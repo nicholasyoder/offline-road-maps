@@ -20,7 +20,7 @@ If the measured North America total is over **15 GB**, stop and revisit scope (z
 | Step | Status | Notes |
 |---|---|---|
 | 0.1 Workspace and CI | **Done** 2026-10-23 | CI green on `master`. Two manual checks open: launch the Windows `.exe`, and the old-laptop test. |
-| 0.2 Test regions and `fetch` | Not started | |
+| 0.2 Test regions and `fetch` | **Done** 2026-10-23 | Ohio, Ontario and Quebec inputs fetched (5.0 GB). NAR chosen over ODA. 79 of 92 Ohio OpenAddresses sources have no license in their metadata. |
 | 0.3 Builder spike | Not started | |
 | 0.4 Address spike | Not started | |
 | 0.5 North America run | Not started | |
@@ -28,7 +28,7 @@ If the measured North America total is over **15 GB**, stop and revisit scope (z
 
 ## Environment notes
 
-Current dev machine: 16 cores, 62 GB RAM, Rust 1.98. Only about 31 GB is free on `/`, so all builder data goes on the data disk.
+Current dev machine: 16 cores, 62 GB RAM, Rust 1.98. Only about 31 GB is free on `/`, so all builder data goes on the data disk. GNU `time` is not installed (`/usr/bin/time` is missing); install the `time` package before 0.3 needs peak RSS.
 
 **Work directory:** `$OMP_WORK=/media/nicholas/Data/maps-testing` on `sda1` (about 586 GB free). Stay inside that folder; the rest of the disk holds unrelated data.
 - The disk is mounted by udisks, not `/etc/fstab`. If it is missing, run `udisksctl mount -b /dev/sda1`.
@@ -93,6 +93,28 @@ Triggered on push to `master` and on pull requests. Jobs:
 
 ## 0.2 Test regions and `fetch`
 
+> **Done 2026-10-23** (the commit that adds `omp-builder fetch`).
+> **Pinned inputs:** Geofabrik snapshot `261001` (2026-10-01, a first-of-month extract that Geofabrik keeps for several months; daily ones last about a week), TIGER 2026, NAR release `202606`. OpenAddresses is pinned by the job IDs in the manifest, since `fetch` keeps files already in the manifest unless `--refresh` is given.
+> **Reproduce:**
+> ```
+> cargo build --profile release-builder -p omp-builder
+> B=target/release-builder/omp-builder
+> $B fetch --region us/ohio     # 181 files, 589 MiB, 2 min
+> $B fetch --region ontario     #  72 files, 2.7 GB with the 1.6 GB national NAR zip, 6.5 min
+> $B fetch --region quebec      #  12 files, 1.4 GB (reuses the NAR zip), 4.5 min
+> ```
+> Rerunning is a no-op. Region ids are Geofabrik's (`us/delaware`, `ontario`, `north-america`, ...); `--dry-run` lists the files without downloading them.
+> **Inputs (raw records):**
+> - Ohio: OSM 310 MiB; 88 TIGER counties; 92 OpenAddresses sources with 6.9M records (2 more listed with no output).
+> - Ontario: OSM 984 MiB; 69 OA sources with 7.1M records (18 with no output).
+> - Quebec: OSM 1,108 MiB; 10 OA sources with 6.7M records, of which the province-wide Adresses Québec source (CC BY 4.0) is 5.3M. **Quebec address coverage is not thin**, so it serves as a full address test region.
+>
+> Raw OA counts overlap: city and county sources cover the same addresses.
+> **OpenAddresses download:** no account or token is needed. `batch.openaddresses.io/api/data?source=<prefix>&layer=addresses` lists the jobs, and `v2.openaddresses.io/batch-prod/job/<id>/source.geojson.gz` redirects to a public, presigned download. The `/api/job/<id>/output/...` path does need a token. Each file's license comes from the source definition at the commit the job ran from, which is recorded as `metadata_url`.
+> **Licenses:** the manifest records what each source states. **79 of the 92 Ohio OA sources state no license** (mostly Ohio LBRS county files) and are recorded as `unspecified`. A further 10 say attribution is required but give no license name. Before Phase 5, the attribution file and license filter (roadmap §7) must decide how to treat `unspecified`.
+> **ODA vs NAR:** results below; NAR is the default Canadian source.
+> Still open: `fetch` does not yet download the osmdata.openstreetmap.de land and water polygons; add them with 0.3. Not yet run for `north-america`; that run belongs to 0.5.
+
 ### Regions
 
 | Role | Region | Why |
@@ -100,7 +122,7 @@ Triggered on push to `master` and on pull requests. Jobs:
 | Inner dev loop | A small US state, e.g. Delaware or Rhode Island | Runs in seconds; used for every code change. |
 | US test state | **Ohio** | Mid-size, a mix of urban and rural, good TIGER coverage, statewide OpenAddresses sources. |
 | Canadian test province 1 | **Ontario** | Most likely the best Canadian address coverage. It is the main check that the Canadian address merge works. |
-| Canadian test province 2 | **Quebec** | Exercises French street names and normalization. Address coverage in ODA is unconfirmed; if it is thin, Quebec still serves for normalization and tile sizes, and the results say so. |
+| Canadian test province 2 | **Quebec** | Exercises French street names and normalization. ODA coverage is thin (1.25M points), but NAR (3.2M civic addresses) and the OpenAddresses province-wide source (5.3M records) cover it well. |
 | Full scale | **North America** (Geofabrik `north-america-latest.osm.pbf`) | The confirmed numbers. Run last, once per encoding candidate, on the large disk. |
 
 Both provinces are run because they test different things and together they cost little compared with the North America run. Pin one Geofabrik snapshot date for all Phase 0 measurements so numbers stay comparable.
@@ -117,6 +139,21 @@ omp-builder fetch --region us/ohio --sources osm,openaddresses,tiger,oda,nar --o
 - **OpenAddresses:** per-source files for the region. Check the current download mechanism first; bulk downloads from batch.openaddresses.io may need an account or token. If so, document the manual step and have `fetch` pick up files placed in the inputs folder.
 - **TIGER `ADDRFEAT`:** one zip per county (`tl_<year>_<county FIPS>_addrfeat.zip`; Ohio is state FIPS 39 with 88 counties). Build the county list from the TIGER directory listing, not a hard-coded table.
 - **StatCan addresses:** fetch both the ODA per-province CSV (2021) and the newer **National Address Register** (NAR, Statistics Canada Open Licence, regularly updated). Compare them for Ontario and Quebec: record count, whether points have coordinates (or only a link to a building or dissemination block), and licence. Use NAR as the default source if it has usable coordinates, and update roadmap §3 with the result.
+**ODA vs NAR result (2026-10-23).** NAR `202606` is one national zip (1.6 GB). It has per-province address CSVs plus location CSVs, joined on `LOC_GUID`. Coordinates are on the location: either a building point (`BG_LATITUDE/LONGITUDE`) or a blockface representative point (`BF_REPPOINT_*`). One civic address counts as one location; apartment units are extra address rows.
+
+| | Ontario | Quebec |
+|---|---|---|
+| ODA v1 (2021) rows / distinct number+street+CSD | 4,033,020 / 3,352,397 | 1,254,237 / 1,229,031 |
+| ODA rows with coordinates | 100% | 100% |
+| NAR civic addresses (locations) | 4,195,809 | 3,237,345 |
+| NAR building coordinate | 3,448,811 (82.2%) | 3,229,937 (99.8%) |
+| NAR blockface point only | 720,479 (17.2%) | 5,660 (0.2%) |
+| NAR no coordinate | 26,519 (0.6%) | 1,748 (0.05%) |
+| NAR address rows (including units) | 6,246,543 | 4,568,811 |
+| Licence | ODA: OGL – Canada. NAR: Statistics Canada Open Licence (also contains OGL – Yukon data). Both are attribution-only. | |
+
+**Decision:** NAR is the default Canadian source. It covers more in both provinces (2.6× ODA in Quebec), it is current, and it has building coordinates for almost all addresses. `fetch` still downloads ODA by default so 0.4 can measure what it adds. For example, ODA may have building points for some of Ontario's 720k blockface-only NAR addresses. Blockface points are approximate, about the middle of one side of a block. 0.4 should treat them like interpolated addresses, not exact points.
+
 - Write `inputs/manifest.toml`: URL, download date, size, checksum and **license plus attribution text** for every file. This is the seed of the Phase 5 attribution file and of the license filter (roadmap §7).
 
 **Done when:** `fetch` reproduces the Ohio input set from scratch and the manifest lists every source's license.
@@ -239,7 +276,7 @@ Exceptions (letter suffixes, units, unmatched points with full coordinates) go i
 
 Run after 0.3 and 0.4 have picked their candidate variants (at most two per layer).
 
-- Check that `$OMP_WORK` is mounted. Fetch North America OSM, OpenAddresses for the US and Canada, all TIGER `ADDRFEAT` counties (about 3,200 files) and the Canadian source chosen in 0.2 (NAR or ODA) for every province.
+- Check that `$OMP_WORK` is mounted. Fetch North America OSM, OpenAddresses for the US and Canada, all TIGER `ADDRFEAT` counties (about 3,200 files) and NAR (the Canadian source chosen in 0.2) for every province.
 - Run `measure` and the address pipeline on all of it. Record wall time, peak RSS and peak temp disk: these are the first numbers for the Phase 5 `BUILDING.md` hardware section.
 - If the run does not fit in 62 GB RAM, that is itself a finding. Switch to the needed-nodes-only strategy or region tiling and note it.
 
@@ -295,7 +332,10 @@ Settled 2026-10-23:
 3. **Work directory:** `/media/nicholas/Data/maps-testing` on the exFAT data disk (see Environment notes).
 4. **Canadian provinces:** both Ontario and Quebec.
 
-Still open, to be settled by Phase 0 data: the encoding variants, the `service` road and POI cut-offs, the dedup threshold, and ODA vs NAR.
+Settled by Phase 0 data:
+5. **Canadian address source:** NAR, with ODA kept only if 0.4 shows it adds coverage (2026-10-23, see 0.2).
+
+Still open, to be settled by Phase 0 data: the encoding variants, the `service` road and POI cut-offs, and the dedup threshold.
 
 ## Out of scope for Phase 0
 
