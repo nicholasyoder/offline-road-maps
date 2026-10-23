@@ -15,6 +15,17 @@ Phase 0 answers one question before any real app code is written: **can a North 
 
 If the measured North America total is over **15 GB**, stop and revisit scope (zoom levels, POI set, service roads, address precision) before Phase 1.
 
+## Status
+
+| Step | Status | Notes |
+|---|---|---|
+| 0.1 Workspace and CI | **Done** 2026-10-23 | CI green on `master`. Two manual checks open: launch the Windows `.exe`, and the old-laptop test. |
+| 0.2 Test regions and `fetch` | Not started | |
+| 0.3 Builder spike | Not started | |
+| 0.4 Address spike | Not started | |
+| 0.5 North America run | Not started | |
+| 0.6 Size table and `format.md` | Not started | |
+
 ## Environment notes
 
 Current dev machine: 16 cores, 62 GB RAM, Rust 1.98. Only about 31 GB is free on `/`, so all builder data goes on the data disk.
@@ -31,6 +42,11 @@ Current dev machine: 16 cores, 62 GB RAM, Rust 1.98. Only about 31 GB is free on
 ---
 
 ## 0.1 Workspace and CI
+
+> **Done 2026-10-23** (commit `787cd68`, [first green CI run](https://github.com/nicholasyoder/offline-road-maps/actions/runs/40039450835)).
+> Stripped sizes: `omp-app` 9.7 MB on Linux (needs glibc 2.35) and 8.6 MB on Windows; `omp-builder` 0.65 MB on both.
+> Note: eframe is 0.37, where `App` implements `ui(&mut Ui, …)`, not `update(&Context, …)`.
+> Still to do by hand: launch the Windows `.exe` on a real Windows PC, and launch on an old laptop with integrated graphics (we may need a GL fallback). The Linux build has opened a window on the dev machine (Vulkan via radv).
 
 ### Layout
 
