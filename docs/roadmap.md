@@ -140,5 +140,5 @@ Detailed plan: [phase0-plan.md](phase0-plan.md).
 - **Builder resources.** North America needs roughly 15 GB of input plus temporary files. Document the hardware requirements.
 
 ## 8. Licensing
-- The app code will be MIT or Apache-2.0 (to be decided). CoMaps is Apache-2.0, so its ideas and code can be borrowed.
+- The app code is dual-licensed `MIT OR Apache-2.0`. CoMaps is Apache-2.0, so its ideas and code can be borrowed.
 - Each pack embeds an attribution file listing ODbL and every address source used.

@@ -1,6 +1,6 @@
 # Phase 0 Plan: Measure and Prototype
 
-*Draft 1, 2026-10-23. Expands Phase 0 of [roadmap.md](roadmap.md#phase-0-measure-and-prototype).*
+*Draft 2, 2026-10-23. Expands Phase 0 of [roadmap.md](roadmap.md#phase-0-measure-and-prototype).*
 
 ## Purpose
 
@@ -8,7 +8,7 @@ Phase 0 answers one question before any real app code is written: **can a North 
 
 ### Exit criteria (expanded)
 
-1. **Confirmed size table.** Measured, not estimated, bytes per layer for the US test state, the Canadian test province and all of North America, with the chosen encoding. It replaces the estimates in roadmap §4, with a planet extrapolation and the CoMaps comparison next to it.
+1. **Confirmed size table.** Measured, not estimated, bytes per layer for the US test state, both Canadian test provinces and all of North America, with the chosen encoding. It replaces the estimates in roadmap §4, with a planet extrapolation and the CoMaps comparison next to it.
 2. **`docs/format.md`.** Describes the container (header, section table, chunking, versioning) in full, and each section's encoding at least at the level the measurements support. Sections not yet prototyped (routing, search) are marked *provisional*.
 3. **Address decision.** A written answer, with numbers, on whether the OSM + OpenAddresses + TIGER merge gives "full address support" and what it costs per address.
 4. **Reproducible.** One documented command sequence regenerates every number in the table from fetched inputs.
@@ -17,9 +17,16 @@ If the measured North America total is over **15 GB**, stop and revisit scope (z
 
 ## Environment notes
 
-Current dev machine: 16 cores, 62 GB RAM, Rust 1.98. **Only about 31 GB is free on `/`**, which is not enough for a North America run (about 15 GB of input plus node index and temp files). There is an unmounted 1.8 TB disk (`sda1`). Plan to mount it as the builder work directory (`$OMP_WORK`) before step 6. Ohio and the Canadian province fit on the current disk.
+Current dev machine: 16 cores, 62 GB RAM, Rust 1.98. Only about 31 GB is free on `/`, so all builder data goes on the data disk.
 
-The repo has no commits and no remote yet.
+**Work directory:** `$OMP_WORK=/media/nicholas/Data/maps-testing` on `sda1` (about 586 GB free). Stay inside that folder; the rest of the disk holds unrelated data.
+- The disk is mounted by udisks, not `/etc/fstab`. If it is missing, run `udisksctl mount -b /dev/sda1`.
+- **It is exFAT.** That has three consequences:
+  - **No sparse files.** A dense node-location index (0.3, strategy 1) is about 8 bytes × max node ID. Node IDs are global, so that is roughly 100 GB of real disk even for Ohio, and it must be zero-filled. Run the dense variant for Ohio on ext4 (`/`), where holes stay free. For North America, either accept about 100 GB of physical writes on exFAT (record the time) or skip the variant if the needed-nodes-only strategy has already won.
+  - **No Unix permissions or symlinks.** Keep the Cargo `target/` directory and anything executable on `/`. Only inputs, temp files and outputs go on `$OMP_WORK`.
+  - Single files up to 16 EB are fine, so large temp files are not a problem.
+
+**Repo:** public on GitHub (`nicholasyoder/offline-road-maps`). The default branch is `master`, and Actions is enabled with all actions allowed. Public repos get standard runners free, so CI minutes are not a constraint.
 
 ---
 
@@ -41,7 +48,7 @@ data/                   # .gitignored; default work dir if $OMP_WORK is unset
 - Edition 2024. Workspace-level `[lints]` with `clippy::all` as warnings and `unsafe_code = "deny"` except in `core` (mmap needs it).
 - Release profile: `lto = "fat"`, `codegen-units = 1`, `strip = true`, `panic = "abort"` for the app. A separate `release-builder` profile without `panic = "abort"`, so builder crashes keep backtraces.
 - Builder CLI uses `clap` (derive). Spikes are builder subcommands, not separate crates, so code that survives stays in place.
-- License: add `LICENSE-MIT` and `LICENSE-APACHE` and declare `MIT OR Apache-2.0`, the Rust convention. This settles roadmap §8 unless you prefer otherwise.
+- License: `MIT OR Apache-2.0` (decided). Add `LICENSE-MIT` and `LICENSE-APACHE`, set `license = "MIT OR Apache-2.0"` in `[workspace.package]`, and update roadmap §8.
 
 ### App stub
 
@@ -52,7 +59,7 @@ data/                   # .gitignored; default work dir if $OMP_WORK is unset
 
 ### CI (GitHub Actions)
 
-Needs a GitHub remote first. Jobs:
+Triggered on push to `master` and on pull requests. Jobs:
 
 | Job | Runner | Steps |
 |---|---|---|
@@ -64,7 +71,7 @@ Needs a GitHub remote first. Jobs:
 - Cache with `Swatinem/rust-cache`. Upload binaries as artifacts. Print stripped binary sizes in the job summary so size regressions are visible.
 - Optional local check: `cargo build --target x86_64-pc-windows-gnu` with mingw, for quick Windows compile checks without pushing.
 
-**Done when:** a push to `main` produces Linux and Windows `omp-app` binaries that open a window, and their sizes are recorded.
+**Done when:** a push to `master` produces Linux and Windows `omp-app` binaries that open a window, and their sizes are recorded.
 
 ---
 
@@ -76,23 +83,24 @@ Needs a GitHub remote first. Jobs:
 |---|---|---|
 | Inner dev loop | A small US state, e.g. Delaware or Rhode Island | Runs in seconds; used for every code change. |
 | US test state | **Ohio** | Mid-size, a mix of urban and rural, good TIGER coverage, statewide OpenAddresses sources. |
-| Canadian test province | **Quebec** (fallback: Ontario) | Exercises French street names and normalization. **First check ODA coverage for Quebec**; if it is thin, use Ontario for address numbers and Quebec only for normalization tests. |
+| Canadian test province 1 | **Ontario** | Most likely the best Canadian address coverage. It is the main check that the Canadian address merge works. |
+| Canadian test province 2 | **Quebec** | Exercises French street names and normalization. Address coverage in ODA is unconfirmed; if it is thin, Quebec still serves for normalization and tile sizes, and the results say so. |
 | Full scale | **North America** (Geofabrik `north-america-latest.osm.pbf`) | The confirmed numbers. Run last, once per encoding candidate, on the large disk. |
 
-Pin one Geofabrik snapshot date for all Phase 0 measurements so numbers stay comparable.
+Both provinces are run because they test different things and together they cost little compared with the North America run. Pin one Geofabrik snapshot date for all Phase 0 measurements so numbers stay comparable.
 
 ### `omp-builder fetch`
 
 A minimal but real subcommand, since Phase 5 needs it anyway:
 
 ```
-omp-builder fetch --region us/ohio --sources osm,openaddresses,tiger,oda --out $OMP_WORK/inputs/
+omp-builder fetch --region us/ohio --sources osm,openaddresses,tiger,oda,nar --out $OMP_WORK/inputs/
 ```
 
 - **OSM:** Geofabrik extract, plus checksum verification against the published `.md5`.
 - **OpenAddresses:** per-source files for the region. Check the current download mechanism first; bulk downloads from batch.openaddresses.io may need an account or token. If so, document the manual step and have `fetch` pick up files placed in the inputs folder.
 - **TIGER `ADDRFEAT`:** one zip per county (`tl_<year>_<county FIPS>_addrfeat.zip`; Ohio is state FIPS 39 with 88 counties). Build the county list from the TIGER directory listing, not a hard-coded table.
-- **StatCan ODA:** the per-province CSV. Also check whether the National Address Register has replaced ODA (roadmap §3).
+- **StatCan addresses:** fetch both the ODA per-province CSV (2021) and the newer **National Address Register** (NAR, Statistics Canada Open Licence, regularly updated). Compare them for Ontario and Quebec: record count, whether points have coordinates (or only a link to a building or dissemination block), and licence. Use NAR as the default source if it has usable coordinates, and update roadmap §3 with the result.
 - Write `inputs/manifest.toml`: URL, download date, size, checksum and **license plus attribution text** for every file. This is the seed of the Phase 5 attribution file and of the license filter (roadmap §7).
 
 **Done when:** `fetch` reproduces the Ohio input set from scratch and the manifest lists every source's license.
@@ -161,11 +169,11 @@ omp-builder measure <input.pbf> --whitelist <file> --variants v1,v3,v4 --json ou
 omp-builder report out/*.json > docs/size-table.md
 ```
 
-**Done when:** `measure` runs on Ohio and the Canadian province, and the JSON holds feature counts, vertex counts and bytes for every layer × zoom × variant, plus build time and peak RAM.
+**Done when:** `measure` runs on Ohio, Ontario and Quebec, and the JSON holds feature counts, vertex counts and bytes for every layer × zoom × variant, plus build time and peak RAM.
 
 ---
 
-## 0.4 Address spike (Ohio first, then the Canadian province)
+## 0.4 Address spike (Ohio first, then Ontario and Quebec)
 
 ### Pipeline
 
@@ -185,7 +193,7 @@ omp-builder report out/*.json > docs/size-table.md
 
 | Metric | Why |
 |---|---|
-| Unique addresses: OSM only, +OpenAddresses, +ODA | Coverage gained by each source |
+| Unique addresses: OSM only, +OpenAddresses, +ODA/NAR | Coverage gained by each source |
 | Share of TIGER ranges with at least one point, before and after the merge | Proxy for "full" coverage, since no single ground truth exists |
 | Street-attach match rate per source | Unmatched addresses need a fallback store and cost more bytes |
 | Duplicate and conflict rate per threshold | Merge quality (roadmap §7 risk) |
@@ -207,7 +215,7 @@ Per street: a sorted run of entries, delta-encoded.
 
 Exceptions (letter suffixes, units, unmatched points with full coordinates) go in a side table; measure it separately. TIGER ranges are stored per segment: `(from, to, parity, side)`.
 
-**Done when:** Ohio and the Canadian province each have the metrics table filled in and a recommended variant, and the conflict sample has been reviewed.
+**Done when:** Ohio, Ontario and Quebec each have the metrics table filled in and a recommended variant, and the conflict sample has been reviewed.
 
 ---
 
@@ -215,7 +223,7 @@ Exceptions (letter suffixes, units, unmatched points with full coordinates) go i
 
 Run after 0.3 and 0.4 have picked their candidate variants (at most two per layer).
 
-- Mount the large disk and set `$OMP_WORK`. Fetch North America OSM, OpenAddresses for the US and Canada, all TIGER `ADDRFEAT` counties (about 3,200 files) and all ODA provinces.
+- Check that `$OMP_WORK` is mounted. Fetch North America OSM, OpenAddresses for the US and Canada, all TIGER `ADDRFEAT` counties (about 3,200 files) and the Canadian source chosen in 0.2 (NAR or ODA) for every province.
 - Run `measure` and the address pipeline on all of it. Record wall time, peak RSS and peak temp disk: these are the first numbers for the Phase 5 `BUILDING.md` hardware section.
 - If the run does not fit in 62 GB RAM, that is itself a finding. Switch to the needed-nodes-only strategy or region tiling and note it.
 
@@ -229,8 +237,8 @@ Run after 0.3 and 0.4 have picked their candidate variants (at most two per laye
 
 Write `docs/size-table.md`, generated by `omp-builder report` with a short hand-written commentary, and replace the estimates in roadmap §4 with a link to it plus the headline numbers.
 
-| Layer | Ohio | Quebec | North America | Planet (extrapolated) | CoMaps equivalent |
-|---|---|---|---|---|---|
+| Layer | Ohio | Ontario | Quebec | North America | Planet (extrapolated) | CoMaps equivalent |
+|---|---|---|---|---|---|---|
 
 For the CoMaps column, sum the CoMaps `.mwm` files covering the same regions. CoMaps splits US states into several files, so add them up. This shows how far ahead or behind we are, keeping in mind CoMaps includes buildings and paths.
 
@@ -256,19 +264,22 @@ Optionally, write the container reader and writer in `omp-core` now (header, sec
 ```
 0.1 workspace + CI ─┬─► 0.2 fetch (Ohio, dev state) ─┬─► 0.3 builder spike (Ohio) ─┐
                     │                                 └─► 0.4 address spike (Ohio) ─┤
-                    │                                                               ├─► Canadian province (0.3 + 0.4)
+                    │                                                               ├─► Ontario + Quebec (0.3 + 0.4)
                     └─► app stub binary-size baseline                               │
                                                                                     └─► 0.5 North America ─► 0.6 size table + format.md
 ```
 
 0.3 and 0.4 can proceed in parallel once Ohio is fetched; they share the PBF reader and normalization code in `core`. Draft `format.md` incrementally as decisions land, not all at the end.
 
-## Decisions to confirm
+## Decisions
 
-1. **License:** `MIT OR Apache-2.0` dual license? (Recommended.)
-2. **CI host:** GitHub Actions requires pushing the repo to GitHub. Is that fine, or should CI target another host?
-3. **Large disk:** OK to mount `sda1` (1.8 TB) as the builder work directory for the North America run?
-4. **Canadian province:** Quebec (French normalization) or Ontario (likely better address data), pending the ODA coverage check?
+Settled 2026-10-23:
+1. **License:** `MIT OR Apache-2.0`.
+2. **CI host:** GitHub Actions on the public GitHub repo.
+3. **Work directory:** `/media/nicholas/Data/maps-testing` on the exFAT data disk (see Environment notes).
+4. **Canadian provinces:** both Ontario and Quebec.
+
+Still open, to be settled by Phase 0 data: the encoding variants, the `service` road and POI cut-offs, the dedup threshold, and ODA vs NAR.
 
 ## Out of scope for Phase 0
 
