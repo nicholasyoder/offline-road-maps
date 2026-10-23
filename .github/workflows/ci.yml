@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  build-linux:
+    # 22.04 keeps the glibc requirement at 2.35.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p omp-app
+      - run: cargo build --profile release-builder -p omp-builder
+      - name: Binary sizes
+        run: |
+          {
+            echo "### Linux binary sizes"
+            echo "| Binary | Bytes |"
+            echo "|---|---|"
+            echo "| omp-app | $(stat -c %s target/release/omp-app) |"
+            echo "| omp-builder | $(stat -c %s target/release-builder/omp-builder) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64
+          path: |
+            target/release/omp-app
+            target/release-builder/omp-builder
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p omp-app
+      - run: cargo build --profile release-builder -p omp-builder
+      - name: Binary sizes
+        shell: pwsh
+        run: |
+          $app = (Get-Item target/release/omp-app.exe).Length
+          $builder = (Get-Item target/release-builder/omp-builder.exe).Length
+          @(
+            "### Windows binary sizes"
+            "| Binary | Bytes |"
+            "|---|---|"
+            "| omp-app.exe | $app |"
+            "| omp-builder.exe | $builder |"
+          ) | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x86_64
+          path: |
+            target/release/omp-app.exe
+            target/release-builder/omp-builder.exe
