@@ -577,8 +577,9 @@ Settled by Phase 0 data:
 10. **Address dedup:** same street, same direction set and same number within 250 m. NAR blockface points merge within 1 km. Attach to OSM streets within 200 m (2026-10-23, see 0.4).
 11. **OSM `addr:interpolation`:** kept as ranges like TIGER, never expanded into points (2026-10-23, see 0.4).
 12. **Node locations:** needed-nodes-only, as a rank-indexed bitset with one 8-byte slot per needed node (13.9 GiB for North America's 1.62 billion). The dense index is dropped (2026-10-24, see 0.5).
+13. **OpenAddresses sources that name no license:** used. If a source is publicly available and names no license, it goes in the pack like any other and is listed in the attribution file. This keeps North America at 151.5M addresses instead of 86.8M. Revisit only if packs are ever distributed beyond personal use, since "no license" is not legally the same as public domain (2026-10-24, owner's decision).
 
-Still open, to be settled by Phase 0 data: the lake, stream, protected-area and `service` road cut-offs, which decide whether North America gets from about 13 GiB toward the 6–10 GB budget. Settle before Phase 5: how to treat OpenAddresses sources with no license name (most US address coverage depends on them).
+Still open, to be settled by Phase 0 data: the lake, stream, protected-area and `service` road cut-offs, which decide whether North America gets from about 13 GiB toward the 6–10 GB budget.
 
 ## Out of scope for Phase 0
 
