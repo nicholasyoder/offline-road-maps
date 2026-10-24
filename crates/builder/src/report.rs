@@ -61,6 +61,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
         return Ok(());
     }
     anyhow::ensure!(args.sum.is_none(), "--sum only applies to addr-spike runs");
+    let runs = merge_bands(runs)?;
     let names: Vec<String> = runs
         .iter()
         .map(|r| {
@@ -277,7 +278,7 @@ fn pct(a: f64, b: f64) -> String {
 }
 
 /// Fields that identify a row in a list; rows with the same values are summed together.
-const ROW_KEYS: [&str; 7] = [
+const ROW_KEYS: [&str; 9] = [
     "source",
     "license",
     "variant",
@@ -285,15 +286,20 @@ const ROW_KEYS: [&str; 7] = [
     "block_kib",
     "path",
     "name",
+    "layer",
+    "zoom",
 ];
 /// Settings, kept from the first run rather than summed.
 const SETTINGS: [&str; 3] = ["attach_m", "dedup_m", "zstd_level"];
 
-/// Adds `b` into `a`: numbers add (peak RSS takes the maximum), lists of rows are matched by
-/// [`ROW_KEYS`], number lists add element-wise, and strings keep `a`'s value.
+/// Adds `b` into `a`: numbers add (peak RSS takes the maximum; row keys and settings keep
+/// `a`'s value), lists of rows are matched by [`ROW_KEYS`], number lists add element-wise,
+/// and strings keep `a`'s value.
 fn add_value(a: &mut Value, b: &Value, key: &str) {
     match (a, b) {
-        (Value::Number(x), Value::Number(y)) if !SETTINGS.contains(&key) => {
+        (Value::Number(x), Value::Number(y))
+            if !SETTINGS.contains(&key) && !ROW_KEYS.contains(&key) =>
+        {
             let (x0, y0) = (x.as_f64().unwrap_or(0.0), y.as_f64().unwrap_or(0.0));
             let v = if key == "peak_rss_mib" {
                 Value::from(x0.max(y0))
@@ -336,6 +342,75 @@ fn add_value(a: &mut Value, b: &Value, key: &str) {
         (a @ Value::Null, b) => *a = b.clone(),
         _ => {}
     }
+}
+
+/// Adds up `measure --band` runs of one region into one run. Tile bytes, MVT, the tile
+/// index and per-class z14 bytes add exactly, since each tile is cut in one band, and so do
+/// per-class feature totals, since each feature is owned by one band. Search sizes add up to
+/// an upper bound (the bands' token sets overlap). Element and tag counts, routing,
+/// dictionaries and read benchmarks are band 0's, which sees the whole input too.
+fn merge_bands(runs: Vec<Value>) -> Result<Vec<Value>> {
+    let band = |r: &Value| r["band"][0].as_u64();
+    let (mut banded, mut out): (Vec<Value>, Vec<Value>) =
+        runs.into_iter().partition(|r| band(r).is_some());
+    banded.sort_by_key(|r| (r["region"].to_string(), band(r)));
+    for r in banded {
+        let n = r["band"][1].as_u64().unwrap_or(1);
+        let base = out
+            .iter_mut()
+            .find(|o| o["region"] == r["region"] && o["bands"].is_array());
+        let Some(base) = base else {
+            anyhow::ensure!(
+                band(&r) == Some(0),
+                "{}: band runs must start at band 0",
+                r["region"]
+            );
+            let mut r = r;
+            r["bands"] = Value::from(vec![Value::from(0), Value::from(n)]);
+            out.push(r);
+            continue;
+        };
+        let seen = base["bands"][0].as_u64().unwrap_or(0) + 1;
+        anyhow::ensure!(
+            band(&r) == Some(seen) && base["bands"][1].as_u64() == Some(n),
+            "{}: expected band {seen}/{n}",
+            r["region"]
+        );
+        base["bands"][0] = Value::from(seen);
+        add_value(&mut base["build"], &r["build"], "build");
+        for key in ["cells", "mvt", "tile_index", "search"] {
+            add_value(&mut base[key], &r[key], key);
+        }
+        if let Some(p) = r["water"]["polygons"].as_u64() {
+            base["water"]["polygons"] =
+                Value::from(base["water"]["polygons"].as_u64().unwrap_or(0) + p);
+        }
+        let classes = base["classes"].as_array_mut().into_iter().flatten();
+        for c in classes {
+            let other = r["classes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|o| o["layer"] == c["layer"] && o["class"] == c["class"]);
+            if let Some(o) = other {
+                for k in ["features", "vertices", "z14_features", "z14_v1_bytes"] {
+                    c[k] = Value::from(c[k].as_u64().unwrap_or(0) + o[k].as_u64().unwrap_or(0));
+                }
+            }
+        }
+    }
+    for r in &mut out {
+        if let Some([k, n]) = r["bands"].as_array().map(|b| [num(&b[0]), num(&b[1])]) {
+            anyhow::ensure!(
+                k + 1.0 == n,
+                "{}: only {} of {n} bands",
+                r["region"],
+                k + 1.0
+            );
+            r["bands"] = Value::from(n as u64);
+        }
+    }
+    Ok(out)
 }
 
 /// One run that adds up `runs`, with ratios recomputed from the sums.
@@ -633,5 +708,29 @@ mod tests {
         assert_eq!(cumulative, [6, 16, 20]);
         assert_eq!(t["attach"][0]["strict"], serde_json::json!([2, 3, 4]));
         assert_eq!(t["encoding"]["variants"][0]["bytes_per_address"], 2.5);
+    }
+
+    #[test]
+    fn merges_bands() {
+        let band = |k: u64, z14: u64| {
+            serde_json::json!({
+                "region": "r", "band": [k, 2], "read": {"nodes": 10},
+                "build": {"wall_s": 1.0, "peak_rss_mib": 5.0 + k as f64},
+                "cells": [{"variant": "v4", "layer": "roads", "zoom": 14, "bytes": z14}],
+                "classes": [{"layer": "roads", "class": "primary", "ways": 3, "features": 2,
+                             "vertices": 4, "z14_features": 1, "z14_v1_bytes": z14}]
+            })
+        };
+        let merged = merge_bands(vec![band(1, 7), band(0, 5)]).unwrap();
+        assert_eq!(merged.len(), 1);
+        let m = &merged[0];
+        assert_eq!(m["bands"], 2);
+        assert_eq!(m["cells"][0]["zoom"], 14);
+        assert_eq!(m["cells"][0]["bytes"], 12);
+        assert_eq!(m["classes"][0]["z14_v1_bytes"], 12);
+        assert_eq!(m["classes"][0]["ways"], 3);
+        assert_eq!(m["read"]["nodes"], 10);
+        assert_eq!(m["build"]["peak_rss_mib"], 6.0);
+        assert!(merge_bands(vec![band(1, 7)]).is_err());
     }
 }

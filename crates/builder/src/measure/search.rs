@@ -25,7 +25,10 @@ pub struct SearchStats {
     pub entries_bytes: u64,
 }
 
-pub fn build(features: &[Feature], wl: &Whitelist) -> anyhow::Result<SearchStats> {
+pub fn build<'a>(
+    features: impl IntoIterator<Item = &'a Feature>,
+    wl: &Whitelist,
+) -> anyhow::Result<SearchStats> {
     let layer = |n: &str| wl.layer_index(n).map(|i| i as u8);
     let (places, pois, roads) = (layer("places"), layer("pois"), layer("roads"));
     let name_prop = |l: u8| {

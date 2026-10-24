@@ -133,9 +133,9 @@ pub struct Pyramid {
     pub store_bytes: u64,
 }
 
-pub fn build(features: &[Feature], wl: &Whitelist, store_path: &Path) -> Result<Pyramid> {
-    let minzoom: Vec<Vec<u8>> = wl
-        .layers
+/// `[layer][class]` minimum zoom, `u8::MAX` for classes not in tiles.
+pub fn minzooms(wl: &Whitelist) -> Vec<Vec<u8>> {
+    wl.layers
         .iter()
         .map(|l| {
             l.classes
@@ -143,7 +143,66 @@ pub fn build(features: &[Feature], wl: &Whitelist, store_path: &Path) -> Result<
                 .map(|c| if c.tile { c.minzoom } else { u8::MAX })
                 .collect()
         })
-        .collect();
+        .collect()
+}
+
+/// The split tiles (z6) whose buffered rect `b` touches.
+fn split_tiles(b: BBox) -> impl Iterator<Item = (u32, u32)> {
+    let n = 1u32 << SPLIT_ZOOM;
+    let size = 1i64 << (32 - u32::from(SPLIT_ZOOM));
+    let range = |lo: u32, hi: u32| {
+        let first = ((i64::from(lo) - size) / size).max(0) as u32;
+        let last = ((i64::from(hi) + size) / size).min(i64::from(n) - 1) as u32;
+        first..=last
+    };
+    let (xs, ys) = (range(b.min[0], b.max[0]), range(b.min[1], b.max[1]));
+    ys.flat_map(move |y| xs.clone().map(move |x| (x, y)))
+        .filter(move |&(x, y)| geom::bbox_overlaps(&b, &tile_rect(SPLIT_ZOOM, x, y)))
+}
+
+/// The part of the pyramid one `measure --band k/n` run cuts: the split tiles in columns
+/// with `x % n == k`, and z0–z5 in band 0. Each tile is cut in exactly one band, so the
+/// bands' tile bytes add up. Every feature is "owned" by the band of the column its bbox
+/// starts in, for per-feature totals that should not count a feature twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Band {
+    pub k: u32,
+    pub n: u32,
+}
+
+impl Band {
+    pub const ALL: Band = Band { k: 0, n: 1 };
+
+    pub fn parse(s: &str) -> Option<Self> {
+        let (k, n) = s.split_once('/')?;
+        let (k, n) = (k.parse().ok()?, n.parse().ok()?);
+        (n > 0 && k < n).then_some(Band { k, n })
+    }
+
+    fn has(self, x: u32) -> bool {
+        x % self.n == self.k
+    }
+
+    pub fn owns(self, b: BBox) -> bool {
+        self.has(b.min[0] >> (32 - u32::from(SPLIT_ZOOM)))
+    }
+
+    /// Whether this band needs a feature with bounds `b` and minimum zoom `minzoom`.
+    pub fn keeps(self, b: BBox, minzoom: u8) -> bool {
+        self.n == 1
+            || self.owns(b)
+            || (self.k == 0 && minzoom < SPLIT_ZOOM)
+            || (minzoom <= MAX_ZOOM && split_tiles(b).any(|(x, _)| self.has(x)))
+    }
+}
+
+pub fn build(
+    features: &[Feature],
+    wl: &Whitelist,
+    store_path: &Path,
+    band: Band,
+) -> Result<Pyramid> {
+    let minzoom = minzooms(wl);
     let ctx = Ctx {
         wl,
         stats: (0..rayon::current_num_threads() + 1)
@@ -166,7 +225,9 @@ pub fn build(features: &[Feature], wl: &Whitelist, store_path: &Path) -> Result<
             geom: Cow::Borrowed(&f.geom),
         })
         .collect();
-    walk(&ctx, 0, 0, 0, &low, SPLIT_ZOOM - 1);
+    if band.k == 0 {
+        walk(&ctx, 0, 0, 0, &low, SPLIT_ZOOM - 1);
+    }
     drop(low);
 
     // (split tile, feature) for every tile a feature's bbox touches.
@@ -176,16 +237,8 @@ pub fn build(features: &[Feature], wl: &Whitelist, store_path: &Path) -> Result<
         .enumerate()
         .filter(|(_, f)| minzoom(f) <= MAX_ZOOM)
         .flat_map_iter(|(i, f)| {
-            let b = f.geom.bbox();
-            let size = 1i64 << (32 - u32::from(SPLIT_ZOOM));
-            let range = |lo: u32, hi: u32| {
-                let first = ((i64::from(lo) - size) / size).max(0) as u32;
-                let last = ((i64::from(hi) + size) / size).min(i64::from(n) - 1) as u32;
-                first..=last
-            };
-            let (xs, ys) = (range(b.min[0], b.max[0]), range(b.min[1], b.max[1]));
-            ys.flat_map(move |y| xs.clone().map(move |x| (x, y)))
-                .filter(move |&(x, y)| geom::bbox_overlaps(&b, &tile_rect(SPLIT_ZOOM, x, y)))
+            split_tiles(f.geom.bbox())
+                .filter(|&(x, _)| band.has(x))
                 .map(move |(x, y)| (y * n + x, i as u32))
         })
         .collect();
@@ -396,4 +449,37 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
     }
     let slot = rayon::current_thread_index().map_or(0, |i| i + 1);
     ctx.stats[slot].lock().unwrap().merge(local);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bands_partition_split_tiles() {
+        let bands: Vec<Band> = (0..3).map(|k| Band { k, n: 3 }).collect();
+        // A bbox spanning several z6 columns: every band keeps it, exactly one owns it.
+        let col = 1u32 << (32 - u32::from(SPLIT_ZOOM));
+        let b = BBox {
+            min: [10 * col + 5, 20 * col],
+            max: [13 * col, 20 * col + 9],
+        };
+        assert!(bands.iter().all(|band| band.keeps(b, MAX_ZOOM)));
+        assert_eq!(bands.iter().filter(|band| band.owns(b)).count(), 1);
+        // A small feature inside one column, away from its edges.
+        let small = BBox {
+            min: [10 * col + col / 2, 20 * col + col / 2],
+            max: [10 * col + col / 2 + 9, 20 * col + col / 2 + 9],
+        };
+        let keepers: Vec<u32> = bands
+            .iter()
+            .filter(|band| band.keeps(small, MAX_ZOOM))
+            .map(|band| band.k)
+            .collect();
+        assert_eq!(keepers, [10 % 3]);
+        // Low-zoom features also go to band 0, for z0–z5.
+        assert!(bands[0].keeps(small, 3));
+        assert_eq!(Band::parse("2/3"), Some(bands[2]));
+        assert_eq!(Band::parse("3/3"), None);
+    }
 }

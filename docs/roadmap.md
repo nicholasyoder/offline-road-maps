@@ -65,17 +65,17 @@ Everything else is unmaintained, server-based (Dawarich Atlas), Windows-only (Ma
 
 The builder **deduplicates** across sources, matching on normalized street, house number and a distance threshold (250 m on the same street, from phase 0). OSM wins when sources conflict. Each address keeps a 1-bit "source" flag so the app can show where it came from. OSM `addr:interpolation` ways are kept as ranges, like TIGER.
 
-## 4. Size budget (estimates; Phase 0 checks them)
+## 4. Size budget (estimates, and Phase 0 measurements)
 
 Leaving out buildings, paths and walking/bike data removes most of the bulk. House numbers add some back.
 
 | Layer | North America | Planet (stretch) |
 |---|---|---|
-| Rendering tiles: no buildings or paths, zoom 14 max, simplified, custom encoding plus zstd dictionaries | 3–5 GB | 15–25 GB |
-| Car routing graph (contraction hierarchy) | 1–1.5 GB | 3–6 GB |
-| Search: places, streets, POIs | about 0.5 GB | 2–4 GB |
-| **House-number addresses** (about 150–200M points in North America after merging) | 1.5–3 GB estimated; **about 0.3–0.5 GB** from the phase 0 test regions (1.9–2.0 B per address, plus about 0.4 B per address for US TIGER ranges; street names are counted under search) | 6–15 GB (depends on open data elsewhere) |
-| **Total** | **about 6–10 GB** | **about 30–50 GB** — well under the 100 GB stretch target |
+| Rendering tiles: no buildings or paths, zoom 14 max, simplified, custom encoding plus zstd dictionaries | 3–5 GB estimated; **9.2 GiB measured** (phase 0.5, V4). Water is half of it: lakes and streams are 40% of z14 bytes. | 15–25 GB |
+| Car routing graph (contraction hierarchy) | 1–1.5 GB estimated; **about 3.2 GiB** from the measured graph (62.5M nodes, 150M edges) at the regional CH-to-graph ratio | 3–6 GB |
+| Search: places, streets, POIs | about 0.5 GB estimated; **0.25 GiB or less** measured (no admin hierarchy yet) | 2–4 GB |
+| **House-number addresses** (about 150–200M points in North America after merging) | 1.5–3 GB estimated; **0.36 GiB measured** for 151.5M merged addresses (2.18 B each, plus 50 MiB of US TIGER ranges; street names are counted under search). Without OpenAddresses sources that name no license: 86.8M. | 6–15 GB (depends on open data elsewhere) |
+| **Total** | **about 6–10 GB** targeted; **about 13 GiB measured** before any cut-offs for lakes, streams, protected areas and `service` roads | **about 30–50 GB** — well under the 100 GB stretch target |
 
 Addresses are stored grouped by street rather than as standalone points. Each street keeps a sorted run of `(house number, offset along the street)` pairs, delta-encoded. This should come to only a few bytes per address instead of a full coordinate and name each time. That grouping is the main reason the address budget is feasible. Measured in phase 0 (A3, with zstd over blocks of streets): 1.9–2.0 bytes per address, units and unattached points included.
 
@@ -89,7 +89,7 @@ Addresses are stored grouped by street rather than as standalone points. Each st
 | Container | One region pack is a header plus memory-mappable sections: tiles, routing, search, addresses and metadata. It is split into **chunks under 4 GB** for FAT32. | Tiles are ordered along a Hilbert curve, which keeps nearby tiles together on disk so reads stay fast on slow USB drives. The OS page cache does the caching. |
 | Routing | **Contraction hierarchies, car profile only**, built in the builder. | Covers one-ways, turn restrictions, speed by road class and `maxspeed`, and avoiding tolls, ferries and highways (these flags are built into the graph). User-drawn "avoid this area" may later need Multi-Level Dijkstra or customizable routing instead. |
 | Search | An `fst` index over normalized tokens, an admin-boundary hierarchy for "123 Main St, Springfield, IL", and a spatial grid for reverse lookup. | Normalizes US and Canadian street suffixes and directions ("St" = "Street", "N" = "North"). Handles French for Quebec. |
-| Builder | Reads OSM data as a stream and keeps node locations in a dense on-disk index. Includes a `fetch` subcommand for Geofabrik, OpenAddresses, TIGER and StatCan. | The target is building North America on a 16–32 GB RAM desktop. The planet may need 64 GB. |
+| Builder | Reads OSM data as a stream and keeps the locations of needed nodes only, in a rank-indexed bitset with 8 bytes per node (13.9 GiB for North America). Includes a `fetch` subcommand for Geofabrik, OpenAddresses, TIGER and StatCan. | The target is building North America on a 16–32 GB RAM desktop, and the planet may need 64 GB. Phase 0 peaks at 43 GB for North America, in 3 bands (one pass needs over 56 GB). Reaching the target needs features spilled to disk by tile. |
 | Portable app | Config, pins and saved trips live next to the executable. | The app makes no network calls at all. |
 
 ## 6. Phased roadmap
@@ -137,7 +137,7 @@ Detailed plan: [phase0-plan.md](phase0-plan.md).
 - **Text labels** are the hardest part of the renderer. Start with Latin-script place labels.
 - **Address merging quality.** Duplicates and conflicts across sources can produce bad results. Phase 0 must measure this on real data.
 - **Address licensing.** Some OpenAddresses sources are share-alike or non-commercial. Fine for private distribution, but the builder should be able to filter sources by license.
-- **Builder resources.** North America needs roughly 15 GB of input plus temporary files. Document the hardware requirements.
+- **Builder resources.** North America needs about 35 GB of input (19 GB OSM, 10 GB OpenAddresses, 3.5 GB TIGER, 2 GB StatCan, 1 GB ocean polygons), plus about 12 GB of temporary tiles. Document the hardware requirements.
 
 ## 8. Licensing
 - The app code is dual-licensed `MIT OR Apache-2.0`. CoMaps is Apache-2.0, so its ideas and code can be borrowed.

@@ -257,6 +257,18 @@ fn fetch_with_retries(agent: &Agent, out: &Path, job: &Job) -> Result<FileEntry>
     }
 }
 
+/// The bytes a file of this type starts with. Checked because the Census server can answer
+/// with an HTML "Request Rejected" page and status 200, and TIGER lists no size or hash.
+fn magic(path: &str) -> Option<&'static [u8]> {
+    if path.ends_with(".zip") {
+        Some(b"PK\x03\x04")
+    } else if path.ends_with(".gz") {
+        Some(&[0x1f, 0x8b])
+    } else {
+        None
+    }
+}
+
 fn fetch_one(agent: &Agent, out: &Path, job: &Job) -> Result<FileEntry> {
     let (license, metadata_url) = match &job.license {
         LicenseSpec::Known(l) => (l.clone(), None),
@@ -286,6 +298,17 @@ fn fetch_one(agent: &Agent, out: &Path, job: &Job) -> Result<FileEntry> {
         }
         if let Some(md5) = &job.expected_md5 {
             ensure!(&d.md5 == md5, "md5 {} but the publisher's is {md5}", d.md5);
+        }
+        if let Some(magic) = magic(&job.path) {
+            let mut head = [0u8; 4];
+            let n = std::fs::File::open(&part)
+                .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+                .with_context(|| format!("read {}", part.display()))?;
+            ensure!(
+                head[..n].starts_with(magic),
+                "not the expected file type (starts with {:?}); the server may have sent an error page",
+                String::from_utf8_lossy(&head[..n])
+            );
         }
         Ok(())
     };

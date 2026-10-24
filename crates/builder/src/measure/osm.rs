@@ -13,6 +13,7 @@ use serde::Serialize;
 use super::geom::{self, Assembly, BBox, Geometry, P};
 use super::nodes::{DenseIndex, NodeSet, RankedLocations};
 use super::routing::RoutingStats;
+use super::tiles::{self, Band};
 
 pub struct Feature {
     /// Source element: OSM id × 4 + 0 node, 1 way, 2 relation, 3 other source. Features are
@@ -103,9 +104,20 @@ struct Ctx<'a> {
     keys: HashSet<&'a str>,
     roads_layer: usize,
     boundaries_layer: usize,
+    band: Band,
+    minzoom: Vec<Vec<u8>>,
 }
 
 impl Ctx<'_> {
+    /// Whether this run's band needs the feature.
+    fn keeps(&self, f: &Feature) -> bool {
+        self.band.n == 1
+            || self.band.keeps(
+                f.geom.bbox(),
+                self.minzoom[f.layer as usize][f.class as usize],
+            )
+    }
+
     fn interesting(&self, tags: &[(&str, &str)]) -> bool {
         tags.iter()
             .any(|(k, _)| self.keys.contains(k) || REPORT_KEYS.contains(k))
@@ -271,9 +283,11 @@ fn parse_maxspeed(v: &str) -> Option<f64> {
 }
 
 impl<'a> Ctx<'a> {
-    fn new(wl: &'a Whitelist) -> Result<Self> {
+    fn new(wl: &'a Whitelist, band: Band) -> Result<Self> {
         Ok(Ctx {
             wl,
+            band,
+            minzoom: tiles::minzooms(wl),
             keys: wl.keys().into_iter().collect(),
             roads_layer: wl
                 .layer_index("roads")
@@ -290,7 +304,7 @@ impl<'a> Ctx<'a> {
 /// one counting the edges between them. For a continent, where the roads do not fit next to
 /// everything else.
 pub fn count_road_graph(path: &Path, wl: &Whitelist, restrictions: u64) -> Result<RoutingStats> {
-    let ctx = Ctx::new(wl)?;
+    let ctx = Ctx::new(wl, Band::ALL)?;
     let (members, boundaries) = (HashSet::new(), HashMap::new());
     // `f` sees each road way's `(refs, oneway, routable)`.
     let roads = |f: &(dyn Fn(&[i64], i8, bool) + Sync)| {
@@ -357,9 +371,17 @@ pub fn count_road_graph(path: &Path, wl: &Whitelist, restrictions: u64) -> Resul
     })
 }
 
-/// `keep_roads`: also return the road ways with their coordinates, for [`super::routing::build`].
-pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy, keep_roads: bool) -> Result<OsmData> {
-    let ctx = Ctx::new(wl)?;
+/// `keep_roads`: also return the road ways with their coordinates, for
+/// [`super::routing::build`]. `band`: keep only the features that band needs.
+pub fn read(
+    path: &Path,
+    wl: &Whitelist,
+    strategy: Strategy,
+    keep_roads: bool,
+    band: Band,
+) -> Result<OsmData> {
+    let ctx = Ctx::new(wl, band)?;
+    let progress = |what: &str| eprintln!("    {what}: peak RSS {:.0} MiB", super::peak_rss_mib());
     let bbox = header_bbox(path)?;
     let mut stats = ReadStats::default();
     let mut counts = class_counts(wl);
@@ -432,7 +454,9 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy, keep_roads: bool) -
             // Pass 2: every node into the index. Pass 3: ways, resolved as they are read.
             let index = DenseIndex::create(index_path)?;
             for mut b in pass(path, wl, |block, out| {
-                nodes_block(&ctx, block, out, |id, p| index.set(id, p))
+                nodes_block(&ctx, block, out, |id, p| index.set(id, p))?;
+                out.features.retain(|f| ctx.keeps(f));
+                Ok(())
             })? {
                 merge_common(&mut b, &mut stats);
                 collect(&mut b);
@@ -443,6 +467,7 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy, keep_roads: bool) -
                 for rec in std::mem::take(&mut out.way_recs) {
                     resolve_way(rec, |id| index.get(id), keep_roads, out);
                 }
+                out.features.retain(|f| ctx.keeps(f));
                 Ok(())
             })? {
                 merge_common(&mut b, &mut stats);
@@ -465,19 +490,28 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy, keep_roads: bool) -
             })? {
                 merge_common(&mut b, &mut stats);
             }
+            progress("ways marked");
             stats.node_set_heap_bytes = needed.heap_bytes();
             let locs = RankedLocations::new(needed);
             stats.needed_nodes = locs.len() as u64;
             stats.node_locations_heap_bytes = locs.heap_bytes();
+            eprintln!(
+                "    {} needed nodes, {:.1} GiB of locations",
+                locs.len(),
+                locs.heap_bytes() as f64 / f64::from(1 << 30)
+            );
             for mut b in pass(path, wl, |block, out| {
                 nodes_block(&ctx, block, out, |id, p| {
                     locs.set(id, p);
                     Ok(())
-                })
+                })?;
+                out.features.retain(|f| ctx.keeps(f));
+                Ok(())
             })? {
                 merge_common(&mut b, &mut stats);
                 collect(&mut b);
             }
+            progress("nodes located");
             for mut b in pass(path, wl, |block, out| {
                 // Tag and class counts were taken in pass 2.
                 let mut ways = Block::new(wl);
@@ -485,11 +519,13 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy, keep_roads: bool) -
                 for rec in ways.way_recs {
                     resolve_way(rec, |id| locs.get(id), keep_roads, out);
                 }
+                out.features.retain(|f| ctx.keeps(f));
                 Ok(())
             })? {
                 merge_common(&mut b, &mut stats);
                 collect(&mut b);
             }
+            progress("ways resolved");
         }
     }
 
@@ -532,13 +568,16 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy, keep_roads: bool) -
                 }
                 GeometryKind::Line => continue,
             };
-            features.push(Feature {
+            let f = Feature {
                 id: r.id * 4 + 2,
                 layer: o.layer,
                 class: o.class,
                 geom: g,
                 props: o.props,
-            });
+            };
+            if ctx.keeps(&f) {
+                features.push(f);
+            }
         }
     }
     features.sort_unstable_by_key(|f| (f.layer, f.id, f.class));

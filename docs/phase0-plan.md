@@ -23,7 +23,7 @@ If the measured North America total is over **15 GB**, stop and revisit scope (z
 | 0.2 Test regions and `fetch` | **Done** 2026-10-23 | Ohio, Ontario and Quebec inputs fetched (5.0 GB). NAR chosen over ODA. 79 of 92 Ohio OpenAddresses sources have no license in their metadata. |
 | 0.3 Builder spike | **Done** 2026-10-23 | `measure` and `report` run on Ohio, Ontario and Quebec. V4 is 134 / 580 / 912 MiB. Lakes and streams are 60–72% of the Canadian tiles. Needed-nodes-only beats the dense index on Ohio; North America is still to confirm. |
 | 0.4 Address spike | **Done** 2026-10-23 | `addr-spike` run on Ohio, Ontario and Quebec. Merged 4.95M / 5.58M / 4.24M addresses, at 1.9–2.0 B each with A3. OSM alone has 12–40% of them. 89 of 92 Ohio OA sources have no license name; without them Ohio drops to 1.13M. Dedup at 250 m. ODA dropped. |
-| 0.5 North America run | In progress | Builder changes for a continent are done and checked on Ohio, Ontario and Quebec. The North America inputs are still downloading (Geofabrik is throttled to about 150–300 KB/s per connection). The runs themselves remain. |
+| 0.5 North America run | **Done** 2026-10-24 | Tiles V4 9.2 GiB, CH about 3.2 GiB (estimated), search 0.25 GiB or less, addresses 0.36 GiB: about 13 GiB in all, under the 15 GB stop line but over the 6–10 GB budget. Lakes and streams are 40% of z14 bytes. One-pass `measure` did not fit in 56 GB, so it ran in 3 bands (peak 43 GB). 151.5M addresses, or 86.8M without unlicensed sources. |
 | 0.6 Size table and `format.md` | Not started | |
 
 ## Environment notes
@@ -412,46 +412,102 @@ Exceptions (letter suffixes, units, unmatched points with full coordinates) go i
 
 ## 0.5 Full North America run
 
-> **In progress 2026-10-24.** The builder changes for a continent are done. The North America inputs are still downloading, and the runs remain.
+> **Done 2026-10-24** (the commits that add `--band`, `--each`, `--routing graph` and `--clip-poly`).
+> **Inputs:** Geofabrik `north-america-261001` (18.1 GiB), plus everything for the 66 US and Canadian subdivisions:
+> - OpenAddresses: 2,193 sources, 9.6 GB.
+> - TIGER: 3,223 of 3,225 counties, 3.5 GB.
+> - NAR, ocean polygons and `.poly` boundaries.
 >
-> **Why the builder had to change** (projected from Quebec, scaled by PBF size, 16.8×):
-> - The 0.3 read path would have needed about 100 GB. It held every way's refs, plus 32 bytes per needed node at peak (`(id, location)` pairs, then a sorted copy).
-> - `fast_paths` and its `HashMap` over every road node would not fit for a continent.
-> - The z0–z5 tiling held frag lists for the whole region at every level.
-> - `addr-spike` has no spatial filter, so 66 runs over the North America extract would count its OSM addresses 66 times.
+> About 35 GB of inputs in all. The North America PBF took a day at Geofabrik's throttled 150–300 KB/s one evening and 30 minutes the next morning.
 >
-> **Changes** (output checked against the 0.3 and 0.4 JSON; identical except where noted):
-> - **Node locations:** the needed-nodes bitset now has a rank index, and each location goes into one 8-byte slot at its rank. Way refs are read again in a fourth pass instead of being held.
->   - Read-stage peak: Ohio 3.0 → 2.1 GB, Ontario 7.9 → 4.6 GB, Quebec 8.9 → 4.8 GB.
->   - `addr-spike` uses the same store.
-> - **Tiling:** z0–z5 come from only the features shown there. From z6 down, each z6 tile is cut on its own from the features its bbox touches. Quebec's overall peak drops 7.4 → 5.8 GB, and every cell is byte-identical.
-> - **Routing:** `measure --routing graph` counts graph nodes and edges with two bitsets, in two extra passes over the ways, and keeps no roads. The counts match the CH build exactly on Ohio (2,211,466 nodes, 5,281,643 edges). `report` estimates the CH size of a graph-only run from the CH-edges-per-edge ratio of the regional runs (1.48–1.52).
-> - **Ocean:** `measure --clip-poly` keeps only the ocean pieces that meet the extract's Geofabrik `.poly`. On the provinces this drops Quebec from 218 to 107 pieces and Ontario from 50 to 14, about 1% of V4 (Quebec 912 → 906 MiB). For North America, whose bbox holds whole oceans, it matters much more.
-> - **Addresses:** `addr-spike --subdivision all --each` reads OSM once, then runs each state and province on its own. Each point and interpolation range goes to the first `.poly` that contains it, and each street to every subdivision within about 5 km. On the Ohio extract, `--each` matches the 0.4 run except for 27 of 604k OSM points outside Ohio's polygon.
-> - **Reports:** `report --sum <name> [--sum-json <file>]` adds up per-subdivision address runs.
-> - **Fetch:**
->   - `--sources poly` fetches the region's and each subdivision's `.poly`.
->   - Interrupted downloads resume with HTTP ranges, and the manifest is saved every 30 s (merged with the copy on disk, so two `fetch` runs can share it).
->   - An OpenAddresses source whose definition was deleted upstream (`us/ca/berkeley`, 404) is recorded as `unspecified (source definition deleted upstream)` instead of failing.
-> - **Bug fixed:** area buckets of POIs made from closed ways were dropped when blocks were merged. Only relations were counted, so the 0.3 parking distribution was wrong (corrected above).
+> **Missing:** 2 TIGER counties, Pearl River, MS (28115) and Sheboygan, WI (55121). The Census server answers them with an HTML "Request Rejected" page and status 200. `fetch` now checks zip and gzip magic bytes, so it fails on such pages instead of saving them. A third county saved that way the first time was fetched again.
 >
-> **Projected memory for North America:** about 52 GB at the end of the read. That is 1.75 GB of bitset, about 15 GB of location slots for about 1.85 billion needed nodes, and about 35 GB of features. It is close to the roughly 53 GB available. `measure` runs under `systemd-run --user --scope -p MemoryMax=56G -p MemorySwapMax=0`, so an OOM kills only the builder. If it fails, the fallback is to run `measure` in two bands of z6 tile columns. Locations stay whole, but each band keeps half the features. The bands' JSON are then summed.
->
-> **Dense index on North America: skipped.** It needs about 108 GB of zero-filled writes on exFAT, and `/` has 24 GB free. Needed-nodes-only already won on Ohio.
->
-> **Remaining:** finish the fetch, then run (with `B`, `I=$OMP_WORK/inputs`, `M=$OMP_WORK/measure/na`):
+> **Reproduce** (with `B`, `I=$OMP_WORK/inputs`, `M=$OMP_WORK/measure/na`, `NA=$I/osm/north-america-261001.osm.pbf`, and `cap` meaning `systemd-run --user --scope -p MemoryMax=56G -p MemorySwapMax=0`):
 > ```
+> $B fetch --region north-america --sources osm,poly,openaddresses,tiger,nar
 > $B measure $I/osm/ohio-261001.osm.pbf    --json $M/ohio.json
 > $B measure $I/osm/ontario-261001.osm.pbf --json $M/ontario.json --clip-poly $I/poly/ontario.poly
 > $B measure $I/osm/quebec-261001.osm.pbf  --json $M/quebec.json  --clip-poly $I/poly/quebec.poly
-> systemd-run --user --scope -p MemoryMax=56G -p MemorySwapMax=0 \
->   $B measure $I/osm/north-america-261001.osm.pbf --json $M/north-america.json --routing graph --clip-poly $I/poly/north-america.poly
-> $B addr-spike $I/osm/north-america-261001.osm.pbf --subdivision all --each --sources osm,openaddresses,nar,tiger --json $M/addr
-> $B addr-spike $I/osm/north-america-261001.osm.pbf --subdivision all --each --sources osm,openaddresses,nar,tiger --exclude-license unspecified --json $M/addr-licensed
-> $B report $M/ohio.json $M/ontario.json $M/quebec.json $M/north-america.json
-> $B report --sum US --sum-json $M/addr/sum-us.json $M/addr/US-*.json   # and Canada, North America
+> for k in 0 1 2; do   # band 0 also counts the routing graph
+>   cap $B measure $NA --region north-america --band $k/3 --routing $([ $k = 0 ] && echo graph || echo none) \
+>     --clip-poly $I/poly/north-america.poly --json $M/north-america-$k.json
+> done
+> cap $B addr-spike $NA --subdivision all --each --sources osm,openaddresses,nar,tiger --json $M/addr
+> cap $B addr-spike $NA --subdivision all --each --sources osm,openaddresses,nar,tiger --exclude-license unspecified --json $M/addr-licensed
+> $B report $M/ohio.json $M/ontario.json $M/quebec.json $M/north-america-*.json > $M/size-table-0.5.md
+> $B report --sum US --sum-json $M/addr/sum-us.json $M/addr/US-*.json   # likewise Canada (CA-*) and North America (both)
+> $B report $M/addr/US-OH.json $M/addr/CA-ON.json $M/addr/CA-QC.json $M/addr/sum-*.json > $M/addr-table-0.5.md
 > ```
-> Geofabrik's `north-america` extract also covers Mexico and Greenland. Tiles include them; addresses cover only the US and Canada. Addresses outside every `.poly` are counted in `osm-split.json`.
+>
+> **Size table, North America** (V4 tiles z0–z14; the tile, routing and search rows include Mexico and Greenland, which are in Geofabrik's extract; addresses cover the US and Canada):
+>
+> | Layer | Ohio | Ontario | Quebec | North America |
+> |---|---:|---:|---:|---:|
+> | Tiles V4 (MiB) | 134 | 579 | 906 | **9,456** |
+> | — water / landcover / roads | 14 / 61 / 55 | 344 / 185 / 44 | 695 / 168 / 34 | 4,739 / 2,449 / 2,070 |
+> | — boundaries, rail, POIs, places, ferries | 4 | 6 | 10 | 198 |
+> | Tiles V5 / MVT + gzip (MiB) | 128 / 170 | 551 / 701 | 869 / 1,105 | 8,743 / 13,288 |
+> | Routing graph nodes / edges | 2.2M / 5.3M | 1.3M / 3.0M | 0.76M / 1.8M | 62.5M / 149.6M |
+> | CH, compact layout (MiB) | 115 | 66 | 40 | **about 3,276** (estimated, 1.50 CH edges per edge) |
+> | Search: fst + postings + entries (MiB) | 6.6 | 5.6 | 4.3 | **253 or less** |
+> | Addresses A3 + TIGER fallback ranges (MiB) | 9.2 + 1.9 | 10.0 | 7.6 | **315 + 50** |
+> | **Total (MiB)** | 267 | 661 | 958 | **about 13,350 (13.0 GiB, 14.0 GB)** |
+>
+> - **Over budget, under the stop line.** The total is above roadmap §4's 6–10 GB and below the 15 GB at which Phase 0 says to revisit scope. Tiles are 2–3× the 3–5 GB estimate, and the CH is about 2–3× its 1–1.5 GB.
+> - **Water is the lever.** At z14 (V1 bytes, all bands), lakes are 21.7% (14.1M features) and streams 18.2% (17.8M). Protected areas are 9.8% from only 32k polygons. `service` roads are 5.4% and driveways 3.5%. A lake minimum size, streams at z14 only or not at all, and simpler protected-area outlines are the first things to settle (the cut-offs 0.3 left open).
+> - The ocean clip kept 2,145 pieces and dropped 14,820 that are in the bbox but outside `north-america.poly`.
+> - Tile bytes add exactly across bands (checked on Quebec: V1 identical). V4/V5 differ by 0.2% or less because each band trains its own dictionaries; the dictionaries row shows band 0's.
+> - Search is an upper bound: each feature is counted in one band, but the bands' `fst`s share tokens.
+>
+> **Addresses** (`addr-spike --each`, summed; full tables in `$M/addr-table-0.5.md` and `$M/addr-licensed-table-0.5.md`):
+>
+> | | US | Canada | North America |
+> |---|---:|---:|---:|
+> | Unique addresses, OSM only | 34.2M (25%) | 5.9M (37%) | 40.1M (26%) |
+> | + OpenAddresses | 135.6M | 13.9M | 149.5M |
+> | + NAR building points, then blockface-only points | – | 15.4M, 15.9M | **151.5M** |
+> | Without sources whose license is `unspecified` | 71.4M | 15.4M | **86.8M** (57%) |
+> | Units (separate table) | 24.9M | 7.1M | 32.0M |
+> | Attached to an OSM street (200 m) | 88.6% | 92.2% | 88.9% |
+> | Conflicts left at 250 m | 512k (0.4%) | 228k (1.4%) | 740k (0.5%) |
+> | TIGER ranges with a point: OSM only → merged | 19.1% → 66.0% | – | – |
+> | A3 total (MiB, bytes per address) | 284 (2.20) | 30.6 (2.02) | **315 (2.18)** |
+> | TIGER fallback ranges (MiB) | 50 (12.6M ranges, 5.0 B each) | – | 50 |
+>
+> - The merged total matches roadmap §3's estimate of 150–200M. Ohio from the North America split (4,946,070) matches the 0.4 run on Ohio's own extract (4,946,534).
+> - A3 is 2.18 B per address, above the test regions' 1.9–2.0. The US attaches worse (88.6% vs 94% in Ohio), and unattached points are the costliest side table (103 MiB, a third of A3). Fuzzy name matching in Phase 2 would lower both.
+> - **Licensing still decides US coverage.** Without the `unspecified` sources the US keeps 53% of its addresses, and the share of TIGER ranges with a point falls from 66% to 35%.
+> - 1.12M OSM address points lie outside every US and Canadian `.poly` (mostly Mexico) and are not counted.
+>
+> **Builder resources** (16 threads, 62 GB RAM; inputs and temp files on the exFAT HDD):
+> - **One-pass `measure` does not fit.** It was killed by the 56 GB cap 5.5 minutes in, before its read finished.
+> - **In 3 bands** (`--band k/3`: z6 columns with `x % 3 == k`, z0–z5 in band 0) it peaks at 42.7 / 40.6 / 40.4 GB and takes 15.0 + 9.7 + 9.7 = 34 minutes. Each band reads the whole PBF (about 340 s), and tiles go to a temp store of about 3.8 GiB per band (11.5 GiB in all, deleted afterwards).
+>   - 1.62 billion needed nodes take 13.9 GiB of locations.
+>   - The way-marking pass alone peaks at 14.7 GB, because `pass()` keeps every block's tag counters until the pass ends. That is the next memory to cut.
+> - **`addr-spike --each`** over all 66 subdivisions takes 18.7 minutes and peaks at 30.8 GB, of which the shared OSM read is 2.2 minutes and 27.7 GB.
+> - The roadmap's 16–32 GB desktop target is not met yet. Phase 5 needs features spilled to disk by z6 tile, or more bands. Bands trade time for memory: each re-reads the PBF, and none can go below the roughly 16 GB the node locations need.
+> - **Node locations: needed-nodes-only.** The dense index is not run on North America: it would need about 108 GB of zero-filled writes on exFAT and only 24 GB is free on `/`.
+>
+> **The work to get here** (all checked against the 0.3 and 0.4 JSON; identical except where noted):
+> - **Node locations:** the needed-nodes bitset has a rank index, and each location takes one 8-byte slot at its rank. Way refs are read again in a fourth pass instead of being held. Read-stage peak: Ohio 3.0 → 2.1 GB, Ontario 7.9 → 4.6 GB, Quebec 8.9 → 4.8 GB. `addr-spike` uses the same store.
+> - **Tiling:** z0–z5 come from only the features shown there. From z6 down, each z6 tile is cut on its own. Every cell is byte-identical; Quebec's peak drops 7.4 → 5.8 GB.
+> - **Bands:** `measure --band k/n` keeps only the features the band's tiles need, and `report` merges band runs of a region. Per-feature totals count each feature in the band its bbox starts in.
+> - **Routing:** `measure --routing graph` counts graph nodes and edges in two extra passes over the ways, with no roads held. It matches the CH build exactly on Ohio (2,211,466 nodes, 5,281,643 edges). `report` estimates the CH from the regional runs' CH-edges-per-edge ratio (1.48–1.52).
+> - **Ocean:** `measure --clip-poly` keeps only the ocean pieces that meet the extract's `.poly`. For Quebec that is 218 → 107 pieces (906 MiB V4, about 0.7% less).
+> - **Addresses:** `addr-spike --subdivision all --each` reads OSM once. Each point and interpolation range goes to the first `.poly` that contains it, and each street to every subdivision within about 5 km. `report --sum` adds up the runs.
+> - **Fetch:**
+>   - `--sources poly`.
+>   - Interrupted downloads resume, and the manifest is saved every 30 s, merged with the copy on disk.
+>   - Magic-byte checks for zip and gzip files.
+>   - Deleted OpenAddresses source definitions are recorded as `unspecified (source definition deleted upstream)`.
+> - **Bug fixed:** area buckets of POIs made from closed ways were dropped when blocks were merged (0.3's parking note is corrected above). Another bug was fixed in `report`'s summing: row keys such as `zoom` and `block_kib` were added up.
+>
+> Still open:
+> - The CH is estimated, not built. `fast_paths` does not fit for a continent, and Phase 3 builds its own.
+> - Lake, stream, protected-area and `service` cut-offs (next: 0.6 or Phase 1).
+> - The two blocked TIGER counties.
+> - The `unspecified` license decision (before Phase 5).
+> - Builder memory for a 16–32 GB machine (Phase 5).
 
 Run after 0.3 and 0.4 have picked their candidate variants (at most two per layer).
 
@@ -520,8 +576,9 @@ Settled by Phase 0 data:
 9. **Address encoding:** A3 (per-street runs of number and 5 m offset deltas, zstd over blocks of streets, plus side tables for units, suffixes and unattached points). 1.9–2.0 bytes per address (2026-10-23, see 0.4).
 10. **Address dedup:** same street, same direction set and same number within 250 m. NAR blockface points merge within 1 km. Attach to OSM streets within 200 m (2026-10-23, see 0.4).
 11. **OSM `addr:interpolation`:** kept as ranges like TIGER, never expanded into points (2026-10-23, see 0.4).
+12. **Node locations:** needed-nodes-only, as a rank-indexed bitset with one 8-byte slot per needed node (13.9 GiB for North America's 1.62 billion). The dense index is dropped (2026-10-24, see 0.5).
 
-Still open, to be settled by Phase 0 data: the node-location strategy (needed-nodes-only leads; confirm on North America), and the lake/stream and `service` road cut-offs. Settle before Phase 5: how to treat OpenAddresses sources with no license name (most US address coverage depends on them).
+Still open, to be settled by Phase 0 data: the lake, stream, protected-area and `service` road cut-offs, which decide whether North America gets from about 13 GiB toward the 6–10 GB budget. Settle before Phase 5: how to treat OpenAddresses sources with no license name (most US address coverage depends on them).
 
 ## Out of scope for Phase 0
 

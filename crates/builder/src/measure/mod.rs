@@ -22,7 +22,11 @@ use clap::{Args, ValueEnum};
 use omp_core::whitelist::{GeometryKind, Whitelist};
 use serde::Serialize;
 
-use tiles::{Cell, Variant};
+use tiles::{Band, Cell, Variant};
+
+fn parse_band(s: &str) -> Result<Band, String> {
+    Band::parse(s).ok_or_else(|| format!("{s:?} is not k/n with k < n"))
+}
 
 #[derive(Args)]
 pub struct MeasureArgs {
@@ -59,6 +63,13 @@ pub struct MeasureArgs {
     #[arg(long)]
     clip_poly: Option<PathBuf>,
 
+    /// Cut only band `k` of `n` (`k/n`): the z6 tile columns with `x % n == k`, plus z0–z5
+    /// in band 0, keeping only the features they need. For regions too big for one run;
+    /// `report` adds up runs of the same region that differ only in band. Each band reads
+    /// every node location, so this saves feature memory only.
+    #[arg(long, value_parser = parse_band)]
+    band: Option<Band>,
+
     /// Directory for the temporary tile store [default: <work dir>/tmp].
     #[arg(long)]
     temp: Option<PathBuf>,
@@ -91,6 +102,8 @@ enum NodeStrategy {
 #[derive(Serialize)]
 struct Report {
     region: String,
+    /// `[k, n]` for a `--band` run.
+    band: Option<[u32; 2]>,
     input: String,
     input_bytes: u64,
     whitelist_version: u32,
@@ -230,7 +243,14 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
     };
 
     eprintln!("measure {region}: {}", args.input.display());
-    let mut data = osm::read(&args.input, &wl, strategy, args.routing == Routing::Ch)?;
+    let band = args.band.unwrap_or(Band::ALL);
+    let mut data = osm::read(
+        &args.input,
+        &wl,
+        strategy,
+        args.routing == Routing::Ch,
+        band,
+    )?;
     stages.done("read");
 
     let restrictions = data.stats.restriction_relations;
@@ -246,7 +266,14 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
     data.roads = Vec::new();
     stages.done("routing");
 
-    let search = search::build(&data.features, &wl)?;
+    // Per-feature totals count each feature in the one band that owns it.
+    let owned: Vec<&osm::Feature> = data
+        .features
+        .iter()
+        .filter(|f| band.owns(f.geom.bbox()))
+        .collect();
+    let search = search::build(owned.iter().copied(), &wl)?;
+    drop(owned);
     stages.done("search");
 
     let water_zip = args
@@ -275,7 +302,10 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
                 outside_poly: outside,
                 polygons: feats.len() as u64,
             };
-            data.features.extend(feats);
+            let minzoom = tiles::minzooms(&wl);
+            data.features.extend(feats.into_iter().filter(|f| {
+                band.keeps(f.geom.bbox(), minzoom[f.layer as usize][f.class as usize])
+            }));
             Some(stats)
         }
         (None, true) => {
@@ -290,7 +320,7 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
     stages.done("water");
 
     let store_path = temp.join(format!("{region}-tiles.v2"));
-    let pyramid = tiles::build(&data.features, &wl, &store_path)?;
+    let pyramid = tiles::build(&data.features, &wl, &store_path, band)?;
     stages.done("tiles");
 
     let comp = compress::run(&store_path, &pyramid.entries, &layer_names, args.zstd_level)?;
@@ -299,7 +329,7 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
 
     // Per-class rows: element counts from the read, geometry totals from the features.
     let mut feats: BTreeMap<(u8, u16), (u64, u64)> = BTreeMap::new();
-    for f in &data.features {
+    for f in data.features.iter().filter(|f| band.owns(f.geom.bbox())) {
         let e = feats.entry((f.layer, f.class)).or_default();
         e.0 += 1;
         e.1 += f.geom.vertices() as u64;
@@ -348,6 +378,7 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
 
     let report = Report {
         region,
+        band: args.band.map(|b| [b.k, b.n]),
         input: args.input.display().to_string(),
         input_bytes: std::fs::metadata(&args.input)?.len(),
         whitelist_version: wl.version,
