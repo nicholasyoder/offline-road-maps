@@ -308,11 +308,7 @@ pub fn centroid(rings: &[Vec<P>]) -> P {
         .filter(|r| ring_area(r) > 0.0)
         .max_by(|a, b| ring_area(a).total_cmp(&ring_area(b)))
     else {
-        let b = BBox::of(rings.iter().flatten().copied());
-        return [
-            ((u64::from(b.min[0]) + u64::from(b.max[0])) / 2) as u32,
-            ((u64::from(b.min[1]) + u64::from(b.max[1])) / 2) as u32,
-        ];
+        return centroid_or_middle(BBox::of(rings.iter().flatten().copied()));
     };
     // Relative to the first point, so f64 keeps its precision.
     let o = [f64::from(ring[0][0]), f64::from(ring[0][1])];
@@ -328,6 +324,158 @@ pub fn centroid(rings: &[Vec<P>]) -> P {
         cy += (py + qy) * c;
     }
     clamp_p(o[0] + cx / (3.0 * a2), o[1] + cy / (3.0 * a2))
+}
+
+/// The pole of inaccessibility (polylabel): a point inside the polygon, as far from its edges
+/// as it gets to within `precision` world units, or after `max_cells` cells, whichever comes
+/// first. Unlike the centroid it stays inside long lakes and crescents. Holes count, and so
+/// do all outer rings: the point lands in the part with the most room.
+pub fn polylabel(rings: &[Vec<P>], precision: f64, max_cells: usize) -> P {
+    use std::collections::BinaryHeap;
+
+    let b = BBox::of(rings.iter().flatten().copied());
+    let o = [f64::from(b.min[0]), f64::from(b.min[1])];
+    let rings: Vec<Vec<[f64; 2]>> = rings
+        .iter()
+        .map(|r| {
+            r.iter()
+                .map(|p| [f64::from(p[0]) - o[0], f64::from(p[1]) - o[1]])
+                .collect()
+        })
+        .collect();
+    let (w, h) = (
+        f64::from(b.max[0] - b.min[0]),
+        f64::from(b.max[1] - b.min[1]),
+    );
+    let size = w.min(h);
+    if size <= 0.0 {
+        return centroid_or_middle(b);
+    }
+
+    struct Cell {
+        c: [f64; 2],
+        half: f64,
+        /// Signed distance from the centre to the polygon's edges, positive inside.
+        d: f64,
+        /// The best distance any point in the cell could have.
+        max: f64,
+    }
+    impl PartialEq for Cell {
+        fn eq(&self, o: &Self) -> bool {
+            self.max == o.max
+        }
+    }
+    impl Eq for Cell {}
+    impl PartialOrd for Cell {
+        fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(o))
+        }
+    }
+    impl Ord for Cell {
+        fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+            self.max.total_cmp(&o.max)
+        }
+    }
+    let cell = |c: [f64; 2], half: f64| {
+        let d = signed_distance(c, &rings);
+        Cell {
+            c,
+            half,
+            d,
+            max: d + half * std::f64::consts::SQRT_2,
+        }
+    };
+
+    let mut queue = BinaryHeap::new();
+    let half = size / 2.0;
+    let mut y = 0.0;
+    while y < h {
+        let mut x = 0.0;
+        while x < w {
+            queue.push(cell([x + half, y + half], half));
+            x += size;
+        }
+        y += size;
+    }
+    // Start from the area centroid, which is often good already, or the bbox centre.
+    let ring_centroid = |r: &[[f64; 2]]| {
+        let (mut cx, mut cy, mut a2) = (0.0, 0.0, 0.0);
+        for i in 0..r.len() {
+            let (p, q) = (r[i], r[(i + 1) % r.len()]);
+            let c = p[0] * q[1] - q[0] * p[1];
+            a2 += c;
+            cx += (p[0] + q[0]) * c;
+            cy += (p[1] + q[1]) * c;
+        }
+        (a2 != 0.0).then(|| [cx / (3.0 * a2), cy / (3.0 * a2)])
+    };
+    let mut best = cell([w / 2.0, h / 2.0], 0.0);
+    if let Some(c) = rings
+        .iter()
+        .filter(|r| ring_area(r) > 0.0)
+        .max_by(|a, b| ring_area(a).total_cmp(&ring_area(b)))
+        .and_then(|r| ring_centroid(r))
+    {
+        let c = cell(c, 0.0);
+        if c.d > best.d {
+            best = c;
+        }
+    }
+    let mut seen = queue.len();
+    while let Some(c) = queue.pop() {
+        if c.d > best.d {
+            best = Cell { ..c };
+        }
+        if c.max - best.d <= precision || seen >= max_cells {
+            continue;
+        }
+        let h = c.half / 2.0;
+        for (dx, dy) in [(-h, -h), (h, -h), (-h, h), (h, h)] {
+            queue.push(cell([c.c[0] + dx, c.c[1] + dy], h));
+        }
+        seen += 4;
+    }
+    clamp_p(best.c[0] + o[0], best.c[1] + o[1])
+}
+
+fn centroid_or_middle(b: BBox) -> P {
+    [
+        ((u64::from(b.min[0]) + u64::from(b.max[0])) / 2) as u32,
+        ((u64::from(b.min[1]) + u64::from(b.max[1])) / 2) as u32,
+    ]
+}
+
+/// Distance from `p` to the nearest ring edge, positive inside (even-odd over all rings).
+fn signed_distance(p: [f64; 2], rings: &[Vec<[f64; 2]>]) -> f64 {
+    let mut inside = false;
+    let mut best = f64::INFINITY;
+    for r in rings {
+        let mut j = r.len() - 1;
+        for i in 0..r.len() {
+            let (a, b) = (r[i], r[j]);
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+            {
+                inside = !inside;
+            }
+            best = best.min(seg_dist2_f(p, a, b));
+            j = i;
+        }
+    }
+    let d = best.sqrt();
+    if inside { d } else { -d }
+}
+
+fn seg_dist2_f(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 == 0.0 {
+        0.0
+    } else {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+    };
+    let (ex, ey) = (a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
+    ex * ex + ey * ey
 }
 
 /// Area of a polygon in square metres (approximate: uses the scale at its first point).
@@ -452,6 +600,41 @@ mod tests {
         assert!(ring_area(&rings[0]) > 0.0);
         let open: Vec<P> = vec![[0, 0], [5, 5]];
         assert!(matches!(assemble(&[(&open, false)]), Assembly::Broken(_)));
+    }
+
+    #[test]
+    fn polylabel_stays_inside() {
+        // A U shape: the centroid falls in the gap between the arms, polylabel does not.
+        let u: Vec<P> = vec![
+            [0, 0],
+            [300, 0],
+            [300, 1000],
+            [700, 1000],
+            [700, 0],
+            [1000, 0],
+            [1000, 1200],
+            [0, 1200],
+        ];
+        let rings = vec![u];
+        let c = centroid(&rings);
+        assert!(c[0] > 300 && c[0] < 700 && c[1] < 1000, "centroid {c:?}");
+        let p = polylabel(&rings, 1.0, 10_000);
+        assert!(
+            signed_distance(
+                [f64::from(p[0]), f64::from(p[1])],
+                &[rings[0]
+                    .iter()
+                    .map(|q| [f64::from(q[0]), f64::from(q[1])])
+                    .collect()]
+            ) > 90.0,
+            "{p:?}"
+        );
+        // A square with a hole in the middle: the point goes around the hole.
+        let sq: Vec<P> = vec![[0, 0], [1000, 0], [1000, 1000], [0, 1000]];
+        let hole: Vec<P> = vec![[200, 200], [200, 800], [800, 800], [800, 200]];
+        let p = polylabel(&[sq, hole], 1.0, 10_000);
+        let inside_hole = (200..=800).contains(&p[0]) && (200..=800).contains(&p[1]);
+        assert!(!inside_hole, "{p:?}");
     }
 
     #[test]

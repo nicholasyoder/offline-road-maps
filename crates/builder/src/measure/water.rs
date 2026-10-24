@@ -99,6 +99,7 @@ pub fn read(
                 class,
                 geom: g,
                 props: Vec::new(),
+                minzoom: None,
             });
         }
     }

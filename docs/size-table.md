@@ -37,6 +37,22 @@ The table was measured without driveways. Every earlier run had them, so their c
 
 The regional columns grow by their driveway share too (Ohio the most: driveways were 11.6% of its z14 bytes in 0.3); they were not measured separately.
 
+### After phase 1 step 1.3
+
+[Step 1.3](phase1-plan.md#13-label-and-shield-data-in-the-builder) (whitelist v2) changed the tiles: points in one tile only, state and water labels, a `labels` layer, `routes` for shields, and line merging. Measured on real packs (`omp-builder build`, `inspect --stats`), whose tile bytes include zstd's 4-byte frame checksums, so they are a little above the `measure` figures in the table:
+
+| North America, MiB | 1.2 pack (v1) | 1.3 pack (v2) | Change |
+|---|---:|---:|---:|
+| Roads | 2,085.5 | 1,863.4 | −222.1 (`routes` +5.7, merging −227.8) |
+| Water | 3,765.8 | 3,674.5 | −91.3 (merging) |
+| Rail | 37.5 | 30.8 | −6.7 (merging) |
+| Labels (new) | – | 23.5 | +23.5 |
+| Places / POIs | 20.8 / 34.2 | 22.2 / 32.3 | +1.4 / −1.8 |
+| Land cover, boundaries, ferries | 2,240.0 | 2,240.0 | 0 |
+| **All tiles** | **8,183.7** | **7,886.7** | **−297.1 (−3.6%)** |
+
+The labels and shields cost 25 MiB; merging saves about 326 MiB (measured with a second North America build without it). So the North America total is **about 11,750 MiB (11.5 GiB, 12.3 GB)** with driveways, down from about 12,049. The pack itself (tiles and index, no addresses, search or routing yet) is 8,001 MiB.
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

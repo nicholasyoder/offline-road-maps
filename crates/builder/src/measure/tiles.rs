@@ -15,11 +15,11 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::Result;
-use omp_core::whitelist::{Layer, Whitelist};
+use omp_core::whitelist::{Layer, MergeLines, Whitelist};
 use rayon::prelude::*;
 use serde::Serialize;
 
-use omp_core::tile::{EXTENT_BITS, Enc, encode_layer};
+use omp_core::tile::{EXTENT_BITS, Enc, Geom, Point, encode_layer};
 
 use super::encode;
 use super::geom::{self, BBox, Geometry, Rect};
@@ -175,6 +175,12 @@ pub fn minzooms(wl: &Whitelist) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// The first zoom feature `f` appears in, `u8::MAX` if never; `minzoom` is [`minzooms`].
+pub fn feature_minzoom(minzoom: &[Vec<u8>], f: &Feature) -> u8 {
+    let class = minzoom[f.layer as usize][f.class as usize];
+    f.minzoom.map_or(class, |z| z.max(class))
+}
+
 /// The split tiles (z6) whose buffered rect `b` touches.
 fn split_tiles(b: BBox) -> impl Iterator<Item = (u32, u32)> {
     let n = 1u32 << SPLIT_ZOOM;
@@ -261,7 +267,7 @@ pub fn cut_pyramid(
         minzoom,
         measure,
     };
-    let minzoom = |f: &Feature| ctx.minzoom[f.layer as usize][f.class as usize];
+    let minzoom = |f: &Feature| feature_minzoom(&ctx.minzoom, f);
     let low: Vec<Frag> = features
         .iter()
         .filter(|f| minzoom(f) < SPLIT_ZOOM)
@@ -359,7 +365,7 @@ fn walk(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag], last: u8) {
 fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
     let mut by_layer: Vec<Vec<&Frag>> = vec![Vec::new(); ctx.wl.layers.len()];
     for f in frags {
-        if ctx.minzoom[f.f.layer as usize][f.f.class as usize] <= z {
+        if feature_minzoom(&ctx.minzoom, f.f) <= z {
             by_layer[f.f.layer as usize].push(f);
         }
     }
@@ -391,10 +397,19 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
                     geom: g,
                 })
             })
+            // A point goes only in the tile that contains it, not in its neighbours' buffers.
+            .filter(|e| match e.geom {
+                Geom::Point(p) => p.iter().all(|&v| (0..1 << EXTENT_BITS).contains(&v)),
+                _ => true,
+            })
             .collect();
         if ctx.measure {
             measure_v0_v1(&mut local, z, li, layer, &class_names, frags, &v1);
         }
+        let v1 = match layer.merge_lines {
+            Some(mode) => merge_lines(v1, mode, layer.props.iter().position(|p| p == "oneway")),
+            None => v1,
+        };
         let v2: Vec<Enc> = v1
             .into_iter()
             .filter_map(|e| {
@@ -456,6 +471,123 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
     ctx.stats[slot].lock().unwrap().merge(local);
 }
 
+/// Joins line pieces of the same class and props that meet end to end (decision 5): each
+/// group becomes one feature whose parts are the joined chains. Pieces join only where
+/// exactly two piece ends of the group meet, so intersections stay part ends. Other features
+/// pass through. Groups keep the order of their first feature.
+fn merge_lines(feats: Vec<Enc>, mode: MergeLines, oneway: Option<usize>) -> Vec<Enc> {
+    use std::collections::HashMap;
+
+    let mut groups: Vec<(Enc, Vec<Vec<Point>>)> = Vec::new();
+    // (class, props) → index into `groups`.
+    let mut by_key: HashMap<(u16, &[_]), usize> = HashMap::new();
+    let mut out_order: Vec<Result<Enc, usize>> = Vec::new();
+    for e in feats {
+        let Geom::Lines(parts) = e.geom else {
+            out_order.push(Ok(e));
+            continue;
+        };
+        match by_key.get(&(e.class, e.props)) {
+            Some(&g) => groups[g].1.extend(parts),
+            None => {
+                by_key.insert((e.class, e.props), groups.len());
+                out_order.push(Err(groups.len()));
+                groups.push((
+                    Enc {
+                        class: e.class,
+                        props: e.props,
+                        geom: Geom::Lines(Vec::new()),
+                    },
+                    parts,
+                ));
+            }
+        }
+    }
+    let mut groups: Vec<Option<Enc>> = groups
+        .into_iter()
+        .map(|(mut e, parts)| {
+            let directed = mode == MergeLines::Directed
+                || oneway.is_some_and(|k| {
+                    e.props
+                        .iter()
+                        .any(|(pk, v)| usize::from(*pk) == k && &**v != "no")
+                });
+            e.geom = Geom::Lines(join_parts(parts, !directed));
+            Some(e)
+        })
+        .collect();
+    out_order
+        .into_iter()
+        .map(|o| match o {
+            Ok(e) => e,
+            Err(g) => groups[g].take().expect("each group once"),
+        })
+        .collect()
+}
+
+/// Joins polyline parts into chains at points where exactly two part ends meet.
+fn join_parts(parts: Vec<Vec<Point>>, reversible: bool) -> Vec<Vec<Point>> {
+    use std::collections::HashMap;
+
+    if parts.len() < 2 {
+        return parts;
+    }
+    // Point → the part ends there: (part, is_start).
+    let mut ends: HashMap<Point, Vec<(usize, bool)>> = HashMap::new();
+    for (i, p) in parts.iter().enumerate() {
+        ends.entry(p[0]).or_default().push((i, true));
+        ends.entry(*p.last().unwrap()).or_default().push((i, false));
+    }
+    // The other part end at `p`, if exactly two meet there.
+    let other = |p: &Point, me: (usize, bool)| -> Option<(usize, bool)> {
+        match ends.get(p).map(Vec::as_slice) {
+            Some(&[a, b]) if a == me => Some(b),
+            Some(&[a, b]) if b == me => Some(a),
+            _ => None,
+        }
+    };
+    let mut used = vec![false; parts.len()];
+    let mut out = Vec::new();
+    for start in 0..parts.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let mut chain = parts[start].clone();
+        // Forward from the chain's end, then backward from its start.
+        let (mut tail, mut head) = ((start, false), (start, true));
+        while let Some((j, at_start)) = other(chain.last().unwrap(), tail) {
+            if used[j] || (!at_start && !reversible) {
+                break;
+            }
+            used[j] = true;
+            if at_start {
+                chain.extend_from_slice(&parts[j][1..]);
+            } else {
+                chain.extend(parts[j].iter().rev().skip(1));
+            }
+            tail = (j, !at_start);
+        }
+        while let Some((j, at_start)) = other(&chain[0], head) {
+            if used[j] || (at_start && !reversible) {
+                break;
+            }
+            used[j] = true;
+            let mut piece: Vec<Point> = if at_start {
+                parts[j].iter().rev().copied().collect()
+            } else {
+                parts[j].clone()
+            };
+            piece.pop();
+            piece.extend_from_slice(&chain);
+            chain = piece;
+            head = (j, !at_start);
+        }
+        out.push(chain);
+    }
+    out
+}
+
 /// `measure`'s V0 and V1 cells for one layer of a tile, and its per-class z14 bytes.
 fn measure_v0_v1(
     local: &mut Stats,
@@ -511,6 +643,69 @@ fn measure_v0_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joins_line_parts() {
+        // a→b→c, with a branch c→d and c→e: the chain stops at the junction c.
+        let a = vec![[0, 0], [10, 0]];
+        let b = vec![[10, 0], [20, 0]];
+        let d = vec![[20, 0], [30, 0]];
+        let e = vec![[20, 0], [20, 10]];
+        let joined = join_parts(vec![a.clone(), b.clone(), d.clone(), e.clone()], true);
+        assert_eq!(
+            joined,
+            vec![vec![[0, 0], [10, 0], [20, 0]], d.clone(), e.clone()]
+        );
+        // Reversed pieces join when reversible, not when directed.
+        let b_rev = vec![[20, 0], [10, 0]];
+        assert_eq!(
+            join_parts(vec![a.clone(), b_rev.clone()], true),
+            vec![vec![[0, 0], [10, 0], [20, 0]]]
+        );
+        assert_eq!(
+            join_parts(vec![b.clone(), a.clone()], false),
+            vec![vec![[0, 0], [10, 0], [20, 0]]]
+        );
+        assert_eq!(join_parts(vec![a.clone(), b_rev.clone()], false).len(), 2);
+        // A closed loop of two pieces ends where it started.
+        let back = vec![[20, 0], [0, 0]];
+        let loop_ = join_parts(vec![a, b, back], false);
+        assert_eq!(loop_, vec![vec![[0, 0], [10, 0], [20, 0], [0, 0]]]);
+    }
+
+    #[test]
+    fn merges_by_class_and_props() {
+        let p1: Vec<(u8, Box<str>)> = vec![(0, "Main".into())];
+        let p2: Vec<(u8, Box<str>)> = vec![(0, "Main".into()), (2, "yes".into())];
+        let line = |pts: &[Point]| Geom::Lines(vec![pts.to_vec()]);
+        let feats = vec![
+            Enc {
+                class: 1,
+                props: &p1,
+                geom: line(&[[0, 0], [5, 0]]),
+            },
+            Enc {
+                class: 1,
+                props: &p2,
+                geom: line(&[[5, 0], [9, 0]]),
+            },
+            Enc {
+                class: 1,
+                props: &p1,
+                geom: line(&[[9, 9], [5, 0]]),
+            },
+            Enc {
+                class: 2,
+                props: &p1,
+                geom: Geom::Point([1, 1]),
+            },
+        ];
+        let out = merge_lines(feats, MergeLines::Reversible, Some(2));
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].geom, line(&[[0, 0], [5, 0], [9, 9]]));
+        assert_eq!(out[1].props, &p2[..]);
+        assert_eq!(out[2].geom, Geom::Point([1, 1]));
+    }
 
     #[test]
     fn bands_partition_split_tiles() {

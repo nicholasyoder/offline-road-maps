@@ -250,6 +250,7 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
         strategy,
         args.routing == Routing::Ch,
         band,
+        &[],
     )?;
     stages.done("read");
 

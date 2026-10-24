@@ -10,7 +10,7 @@ use clap::Args;
 use omp_core::meta::{self, Meta};
 use omp_core::pack::Pack;
 use omp_core::schema::{self, Schema};
-use omp_core::tile::{Geom, MAX_ZOOM, hilbert_xy};
+use omp_core::tile::{Feature, Geom, Layer, MAX_ZOOM, hilbert_xy};
 use omp_core::tiles::TileReader;
 
 use super::first_chunk;
@@ -27,6 +27,11 @@ pub struct InspectArgs {
     /// Read the whole tile index: bytes per layer and zoom, and the largest tile per zoom.
     #[arg(long)]
     stats: bool,
+
+    /// Decode every tile of one zoom and list one layer's features, `layer/z` (e.g.
+    /// `labels/8`), one per line with its tile and position.
+    #[arg(long)]
+    features: Option<String>,
 }
 
 #[derive(Args)]
@@ -179,9 +184,42 @@ pub fn inspect(args: InspectArgs) -> Result<()> {
         }
         print!("all ");
         for b in &col_totals {
-            print!("{:>11.1}", mib(*b));
+            print!("{:>11.2}", mib(*b));
         }
-        println!("{:>11.1}", mib(col_totals.iter().sum()));
+        println!("{:>11.2}", mib(col_totals.iter().sum()));
+    }
+
+    if let Some(spec) = &args.features {
+        let (name, z) = spec.rsplit_once('/').context("--features wants layer/z")?;
+        let z: u8 = z.parse()?;
+        let s = schema.as_ref().context("the pack has no SCHM")?;
+        let id = s
+            .layers
+            .iter()
+            .position(|l| l.name == name)
+            .with_context(|| format!("no layer {name:?}"))? as u8;
+        let mut keys = Vec::new();
+        tiles.for_each_tile(z, |key, loc| {
+            if loc.layers.iter().any(|&(l, _)| l == id) {
+                keys.push(key);
+            }
+        })?;
+        let mut n = 0;
+        for key in keys {
+            let (x, y) = hilbert_xy(z, key);
+            let Some(t) = tiles.tile(z, x, y)? else {
+                continue;
+            };
+            for (lid, layer) in &t.layers {
+                if *lid == id {
+                    for f in &layer.features {
+                        println!("{z}/{x}/{y} {}", describe(&s.layers[id as usize], layer, f));
+                        n += 1;
+                    }
+                }
+            }
+        }
+        println!("{n} features");
     }
 
     if let Some(spec) = &args.tile {
@@ -204,25 +242,10 @@ pub fn inspect(args: InspectArgs) -> Result<()> {
                 layer.vertices()
             );
             for f in layer.features.iter().take(5) {
-                let class = sl
-                    .and_then(|l| l.classes.get(f.class as usize))
-                    .map_or_else(|| f.class.to_string(), |c| c.name.clone());
-                let props: Vec<String> = layer
-                    .props(f)
-                    .iter()
-                    .map(|&(k, _)| {
-                        let key = sl
-                            .and_then(|l| l.props.get(k as usize))
-                            .map_or_else(|| k.to_string(), Clone::clone);
-                        format!("{key}={}", layer.prop(f, k).unwrap_or_default())
-                    })
-                    .collect();
-                let shape = match layer.geom(f) {
-                    Geom::Point(p) => format!("point {},{}", p[0], p[1]),
-                    Geom::Lines(l) => format!("{} line(s)", l.len()),
-                    Geom::Polygon(r) => format!("{} ring(s)", r.len()),
-                };
-                println!("    {class} {shape} {}", props.join(" "));
+                match sl {
+                    Some(sl) => println!("    {}", describe(sl, layer, f)),
+                    None => println!("    class {}", f.class),
+                }
             }
             if layer.features.len() > 5 {
                 println!("    …");
@@ -230,6 +253,31 @@ pub fn inspect(args: InspectArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `class shape key=value …` for one decoded feature.
+fn describe(sl: &schema::Layer, layer: &Layer, f: &Feature) -> String {
+    let class = sl
+        .classes
+        .get(f.class as usize)
+        .map_or_else(|| f.class.to_string(), |c| c.name.clone());
+    let props: Vec<String> = layer
+        .props(f)
+        .iter()
+        .map(|&(k, _)| {
+            let key = sl
+                .props
+                .get(k as usize)
+                .map_or_else(|| k.to_string(), Clone::clone);
+            format!("{key}={}", layer.prop(f, k).unwrap_or_default())
+        })
+        .collect();
+    let shape = match layer.geom(f) {
+        Geom::Point(p) => format!("point {},{}", p[0], p[1]),
+        Geom::Lines(l) => format!("{} line(s)", l.len()),
+        Geom::Polygon(r) => format!("{} ring(s)", r.len()),
+    };
+    format!("{class} {shape} {}", props.join(" "))
 }
 
 pub fn verify(args: VerifyArgs) -> Result<()> {

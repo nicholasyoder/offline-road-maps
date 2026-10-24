@@ -14,7 +14,8 @@ Status of each part:
 | Addresses (`ASTR`, `AIDX`, `ASUF`, `AUNI`, `ALSE`, `ARNG`) | **Specified** (encoding A3 from phase 0). |
 | Routing (`RCH*`) | *Provisional*, finalized in Phase 3. |
 | Search (`SFST`, `SPST`, `SENT`) | *Provisional*, finalized in Phase 2. |
-| Style and labels (`STYL`) | *Provisional*, finalized in Phase 1. |
+| Label data in tiles (`labels` layer, `routes` prop) | **Specified** (phase 1 step 1.3, whitelist v2). |
+| Style (`STYL`) | **Not used:** the style lives in the app (phase 1 decision 8). |
 
 ## Conventions
 
@@ -128,7 +129,7 @@ The style (Phase 1) refers to layers and classes by name. The app resolves names
 
 ## Tiles
 
-Tiles cover zooms 0–14. The app overzooms z14 tiles for higher zooms. Each tile is cut with a buffer of 64 grid units on every side, so lines and polygon edges continue a little past the tile's edge and strokes join cleanly.
+Tiles cover zooms 0–14. The app overzooms z14 tiles for higher zooms. Each tile is cut with a buffer of 64 grid units on every side, so lines and polygon edges continue a little past the tile's edge and strokes join cleanly. **Point features are not buffered:** each point is in exactly one tile per zoom, the one whose grid holds it (coordinates 0–4095), so the app never sees the same label or icon twice.
 
 ### Layer payload (encoding V2)
 
@@ -152,6 +153,32 @@ polygon    = nrings:varint  (npoints:varint (dx:zvarint dy:zvarint)*)*
 - All deltas are from one **cursor** that starts at `(0, 0)` and carries across points, parts, rings and features. Each decoded point moves the cursor.
 - **Polygons:** rings are implicitly closed (the last point is not repeated). Outer rings are clockwise on screen (positive shoelace area with y down) and holes counter-clockwise, as in MVT. A ring belongs to the nearest preceding outer ring. A polygon has at least one outer ring.
 - Features are already simplified for their zoom (Douglas–Peucker, with tolerances from the whitelist, see [phase0-plan.md](phase0-plan.md#water-simplification-follow-up-2026-10-24)) and filtered by `minzoom`. The app draws what it gets.
+- **Merged lines** (phase 1 decision 5): in the layers the whitelist marks (roads, ferries, rail, and the water layer's lines), pieces of one class with identical props that meet end to end are joined before simplification, wherever exactly two piece ends meet. All of a tile's pieces with the same class and props then form **one feature**, whose parts are the joined chains. So a feature is not an OSM way: one road feature may be several separate stretches of the same street. Oneway roads and waterways keep their direction (pieces are joined end to start only).
+
+### Labels and shields
+
+What the app needs to label the map, beyond the geometry (whitelist v2, phase 1 step 1.3). Text is the plain `name` tag only, as signed locally; `name:en` and `name:fr` are not kept.
+
+**`places` layer.** Classes `country`, `state` (OSM `place=state` and `place=province`), and the water labels `ocean`, `sea` and `bay` (`natural=bay` nodes), besides the settlements. Props `name`, `population` and `capital` (the OSM value: `yes`, or an admin level such as `2` or `4`), for ranking.
+
+**`labels` layer.** One point per named area worth labelling, placed at the area's **pole of inaccessibility** (polylabel, to within 1/200 of the area's larger side or half a z14 pixel, whichever is more), which stays inside long lakes and crescents where the centroid would not. Classes: `river` (`natural=water` + `water=river|canal`), `riverbank`, `lake` (other `natural=water`), `bay` (`natural=bay` areas), `protected_area`, `park`, `forest`, `wood`. Props:
+- `name`;
+- `area`: ⌊log₂ of the area in square pixels at z14⌋ (512 px tiles; one z14 pixel is 2⁹ world units). At zoom *z* the area is about 2^(`area` − 2·(14 − *z*)) px².
+
+A label point appears from the zoom where its area covers at least 1024 px², but not before its class's `minzoom`, and in every zoom after. Areas that stay under 1024 px² even at z16 (two zooms of overzoom) get no label point. Like every point, it is stored in one tile per zoom. The area's own geometry is in the `water` or `landcover` layer as usual (bays have none).
+
+**`routes` prop** of the `roads` layer: the road routes a way belongs to, for shields. Entries `network=ref`, joined by `;`, most important first:
+
+```
+US:I=75;US:US=23;US:OH=4
+CA:transcanada=1;CA:ON:primary=17
+```
+
+- `network` is the OSM `network` tag of a `type=route` + `route=road` relation that has the way as a member, and `ref` the relation's `ref` (a relation `ref` of `1;2` gives two entries).
+- A way in no such relation falls back to its own `ref` tag. Each `;`-separated ref is split into a designator and a number: `I 75` → `US:I=75`, `US 23` → `US:US=23`, `OH 4` → `US:OH=4`, `QC-138` → `CA:QC=138`, `TCH 1` → `CA:transcanada=1`. Any other designator is kept upper-cased as the network (`CR 12` → `CR=12`), and a bare number has an empty network (`=401`). These networks have no country, so the app draws them with a generic shield.
+- Order: Interstates and the Trans-Canada first; then US routes, Mexican federal roads (`MX:MX`, `MX:MEX`) and Interstate variants (`US:I:Business`); then states and provinces (`US:OH`, `CA:ON:primary`, `MX:SON`) and US route variants; then counties (`US:OH:FRA`); then anything else. Within a level, by network, then by route number.
+- The `ref` tag itself is not kept: `routes` carries it.
+- `omp-core::routes` has the parser, the order and the fallback, shared by the builder and the app.
 
 ### `TDIC`: dictionaries (contiguous)
 
@@ -263,6 +290,6 @@ Phase 2. The phase 0 spike measured an `fst` of normalized tokens, postings list
 
 The admin hierarchy, ranking data and the street table's exact form are open.
 
-## Style and labels — *provisional*
+## Style
 
-Phase 1. A `STYL` section holds the style the pack was built for (colors, widths and label rules per layer, class and zoom), so a pack and the app's renderer agree. The app may also ship a built-in style and ignore it. Label placement data (e.g. precomputed label points for large polygons) is open.
+The style is compiled into the app, with a `style.toml` override (phase 1 decision 8); packs have no `STYL` section. The label data the style uses is in the tiles: see [Labels and shields](#labels-and-shields).

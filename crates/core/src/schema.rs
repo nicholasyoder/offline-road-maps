@@ -98,7 +98,7 @@ mod tests {
         let (id, roads) = back.layer("roads").unwrap();
         assert_eq!(usize::from(id), wl.layer_index("roads").unwrap());
         assert_eq!(roads.geometry, GeometryKind::Line);
-        assert!(roads.class("motorway").is_some() && roads.prop("ref").is_some());
+        assert!(roads.class("motorway").is_some() && roads.prop("routes").is_some());
         assert!(back.layer("nope").is_none());
     }
 }

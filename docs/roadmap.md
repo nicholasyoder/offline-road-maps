@@ -108,7 +108,7 @@ Detailed plan: [phase0-plan.md](phase0-plan.md).
 ### Phase 1: Map viewer MVP
 Detailed plan: [phase1-plan.md](phase1-plan.md).
 
-- [ ] Builder: simplify geometry per zoom level, compute label points, read route relations for highway shields, and write the pack.
+- [x] Builder: simplify geometry per zoom level, compute label points, read route relations for highway shields, and write the pack. Done 2026-10-24: [phase 1 steps 1.2 and 1.3](phase1-plan.md#13-label-and-shield-data-in-the-builder).
 - [ ] App: pan and zoom; draw polygons, lines and labels with collision avoidance; highway shields and POI icons; a style file; a scale bar, zoom buttons and layer toggles; portable mode.
 - [ ] **Exit criterion:** browse all of North America from a USB stick at a smooth frame rate with less than 300 MB RAM.
 

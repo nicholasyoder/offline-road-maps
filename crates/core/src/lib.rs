@@ -5,6 +5,7 @@
 pub mod meta;
 pub mod normalize;
 pub mod pack;
+pub mod routes;
 pub mod schema;
 pub mod tile;
 pub mod tiles;

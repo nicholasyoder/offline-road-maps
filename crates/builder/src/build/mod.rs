@@ -70,6 +70,11 @@ pub struct BuildArgs {
     #[arg(long)]
     manifest: Option<PathBuf>,
 
+    /// Directory of state and province `.poly` files (`US-OH.poly`, `CA-QC.poly`, from `fetch
+    /// --sources poly`), to split the route coverage report by [default: <work dir>/inputs/poly].
+    #[arg(long)]
+    route_regions: Option<PathBuf>,
+
     /// Directory for the temporary tile store [default: <work dir>/tmp].
     #[arg(long)]
     temp: Option<PathBuf>,
@@ -274,6 +279,13 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     }
     let clip = args.clip_poly.as_deref().map(Poly::read).transpose()?;
 
+    let regions = load_regions(
+        &args
+            .route_regions
+            .clone()
+            .unwrap_or_else(|| work_dir.join("inputs/poly")),
+    )?;
+
     eprintln!("build {name}: {}", args.input.display());
     let store_path = temp.join(format!("{file_name}-build.v2"));
     let mut store = Store::create(&store_path)?;
@@ -283,9 +295,19 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         if args.bands > 1 {
             eprintln!(" band {k}/{}", args.bands);
         }
-        let mut data = osm::read(&args.input, &wl, osm::Strategy::Sparse, false, band)?;
+        let mut data = osm::read(
+            &args.input,
+            &wl,
+            osm::Strategy::Sparse,
+            false,
+            band,
+            &regions,
+        )?;
         data.roads = Vec::new();
         log_stage("read", &mut t);
+        if k == 0 {
+            print_routes(&data.stats.routes);
+        }
         if let (Some(zip), Some(bbox)) = (&water_zip, data.bbox) {
             let layer = wl.layer_index("water").context("no water layer")?;
             let class = wl.layers[layer]
@@ -471,6 +493,96 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         mib(store_bytes)
     );
     Ok(())
+}
+
+/// The `XX-YY.poly` files in `dir`, sorted by name; none if `dir` does not exist.
+fn load_regions(dir: &Path) -> Result<Vec<(String, Poly)>> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Ok(Vec::new());
+    };
+    let mut paths: Vec<(String, PathBuf)> = rd
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter_map(|p| {
+            let stem = p.file_name()?.to_str()?.strip_suffix(".poly")?.to_owned();
+            let b = stem.as_bytes();
+            let code = b.len() == 5
+                && b[2] == b'-'
+                && b[..2].iter().chain(&b[3..]).all(u8::is_ascii_uppercase);
+            code.then_some((stem, p))
+        })
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|(name, p)| Ok((name, Poly::read(&p)?)))
+        .collect()
+}
+
+/// Route relation coverage per country and class and per region, and the commonest networks.
+fn print_routes(r: &osm::RouteStats) {
+    use std::collections::BTreeMap;
+    let line = |name: &str, c: [u64; 3]| {
+        let all: u64 = c.iter().sum();
+        let pct = |n: u64| 100.0 * n as f64 / all.max(1) as f64;
+        eprintln!(
+            "    {name:<20} {all:>9} {:>8.1}% {:>8.1}% {:>8.1}%",
+            pct(c[0]),
+            pct(c[1]),
+            pct(c[2])
+        );
+    };
+    let add = |t: &mut [u64; 3], c: &[u64; 3]| {
+        for i in 0..3 {
+            t[i] += c[i];
+        }
+    };
+    eprintln!("  routes: {} road route relations", r.relations);
+    eprintln!("    ways                      all  relation  ref only   neither");
+    // Country → class → counts; the class order is the whitelist's, roughly by importance.
+    let order = ["motorway", "trunk", "primary", "secondary", "tertiary"];
+    let mut countries: BTreeMap<&str, BTreeMap<usize, [u64; 3]>> = BTreeMap::new();
+    for (region, classes) in &r.coverage {
+        let country = region.split('-').next().unwrap_or(region);
+        for (class, c) in classes {
+            let i = order.iter().position(|o| o == class).unwrap_or(order.len());
+            add(
+                countries.entry(country).or_default().entry(i).or_default(),
+                c,
+            );
+        }
+    }
+    for (country, classes) in &countries {
+        let mut total = [0; 3];
+        for (i, c) in classes {
+            add(&mut total, c);
+            line(
+                &format!("{country} {}", order.get(*i).unwrap_or(&"other")),
+                *c,
+            );
+        }
+        line(&format!("{country} all"), total);
+    }
+    if r.coverage.len() > countries.len() {
+        for (region, classes) in &r.coverage {
+            let mut total = [0; 3];
+            for c in classes.values() {
+                add(&mut total, c);
+            }
+            line(region, total);
+        }
+    }
+    let mut nets: Vec<(&String, &u64)> = r.networks.iter().collect();
+    nets.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let top: Vec<String> = nets
+        .iter()
+        .take(40)
+        .map(|(n, c)| format!("{n} {c}"))
+        .collect();
+    eprintln!(
+        "    {} networks; ways per network: {}",
+        nets.len(),
+        top.join(", ")
+    );
 }
 
 fn mib(b: u64) -> f64 {

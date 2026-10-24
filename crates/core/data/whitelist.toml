@@ -16,17 +16,29 @@
 # zoom, in tile grid units (4096 per tile; 8 per pixel on a 512 px tile). Zooms not listed
 # use 4, or 1 at z14. At z14 a ring that would collapse is simplified again at a smaller
 # tolerance, so no feature disappears there.
-# Point layers turn ways and relations into a single point (area centroid).
+# A layer may set `merge_lines = "reversible"` or `"directed"`: before encoding a tile, line
+# pieces with the same class and props that meet end to end become one feature with fewer,
+# longer parts. "directed" never reverses a piece; "reversible" may, unless it has a `oneway`
+# prop other than "no".
+# Point layers turn ways and relations into a single point (area centroid). Point features
+# go in only the one tile that contains them, not in neighbours' buffers.
 # The `boundaries` layer is special: classes match administrative relations, and their
 # member ways become lines carrying the lowest admin level.
+# The `labels` layer is special: classes match named areas, and each becomes one label point
+# (the pole of inaccessibility, polylabel), from the zoom where the area covers 1024 px² on a
+# 512 px tile (but not before the class's minzoom). Areas under that even at z16 get none.
+# Two props are filled by the builder instead of from tags: `routes` (roads: the route
+# relations a way belongs to, else its `ref`; see omp-core's `routes` module) and `area`
+# (labels: log2 of the area in square pixels at z14, rounded down).
 
-version = 1
+version = 2
 
 [[layer]]
 name = "roads"
 geometry = "line"
 from = ["way"]
-props = ["name", "ref", "oneway", "bridge", "tunnel"]
+props = ["name", "routes", "oneway", "bridge", "tunnel"]
+merge_lines = "reversible"
 classes = [
   { name = "motorway", tags = { highway = "motorway" }, minzoom = 4 },
   { name = "trunk", tags = { highway = "trunk" }, minzoom = 5 },
@@ -56,6 +68,7 @@ name = "ferries"
 geometry = "line"
 from = ["way"]
 props = ["name"]
+merge_lines = "reversible"
 classes = [
   { name = "ferry", tags = { route = "ferry" }, minzoom = 7 },
 ]
@@ -65,6 +78,7 @@ name = "rail"
 geometry = "line"
 from = ["way"]
 props = []
+merge_lines = "reversible"
 classes = [
   { name = "rail", tags = { railway = "rail" }, absent = ["service"], minzoom = 9 },
   { name = "rail_service", tags = { railway = "rail", service = "*" }, minzoom = 13 },
@@ -78,6 +92,8 @@ props = ["name"]
 # Simplified harder than other layers: at most about 6.5 m off at z14, every lake and
 # stream kept. Cuts North America water by 21% (phase 0.5 experiment).
 tolerance = { z12 = 6.0, z13 = 8.0, z14 = 16.0 }
+# Rivers, canals and streams; the areas are left alone.
+merge_lines = "directed"
 classes = [
   # Ocean polygons come from osmdata.openstreetmap.de, not from OSM tags.
   { name = "ocean", external = true, minzoom = 0 },
@@ -112,8 +128,15 @@ classes = [
 name = "places"
 geometry = "point"
 from = ["node"]
-props = ["name", "population"]
+# Only the plain `name`, which is what is signed locally; no `name:en` or `name:fr`.
+props = ["name", "population", "capital"]
 classes = [
+  { name = "country", tags = { place = "country" }, minzoom = 1 },
+  { name = "state", tags = { place = ["state", "province"] }, minzoom = 3 },
+  # Water labels.
+  { name = "ocean", tags = { place = "ocean" }, minzoom = 0 },
+  { name = "sea", tags = { place = "sea" }, minzoom = 3 },
+  { name = "bay", tags = { natural = "bay" }, minzoom = 9 },
   { name = "city", tags = { place = "city" }, minzoom = 4 },
   { name = "town", tags = { place = "town" }, minzoom = 7 },
   { name = "village", tags = { place = "village" }, minzoom = 10 },
@@ -155,6 +178,22 @@ classes = [
   { name = "campground", tags = { tourism = ["camp_site", "caravan_site"] }, minzoom = 12 },
   { name = "attraction", tags = { tourism = "attraction" }, minzoom = 12 },
   { name = "parking", tags = { amenity = "parking" }, minzoom = 14 },
+]
+
+[[layer]]
+name = "labels"
+geometry = "point"
+from = ["way", "relation"]
+props = ["name", "area"]
+classes = [
+  { name = "river", tags = { natural = "water", water = ["river", "canal"], name = "*" }, minzoom = 8 },
+  { name = "riverbank", tags = { waterway = "riverbank", name = "*" }, minzoom = 8 },
+  { name = "lake", tags = { natural = "water", name = "*" }, minzoom = 4 },
+  { name = "bay", tags = { natural = "bay", name = "*" }, minzoom = 4 },
+  { name = "protected_area", tags = { boundary = ["protected_area", "national_park"], name = "*" }, minzoom = 6 },
+  { name = "park", tags = { leisure = "park", name = "*" }, minzoom = 10 },
+  { name = "forest", tags = { landuse = "forest", name = "*" }, minzoom = 7 },
+  { name = "wood", tags = { natural = "wood", name = "*" }, minzoom = 7 },
 ]
 
 [[layer]]

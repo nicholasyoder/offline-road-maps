@@ -26,7 +26,20 @@ pub struct Layer {
     /// listed use the builder's default.
     #[serde(default)]
     pub tolerance: BTreeMap<String, f64>,
+    /// Join line pieces of the same class and props end to end before encoding (decision 5).
+    #[serde(default)]
+    pub merge_lines: Option<MergeLines>,
     pub classes: Vec<Class>,
+}
+
+/// How [`Layer::merge_lines`] may join two pieces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MergeLines {
+    /// A piece may be reversed to join, unless it has a `oneway` prop other than `no`.
+    Reversible,
+    /// Pieces join only end to start, so their direction is kept (waterways flow).
+    Directed,
 }
 
 #[derive(Debug, Deserialize)]

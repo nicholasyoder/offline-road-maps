@@ -27,7 +27,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 |---|---|---|
 | 1.1 Shared tile codec and pack reader | **Done** 2026-10-24 | `omp-core::{tile, tiles, schema, meta, varint}`; `measure` output on Ohio unchanged. |
 | 1.2 `omp-builder build`: write a tile pack | **Done** 2026-10-24 | Delaware, Ohio and North America packs; North America is 8.1 GiB in 3 chunks, built in 24 min at 43 GiB peak. |
-| 1.3 Label and shield data in the builder | Not started | |
+| 1.3 Label and shield data in the builder | **Done** 2026-10-24 | Whitelist v2: state and water labels, a `labels` layer of polylabel points, `routes` for shields, merged lines, one tile per point. North America tiles −297 MiB (−3.6%); pack 8,001 MiB in 2 chunks. |
 | 1.4 App skeleton: pack, camera, tile loading, bench | Not started | |
 | 1.5 Geometry renderer | Not started | |
 | 1.6 Style file and default style | Not started | |
@@ -109,7 +109,7 @@ The tiles from phase 0 have the geometry but not enough to label a map well. Thi
 **Places and boundaries:**
 - Add `place=country`, `state` and `province` nodes to the places layer (state and country labels at low zoom), and `place=sea`/`ocean`/`bay` nodes as water labels.
 - Add a `capital` prop and keep `population`, so the app can rank places.
-- Decide whether to keep `name:en` and `name:fr`. Default: the plain `name` only, which is what is signed locally.
+- Decide whether to keep `name:en` and `name:fr`. Default: the plain `name` only, which is what is signed locally. *Decided: `name` only.*
 
 **Label points for areas** (decision 4):
 - For each named lake, large river area, park, protected area and wood, compute one label point with *polylabel* (the pole of inaccessibility, which stays inside odd shapes such as long lakes).
@@ -127,6 +127,44 @@ The tiles from phase 0 have the geometry but not enough to label a map well. Thi
 **Format:** these change the whitelist (bump its `version`) and `SCHM`, not the container. Update [format.md](format.md) for the `labels` layer and the `routes` prop.
 
 **Done when:** an Ohio and a Quebec pack have state labels, label points for named lakes and parks, and `routes` on the Interstate, US, state and provincial highways; the North America size table is updated with the cost of each change; and format.md describes it.
+
+> **Done 2026-10-24** (the commit that adds `omp-core::routes`).
+> **Whitelist v2** (`crates/core/data/whitelist.toml`; [format.md](format.md#labels-and-shields) has the details):
+> - `places` gains `country` (z1), `state` (`place=state|province`, z3), and the water labels `ocean` (z0), `sea` (z3) and `bay` (`natural=bay` nodes, z9), and a `capital` prop. **`name` only**, no `name:en`/`name:fr` (the open question is settled: the plain name is what is signed).
+> - A new **`labels` layer**: one point per named lake, river area, riverbank, bay, protected area, park, forest and wood, at its pole of inaccessibility (`geom::polylabel`, rings first simplified to a quarter of the precision so big lakes stay cheap). Props `name` and `area` (⌊log₂ px²⌋ at z14). It appears from the zoom where the area covers 1024 px², but not before the class's minzoom; areas under that even at z16 get none. `Feature` gained a per-feature `minzoom` for this.
+> - **Points go in one tile only:** the cutter drops points that fall in a tile's buffer, for every point layer (the duplicate-label question in the bullets above: `measure` did copy places and POIs into neighbours' buffers).
+> - **`routes`** replaces `ref` on roads: `network=ref` entries from `type=route` + `route=road` relations, sorted by `omp_core::routes::priority`, falling back to the way's `ref` parsed by designator (`I 75` → `US:I=75`, `QC-138` → `CA:QC=138`, `CR 12` → `CR=12`). Not done: guessing the state of a bare `SR 4` from the way's position; with these coverage numbers it can wait for 1.8.
+> - **Line merging** (`merge_lines` per layer): roads, ferries and rail "reversible" (except oneway roads), the water layer's lines "directed". A tile's pieces with the same class and props become one feature whose parts are the chains joined where exactly two piece ends meet. Kept: it makes tiles smaller (decision 5).
+>
+> **Cost of each change** (tile bytes, MiB, from `inspect --stats`; Ohio and Quebec built once per change with `$OMP_WORK/whitelists/v2-*.toml`, each adding one change to the one before; v1 is the 1.2 binary; logs in `$OMP_WORK/measure/labels/`):
+>
+> | Change | Ohio | Quebec | North America |
+> |---|---:|---:|---:|
+> | v1 tiles (1.2) | 121.21 | 745.87 | 8,183.7 |
+> | Points in one tile (places, POIs) | −0.08 | −0.01 | about −1.8 (POIs −1.8; places mixed with the next row) |
+> | New place classes, `capital` | +0.01 | +0.02 | +1.4 (places, both rows) |
+> | `labels` layer | +0.29 | +2.78 | +23.5 |
+> | `routes` instead of `ref` | +0.18 | +0.09 | +5.7 |
+> | Line merging | −6.89 (roads −6.26, water −0.43, rail −0.19) | −12.71 (water −8.15, roads −4.45, rail −0.10) | −325.8 (roads −227.8, water −91.3, rail −6.7) |
+> | **v2 tiles** | **114.72 (−5.4%)** | **736.05 (−1.3%)** | **7,886.7 (−3.6%)** |
+>
+> North America was built twice, with v2 and with v2 minus merging; the other rows are read off its per-layer bytes. Merging cuts roads by 11–13% in all three; water's share is small because most water bytes are polygons.
+>
+> **Shield coverage** (motorway to tertiary ways, not links, by the way's middle point in `$OMP_WORK/inputs/poly/XX-YY.poly`; `build` prints it per country, class and state or province):
+>
+> | North America | ways | in a route relation | `ref` only | neither |
+> |---|---:|---:|---:|---:|
+> | US motorway / trunk / primary | 288k / 309k / 835k | 96% / 96% / 69% | 1% / 1% / 1% | 3% / 4% / 30% |
+> | US secondary / tertiary | 1,076k / 1,164k | 30% / 12% | 2% / 5% | 69% / 84% |
+> | Canada motorway / trunk / primary | 27k / 24k / 77k | 95% / 94% / 77% | 1% / 1% / 2% | 5% / 5% / 20% |
+> | Canada secondary / tertiary | 174k / 197k | 43% / 2% | 2% / 2% | 56% / 96% |
+> | Elsewhere (Mexico, Greenland, …) | 329k | 16% | 13% | 72% |
+>
+> So Interstates, US routes and the main state and provincial highways come almost entirely from relations, and the `ref` fallback adds little. Most "neither" ways are secondary and tertiary roads that carry no route at all. 71,757 road route relations in 1,483 networks; the commonest by ways are `US:US`, `US:I`, `US:GA`, `US:FL`, `US:CA`, `US:VA:Secondary`, `US:NY`, `US:PA`, `US:OH`, `US:TX:FM`, `MX:MX`; Canada's are `CA:QC:R`, `CA:ON:primary`, `CA:BC` (input for 1.8's shield table). Mexico's federal network is mostly `MX:MX`, which the priority now counts as federal.
+> **Checked in the packs** with the new `inspect --features <layer>/<z>`: Ohio has `state Ohio` from z3, `lake Lake Erie` and the state forests as label points at z8, and `US:I=71`, `US:US=23`, `US:OH=4` routes; Quebec has `state Québec` at z3, `Lac Saint-Jean`, `Lac Mistassini` and `Parc national du Mont-Tremblant` at z7, 1,441 bays at z9, and `CA:QC:R=138`-style routes.
+> **Build cost:** Ohio 16 s (unchanged), Quebec 43 s (unchanged once relation label points are computed in parallel; sequential polylabel had taken it to 61 s), North America 24.9 min at 43.0 GiB peak in 3 bands (1.2: 24 min, 43.0 GiB); the no-merge build took 25.5 min.
+> **Packs rebuilt** with v2: Delaware (8.1 MiB, was 8.7), Ohio (116.4, was 122.8), Quebec (742.5) and North America in `$OMP_WORK/packs/`. North America is now **8,001 MiB in 2 chunks** (4,095 + 3,906 MiB): with 297 MiB less tile data it fits in two. `verify` passes.
+> **Open:** the 1024 px² threshold and the per-class label minzooms are first guesses, to be tuned when 1.7 draws them. Bare refs without a known designator (`SR 4`, `=401`) get a generic shield.
 
 ## 1.4 App skeleton: pack, camera, tile loading, bench
 
@@ -242,16 +280,17 @@ Settled while planning (2026-10-24):
 2. **Rendering backends:** wgpu with Vulkan, DX12, Metal and its GL backend. Pre-2012 hardware is not a priority: if it does not run with wgpu's GL backend, it is recorded and left for later, with no separate glow renderer in phase 1 (owner, 2026-10-24).
 3. **Real route shields in phase 1** (owner, 2026-10-24): from route relations, falling back to `ref`.
 4. **Area labels as label points** in a synthetic `labels` layer, computed with polylabel in the builder and stored in one tile only.
-5. **Line merging** in the builder before encoding, if it does not make tiles bigger (measured in 1.3).
+5. **Line merging** in the builder before encoding, if it does not make tiles bigger (measured in 1.3: kept, roads 11–13% smaller).
 6. **One pack open at a time**, with a picker if `maps/` holds several. Several packs at once is left for later (owner did not choose it for phase 1).
 7. **North up, no map rotation** in phase 1, like Streets & Trips. It keeps tile clipping to axis-aligned squares.
 8. **The style lives in the app, not the pack:** a compiled-in TOML style with a `style.toml` override, and no `STYL` section.
 9. **Text:** SDF glyph atlas in the map pass, Latin script, kerning but no complex shaping; no `cosmic-text`/`rustybuzz` for now. Update roadmap §5 when 1.7 confirms it.
 10. **Viewer extras in phase 1:** scale bar, zoom buttons, cursor coordinates and layer toggles (owner, 2026-10-24). No night style yet.
+11. **`routes` replaces `ref`** on roads (1.3): it carries the same refs, sorted, with their networks.
+12. **`name` only** in tiles, no `name:en`/`name:fr` (1.3).
 
 Open, to settle in their steps:
 - Tile zoom choice for a fractional zoom, and the overzoom limit (1.4, 1.5).
-- `name` only, or also `name:en`/`name:fr` (1.3).
 - The state-by-state shield table: how many distinct shapes are worth drawing (1.8).
 - The default units rule for the scale bar in a pack that covers both countries (1.9).
 
