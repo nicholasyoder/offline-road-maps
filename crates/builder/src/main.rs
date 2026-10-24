@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 mod addr;
+mod build;
 mod fetch;
 mod measure;
 mod report;
@@ -25,6 +26,12 @@ enum Command {
     Paths,
     /// Download a region's OSM extract and address sources into <work dir>/inputs.
     Fetch(fetch::FetchArgs),
+    /// Cut a PBF into tiles and write a pack.
+    Build(build::BuildArgs),
+    /// Print a pack's header, sections, schema and tile counts, or one decoded tile.
+    Inspect(build::inspect::InspectArgs),
+    /// Check every section's checksum.
+    Verify(build::inspect::VerifyArgs),
     /// Phase 0 spike: tile a PBF through the whitelist and report sizes per layer, zoom and encoding.
     Measure(measure::MeasureArgs),
     /// Phase 0 spike: merge address sources onto OSM streets and measure coverage and size.
@@ -49,6 +56,9 @@ fn main() -> anyhow::Result<()> {
             println!("work dir: {} ({state})", dir.display());
         }
         Command::Fetch(args) => fetch::run(args, &dir)?,
+        Command::Build(args) => build::run(args, &dir)?,
+        Command::Inspect(args) => build::inspect::inspect(args)?,
+        Command::Verify(args) => build::inspect::verify(args)?,
         Command::Measure(args) => measure::run(args, &dir)?,
         Command::AddrSpike(args) => addr::run(args, &dir)?,
         Command::Report(args) => report::run(args)?,

@@ -54,6 +54,28 @@ pub fn hilbert(z: u8, mut x: u32, mut y: u32) -> u64 {
     d
 }
 
+/// The tile `(x, y)` at zoom `z` with Hilbert key `d`: the inverse of [`hilbert`].
+pub fn hilbert_xy(z: u8, mut d: u64) -> (u32, u32) {
+    let (mut x, mut y) = (0u64, 0u64);
+    let mut s = 1u64;
+    while s < 1u64 << z {
+        let rx = 1 & (d / 2);
+        let ry = 1 & (d ^ rx);
+        if ry == 0 {
+            if rx == 1 {
+                x = s - 1 - x;
+                y = s - 1 - y;
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        x += s * rx;
+        y += s * ry;
+        d /= 4;
+        s *= 2;
+    }
+    (x as u32, y as u32)
+}
+
 // --- Layer payload (V2) ---
 
 #[derive(Clone, Debug, PartialEq)]
@@ -516,12 +538,21 @@ impl Block {
 
     pub fn find(&self, key: u64) -> Option<TileLoc> {
         let i = self.keys.binary_search(&key).ok()?;
+        Some(self.loc(i))
+    }
+
+    /// Every tile in the block, in key order.
+    pub fn iter(&self) -> impl Iterator<Item = (u64, TileLoc)> + '_ {
+        (0..self.keys.len()).map(|i| (self.keys[i], self.loc(i)))
+    }
+
+    fn loc(&self, i: usize) -> TileLoc {
         let lens = &self.lens[self.len_starts[i] as usize..self.len_starts[i + 1] as usize];
         let layers = (0..MAX_LAYERS as u8).filter(|l| self.masks[i] & (1 << l) != 0);
-        Some(TileLoc {
+        TileLoc {
             offset: self.offsets[i],
             layers: layers.zip(lens.iter().copied()).collect(),
-        })
+        }
     }
 
     /// Bytes this block holds in memory, for cache accounting.
@@ -633,6 +664,16 @@ impl IndexBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hilbert_inverts() {
+        for z in [0, 1, 3, 14] {
+            for &(x, y) in &[(0, 0), (1, 0), (5, 7), (16383, 1), (9000, 12000)] {
+                let (x, y) = (x % (1 << z), y % (1 << z));
+                assert_eq!(hilbert_xy(z, hilbert(z, x, y)), (x, y), "z{z} {x},{y}");
+            }
+        }
+    }
 
     #[test]
     fn hilbert_order_2() {

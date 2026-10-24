@@ -113,10 +113,31 @@ pub struct Entry {
     pub len: u32,
 }
 
-struct Store {
+/// The temp file of V2 layer payloads, and where each one is.
+pub struct Store {
     out: BufWriter<File>,
     offset: u64,
     entries: Vec<Entry>,
+}
+
+impl Store {
+    pub fn create(path: &Path) -> Result<Self> {
+        Ok(Self {
+            out: BufWriter::with_capacity(8 << 20, File::create(path)?),
+            offset: 0,
+            entries: Vec::new(),
+        })
+    }
+
+    /// Flushes the file; returns the entries sorted by `(z, x, y, layer)` and the bytes
+    /// written. Tiles finish in parallel, so the sort makes later stages see the same order
+    /// every run.
+    pub fn finish(mut self) -> Result<(Vec<Entry>, u64)> {
+        self.out.flush()?;
+        self.entries
+            .sort_unstable_by_key(|e| (e.z, e.x, e.y, e.layer));
+        Ok((self.entries, self.offset))
+    }
 }
 
 struct Frag<'a> {
@@ -129,8 +150,10 @@ struct Ctx<'a> {
     wl: &'a Whitelist,
     /// `[layer][class]`, `u8::MAX` for classes not in tiles.
     minzoom: Vec<Vec<u8>>,
+    /// Also measure V0, V1 and MVT; without it only V2 is encoded (for `build`).
+    measure: bool,
     stats: Vec<Mutex<Stats>>,
-    store: Mutex<Store>,
+    store: Mutex<&'a mut Store>,
 }
 
 pub struct Pyramid {
@@ -202,24 +225,41 @@ impl Band {
     }
 }
 
+/// Cuts the pyramid for `measure`, into a new temp file at `store_path`.
 pub fn build(
     features: &[Feature],
     wl: &Whitelist,
     store_path: &Path,
     band: Band,
 ) -> Result<Pyramid> {
+    let mut store = Store::create(store_path)?;
+    let stats = cut_pyramid(features, wl, &mut store, band, true);
+    let (entries, store_bytes) = store.finish()?;
+    Ok(Pyramid {
+        stats,
+        entries,
+        store_bytes,
+    })
+}
+
+/// Cuts band `band` of the pyramid and appends its V2 payloads to `store`. With `measure`,
+/// also collects the V0, V1 and MVT statistics.
+pub fn cut_pyramid(
+    features: &[Feature],
+    wl: &Whitelist,
+    store: &mut Store,
+    band: Band,
+    measure: bool,
+) -> Stats {
     let minzoom = minzooms(wl);
     let ctx = Ctx {
         wl,
         stats: (0..rayon::current_num_threads() + 1)
             .map(|_| Mutex::default())
             .collect(),
-        store: Mutex::new(Store {
-            out: BufWriter::with_capacity(8 << 20, File::create(store_path)?),
-            offset: 0,
-            entries: Vec::new(),
-        }),
+        store: Mutex::new(store),
         minzoom,
+        measure,
     };
     let minzoom = |f: &Feature| ctx.minzoom[f.layer as usize][f.class as usize];
     let low: Vec<Frag> = features
@@ -266,17 +306,7 @@ pub fn build(
     for s in ctx.stats {
         stats.merge(s.into_inner().unwrap());
     }
-    let mut store = ctx.store.into_inner().unwrap();
-    store.out.flush()?;
-    // Tiles finish in parallel; sort so later stages see the same order every run.
-    store
-        .entries
-        .sort_unstable_by_key(|e| (e.z, e.x, e.y, e.layer));
-    Ok(Pyramid {
-        stats,
-        entries: store.entries,
-        store_bytes: store.offset,
-    })
+    stats
 }
 
 fn tile_rect(z: u8, x: u32, y: u32) -> Rect {
@@ -348,20 +378,10 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
         let layer = &ctx.wl.layers[li];
         let (tol, min_len, min_area) = thinning(z, layer);
         let li = li as u8;
-        let class_names: Vec<String> = layer.classes.iter().map(|c| c.name.clone()).collect();
-
-        let mut v0 = Cell::default();
-        for f in frags {
-            v0.features += 1;
-            v0.vertices += f.geom.vertices() as u64;
-            v0.bytes += encode::v0_size(
-                &f.geom,
-                &class_names[f.f.class as usize],
-                &f.f.props,
-                &layer.props,
-            );
-        }
-
+        let class_names: Vec<String> = match ctx.measure {
+            true => layer.classes.iter().map(|c| c.name.clone()).collect(),
+            false => Vec::new(),
+        };
         let v1: Vec<Enc> = frags
             .iter()
             .filter_map(|f| {
@@ -372,23 +392,9 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
                 })
             })
             .collect();
-        let v1_bytes = encode_layer(&v1);
-        if z == MAX_ZOOM {
-            for e in &v1 {
-                // Encoded alone, so its strings are counted in full rather than shared.
-                let one = encode_layer(std::slice::from_ref(e));
-                let c = local.class_z14.entry((li, e.class)).or_default();
-                c.0 += one.len() as u64 - 1;
-                c.1 += 1;
-            }
+        if ctx.measure {
+            measure_v0_v1(&mut local, z, li, layer, &class_names, frags, &v1);
         }
-        let v1_cell = Cell {
-            tiles: 1,
-            features: v1.len() as u64,
-            vertices: v1.iter().map(|e| e.geom.vertices() as u64).sum(),
-            bytes: v1_bytes.len() as u64,
-        };
-
         let v2: Vec<Enc> = v1
             .into_iter()
             .filter_map(|e| {
@@ -399,37 +405,28 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
                 })
             })
             .collect();
-        v0.tiles = 1;
-        local
-            .cells
-            .entry((Variant::V0, li, z))
-            .or_default()
-            .add(&v0);
-        local
-            .cells
-            .entry((Variant::V1, li, z))
-            .or_default()
-            .add(&v1_cell);
         if v2.is_empty() {
             continue;
         }
         let v2_bytes = encode_layer(&v2);
-        local
-            .cells
-            .entry((Variant::V2, li, z))
-            .or_default()
-            .add(&Cell {
-                tiles: 1,
-                features: v2.len() as u64,
-                vertices: v2.iter().map(|e| e.geom.vertices() as u64).sum(),
-                bytes: v2_bytes.len() as u64,
-            });
-        mvt_layers.push(encode::mvt_layer(
-            &layer.name,
-            &v2,
-            &class_names,
-            &layer.props,
-        ));
+        if ctx.measure {
+            local
+                .cells
+                .entry((Variant::V2, li, z))
+                .or_default()
+                .add(&Cell {
+                    tiles: 1,
+                    features: v2.len() as u64,
+                    vertices: v2.iter().map(|e| e.geom.vertices() as u64).sum(),
+                    bytes: v2_bytes.len() as u64,
+                });
+            mvt_layers.push(encode::mvt_layer(
+                &layer.name,
+                &v2,
+                &class_names,
+                &layer.props,
+            ));
+        }
         sections.push((li, v2_bytes));
     }
     if !mvt_layers.is_empty() {
@@ -457,6 +454,58 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
     }
     let slot = rayon::current_thread_index().map_or(0, |i| i + 1);
     ctx.stats[slot].lock().unwrap().merge(local);
+}
+
+/// `measure`'s V0 and V1 cells for one layer of a tile, and its per-class z14 bytes.
+fn measure_v0_v1(
+    local: &mut Stats,
+    z: u8,
+    li: u8,
+    layer: &Layer,
+    class_names: &[String],
+    frags: &[&Frag],
+    v1: &[Enc],
+) {
+    let mut v0 = Cell {
+        tiles: 1,
+        ..Cell::default()
+    };
+    for f in frags {
+        v0.features += 1;
+        v0.vertices += f.geom.vertices() as u64;
+        v0.bytes += encode::v0_size(
+            &f.geom,
+            &class_names[f.f.class as usize],
+            &f.f.props,
+            &layer.props,
+        );
+    }
+    let v1_bytes = encode_layer(v1);
+    if z == MAX_ZOOM {
+        for e in v1 {
+            // Encoded alone, so its strings are counted in full rather than shared.
+            let one = encode_layer(std::slice::from_ref(e));
+            let c = local.class_z14.entry((li, e.class)).or_default();
+            c.0 += one.len() as u64 - 1;
+            c.1 += 1;
+        }
+    }
+    let v1_cell = Cell {
+        tiles: 1,
+        features: v1.len() as u64,
+        vertices: v1.iter().map(|e| e.geom.vertices() as u64).sum(),
+        bytes: v1_bytes.len() as u64,
+    };
+    local
+        .cells
+        .entry((Variant::V0, li, z))
+        .or_default()
+        .add(&v0);
+    local
+        .cells
+        .entry((Variant::V1, li, z))
+        .or_default()
+        .add(&v1_cell);
 }
 
 #[cfg(test)]

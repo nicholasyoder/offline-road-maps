@@ -26,7 +26,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | Step | Status | Notes |
 |---|---|---|
 | 1.1 Shared tile codec and pack reader | **Done** 2026-10-24 | `omp-core::{tile, tiles, schema, meta, varint}`; `measure` output on Ohio unchanged. |
-| 1.2 `omp-builder build`: write a tile pack | Not started | |
+| 1.2 `omp-builder build`: write a tile pack | **Done** 2026-10-24 | Delaware, Ohio and North America packs; North America is 8.1 GiB in 3 chunks, built in 24 min at 43 GiB peak. |
 | 1.3 Label and shield data in the builder | Not started | |
 | 1.4 App skeleton: pack, camera, tile loading, bench | Not started | |
 | 1.5 Geometry renderer | Not started | |
@@ -85,6 +85,22 @@ omp-builder verify <pack>
 - Record wall time, peak RSS and temp disk per region, as in phase 0.
 
 **Done when:** `build` writes Delaware, Ohio and North America packs; `verify` passes; tile bytes match `measure`'s V4 for the same region within 1% (the difference is the dictionaries); and a North America pack splits into 3 chunk files under 4 GiB each.
+
+> **Done 2026-10-24** (the commit that adds `omp-builder build`).
+> **Code:** `crates/builder/src/build/` holds `build`, `inspect` and `verify`. `build` reuses `measure`'s reader, water and tile cutter; the cutter now takes a `measure` flag, so `build` encodes only V2 and skips the V0, V1 and MVT measurements. Every band appends to one temp store. `compress::train` (split out of `measure`) trains one dictionary set from all of it. Tiles are then sorted into zoom and Hilbert order, compressed in parallel batches of 16k tiles with pooled `FrameCompressor`s, and written in order through `omp-core`'s `TileWriter`. `META` gets its sources from the fetch manifest (the PBF and the water polygons, with URL, hash and license), the attribution lines, and the settings (whitelist version, encoding, zstd level, input file names). The header snapshot reads, e.g., `osm 2026-10-01; water 2026-10-24`. `--out <dir>` names the chunks after the directory (`packs/ohio/ohio.omp.000`) and deletes old chunks of that name first.
+> **omp-core additions:** `Pack::verify_with` (progress callback, for the app's "Verify pack" in 1.9), `Pack::chunks`, `TileReader::tile_count` and `for_each_tile` (walks `TIDX` without filling the block cache), `Block::iter`, and `tile::hilbert_xy` (the inverse of `hilbert`).
+> **Results** (`$OMP_WORK/measure/build/*.log`), from `omp-builder build $OMP_WORK/inputs/osm/<region>-261001.osm.pbf --out $OMP_WORK/packs/<region>`, plus `--clip-poly inputs/poly/us/delaware.poly`, or `--clip-poly inputs/poly/north-america.poly --bands 3`; Ohio has no poly, as in phase 0):
+>
+> | Region | Tiles | Frames | Pack | Chunks | Wall | Peak RSS | Temp store |
+> |---|---:|---:|---:|---:|---:|---:|---:|
+> | Delaware | 3,110 | 10,815 | 8.7 MiB | 1 | 6 s | 0.6 GiB | 11 MiB |
+> | Ohio | 55,649 | 170,255 | 122.8 MiB | 1 | 16 s | 2.2 GiB | 158 MiB |
+> | North America (`--bands 3`) | 23,658,210 | 32,940,398 | 8,302 MiB | 3 (4,094 + 4,094 + 112 MiB) | 24 min | 43.0 GiB | 10.0 GiB |
+>
+> North America: each band's read takes about 350 s, and its cut about 55 s; training takes 23 s, compressing 154 s and writing 10 s. `TIDX` is 112 MiB and `TDIC` holds 29 dictionaries. `verify` passes on all three packs. On North America it took 1.3 s because the pack was still in the page cache, so this is not a cold-read number. `inspect --stats` reads the whole index in 1.2 s.
+> **Against `measure`'s V4** (rerun the same day with the same whitelist, and with `--band k/3` for North America): Delaware and Ohio frames are **byte-identical** to V4 (`TDAT` − 4 bytes × frames = V4 exactly), because a single-band build trains on the same samples. The packs are 0.5% larger because each frame carries zstd's 4-byte content checksum (format.md). North America's frames are 0.15% larger than the sum of the three per-band V4 runs (one dictionary set instead of three). With the checksums, `TDAT` is 8,581 MB against V4's 8,437 MB (+1.7%, of which checksums are 126 MiB). That is over the 1% in **Done when**, but only because of the checksums, which format.md already requires; without them the difference is 0.15%.
+> **Deterministic:** two `--deterministic` Delaware builds, one with `--bands 1` and one with `--bands 3`, give the same SHA-256. So banding does not change the tiles, and neither does parallel order.
+> **Open:** packs have no address, search or routing sections yet (phases 2 and 3). The tiles are those of whitelist v1 (no labels layer or `routes` yet; 1.3 adds them and bumps the version). The North America pack must be rebuilt after 1.3.
 
 ## 1.3 Label and shield data in the builder
 

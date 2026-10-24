@@ -219,14 +219,19 @@ where
 }
 
 fn header_bbox(path: &Path) -> Result<Option<BBox>> {
+    Ok(header_bounds(path)?.map(|[w, s, e, n]| BBox {
+        min: geom::project(n, w),
+        max: geom::project(s, e),
+    }))
+}
+
+/// The PBF header's bounding box: west, south, east, north in degrees.
+pub fn header_bounds(path: &Path) -> Result<Option<[f64; 4]>> {
     let mut reader = BlobReader::from_path(path)?;
     if let Some(blob) = reader.next()
         && let BlobDecode::OsmHeader(h) = blob?.decode()?
     {
-        return Ok(h.bbox().map(|b| BBox {
-            min: geom::project(b.top, b.left),
-            max: geom::project(b.bottom, b.right),
-        }));
+        return Ok(h.bbox().map(|b| [b.left, b.bottom, b.right, b.top]));
     }
     Ok(None)
 }

@@ -228,6 +228,38 @@ impl TileReader {
         Ok(cell.get_or_init(|| dir))
     }
 
+    /// Tiles stored at zoom `z`, from its directory alone.
+    pub fn tile_count(&self, z: u8) -> io::Result<u64> {
+        if z > MAX_ZOOM {
+            return Ok(0);
+        }
+        Ok(self.dir(z)?.iter().map(|d| u64::from(d.tiles)).sum())
+    }
+
+    /// Calls `f(key, loc)` for every tile at zoom `z`, in Hilbert order. Reads each block
+    /// once and does not fill the block cache.
+    pub fn for_each_tile(&self, z: u8, mut f: impl FnMut(u64, &TileLoc)) -> io::Result<()> {
+        if z > MAX_ZOOM {
+            return Ok(());
+        }
+        let dir = self.dir(z)?;
+        for i in 0..dir.len() {
+            for (key, loc) in self.read_block(z, i, dir)?.iter() {
+                f(key, &loc);
+            }
+        }
+        Ok(())
+    }
+
+    fn read_block(&self, z: u8, i: usize, dir: &[DirEntry]) -> io::Result<Block> {
+        let d = &dir[i];
+        let end = dir
+            .get(i + 1)
+            .map_or(self.zoom_ends[z as usize], |n| n.block_offset);
+        let bytes = self.read(d.block_offset, (end - d.block_offset) as usize)?;
+        Block::decode(&bytes, d)
+    }
+
     fn block(&self, z: u8, i: usize, dir: &[DirEntry]) -> io::Result<std::sync::Arc<Block>> {
         let key = (z, i as u32);
         {
@@ -239,12 +271,7 @@ impl TileReader {
                 return Ok(b.clone());
             }
         }
-        let d = &dir[i];
-        let end = dir
-            .get(i + 1)
-            .map_or(self.zoom_ends[z as usize], |n| n.block_offset);
-        let bytes = self.read(d.block_offset, (end - d.block_offset) as usize)?;
-        let block = std::sync::Arc::new(Block::decode(&bytes, d)?);
+        let block = std::sync::Arc::new(self.read_block(z, i, dir)?);
         let mut c = self.blocks.lock().unwrap();
         if c.map.len() >= BLOCK_CACHE
             && let Some(old) = c.map.iter().min_by_key(|(_, (_, t))| *t).map(|(k, _)| *k)
@@ -444,6 +471,20 @@ mod tests {
             assert!(r.tile(z, x, y).unwrap().is_none(), "{z}/{x}/{y}");
         }
         assert!(r.bytes_read() > tdat.len);
+
+        // Walking the index visits every tile once, in order, with the same locations.
+        let mut seen = Vec::new();
+        for z in 0..=MAX_ZOOM {
+            let before = seen.len();
+            r.for_each_tile(z, |key, loc| {
+                let (x, y) = tile::hilbert_xy(z, key);
+                assert_eq!(r.locate(z, x, y).unwrap().as_ref(), Some(loc));
+                seen.push((z, x, y));
+            })
+            .unwrap();
+            assert_eq!(r.tile_count(z).unwrap(), (seen.len() - before) as u64);
+        }
+        assert_eq!(seen, tiles());
     }
 
     #[test]

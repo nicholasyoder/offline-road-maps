@@ -2264,6 +2264,7 @@ dependencies = [
  "sha2",
  "toml",
  "ureq",
+ "xxhash-rust",
  "zip",
  "zstd",
 ]

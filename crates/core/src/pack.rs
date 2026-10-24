@@ -463,6 +463,10 @@ impl Pack {
         Ok(pack)
     }
 
+    pub fn chunks(&self) -> usize {
+        self.files.len()
+    }
+
     pub fn section(&self, id: [u8; 4]) -> Option<&Section> {
         self.sections.iter().find(|s| s.id == id)
     }
@@ -493,7 +497,14 @@ impl Pack {
 
     /// Hashes every section; returns the IDs whose checksum does not match.
     pub fn verify(&self) -> io::Result<Vec<[u8; 4]>> {
+        self.verify_with(|_, _| {})
+    }
+
+    /// [`Pack::verify`], calling `progress(bytes hashed, total)` every 8 MiB.
+    pub fn verify_with(&self, mut progress: impl FnMut(u64, u64)) -> io::Result<Vec<[u8; 4]>> {
         const STEP: u64 = 8 << 20;
+        let total: u64 = self.sections.iter().map(|s| s.len).sum();
+        let mut done = 0;
         let mut bad = Vec::new();
         for s in &self.sections {
             let mut h = Xxh3::new();
@@ -502,6 +513,8 @@ impl Pack {
                 let n = (end - v).min(STEP).min(self.capacity - v % self.capacity);
                 h.update(&self.read(v, n as usize)?);
                 v += n;
+                done += n;
+                progress(done, total);
             }
             if h.digest() != s.checksum {
                 bad.push(s.id);
@@ -562,6 +575,9 @@ mod tests {
             assert_eq!(&p.read(*o, r.len()).unwrap(), r);
         }
         assert!(p.verify().unwrap().is_empty());
+        let mut last = (0, 0);
+        p.verify_with(|done, total| last = (done, total)).unwrap();
+        assert_eq!(last, (last.1, meta.len + tdat.len + tidx.len));
         assert!(p.read_section(&tdat).is_err());
     }
 

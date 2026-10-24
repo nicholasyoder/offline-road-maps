@@ -13,7 +13,7 @@ use zstd::bulk::{Compressor, Decompressor};
 use zstd::zstd_safe::CParameter;
 
 use super::tiles::{Cell, Entry, Variant};
-use omp_core::tile::{BAND_NAMES, Layer, hilbert, zoom_band};
+use omp_core::tile::{BAND_NAMES, Dictionaries, Layer, hilbert, zoom_band};
 use omp_core::varint::{len as varint_len, put as put_varint};
 
 const DICT_SIZE: usize = 64 << 10;
@@ -66,7 +66,7 @@ pub struct Output {
     pub random_read: Vec<ReadBench>,
 }
 
-fn read(file: &File, e: &Entry) -> Vec<u8> {
+pub fn read(file: &File, e: &Entry) -> Vec<u8> {
     let mut buf = vec![0; e.len as usize];
     read_at(file, &mut buf, e.offset).expect("read tile store");
     buf
@@ -130,38 +130,8 @@ fn group_of(layer: u8, t: Tile) -> GroupKey {
 pub fn run(store: &Path, entries: &[Entry], layer_names: &[String], level: i32) -> Result<Output> {
     let file = File::open(store).with_context(|| format!("open {}", store.display()))?;
 
-    // Dictionaries per (layer, band).
-    let mut groups: BTreeMap<(u8, u8), Vec<&Entry>> = BTreeMap::new();
-    for e in entries {
-        groups.entry((e.layer, zoom_band(e.z))).or_default().push(e);
-    }
-    let trained: Vec<((u8, u8), Vec<u8>, DictInfo)> = groups
-        .par_iter()
-        .map(|(&(layer, b), es)| {
-            let total: u64 = es.iter().map(|e| u64::from(e.len)).sum();
-            let step = (total as usize / TRAIN_BYTES).max(1);
-            let samples: Vec<Vec<u8>> = es.iter().step_by(step).map(|e| read(&file, e)).collect();
-            let dict = if total >= 128 << 10 && samples.len() >= 64 {
-                zstd::dict::from_samples(&samples, DICT_SIZE).unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let info = DictInfo {
-                layer: layer_names[layer as usize].clone(),
-                band: BAND_NAMES[b as usize],
-                sections: es.len() as u64,
-                section_bytes: total,
-                dict_bytes: dict.len() as u64,
-            };
-            ((layer, b), dict, info)
-        })
-        .collect();
-    let mut dicts: HashMap<(u8, u8), Vec<u8>> = HashMap::new();
-    let mut dictionaries = Vec::new();
-    for (k, d, info) in trained {
-        dicts.insert(k, d);
-        dictionaries.push(info);
-    }
+    let (dicts, dictionaries) = train(&file, entries, layer_names);
+    let dicts: HashMap<(u8, u8), Vec<u8>> = dicts.0.into_iter().collect();
 
     // Viewports to benchmark, chosen before compressing so their bytes can be kept.
     let mut nonempty: BTreeMap<u8, Vec<(u32, u32)>> = BTreeMap::new();
@@ -299,6 +269,47 @@ pub fn run(store: &Path, entries: &[Entry], layer_names: &[String], level: i32) 
         index,
         random_read,
     })
+}
+
+/// Trains one dictionary per (layer, zoom band) from the payloads in `file`, sampled evenly
+/// in `entries` order. A group too small to train on gets an empty one.
+pub fn train(
+    file: &File,
+    entries: &[Entry],
+    layer_names: &[String],
+) -> (Dictionaries, Vec<DictInfo>) {
+    let mut groups: BTreeMap<(u8, u8), Vec<&Entry>> = BTreeMap::new();
+    for e in entries {
+        groups.entry((e.layer, zoom_band(e.z))).or_default().push(e);
+    }
+    let trained: Vec<((u8, u8), Vec<u8>, DictInfo)> = groups
+        .par_iter()
+        .map(|(&(layer, b), es)| {
+            let total: u64 = es.iter().map(|e| u64::from(e.len)).sum();
+            let step = (total as usize / TRAIN_BYTES).max(1);
+            let samples: Vec<Vec<u8>> = es.iter().step_by(step).map(|e| read(file, e)).collect();
+            let dict = if total >= 128 << 10 && samples.len() >= 64 {
+                zstd::dict::from_samples(&samples, DICT_SIZE).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let info = DictInfo {
+                layer: layer_names[layer as usize].clone(),
+                band: BAND_NAMES[b as usize],
+                sections: es.len() as u64,
+                section_bytes: total,
+                dict_bytes: dict.len() as u64,
+            };
+            ((layer, b), dict, info)
+        })
+        .collect();
+    let mut dicts = BTreeMap::new();
+    let mut dictionaries = Vec::new();
+    for (k, d, info) in trained {
+        dicts.insert(k, d);
+        dictionaries.push(info);
+    }
+    (Dictionaries(dicts), dictionaries)
 }
 
 fn index_stats(entries: &[Entry], v4_len: &[u64]) -> Vec<IndexStats> {

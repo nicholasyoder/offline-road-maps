@@ -2,16 +2,16 @@
 //! cuts a z0–z14 tile pyramid, and reports feature counts, vertex counts and bytes for every
 //! layer × zoom × encoding variant, plus routing and search size estimates.
 
-mod compress;
+pub(crate) mod compress;
 pub(crate) mod encode;
 pub(crate) mod geom;
 pub(crate) mod nodes;
-mod osm;
+pub(crate) mod osm;
 pub(crate) mod poly;
 mod routing;
 mod search;
-mod tiles;
-mod water;
+pub(crate) mod tiles;
+pub(crate) mod water;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

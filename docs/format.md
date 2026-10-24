@@ -155,7 +155,7 @@ polygon    = nrings:varint  (npoints:varint (dx:zvarint dy:zvarint)*)*
 
 ### `TDIC`: dictionaries (contiguous)
 
-zstd dictionaries, one per **(layer, zoom band)** that had enough data to train on. Zoom bands are z0–7, z8–11, z12–13 and z14.
+zstd dictionaries, one per **(layer, zoom band)** that had enough data to train on (at least 128 KiB of payloads, and 64 or more sampled payloads). Zoom bands are z0–7, z8–11, z12–13 and z14. `omp-builder build` trains one set per pack, from up to about 16 MiB of payloads per dictionary sampled evenly across the whole pyramid, even when it cuts the pyramid in several passes.
 
 ```
 TDIC  = ndicts:u32  entry*  dict_bytes*
