@@ -520,6 +520,37 @@ Run after 0.3 and 0.4 have picked their candidate variants (at most two per laye
 
 ---
 
+### Water simplification (follow-up, 2026-10-24)
+
+> **Done 2026-10-24.** Water is simplified harder, and every lake and stream is kept. It is now the default: the water layer in `whitelist.toml` sets `tolerance = { z12 = 6.0, z13 = 8.0, z14 = 16.0 }`.
+>
+> **Mechanism:**
+> - A whitelist layer can set a Douglas–Peucker `tolerance` per zoom, in grid units (4096 per tile; one unit at z14 is about 0.6 m × cos(latitude), so 16 units ≈ 6.5 m in Quebec).
+> - Zooms not listed keep the defaults: 4, and 1 at z14.
+> - At z14 a ring that would collapse is simplified again at half the tolerance, down to 1, so no feature is lost to simplification.
+>
+> **Variants** (whitelists in `$OMP_WORK/whitelists/water-w*.toml`; runs with `--routing none`). W0 reproduces the 0.5 cells exactly.
+>
+> | Variant: z12 / z13 / z14 tolerance | Water V4, Quebec | Water V4, Ontario | All tiles, Quebec | All tiles, Ontario |
+> |---|---:|---:|---:|---:|
+> | W0: 4 / 4 / 1 (before) | 695 MiB | 344 MiB | 906 MiB | 579 MiB |
+> | W1: 4 / 4 / 4 | −1% | −6% | −1% | −3% |
+> | W2: 4 / 6 / 8 | −8% | −16% | −6% | −10% |
+> | **W3: 6 / 8 / 16** | **−19%** | **−28%** | **−15%** | **−17%** |
+> | W4: 8 / 16 / 32 | −33% | −41% | −25% | −24% |
+>
+> **North America with W3** (3 bands, as in 0.5):
+> - Water drops 4,739 → 3,724 MiB (−21%) and all tiles 9,456 → 8,441 MiB (−11%). V5 is 7,786 MiB and MVT + gzip 12,297 MiB.
+> - z14 water vertices drop from 841M to 455M (−46%). Bytes fall less than vertices, because the remaining deltas are longer and small features cannot shrink below a few points.
+> - Of 50.0M z14 water pieces, 641 more are dropped than at W0: degenerate clipped slivers, not lakes.
+> - **New North America total: about 12,335 MiB (12.0 GiB, 12.9 GB).**
+>
+> **Why the light settings do little:** CanVec shorelines in Quebec are already sparse, so W1 changes 1%. Ontario's OSM-traced shorelines are denser and gain more at every setting.
+>
+> **Next levers:**
+> - Land cover (2.4 GiB; woods and protected areas) could take the same treatment.
+> - Dropping the tiniest ponds at z14 is the alternative to keeping every lake.
+
 ## 0.6 Size table and `docs/format.md`
 
 ### Size table
@@ -578,8 +609,9 @@ Settled by Phase 0 data:
 11. **OSM `addr:interpolation`:** kept as ranges like TIGER, never expanded into points (2026-10-23, see 0.4).
 12. **Node locations:** needed-nodes-only, as a rank-indexed bitset with one 8-byte slot per needed node (13.9 GiB for North America's 1.62 billion). The dense index is dropped (2026-10-24, see 0.5).
 13. **OpenAddresses sources that name no license:** used. If a source is publicly available and names no license, it goes in the pack like any other and is listed in the attribution file. This keeps North America at 151.5M addresses instead of 86.8M. Revisit only if packs are ever distributed beyond personal use, since "no license" is not legally the same as public domain (2026-10-24, owner's decision).
+14. **Water simplification:** the water layer uses tolerance 6 / 8 / 16 grid units at z12 / z13 / z14 (about 6.5 m at z14). Every lake and stream is kept, and North America water is 21% smaller (2026-10-24, see the follow-up after 0.5).
 
-Still open, to be settled by Phase 0 data: the lake, stream, protected-area and `service` road cut-offs, which decide whether North America gets from about 13 GiB toward the 6–10 GB budget.
+Still open, to be settled by Phase 0 data: simplifying land cover the same way, and the protected-area and `service` road cut-offs. They decide how far North America gets from about 12 GiB toward the 6–10 GB budget.
 
 ## Out of scope for Phase 0
 

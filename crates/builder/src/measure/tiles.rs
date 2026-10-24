@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::Result;
-use omp_core::whitelist::Whitelist;
+use omp_core::whitelist::{Layer, Whitelist};
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -28,15 +28,19 @@ const SPLIT_ZOOM: u8 = 6;
 /// Clip buffer around each tile, in grid units (of 4096).
 const BUFFER: i64 = 64;
 
+/// Default DP tolerance at z14, in grid units, and the floor a collapsing ring falls back to.
+const Z14_TOLERANCE: f64 = 1.0;
+
 /// V2 thinning per zoom: (DP tolerance, min line length, min ring area), in grid units.
-/// 8 grid units are one pixel on a 512 px tile. z14 is overzoomed in the app, so it keeps
-/// more detail and drops nothing.
-fn thinning(z: u8) -> (f64, f64, f64) {
-    if z >= MAX_ZOOM {
-        (1.0, 0.0, 0.0)
+/// 8 grid units are one pixel on a 512 px tile. z14 is overzoomed in the app, so by default
+/// it keeps more detail, and it drops nothing. A layer's `tolerance` overrides the default.
+fn thinning(z: u8, layer: &Layer) -> (f64, f64, f64) {
+    let (tol, min_len, min_area) = if z >= MAX_ZOOM {
+        (Z14_TOLERANCE, 0.0, 0.0)
     } else {
         (4.0, 8.0, 256.0)
-    }
+    };
+    (layer.tolerance(z).unwrap_or(tol), min_len, min_area)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -333,12 +337,14 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
     let mut local = Stats::default();
     let mut sections: Vec<(u8, Vec<u8>)> = Vec::new();
     let mut mvt_layers = Vec::new();
-    let (tol, min_len, min_area) = thinning(z);
+    // z14 drops nothing: rings that collapse are simplified again, down to the default.
+    let floor = (z >= MAX_ZOOM).then_some(Z14_TOLERANCE);
     for (li, frags) in by_layer.iter().enumerate() {
         if frags.is_empty() {
             continue;
         }
         let layer = &ctx.wl.layers[li];
+        let (tol, min_len, min_area) = thinning(z, layer);
         let li = li as u8;
         let class_names: Vec<String> = layer.classes.iter().map(|c| c.name.clone()).collect();
 
@@ -384,7 +390,7 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
         let v2: Vec<Enc> = v1
             .into_iter()
             .filter_map(|e| {
-                encode::simplify(e.geom, tol, min_len, min_area).map(|g| Enc {
+                encode::simplify(e.geom, tol, min_len, min_area, floor).map(|g| Enc {
                     class: e.class,
                     props: e.props,
                     geom: g,

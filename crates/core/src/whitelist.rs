@@ -22,6 +22,10 @@ pub struct Layer {
     pub geometry: GeometryKind,
     pub from: Vec<ElementType>,
     pub props: Vec<String>,
+    /// Douglas–Peucker tolerance per zoom (`z0`..`z14`), in tile grid units; zooms not
+    /// listed use the builder's default.
+    #[serde(default)]
+    pub tolerance: BTreeMap<String, f64>,
     pub classes: Vec<Class>,
 }
 
@@ -79,7 +83,19 @@ pub enum ElementType {
 
 impl Whitelist {
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(text)
+        let wl: Self = toml::from_str(text)?;
+        for l in &wl.layers {
+            for (k, v) in &l.tolerance {
+                let zoom = k.strip_prefix('z').and_then(|z| z.parse::<u8>().ok());
+                if !zoom.is_some_and(|z| z <= 14) || !(v.is_finite() && *v >= 0.0) {
+                    return Err(serde::de::Error::custom(format!(
+                        "layer {}: bad tolerance {k} = {v} (keys are z0..z14, values >= 0)",
+                        l.name
+                    )));
+                }
+            }
+        }
+        Ok(wl)
     }
 
     pub fn layer_index(&self, name: &str) -> Option<usize> {
@@ -101,6 +117,11 @@ impl Whitelist {
 }
 
 impl Layer {
+    /// The Douglas–Peucker tolerance this layer sets for zoom `z`, if any.
+    pub fn tolerance(&self, z: u8) -> Option<f64> {
+        self.tolerance.get(&format!("z{z}")).copied()
+    }
+
     /// The first class whose conditions hold for `tags`.
     pub fn classify(&self, tags: &[(&str, &str)]) -> Option<usize> {
         self.classes.iter().position(|c| c.matches(tags))
@@ -127,6 +148,25 @@ impl Class {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layer_tolerance() {
+        let layer = |tol: &str| {
+            format!(
+                "version = 1\n[[layer]]\nname = \"water\"\ngeometry = \"area\"\nfrom = [\"way\"]\n\
+                 props = []\ntolerance = {tol}\nclasses = [{{ name = \"lake\", minzoom = 6 }}]\n"
+            )
+        };
+        let wl = Whitelist::parse(&layer("{ z13 = 6.0, z14 = 4 }")).unwrap();
+        assert_eq!(wl.layers[0].tolerance(14), Some(4.0));
+        assert_eq!(wl.layers[0].tolerance(12), None);
+        assert!(Whitelist::parse(&layer("{ z15 = 1.0 }")).is_err());
+        assert!(Whitelist::parse(&layer("{ z14 = -1.0 }")).is_err());
+        assert_eq!(
+            Whitelist::parse(DEFAULT).unwrap().layers[0].tolerance(14),
+            None
+        );
+    }
 
     #[test]
     fn default_parses_and_classifies() {

@@ -12,6 +12,10 @@
 #   tile    false = counted in the report but not put in tiles (searched or routed only);
 #   geometry overrides the layer default;
 #   external true = never matched against OSM tags; the builder fills it from another source.
+# A layer may set `tolerance = { z13 = 6.0, z14 = 4.0 }`: the simplification tolerance per
+# zoom, in tile grid units (4096 per tile; 8 per pixel on a 512 px tile). Zooms not listed
+# use 4, or 1 at z14. At z14 a ring that would collapse is simplified again at a smaller
+# tolerance, so no feature disappears there.
 # Point layers turn ways and relations into a single point (area centroid).
 # The `boundaries` layer is special: classes match administrative relations, and their
 # member ways become lines carrying the lowest admin level.
@@ -70,6 +74,9 @@ name = "water"
 geometry = "area"
 from = ["way", "relation"]
 props = ["name"]
+# Simplified harder than other layers: at most about 6.5 m off at z14, every lake and
+# stream kept. Cuts North America water by 21% (phase 0.5 experiment).
+tolerance = { z12 = 6.0, z13 = 8.0, z14 = 16.0 }
 classes = [
   # Ocean polygons come from osmdata.openstreetmap.de, not from OSM tags.
   { name = "ocean", external = true, minzoom = 0 },

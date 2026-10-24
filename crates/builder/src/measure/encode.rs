@@ -86,7 +86,16 @@ pub fn quantize(g: &Geometry, z: u8, x: u32, y: u32) -> Option<LocalGeom> {
 
 /// V2 thinning: Douglas–Peucker with `tolerance` grid units, then drop lines shorter than
 /// `min_len` and rings smaller than `min_area` (both 0 to keep everything).
-pub fn simplify(g: LocalGeom, tolerance: f64, min_len: f64, min_area: f64) -> Option<LocalGeom> {
+///
+/// With `floor`, a ring that would collapse (fewer than 3 points, or no area) is simplified
+/// again at half the tolerance, down to `floor`, so small areas keep a shape.
+pub fn simplify(
+    g: LocalGeom,
+    tolerance: f64,
+    min_len: f64,
+    min_area: f64,
+    floor: Option<f64>,
+) -> Option<LocalGeom> {
     match g {
         LocalGeom::Point(_) => Some(g),
         LocalGeom::Lines(parts) => {
@@ -102,9 +111,19 @@ pub fn simplify(g: LocalGeom, tolerance: f64, min_len: f64, min_area: f64) -> Op
                 .into_iter()
                 .filter_map(|mut r| {
                     r.push(r[0]);
-                    let mut s = geom::simplify(&r, tolerance);
+                    let ok =
+                        |s: &[L]| s.len() >= 3 && geom::ring_area(s).abs() >= min_area.max(0.5);
+                    let mut tol = tolerance;
+                    let mut s = geom::simplify(&r, tol);
+                    while let Some(f) = floor
+                        && tol > f
+                        && !ok(&s[..s.len() - 1])
+                    {
+                        tol = (tol / 2.0).max(f);
+                        s = geom::simplify(&r, tol);
+                    }
                     s.pop();
-                    (s.len() >= 3 && geom::ring_area(&s).abs() >= min_area.max(0.5)).then_some(s)
+                    ok(&s).then_some(s)
                 })
                 .collect();
             v.iter()
@@ -510,8 +529,23 @@ mod tests {
         let g = Geometry::Lines(vec![vec![[0, 0], [10, 0], [64 * 100, 64], [64 * 200, 0]]]);
         let q = quantize(&g, 14, 0, 0).unwrap();
         assert_eq!(q, LocalGeom::Lines(vec![vec![[0, 0], [100, 1], [200, 0]]]));
-        let s = simplify(q, 2.0, 0.0, 0.0).unwrap();
+        let s = simplify(q, 2.0, 0.0, 0.0, None).unwrap();
         assert_eq!(s, LocalGeom::Lines(vec![vec![[0, 0], [200, 0]]]));
-        assert!(simplify(s, 2.0, 500.0, 0.0).is_none());
+        assert!(simplify(s, 2.0, 500.0, 0.0, None).is_none());
+    }
+
+    #[test]
+    fn small_rings_survive_with_a_floor() {
+        let pond = || LocalGeom::Polygon(vec![vec![[0, 0], [4, 0], [4, 4], [0, 4]]]);
+        assert!(simplify(pond(), 16.0, 0.0, 0.0, None).is_none());
+        let kept = simplify(pond(), 16.0, 0.0, 0.0, Some(1.0)).unwrap();
+        assert_eq!(kept, pond());
+        // A larger ring is simplified at the full tolerance.
+        let lake = LocalGeom::Polygon(vec![vec![[0, 0], [50, 1], [100, 0], [100, 100], [0, 100]]]);
+        let s = simplify(lake, 16.0, 0.0, 0.0, Some(1.0)).unwrap();
+        assert_eq!(
+            s,
+            LocalGeom::Polygon(vec![vec![[0, 0], [100, 0], [100, 100], [0, 100]]])
+        );
     }
 }

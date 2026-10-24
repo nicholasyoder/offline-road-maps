@@ -71,11 +71,11 @@ Leaving out buildings, paths and walking/bike data removes most of the bulk. Hou
 
 | Layer | North America | Planet (stretch) |
 |---|---|---|
-| Rendering tiles: no buildings or paths, zoom 14 max, simplified, custom encoding plus zstd dictionaries | 3–5 GB estimated; **9.2 GiB measured** (phase 0.5, V4). Water is half of it: lakes and streams are 40% of z14 bytes. | 15–25 GB |
+| Rendering tiles: no buildings or paths, zoom 14 max, simplified, custom encoding plus zstd dictionaries | 3–5 GB estimated; **9.2 GiB measured** (phase 0.5, V4), **8.2 GiB** with water simplified to about 6.5 m at z14 (every lake kept). Water is still the largest layer (3.6 GiB), then land cover (2.4) and roads (2.0). | 15–25 GB |
 | Car routing graph (contraction hierarchy) | 1–1.5 GB estimated; **about 3.2 GiB** from the measured graph (62.5M nodes, 150M edges) at the regional CH-to-graph ratio | 3–6 GB |
 | Search: places, streets, POIs | about 0.5 GB estimated; **0.25 GiB or less** measured (no admin hierarchy yet) | 2–4 GB |
 | **House-number addresses** (about 150–200M points in North America after merging) | 1.5–3 GB estimated; **0.36 GiB measured** for 151.5M merged addresses (2.18 B each, plus 50 MiB of US TIGER ranges; street names are counted under search). Without OpenAddresses sources that name no license: 86.8M. | 6–15 GB (depends on open data elsewhere) |
-| **Total** | **about 6–10 GB** targeted; **about 13 GiB measured** before any cut-offs for lakes, streams, protected areas and `service` roads | **about 30–50 GB** — well under the 100 GB stretch target |
+| **Total** | **about 6–10 GB** targeted; **about 12.0 GiB measured** with water simplified; land cover, protected areas and `service` roads are the next levers | **about 30–50 GB** — well under the 100 GB stretch target |
 
 Addresses are stored grouped by street rather than as standalone points. Each street keeps a sorted run of `(house number, offset along the street)` pairs, delta-encoded. This should come to only a few bytes per address instead of a full coordinate and name each time. That grouping is the main reason the address budget is feasible. Measured in phase 0 (A3, with zstd over blocks of streets): 1.9–2.0 bytes per address, units and unattached points included.
 
