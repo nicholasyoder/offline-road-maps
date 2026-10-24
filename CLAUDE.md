@@ -13,5 +13,5 @@ Offline road map app for North America (Rust: `omp-core`, `omp-builder`, `omp-ap
 ## Environment
 
 - Builder data goes in `$OMP_WORK=/media/nicholas/Data/maps-testing` (exFAT). If it isn't mounted, run `udisksctl mount -b /dev/sda1`. Keep `target/` and executables on `/`. See the Environment notes in the phase 0 plan.
-- Default branch is `master`. To push, use `git -c credential.helper= -c credential.helper='!gh auth git-credential' push origin master`; plain HTTPS has no stored credentials.
+- After committing, always push to `master` right away; no need to ask first. Default branch is `master`. To push, use `git -c credential.helper= -c credential.helper='!gh auth git-credential' push origin master`; plain HTTPS has no stored credentials.
 - Before committing, run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`; these are what CI runs.
