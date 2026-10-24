@@ -93,6 +93,9 @@ name = "landcover"
 geometry = "area"
 from = ["way", "relation"]
 props = ["name"]
+# Simplified like water: every wood, park and protected area kept. Cuts land cover by
+# 18–20% in Quebec and Ontario (phase 0.6 experiment).
+tolerance = { z12 = 6.0, z13 = 8.0, z14 = 16.0 }
 classes = [
   { name = "forest", tags = { landuse = "forest" }, minzoom = 7 },
   { name = "wood", tags = { natural = "wood" }, minzoom = 7 },

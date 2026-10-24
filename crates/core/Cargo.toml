@@ -10,6 +10,10 @@ repository.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
 unicode-normalization = "0.1.26"
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

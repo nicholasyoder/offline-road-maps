@@ -65,19 +65,21 @@ Everything else is unmaintained, server-based (Dawarich Atlas), Windows-only (Ma
 
 The builder **deduplicates** across sources, matching on normalized street, house number and a distance threshold (250 m on the same street, from phase 0). OSM wins when sources conflict. Each address keeps a 1-bit "source" flag so the app can show where it came from. OSM `addr:interpolation` ways are kept as ranges, like TIGER.
 
-## 4. Size budget (estimates, and Phase 0 measurements)
+## 4. Size budget (measured in Phase 0)
 
-Leaving out buildings, paths and walking/bike data removes most of the bulk. House numbers add some back.
+Leaving out buildings, paths and walking/bike data removes most of the bulk. House numbers add some back. The full table, with Ohio, Ontario, Quebec and the CoMaps comparison, is in [size-table.md](size-table.md).
 
-| Layer | North America | Planet (stretch) |
-|---|---|---|
-| Rendering tiles: no buildings or paths, zoom 14 max, simplified, custom encoding plus zstd dictionaries | 3–5 GB estimated; **9.2 GiB measured** (phase 0.5, V4), **8.2 GiB** with water simplified to about 6.5 m at z14 (every lake kept). Water is still the largest layer (3.6 GiB), then land cover (2.4) and roads (2.0). | 15–25 GB |
-| Car routing graph (contraction hierarchy) | 1–1.5 GB estimated; **about 3.2 GiB** from the measured graph (62.5M nodes, 150M edges) at the regional CH-to-graph ratio | 3–6 GB |
-| Search: places, streets, POIs | about 0.5 GB estimated; **0.25 GiB or less** measured (no admin hierarchy yet) | 2–4 GB |
-| **House-number addresses** (about 150–200M points in North America after merging) | 1.5–3 GB estimated; **0.36 GiB measured** for 151.5M merged addresses (2.18 B each, plus 50 MiB of US TIGER ranges; street names are counted under search). Without OpenAddresses sources that name no license: 86.8M. | 6–15 GB (depends on open data elsewhere) |
-| **Total** | **about 6–10 GB** targeted; **about 12.0 GiB measured** with water simplified; land cover, protected areas and `service` roads are the next levers | **about 30–50 GB** — well under the 100 GB stretch target |
+| Layer | Estimate before Phase 0 | **North America, measured** | Planet (extrapolated) |
+|---|---|---|---|
+| Rendering tiles: no buildings or paths, zoom 14 max, simplified, custom encoding plus zstd dictionaries | 3–5 GB | **7.8 GiB** with the index (V4). Water 3.6 GiB, land cover 2.0, roads 1.9. Water and land cover are simplified to about 6.5 m at z14, with every lake, wood and park kept; driveways are left out. | about 38 GiB |
+| Car routing graph (contraction hierarchy) | 1–1.5 GB | **about 3.2 GiB**, estimated from the measured graph (62.5M nodes, 150M edges) at the regional CH-to-graph ratio | about 16 GiB |
+| Search: places, streets, POIs | about 0.5 GB | **0.25 GiB or less** (no admin hierarchy yet) | about 1.2 GiB |
+| **House-number addresses** | 1.5–3 GB | **0.36 GiB** for 151.5M merged addresses (2.18 B each, plus 50 MiB of US TIGER ranges; street names are counted under search). Without OpenAddresses sources that name no license: 86.8M. | depends on open data elsewhere |
+| **Total** | 6–10 GB targeted | **11.6 GiB (12.5 GB)**, about 0.54× CoMaps' maps of the same area | **about 50–57 GiB**, well under the 100 GB stretch target |
 
-Addresses are stored grouped by street rather than as standalone points. Each street keeps a sorted run of `(house number, offset along the street)` pairs, delta-encoded. This should come to only a few bytes per address instead of a full coordinate and name each time. That grouping is the main reason the address budget is feasible. Measured in phase 0 (A3, with zstd over blocks of streets): 1.9–2.0 bytes per address, units and unattached points included.
+The total is over the original 6–10 GB target and under Phase 0's 15 GB stop line. About 12 GiB is workable (it fits a 16 GB drive), so scope stays as it is. The levers left, if size matters later, are the CH layout (Phase 3), the smallest ponds and streams, and V5 tile groups (8% smaller tiles, at about 2.5× the bytes read per viewport).
+
+Addresses are stored grouped by street rather than as standalone points. Each street keeps a sorted run of `(house number, offset along the street)` pairs, delta-encoded. This should come to only a few bytes per address instead of a full coordinate and name each time. That grouping is the main reason the address budget is feasible. Measured in phase 0 (A3, with zstd over blocks of streets): 1.9–2.0 bytes per address in the test regions and 2.18 for North America, units and unattached points included. The layout is in [format.md](format.md#addresses).
 
 ## 5. Key technical decisions
 
@@ -86,7 +88,7 @@ Addresses are stored grouped by street rather than as standalone points. Each st
 | Language | **Rust**, as a Cargo workspace with `core`, `builder` and `app` crates. | `core` holds the format reader and writer and the shared algorithms, so the builder and the app can never disagree about the format. |
 | Rendering | A custom 2D vector renderer: `wgpu` with `lyon` to turn shapes into triangles, plus a glyph atlas. Text uses `cosmic-text`/`rustybuzz`. | Fallback if this stalls: convert to standard map tiles (MVT) and use MapLibre Native. |
 | UI | egui/eframe. | It is tiny and lets the map be drawn inside the UI. Could move to Slint later for polish. |
-| Container | One region pack is a header plus memory-mappable sections: tiles, routing, search, addresses and metadata. It is split into **chunks under 4 GB** for FAT32. | Tiles are ordered along a Hilbert curve, which keeps nearby tiles together on disk so reads stay fast on slow USB drives. The OS page cache does the caching. |
+| Container | One region pack is a header plus memory-mappable sections: tiles, routing, search, addresses and metadata. It is split into **chunks under 4 GB** for FAT32. Specified in [format.md](format.md). | Tiles are ordered along a Hilbert curve, which keeps nearby tiles together on disk so reads stay fast on slow USB drives. The OS page cache does the caching. |
 | Routing | **Contraction hierarchies, car profile only**, built in the builder. | Covers one-ways, turn restrictions, speed by road class and `maxspeed`, and avoiding tolls, ferries and highways (these flags are built into the graph). User-drawn "avoid this area" may later need Multi-Level Dijkstra or customizable routing instead. |
 | Search | An `fst` index over normalized tokens, an admin-boundary hierarchy for "123 Main St, Springfield, IL", and a spatial grid for reverse lookup. | Normalizes US and Canadian street suffixes and directions ("St" = "Street", "N" = "North"). Handles French for Quebec. |
 | Builder | Reads OSM data as a stream and keeps the locations of needed nodes only, in a rank-indexed bitset with 8 bytes per node (13.9 GiB for North America). Includes a `fetch` subcommand for Geofabrik, OpenAddresses, TIGER and StatCan. | The target is building North America on a 16–32 GB RAM desktop, and the planet may need 64 GB. Phase 0 peaks at 43 GB for North America, in 3 bands (one pass needs over 56 GB). Reaching the target needs features spilled to disk by tile. |
@@ -97,11 +99,11 @@ Addresses are stored grouped by street rather than as standalone points. Each st
 ### Phase 0: Measure and prototype
 Detailed plan: [phase0-plan.md](phase0-plan.md).
 
-- [ ] Set up the Cargo workspace, plus CI cross-builds for Windows and Linux.
-- [ ] Choose test regions: one US state (for example Ohio), one Canadian province, then all of North America.
-- [ ] Builder spike: read the PBF, apply a car-relevant tag whitelist, and measure size per layer with a few encoding variants.
-- [ ] Address spike: merge OSM, OpenAddresses and TIGER for the test state. Measure coverage gained and bytes per address.
-- [ ] **Exit criterion:** a confirmed size table and `docs/format.md` describing the file format.
+- [x] Set up the Cargo workspace, plus CI cross-builds for Windows and Linux.
+- [x] Choose test regions: one US state (for example Ohio), one Canadian province, then all of North America.
+- [x] Builder spike: read the PBF, apply a car-relevant tag whitelist, and measure size per layer with a few encoding variants.
+- [x] Address spike: merge OSM, OpenAddresses and TIGER for the test state. Measure coverage gained and bytes per address.
+- [x] **Exit criterion:** a confirmed size table and `docs/format.md` describing the file format. Done 2026-10-24: [size-table.md](size-table.md), [format.md](format.md).
 
 ### Phase 1: Map viewer MVP
 - [ ] Builder: simplify geometry per zoom level, compute label points, and write the pack.

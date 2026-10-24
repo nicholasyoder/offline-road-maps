@@ -21,6 +21,28 @@ pub struct ReportArgs {
     /// With `--sum`, also write the summed run here, to report it next to other runs.
     #[arg(long, requires = "sum")]
     sum_json: Option<PathBuf>,
+
+    /// Print only the headline size table: one column per `measure` region, with totals.
+    #[arg(long)]
+    size_table: bool,
+
+    /// With `--size-table`: the `addr-spike` JSON (e.g. from `--sum-json`) for a region.
+    #[arg(long, value_name = "REGION=FILE", requires = "size_table")]
+    addr: Vec<String>,
+
+    /// With `--size-table`: extrapolate a planet column from REGION by the planet PBF's size
+    /// over REGION's.
+    #[arg(long, value_name = "REGION=BYTES", requires = "size_table")]
+    planet: Option<String>,
+
+    /// With `--size-table`: CoMaps `countries.txt`, to compare with its `.mwm` sizes.
+    #[arg(long, requires = "size_table")]
+    comaps: Option<PathBuf>,
+
+    /// With `--comaps`: the CoMaps groups or maps that cover a region (`planet` for the
+    /// planet column); a leading `-` subtracts one, e.g. `quebec=Canada_Quebec`.
+    #[arg(long, value_name = "REGION=ID,ID,-ID", requires = "comaps")]
+    comaps_ids: Vec<String>,
 }
 
 const VARIANTS: [&str; 6] = ["v0", "v1", "v2", "v3", "v4", "v5"];
@@ -62,6 +84,10 @@ pub fn run(args: ReportArgs) -> Result<()> {
     }
     anyhow::ensure!(args.sum.is_none(), "--sum only applies to addr-spike runs");
     let runs = merge_bands(runs)?;
+    if args.size_table {
+        print!("{}", size_table(&runs, &args)?);
+        return Ok(());
+    }
     let names: Vec<String> = runs
         .iter()
         .map(|r| {
@@ -216,15 +242,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
     row(&mut out, "Graph edges", &|r| {
         format!("{:.0}", num(&r["routing"]["edges"]))
     });
-    let has_ch = |r: &Value| r["routing"]["ch_edges"].is_number();
-    // For runs that only counted the graph (`--routing graph`), the CH is estimated from the
-    // mean CH-edges-per-edge ratio of the runs that built one.
-    let ratios: Vec<f64> = runs
-        .iter()
-        .filter(|r| has_ch(r))
-        .map(|r| num(&r["routing"]["ch_edges"]) / num(&r["routing"]["edges"]).max(1.0))
-        .collect();
-    let ratio = (!ratios.is_empty()).then(|| ratios.iter().sum::<f64>() / ratios.len() as f64);
+    let ratio = ch_ratio(&runs);
     row(&mut out, "CH prepare (s)", &|r| {
         if has_ch(r) {
             format!("{:.0}", num(&r["routing"]["ch_prepare_s"]))
@@ -232,17 +250,19 @@ pub fn run(args: ReportArgs) -> Result<()> {
             "–".into()
         }
     });
-    row(&mut out, "CH, compact layout (MiB)", &|r| {
-        let g = &r["routing"];
-        match ratio {
-            _ if has_ch(r) => mib(num(&g["ch_bytes_compact"])),
-            Some(k) if g["edges"].is_number() => format!(
-                "~{} (est., {k:.2} CH edges per edge)",
-                mib(num(&g["edges"]) * k * 12.0 + num(&g["nodes"]) * 12.0)
+    row(
+        &mut out,
+        "CH, compact layout (MiB)",
+        &|r| match ch_bytes(r, ratio) {
+            Some((b, false)) => mib(b),
+            Some((b, true)) => format!(
+                "~{} (est., {:.2} CH edges per edge)",
+                mib(b),
+                ratio.unwrap_or_default()
             ),
-            _ => "–".into(),
-        }
-    });
+            None => "–".into(),
+        },
+    );
     row(&mut out, "Search fst (MiB)", &|r| {
         mib(num(&r["search"]["fst_bytes"]))
     });
@@ -254,6 +274,294 @@ pub fn run(args: ReportArgs) -> Result<()> {
     });
     print!("{out}");
     Ok(())
+}
+
+fn has_ch(r: &Value) -> bool {
+    r["routing"]["ch_edges"].is_number()
+}
+
+/// The mean CH-edges-per-edge ratio of the runs that built a CH.
+fn ch_ratio(runs: &[Value]) -> Option<f64> {
+    let ratios: Vec<f64> = runs
+        .iter()
+        .filter(|r| has_ch(r))
+        .map(|r| num(&r["routing"]["ch_edges"]) / num(&r["routing"]["edges"]).max(1.0))
+        .collect();
+    (!ratios.is_empty()).then(|| ratios.iter().sum::<f64>() / ratios.len() as f64)
+}
+
+/// CH bytes in the compact layout, and whether they are estimated: runs that only counted
+/// the graph (`--routing graph`) are estimated from `ratio` (12 bytes per node and per edge).
+fn ch_bytes(r: &Value, ratio: Option<f64>) -> Option<(f64, bool)> {
+    let g = &r["routing"];
+    match ratio {
+        _ if has_ch(r) => Some((num(&g["ch_bytes_compact"]), false)),
+        Some(k) if g["edges"].is_number() => {
+            Some(((num(&g["edges"]) * k + num(&g["nodes"])) * 12.0, true))
+        }
+        _ => None,
+    }
+}
+
+/// The headline sizes of one region, in bytes (graph and address sizes in counts).
+#[derive(Clone, Default)]
+struct Sizes {
+    tiles: f64,
+    water: f64,
+    landcover: f64,
+    roads: f64,
+    tile_index: f64,
+    nodes: f64,
+    edges: f64,
+    ch: Option<f64>,
+    ch_estimated: bool,
+    search: f64,
+    addresses: Option<f64>,
+    a3: Option<f64>,
+    tiger: Option<f64>,
+}
+
+impl Sizes {
+    fn total(&self) -> f64 {
+        self.tiles
+            + self.tile_index
+            + self.ch.unwrap_or(0.0)
+            + self.search
+            + self.a3.unwrap_or(0.0)
+            + self.tiger.unwrap_or(0.0)
+    }
+
+    fn scaled(&self, k: f64) -> Self {
+        let m = |v: Option<f64>| v.map(|v| v * k);
+        Self {
+            tiles: self.tiles * k,
+            water: self.water * k,
+            landcover: self.landcover * k,
+            roads: self.roads * k,
+            tile_index: self.tile_index * k,
+            nodes: self.nodes * k,
+            edges: self.edges * k,
+            ch: m(self.ch),
+            ch_estimated: true,
+            search: self.search * k,
+            addresses: m(self.addresses),
+            a3: m(self.a3),
+            tiger: m(self.tiger),
+        }
+    }
+}
+
+/// Splits `REGION=VALUE`.
+fn region_arg(s: &str) -> Result<(&str, &str)> {
+    s.split_once('=')
+        .with_context(|| format!("expected REGION=VALUE, got {s:?}"))
+}
+
+/// Sums the `.mwm` sizes under `ids` in CoMaps' `countries.txt` tree (`-ID` subtracts).
+fn comaps_bytes(tree: &Value, ids: &str) -> Result<f64> {
+    fn total(n: &Value) -> f64 {
+        num(&n["s"])
+            + n["g"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(total)
+                .sum::<f64>()
+    }
+    fn find<'a>(n: &'a Value, id: &str) -> Option<&'a Value> {
+        if n["id"] == id {
+            return Some(n);
+        }
+        n["g"].as_array()?.iter().find_map(|c| find(c, id))
+    }
+    let mut sum = 0.0;
+    for id in ids.split(',') {
+        let (sign, id) = id.strip_prefix('-').map_or((1.0, id), |i| (-1.0, i));
+        let n = find(tree, id).with_context(|| format!("CoMaps id {id:?} not found"))?;
+        sum += sign * total(n);
+    }
+    Ok(sum)
+}
+
+/// The headline table: tiles, routing, search and addresses per region, their total, a
+/// planet extrapolation and the CoMaps maps that cover the same ground.
+fn size_table(runs: &[Value], args: &ReportArgs) -> Result<String> {
+    let region = |r: &Value| r["region"].as_str().unwrap_or("?").to_owned();
+    let mut addr = BTreeMap::new();
+    for a in &args.addr {
+        let (name, path) = region_arg(a)?;
+        let text = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
+        let v: Value = serde_json::from_str(&text).with_context(|| format!("parse {path}"))?;
+        anyhow::ensure!(v["kind"] == "addr", "{path}: not an addr-spike run");
+        addr.insert(name.to_owned(), v);
+    }
+    let ratio = ch_ratio(runs);
+    let mut cols: Vec<(String, Sizes)> = runs
+        .iter()
+        .map(|r| {
+            let layer = |l: &str| {
+                r["cells"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|c| c["variant"] == MAIN && (l.is_empty() || c["layer"] == l))
+                    .map(|c| num(&c["bytes"]))
+                    .sum::<f64>()
+            };
+            let s = &r["search"];
+            let a = addr.get(&region(r));
+            let a3 = a.and_then(|a| find(&a["encoding"]["variants"], "variant", &"a3".into()));
+            let tiger = a.and_then(|a| find(&a["encoding"]["ranges"], "source", &"tiger".into()));
+            let ch = ch_bytes(r, ratio);
+            let sizes = Sizes {
+                tiles: layer(""),
+                water: layer("water"),
+                landcover: layer("landcover"),
+                roads: layer("roads"),
+                tile_index: r["tile_index"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|z| num(&z["sparse_bytes"]))
+                    .sum(),
+                nodes: num(&r["routing"]["nodes"]),
+                edges: num(&r["routing"]["edges"]),
+                ch: ch.map(|c| c.0),
+                ch_estimated: ch.is_some_and(|c| c.1),
+                search: num(&s["fst_bytes"]) + num(&s["postings_bytes"]) + num(&s["entries_bytes"]),
+                addresses: a.map(|a| num(&a["encoding"]["addresses"])),
+                a3: a3.map(|x| num(&x["total"])),
+                tiger: tiger.map(|x| num(&x["zstd"])),
+            };
+            (region(r), sizes)
+        })
+        .collect();
+    for name in addr.keys() {
+        anyhow::ensure!(
+            cols.iter().any(|c| &c.0 == name),
+            "--addr {name}: no such region"
+        );
+    }
+    if let Some(p) = &args.planet {
+        let (name, bytes) = region_arg(p)?;
+        let bytes: f64 = bytes.parse().context("--planet: bytes")?;
+        let base = runs
+            .iter()
+            .position(|r| region(r) == name)
+            .with_context(|| format!("--planet {name}: no such region"))?;
+        let k = bytes / num(&runs[base]["input_bytes"]).max(1.0);
+        cols.push(("planet".into(), cols[base].1.scaled(k)));
+    }
+    let comaps: Option<Vec<Option<f64>>> = match &args.comaps {
+        None => None,
+        Some(p) => {
+            let text =
+                std::fs::read_to_string(p).with_context(|| format!("read {}", p.display()))?;
+            let tree: Value = serde_json::from_str(&text).context("parse countries.txt")?;
+            let mut ids = BTreeMap::new();
+            for a in &args.comaps_ids {
+                let (name, list) = region_arg(a)?;
+                ids.insert(name, list);
+            }
+            let sizes = cols
+                .iter()
+                .map(|(name, _)| ids.get(name.as_str()).map(|i| comaps_bytes(&tree, i)))
+                .map(Option::transpose)
+                .collect::<Result<_>>()?;
+            Some(sizes)
+        }
+    };
+
+    let mut out = String::new();
+    let _ = write!(out, "| Layer |");
+    for (name, _) in &cols {
+        let name = if name == "planet" {
+            "planet (extrapolated)"
+        } else {
+            name
+        };
+        let _ = write!(out, " {name} |");
+    }
+    let _ = write!(out, "\n|---|");
+    for _ in &cols {
+        out.push_str("---:|");
+    }
+    out.push('\n');
+    let dash = || "–".to_owned();
+    let big = |b: f64| {
+        let m = b / f64::from(1 << 20);
+        if m >= 1000.0 {
+            count(&Value::from(m.round() as u64))
+        } else {
+            mib(b)
+        }
+    };
+    let millions = |n: f64| format!("{:.1}M", n / 1e6);
+    let mut row = |label: &str, f: &dyn Fn(&Sizes) -> String| {
+        let _ = write!(out, "| {label} |");
+        for (_, s) in &cols {
+            let _ = write!(out, " {} |", f(s));
+        }
+        out.push('\n');
+    };
+    row(&format!("Tiles {} (MiB)", MAIN.to_uppercase()), &|s| {
+        big(s.tiles)
+    });
+    row("— water / landcover / roads", &|s| {
+        format!("{} / {} / {}", big(s.water), big(s.landcover), big(s.roads))
+    });
+    row("— other layers", &|s| {
+        big(s.tiles - s.water - s.landcover - s.roads)
+    });
+    row("Tile index, sparse (MiB)", &|s| big(s.tile_index));
+    row("Routing graph nodes / edges", &|s| {
+        format!("{} / {}", millions(s.nodes), millions(s.edges))
+    });
+    row("CH, compact layout (MiB)", &|s| {
+        s.ch.map_or_else(dash, |c| {
+            format!("{}{}", if s.ch_estimated { "~" } else { "" }, big(c))
+        })
+    });
+    row("Search: fst + postings + entries (MiB)", &|s| big(s.search));
+    row("Addresses", &|s| s.addresses.map_or_else(dash, millions));
+    row(
+        "Addresses A3 + TIGER fallback ranges (MiB)",
+        &|s| match (s.a3, s.tiger) {
+            (None, None) => dash(),
+            (a, t) => format!(
+                "{} + {}",
+                a.map_or_else(dash, big),
+                t.map_or_else(dash, big)
+            ),
+        },
+    );
+    row("**Total (MiB)**", &|s| format!("**{}**", big(s.total())));
+    row("Total (GiB / GB)", &|s| {
+        format!(
+            "{:.1} / {:.1}",
+            s.total() / f64::from(1 << 30),
+            s.total() / 1e9
+        )
+    });
+    if let Some(comaps) = &comaps {
+        let _ = write!(out, "| CoMaps `.mwm` files (MiB) |");
+        for c in comaps {
+            let _ = write!(out, " {} |", c.map_or_else(dash, big));
+        }
+        let _ = write!(out, "\n| Total / CoMaps |");
+        for (c, (_, s)) in comaps.iter().zip(&cols) {
+            let _ = write!(
+                out,
+                " {} |",
+                c.map_or_else(dash, |c| format!("{:.2}", s.total() / c))
+            );
+        }
+        out.push('\n');
+    }
+    if let Some(k) = ratio {
+        let _ = writeln!(out, "\n~ CH estimated at {k:.2} CH edges per graph edge.");
+    }
+    Ok(out)
 }
 
 /// 1234567 → "1,234,567".
@@ -732,5 +1040,29 @@ mod tests {
         assert_eq!(m["read"]["nodes"], 10);
         assert_eq!(m["build"]["peak_rss_mib"], 6.0);
         assert!(merge_bands(vec![band(1, 7)]).is_err());
+    }
+
+    #[test]
+    fn sums_comaps_maps() {
+        let tree = serde_json::json!({"id": "Countries", "g": [
+            {"id": "US", "g": [{"id": "Ohio", "s": 10}, {"id": "US_Guam", "s": 2}]},
+            {"id": "Canada", "g": [{"id": "Canada_Quebec", "g": [{"id": "Q1", "s": 5}]}]}
+        ]});
+        assert_eq!(comaps_bytes(&tree, "Countries").unwrap(), 17.0);
+        assert_eq!(comaps_bytes(&tree, "US,-US_Guam,Canada").unwrap(), 15.0);
+        assert_eq!(comaps_bytes(&tree, "Canada_Quebec").unwrap(), 5.0);
+        assert!(comaps_bytes(&tree, "Mexico").is_err());
+    }
+
+    #[test]
+    fn estimates_ch_from_regional_ratio() {
+        let built = serde_json::json!({"routing": {"nodes": 10, "edges": 100,
+            "ch_edges": 150, "ch_bytes_compact": 2000}});
+        let graph = serde_json::json!({"routing": {"nodes": 10, "edges": 200}});
+        let k = ch_ratio(&[built.clone(), graph.clone()]);
+        assert_eq!(k, Some(1.5));
+        assert_eq!(ch_bytes(&built, k), Some((2000.0, false)));
+        assert_eq!(ch_bytes(&graph, k), Some(((300.0 + 10.0) * 12.0, true)));
+        assert_eq!(ch_bytes(&graph, None), None);
     }
 }
