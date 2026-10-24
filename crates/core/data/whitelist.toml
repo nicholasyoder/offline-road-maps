@@ -44,8 +44,8 @@ classes = [
   # `service` is split by subtag so its size can be measured with and without each kind.
   { name = "service", tags = { highway = "service" }, absent = ["service"], minzoom = 13 },
   { name = "service_alley", tags = { highway = "service", service = "alley" }, minzoom = 14 },
-  # Driveways are left out of tiles: they add the most clutter for the least use (phase 0.6).
-  { name = "service_driveway", tags = { highway = "service", service = "driveway" }, minzoom = 14, tile = false },
+  # Driveways cost about 144 MiB of North America tiles (phase 0.6); kept (decision 16).
+  { name = "service_driveway", tags = { highway = "service", service = "driveway" }, minzoom = 14 },
   { name = "service_parking_aisle", tags = { highway = "service", service = "parking_aisle" }, minzoom = 14 },
   { name = "service_drive_through", tags = { highway = "service", service = "drive-through" }, minzoom = 14 },
   { name = "service_other", tags = { highway = "service", service = "*" }, minzoom = 14 },

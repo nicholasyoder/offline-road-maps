@@ -24,7 +24,7 @@ If the measured North America total is over **15 GB**, stop and revisit scope (z
 | 0.3 Builder spike | **Done** 2026-10-23 | `measure` and `report` run on Ohio, Ontario and Quebec. V4 is 134 / 580 / 912 MiB. Lakes and streams are 60–72% of the Canadian tiles. Needed-nodes-only beats the dense index on Ohio; North America is still to confirm. |
 | 0.4 Address spike | **Done** 2026-10-23 | `addr-spike` run on Ohio, Ontario and Quebec. Merged 4.95M / 5.58M / 4.24M addresses, at 1.9–2.0 B each with A3. OSM alone has 12–40% of them. 89 of 92 Ohio OA sources have no license name; without them Ohio drops to 1.13M. Dedup at 250 m. ODA dropped. |
 | 0.5 North America run | **Done** 2026-10-24 | Tiles V4 9.2 GiB, CH about 3.2 GiB (estimated), search 0.25 GiB or less, addresses 0.36 GiB: about 13 GiB in all, under the 15 GB stop line but over the 6–10 GB budget. Lakes and streams are 40% of z14 bytes. One-pass `measure` did not fit in 56 GB, so it ran in 3 bands (peak 43 GB). 151.5M addresses, or 86.8M without unlicensed sources. |
-| 0.6 Size table and `format.md` | **Done** 2026-10-24 | North America is 11.6 GiB (12.5 GB) with the final whitelist, about 0.54× CoMaps; planet extrapolated at 50–57 GiB. Land cover simplified like water (−16%). [size-table.md](size-table.md) and [format.md](format.md) written; the container reader and writer are in `omp-core::pack`. |
+| 0.6 Size table and `format.md` | **Done** 2026-10-24 | North America is 11.6 GiB (12.5 GB) as measured, or 11.8 GiB (12.6 GB) with driveways put back (decision 16, revised); about 0.54× CoMaps. Planet extrapolated at 50–58 GiB. Land cover simplified like water (−16%). [size-table.md](size-table.md) and [format.md](format.md) written; the container reader and writer are in `omp-core::pack`. |
 
 ## Environment notes
 
@@ -560,6 +560,7 @@ Run after 0.3 and 0.4 have picked their candidate variants (at most two per laye
 > **Final North America run** (3 bands as in 0.5, final whitelist; addresses reused from 0.5, which the whitelist does not affect):
 > - Tiles V4 7,901 MiB: water 3,724, land cover 2,053 (was 2,449), roads 1,926 (was 2,070 with driveways). The tile index adds 109 MiB, which earlier totals left out.
 > - **Total 11,905 MiB (11.6 GiB, 12.5 GB)**, down from 13,350 in 0.5. CoMaps' maps of the same area are 22,228 MiB, so this pack is 0.54× their size (0.51–0.70 per region).
+> - **Driveways put back afterwards** (decision 16, revised): about +144 MiB, the difference between the 0.5 and final road tiles, for **about 12,049 MiB (11.8 GiB, 12.6 GB)**. Not rerun, since every run before the final one had driveways.
 > - **Planet:** 57 GiB by the PBF ratio (4.90×), or about 50 GiB by CoMaps' ratio (4.27×). The address part of that is a placeholder.
 > - Build: 33 minutes for the 3 bands, peak 41.8 GiB, 9.8 GiB of temp tile store.
 >
@@ -635,9 +636,9 @@ Settled by Phase 0 data:
 
 15. **Land cover simplification:** land cover (woods, parks, protected areas) gets the same treatment as water: 6 / 8 / 16 grid units at z12 / z13 / z14, with every feature kept. Confirmed on Quebec and Ontario (−18 to −20% land cover); North America land cover is 16% smaller (2026-10-24, owner's decision; measured in 0.6).
 
-16. **`service` roads:** driveways (`service=driveway`, 9.3M in North America, 3.5% of z14 bytes) are left out of tiles. Every other `service` road stays: plain access roads, parking aisles, alleys and drive-throughs. About 12 GiB is already a workable size, so the access roads that help with the end of a route are worth their roughly 0.3 GiB. Driveways in the routing graph are a separate choice for Phase 3 (2026-10-24, owner's decision).
+16. **`service` roads:** all `service` roads are kept in tiles, driveways included: plain access roads, parking aisles, alleys, drive-throughs and driveways (`service=driveway`, 9.3M in North America). Driveways were first left out, then put back once the final run showed they cost only about 144 MiB (1.2% of the pack). About 12 GiB is a workable size. Driveways in the routing graph are a separate choice for Phase 3 (2026-10-24, owner's decision, revised the same day).
 
-17. **Size scope:** North America at 11.6 GiB is over the 6–10 GB target but under the 15 GB stop line, and about 12 GiB is workable, so no further cuts are planned before Phase 1, following the owner's view in decision 16 (2026-10-24, see 0.6). Revisit if a smaller target comes up.
+17. **Size scope:** North America at 11.8 GiB is over the 6–10 GB target but under the 15 GB stop line, and about 12 GiB is workable, so no further cuts are planned before Phase 1, following the owner's view in decision 16 (2026-10-24, see 0.6). Revisit if a smaller target comes up.
 
 Nothing is left open that blocks Phase 1.
 

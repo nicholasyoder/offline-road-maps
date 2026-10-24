@@ -71,11 +71,11 @@ Leaving out buildings, paths and walking/bike data removes most of the bulk. Hou
 
 | Layer | Estimate before Phase 0 | **North America, measured** | Planet (extrapolated) |
 |---|---|---|---|
-| Rendering tiles: no buildings or paths, zoom 14 max, simplified, custom encoding plus zstd dictionaries | 3–5 GB | **7.8 GiB** with the index (V4). Water 3.6 GiB, land cover 2.0, roads 1.9. Water and land cover are simplified to about 6.5 m at z14, with every lake, wood and park kept; driveways are left out. | about 38 GiB |
+| Rendering tiles: no buildings or paths, zoom 14 max, simplified, custom encoding plus zstd dictionaries | 3–5 GB | **8.0 GiB** with the index (V4). Water 3.6 GiB, land cover 2.0, roads 2.0. Water and land cover are simplified to about 6.5 m at z14, with every lake, wood and park kept. Driveways are included (about 0.14 GiB). | about 38 GiB |
 | Car routing graph (contraction hierarchy) | 1–1.5 GB | **about 3.2 GiB**, estimated from the measured graph (62.5M nodes, 150M edges) at the regional CH-to-graph ratio | about 16 GiB |
 | Search: places, streets, POIs | about 0.5 GB | **0.25 GiB or less** (no admin hierarchy yet) | about 1.2 GiB |
 | **House-number addresses** | 1.5–3 GB | **0.36 GiB** for 151.5M merged addresses (2.18 B each, plus 50 MiB of US TIGER ranges; street names are counted under search). Without OpenAddresses sources that name no license: 86.8M. | depends on open data elsewhere |
-| **Total** | 6–10 GB targeted | **11.6 GiB (12.5 GB)**, about 0.54× CoMaps' maps of the same area | **about 50–57 GiB**, well under the 100 GB stretch target |
+| **Total** | 6–10 GB targeted | **11.8 GiB (12.6 GB)**, about 0.54× CoMaps' maps of the same area | **about 50–58 GiB**, well under the 100 GB stretch target |
 
 The total is over the original 6–10 GB target and under Phase 0's 15 GB stop line. About 12 GiB is workable (it fits a 16 GB drive), so scope stays as it is. The levers left, if size matters later, are the CH layout (Phase 3), the smallest ponds and streams, and V5 tile groups (8% smaller tiles, at about 2.5× the bytes read per viewport).
 
