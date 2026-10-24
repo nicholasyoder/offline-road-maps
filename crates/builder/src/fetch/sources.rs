@@ -28,14 +28,33 @@ pub fn osm(agent: &Agent, region: &Region, snapshot: &str) -> Result<Vec<Job>> {
         url,
         expected_size: None,
         expected_md5: Some(md5),
-        license: LicenseSpec::Known(License {
-            name: "ODbL-1.0".into(),
-            url: Some("https://opendatacommons.org/licenses/odbl/1-0/".into()),
-            attribution_required: Some(true),
-            attribution: Some("© OpenStreetMap contributors".into()),
-            share_alike: Some(true),
-        }),
+        license: LicenseSpec::Known(odbl()),
     }])
+}
+
+fn odbl() -> License {
+    License {
+        name: "ODbL-1.0".into(),
+        url: Some("https://opendatacommons.org/licenses/odbl/1-0/".into()),
+        attribution_required: Some(true),
+        attribution: Some("© OpenStreetMap contributors".into()),
+        share_alike: Some(true),
+    }
+}
+
+/// Ocean polygons derived from OSM coastlines, split into small pieces, in WGS84. Global, and
+/// only the latest build is published, so it cannot be pinned to the OSM snapshot date.
+pub fn water() -> Vec<Job> {
+    let name = "water-polygons-split-4326.zip";
+    vec![Job {
+        path: format!("osmdata/{name}"),
+        source: Source::Water,
+        source_id: None,
+        url: format!("https://osmdata.openstreetmap.de/download/{name}"),
+        expected_size: None,
+        expected_md5: None,
+        license: LicenseSpec::Known(odbl()),
+    }]
 }
 
 /// TIGER/Line `ADDRFEAT`: one zip per county, listed from the Census directory index.

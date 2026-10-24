@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 mod fetch;
+mod measure;
+mod report;
 
 /// Builds offline map packs from OSM and address sources.
 #[derive(Parser)]
@@ -22,6 +24,10 @@ enum Command {
     Paths,
     /// Download a region's OSM extract and address sources into <work dir>/inputs.
     Fetch(fetch::FetchArgs),
+    /// Phase 0 spike: tile a PBF through the whitelist and report sizes per layer, zoom and encoding.
+    Measure(measure::MeasureArgs),
+    /// Print Markdown size tables from `measure` JSON files.
+    Report(report::ReportArgs),
 }
 
 fn work_dir(cli: &Cli) -> PathBuf {
@@ -40,6 +46,8 @@ fn main() -> anyhow::Result<()> {
             println!("work dir: {} ({state})", dir.display());
         }
         Command::Fetch(args) => fetch::run(args, &dir)?,
+        Command::Measure(args) => measure::run(args, &dir)?,
+        Command::Report(args) => report::run(args)?,
     }
     Ok(())
 }

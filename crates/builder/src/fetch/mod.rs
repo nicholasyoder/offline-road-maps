@@ -29,10 +29,11 @@ pub struct FetchArgs {
     region: String,
 
     /// Sources to fetch. Ones that do not apply to the region (tiger in Canada) are skipped.
+    /// `water` is global and not date-pinned; the manifest records the hash of the copy fetched.
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "osm,openaddresses,tiger,oda,nar"
+        default_value = "osm,water,openaddresses,tiger,oda,nar"
     )]
     sources: Vec<Source>,
 
@@ -69,6 +70,8 @@ pub struct FetchArgs {
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Source {
     Osm,
+    /// osmdata.openstreetmap.de ocean polygons (global, one file).
+    Water,
     #[value(name = "openaddresses")]
     OpenAddresses,
     Tiger,
@@ -82,6 +85,7 @@ impl Source {
     fn as_str(self) -> &'static str {
         match self {
             Self::Osm => "osm",
+            Self::Water => "water",
             Self::OpenAddresses => "openaddresses",
             Self::Tiger => "tiger",
             Self::Oda => "oda",
@@ -132,6 +136,7 @@ pub fn run(args: FetchArgs, work_dir: &Path) -> Result<()> {
     for &source in &args.sources {
         let planned = match source {
             Source::Osm => sources::osm(&agent, &region, &args.osm_snapshot)?,
+            Source::Water => sources::water(),
             Source::OpenAddresses => sources::openaddresses(&agent, &region)?,
             Source::Tiger => sources::tiger(&agent, &region, args.tiger_year)?,
             Source::Oda => sources::oda(&region),

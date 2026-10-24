@@ -21,14 +21,14 @@ If the measured North America total is over **15 GB**, stop and revisit scope (z
 |---|---|---|
 | 0.1 Workspace and CI | **Done** 2026-10-23 | CI green on `master`. Two manual checks open: launch the Windows `.exe`, and the old-laptop test. |
 | 0.2 Test regions and `fetch` | **Done** 2026-10-23 | Ohio, Ontario and Quebec inputs fetched (5.0 GB). NAR chosen over ODA. 79 of 92 Ohio OpenAddresses sources have no license in their metadata. |
-| 0.3 Builder spike | Not started | |
+| 0.3 Builder spike | **Done** 2026-10-23 | `measure` and `report` run on Ohio, Ontario and Quebec. V4 is 134 / 580 / 912 MiB. Lakes and streams are 60–72% of the Canadian tiles. Needed-nodes-only beats the dense index on Ohio; North America is still to confirm. |
 | 0.4 Address spike | Not started | |
 | 0.5 North America run | Not started | |
 | 0.6 Size table and `format.md` | Not started | |
 
 ## Environment notes
 
-Current dev machine: 16 cores, 62 GB RAM, Rust 1.98. Only about 31 GB is free on `/`, so all builder data goes on the data disk. GNU `time` is not installed (`/usr/bin/time` is missing); install the `time` package before 0.3 needs peak RSS.
+Current dev machine: 16 cores, 62 GB RAM, Rust 1.98. Only about 25 GB is free on `/`, so all builder data goes on the data disk. GNU `time` is installed (`/usr/bin/time -v`); `measure` also records its own peak RSS from `/proc/self/status`.
 
 **Work directory:** `$OMP_WORK=/media/nicholas/Data/maps-testing` on `sda1` (about 586 GB free). Stay inside that folder; the rest of the disk holds unrelated data.
 - The disk is mounted by udisks, not `/etc/fstab`. If it is missing, run `udisksctl mount -b /dev/sda1`.
@@ -113,7 +113,7 @@ Triggered on push to `master` and on pull requests. Jobs:
 > **OpenAddresses download:** no account or token is needed. `batch.openaddresses.io/api/data?source=<prefix>&layer=addresses` lists the jobs, and `v2.openaddresses.io/batch-prod/job/<id>/source.geojson.gz` redirects to a public, presigned download. The `/api/job/<id>/output/...` path does need a token. Each file's license comes from the source definition at the commit the job ran from, which is recorded as `metadata_url`.
 > **Licenses:** the manifest records what each source states. **79 of the 92 Ohio OA sources state no license** (mostly Ohio LBRS county files) and are recorded as `unspecified`. A further 10 say attribution is required but give no license name. Before Phase 5, the attribution file and license filter (roadmap §7) must decide how to treat `unspecified`.
 > **ODA vs NAR:** results below; NAR is the default Canadian source.
-> Still open: `fetch` does not yet download the osmdata.openstreetmap.de land and water polygons; add them with 0.3. Not yet run for `north-america`; that run belongs to 0.5.
+> Still open: not yet run for `north-america`; that run belongs to 0.5. (The osmdata.openstreetmap.de water polygons were added to `fetch` in 0.3.)
 
 ### Regions
 
@@ -161,6 +161,68 @@ omp-builder fetch --region us/ohio --sources osm,openaddresses,tiger,oda,nar --o
 ---
 
 ## 0.3 Builder spike: PBF, whitelist, per-layer sizes
+
+> **Done 2026-10-23** (the commit that adds `omp-builder measure` and `report`).
+> **Reproduce** (inputs from 0.2, plus `fetch --sources water` for the 865 MiB global `osmdata/water-polygons-split-4326.zip`, which is not date-pinned; its hash is in the manifest):
+> ```
+> M=$OMP_WORK/measure; I=$OMP_WORK/inputs/osm
+> $B measure $I/ohio-261001.osm.pbf    --json $M/ohio-sparse.json
+> $B measure $I/ohio-261001.osm.pbf    --json $M/ohio-dense.json --nodes dense --node-index /var/tmp/omp-nodes.idx
+> $B measure $I/ontario-261001.osm.pbf --json $M/ontario-sparse.json
+> $B measure $I/quebec-261001.osm.pbf  --json $M/quebec-sparse.json
+> $B report $M/*-sparse.json $M/ohio-dense.json
+> ```
+> Output is deterministic: features, roads and tile sections are sorted, so reruns give identical JSON.
+>
+> | | Ohio | Ontario | Quebec |
+> |---|---:|---:|---:|
+> | Input PBF (MiB) | 310 | 984 | 1,108 |
+> | Wall time, 16 threads (s) | 48 | 63 | 73 |
+> | Peak RSS (MiB) | 3,443 | 7,937 | 8,916 |
+> | V0 raw (f64, string tags) | 2,275 | 13,444 | 19,811 |
+> | V1 grid + varint | 302 | 1,429 | 2,176 |
+> | V2 + simplify/drop | 173 | 673 | 1,060 |
+> | V3 + zstd 19 | 143 | 614 | 968 |
+> | **V4 + dictionaries** (dicts 1.1–1.3 MiB, included) | **134** | **580** | **912** |
+> | V5 4×4 groups | 128 | 553 | 875 |
+> | MVT + gzip reference (V2 geometry) | 170 | 704 | 1,112 |
+> | V4 roads / landcover / water | 55 / 61 / 14 | 44 / 185 / 346 | 34 / 168 / 701 |
+> | CH graph nodes / edges | 2.2M / 5.3M | 1.3M / 3.0M | 0.76M / 1.8M |
+> | CH, compact layout (MiB) | 115 | 66 | 40 |
+> | Search: fst + postings + entries (MiB) | 6.6 | 5.6 | 4.3 |
+>
+> **Node locations** (Ohio, identical output both ways):
+> - Needed-nodes-only: read stage 4.4 s and 3.0 GB peak, no temp disk. The bitset is a fixed ~1.7 GB because its pages fill across the whole node-ID range even for one state, so it does not shrink for small extracts.
+> - Dense index: 5.2 s and 4.8 GB peak RSS (mapped pages count), plus **3.3 GB of real disk for one state**.
+> - Needed-nodes-only is the working default. Roadmap §5 says "dense on-disk index"; change it after 0.5 confirms on North America.
+>
+> **Encodings:**
+> - V2 thinning saves 43–53% over V1. zstd (V3) adds 9–17%, dictionaries (V4) 5–6% more, and V5 groups 4–5% more.
+> - V5 reads 2.4–2.6× the bytes per viewport (z14: Ohio 84 KB vs 33 KB) and decodes 10–20% slower.
+> - MVT+gzip of the same geometry is 21–27% larger than V4.
+> - **Candidate for 0.5: V4.** V5 is second only if the USB 2 test shows its bigger reads don't matter.
+>
+> **Random reads, V4** (100 viewports of 5×4 tiles, in RAM):
+> - z14: 12–33 KB and 0.09–0.29 ms per viewport;
+> - z10: 181–519 KB and 1.3–4.7 ms.
+>
+> **Tile index:** a sparse Hilbert-ordered index (delta varint, layer mask, lengths) is 0.3 / 2.6 / 3.7 MB at z14. Dense offset arrays would be 108 MB for Quebec, where 95% of the z14 bbox is empty, so the index is sparse.
+>
+> **Whitelist findings** (per-class rows and all tag values are in the JSON):
+> - **Water is the biggest lever in Canada.** Lakes are 39% / 53% and streams 21% / 19% of z14 V1 bytes in Ontario / Quebec (3.0M lakes and 2.2M streams in Quebec, mostly CanVec imports). In Ohio they are 5% and 3%. 0.5 needs a size-based lake minzoom and a stream decision (z14 only, or none).
+> - **`service` roads** (Ohio ablations, `tile = false`): dropping only subtagged ones (driveways, parking aisles, …) saves 9 MiB, 7% of V4. Dropping all `service` roads saves 21 MiB (16%). In Canada service roads are only 1–2% of z14. Driveways alone are 11.6% of Ohio z14.
+> - **POIs are not a size lever:** under 1.3 MiB per region with all categories, parking included (55k–95k lots, mostly 500–10,000 m²).
+> - **Boundaries:** admin 9 and 10 exist (Ontario 559 level-10 relations) but stay `tile = false`. Their need for search is left to Phase 2.
+> - **Addresses** (not tiled; feeds 0.4): 0.60M / 2.5M / 1.5M OSM address points. Ontario and Quebec also have 649k / 442k `addr:interpolation` ways.
+>
+> **Multipolygons:** over 99.9% assemble. Admin boundaries miss members in about 10% of relations, all cut at the extract border.
+> **Routing extras:** 16–21k turn restrictions per region. In Ohio, `access` is on 285k road ways and `maxspeed` on 115k.
+>
+> Still open:
+> - USB 2 flash-drive read timing (no drive available; the numbers above are decode-only from RAM).
+> - Dense vs needed-nodes on North America (0.5).
+> - Lake/stream thresholds, and the `service` decision.
+> - The ocean is clipped to the extract's bbox, not its polygon, which slightly overcounts it for Quebec (218 pieces, 1% of z14).
 
 ### Reading the PBF
 
@@ -218,9 +280,11 @@ These are layers in the size table too, so get real numbers cheaply:
 ### Interface
 
 ```
-omp-builder measure <input.pbf> --whitelist <file> --variants v1,v3,v4 --json out/ohio.json
+omp-builder measure <input.pbf> [--whitelist <file>] [--nodes sparse|dense --node-index <file>] --json out/ohio.json
 omp-builder report out/*.json > docs/size-table.md
 ```
+
+Every variant is computed on every run, since they share the tiling, so there is no `--variants` flag. `--no-routing` skips the contraction hierarchy.
 
 **Done when:** `measure` runs on Ohio, Ontario and Quebec, and the JSON holds feature counts, vertex counts and bytes for every layer × zoom × variant, plus build time and peak RAM.
 
@@ -334,8 +398,11 @@ Settled 2026-10-23:
 
 Settled by Phase 0 data:
 5. **Canadian address source:** NAR, with ODA kept only if 0.4 shows it adds coverage (2026-10-23, see 0.2).
+6. **Tile encoding candidate:** V4 (zstd 19 with per-layer, per-zoom-band dictionaries) for 0.5. V5 is kept in reserve only (2026-10-23, see 0.3).
+7. **Tile index:** sparse and Hilbert-ordered, not dense offset arrays (2026-10-23, see 0.3).
+8. **POIs:** keep every category in the whitelist; they are under 1% of tile bytes (2026-10-23, see 0.3).
 
-Still open, to be settled by Phase 0 data: the encoding variants, the `service` road and POI cut-offs, and the dedup threshold.
+Still open, to be settled by Phase 0 data: the node-location strategy (needed-nodes-only leads; confirm on North America), the lake/stream and `service` road cut-offs, and the address dedup threshold.
 
 ## Out of scope for Phase 0
 

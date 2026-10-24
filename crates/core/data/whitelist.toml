@@ -1,0 +1,157 @@
+# Tag whitelist: which OSM features go into a pack, and in which layer.
+#
+# Shared by the builder and the app style. Bump `version` on any change that alters
+# class ids (adding, removing or reordering classes or layers).
+#
+# Each layer has a default geometry ("point", "line" or "area"), the element types it
+# reads (`from`), and the tags kept as feature properties (`props`). Classes are tried in
+# order and the first match wins:
+#   tags    every key must be present with one of the listed values ("*" = any value);
+#   absent  keys that must not be present;
+#   minzoom first zoom the class appears in tiles;
+#   tile    false = counted in the report but not put in tiles (searched or routed only);
+#   geometry overrides the layer default;
+#   external true = never matched against OSM tags; the builder fills it from another source.
+# Point layers turn ways and relations into a single point (area centroid).
+# The `boundaries` layer is special: classes match administrative relations, and their
+# member ways become lines carrying the lowest admin level.
+
+version = 1
+
+[[layer]]
+name = "roads"
+geometry = "line"
+from = ["way"]
+props = ["name", "ref", "oneway", "bridge", "tunnel"]
+classes = [
+  { name = "motorway", tags = { highway = "motorway" }, minzoom = 4 },
+  { name = "trunk", tags = { highway = "trunk" }, minzoom = 5 },
+  { name = "primary", tags = { highway = "primary" }, minzoom = 7 },
+  { name = "secondary", tags = { highway = "secondary" }, minzoom = 9 },
+  { name = "tertiary", tags = { highway = "tertiary" }, minzoom = 10 },
+  { name = "motorway_link", tags = { highway = "motorway_link" }, minzoom = 10 },
+  { name = "trunk_link", tags = { highway = "trunk_link" }, minzoom = 11 },
+  { name = "primary_link", tags = { highway = "primary_link" }, minzoom = 11 },
+  { name = "secondary_link", tags = { highway = "secondary_link" }, minzoom = 12 },
+  { name = "tertiary_link", tags = { highway = "tertiary_link" }, minzoom = 12 },
+  { name = "unclassified", tags = { highway = "unclassified" }, minzoom = 12 },
+  { name = "residential", tags = { highway = "residential" }, minzoom = 12 },
+  { name = "living_street", tags = { highway = "living_street" }, minzoom = 13 },
+  # `service` is split by subtag so its size can be measured with and without each kind.
+  { name = "service", tags = { highway = "service" }, absent = ["service"], minzoom = 13 },
+  { name = "service_alley", tags = { highway = "service", service = "alley" }, minzoom = 14 },
+  { name = "service_driveway", tags = { highway = "service", service = "driveway" }, minzoom = 14 },
+  { name = "service_parking_aisle", tags = { highway = "service", service = "parking_aisle" }, minzoom = 14 },
+  { name = "service_drive_through", tags = { highway = "service", service = "drive-through" }, minzoom = 14 },
+  { name = "service_other", tags = { highway = "service", service = "*" }, minzoom = 14 },
+]
+
+[[layer]]
+name = "ferries"
+geometry = "line"
+from = ["way"]
+props = ["name"]
+classes = [
+  { name = "ferry", tags = { route = "ferry" }, minzoom = 7 },
+]
+
+[[layer]]
+name = "rail"
+geometry = "line"
+from = ["way"]
+props = []
+classes = [
+  { name = "rail", tags = { railway = "rail" }, absent = ["service"], minzoom = 9 },
+  { name = "rail_service", tags = { railway = "rail", service = "*" }, minzoom = 13 },
+]
+
+[[layer]]
+name = "water"
+geometry = "area"
+from = ["way", "relation"]
+props = ["name"]
+classes = [
+  # Ocean polygons come from osmdata.openstreetmap.de, not from OSM tags.
+  { name = "ocean", external = true, minzoom = 0 },
+  { name = "lake", tags = { natural = "water" }, minzoom = 4 },
+  { name = "riverbank", tags = { waterway = "riverbank" }, minzoom = 8 },
+  { name = "river", tags = { waterway = "river" }, minzoom = 8, geometry = "line" },
+  { name = "canal", tags = { waterway = "canal" }, minzoom = 10, geometry = "line" },
+  { name = "stream", tags = { waterway = "stream" }, minzoom = 13, geometry = "line" },
+]
+
+[[layer]]
+name = "landcover"
+geometry = "area"
+from = ["way", "relation"]
+props = ["name"]
+classes = [
+  { name = "forest", tags = { landuse = "forest" }, minzoom = 7 },
+  { name = "wood", tags = { natural = "wood" }, minzoom = 7 },
+  { name = "residential", tags = { landuse = "residential" }, minzoom = 10 },
+  { name = "industrial", tags = { landuse = "industrial" }, minzoom = 10 },
+  { name = "commercial", tags = { landuse = "commercial" }, minzoom = 10 },
+  { name = "retail", tags = { landuse = "retail" }, minzoom = 10 },
+  { name = "farmland", tags = { landuse = "farmland" }, minzoom = 9 },
+  { name = "park", tags = { leisure = "park" }, minzoom = 10 },
+  { name = "protected_area", tags = { boundary = ["protected_area", "national_park"] }, minzoom = 6 },
+]
+
+[[layer]]
+name = "places"
+geometry = "point"
+from = ["node"]
+props = ["name", "population"]
+classes = [
+  { name = "city", tags = { place = "city" }, minzoom = 4 },
+  { name = "town", tags = { place = "town" }, minzoom = 7 },
+  { name = "village", tags = { place = "village" }, minzoom = 10 },
+  { name = "hamlet", tags = { place = "hamlet" }, minzoom = 12 },
+  { name = "suburb", tags = { place = "suburb" }, minzoom = 11 },
+  { name = "neighbourhood", tags = { place = "neighbourhood" }, minzoom = 13 },
+  { name = "locality", tags = { place = "locality" }, minzoom = 14 },
+  { name = "isolated_dwelling", tags = { place = "isolated_dwelling" }, minzoom = 14, tile = false },
+]
+
+[[layer]]
+name = "boundaries"
+geometry = "line"
+from = ["relation"]
+props = ["admin_level", "maritime"]
+classes = [
+  { name = "admin_2", tags = { boundary = "administrative", admin_level = "2" }, minzoom = 0 },
+  { name = "admin_4", tags = { boundary = "administrative", admin_level = "4" }, minzoom = 3 },
+  { name = "admin_6", tags = { boundary = "administrative", admin_level = "6" }, minzoom = 8 },
+  { name = "admin_8", tags = { boundary = "administrative", admin_level = "8" }, minzoom = 11 },
+  { name = "admin_9", tags = { boundary = "administrative", admin_level = "9" }, minzoom = 14, tile = false },
+  { name = "admin_10", tags = { boundary = "administrative", admin_level = "10" }, minzoom = 14, tile = false },
+]
+
+[[layer]]
+name = "pois"
+geometry = "point"
+from = ["node", "way", "relation"]
+props = ["name"]
+classes = [
+  { name = "fuel", tags = { amenity = "fuel" }, minzoom = 12 },
+  { name = "charging_station", tags = { amenity = "charging_station" }, minzoom = 13 },
+  { name = "rest_area", tags = { highway = ["rest_area", "services"] }, minzoom = 10 },
+  { name = "hotel", tags = { tourism = ["hotel", "motel"] }, minzoom = 13 },
+  { name = "restaurant", tags = { amenity = "restaurant" }, minzoom = 14 },
+  { name = "fast_food", tags = { amenity = "fast_food" }, minzoom = 14 },
+  { name = "hospital", tags = { amenity = "hospital" }, minzoom = 11 },
+  { name = "airport", tags = { aeroway = "aerodrome" }, minzoom = 9 },
+  { name = "campground", tags = { tourism = ["camp_site", "caravan_site"] }, minzoom = 12 },
+  { name = "attraction", tags = { tourism = "attraction" }, minzoom = 12 },
+  { name = "parking", tags = { amenity = "parking" }, minzoom = 14 },
+]
+
+[[layer]]
+name = "addresses"
+geometry = "point"
+from = ["node", "way"]
+props = ["addr:housenumber", "addr:street"]
+classes = [
+  { name = "interpolation", tags = { "addr:interpolation" = "*" }, minzoom = 14, tile = false, geometry = "line" },
+  { name = "address", tags = { "addr:housenumber" = "*" }, minzoom = 14, tile = false },
+]
