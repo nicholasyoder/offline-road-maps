@@ -106,8 +106,10 @@ Detailed plan: [phase0-plan.md](phase0-plan.md).
 - [x] **Exit criterion:** a confirmed size table and `docs/format.md` describing the file format. Done 2026-10-24: [size-table.md](size-table.md), [format.md](format.md).
 
 ### Phase 1: Map viewer MVP
-- [ ] Builder: simplify geometry per zoom level, compute label points, and write the pack.
-- [ ] App: pan and zoom; draw polygons, lines and labels with collision avoidance; a style file; portable mode.
+Detailed plan: [phase1-plan.md](phase1-plan.md).
+
+- [ ] Builder: simplify geometry per zoom level, compute label points, read route relations for highway shields, and write the pack.
+- [ ] App: pan and zoom; draw polygons, lines and labels with collision avoidance; highway shields and POI icons; a style file; a scale bar, zoom buttons and layer toggles; portable mode.
 - [ ] **Exit criterion:** browse all of North America from a USB stick at a smooth frame rate with less than 300 MB RAM.
 
 ### Phase 2: Search and addresses
