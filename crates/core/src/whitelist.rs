@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The whitelist compiled into this build.
 pub const DEFAULT: &str = include_str!("../data/whitelist.toml");
@@ -65,7 +65,7 @@ impl Values {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GeometryKind {
     Point,

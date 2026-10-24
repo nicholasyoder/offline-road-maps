@@ -2273,10 +2273,12 @@ name = "omp-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
  "unicode-normalization",
  "xxhash-rust",
+ "zstd",
 ]
 
 [[package]]

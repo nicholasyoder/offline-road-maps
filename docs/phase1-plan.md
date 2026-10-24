@@ -25,7 +25,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 
 | Step | Status | Notes |
 |---|---|---|
-| 1.1 Shared tile codec and pack reader | Not started | |
+| 1.1 Shared tile codec and pack reader | **Done** 2026-10-24 | `omp-core::{tile, tiles, schema, meta, varint}`; `measure` output on Ohio unchanged. |
 | 1.2 `omp-builder build`: write a tile pack | Not started | |
 | 1.3 Label and shield data in the builder | Not started | |
 | 1.4 App skeleton: pack, camera, tile loading, bench | Not started | |
@@ -57,6 +57,14 @@ The V2 payload encoder and decoder, the Hilbert curve and the tile index are in 
 - The decoder works on borrowed bytes and does not allocate per point.
 
 **Done when:** the builder's `measure` uses the moved code with byte-identical output on Ohio, and `TileReader` round-trips tiles written by a test writer (all geometry types, props, empty layers, missing tiles, a spanning `TDAT` across a chunk boundary with a small `chunk_capacity`).
+
+> **Done 2026-10-24** (the commit that adds `omp-core::tiles`).
+> **What moved where:** `omp-core::varint` (LEB128, zigzag, a bounds-checked reader; the address and search spikes use it too), `omp-core::tile` (V2 payload `encode_layer` / `Layer::decode`, `hilbert`, `zoom_band`, `TDIC` as `Dictionaries`, and `TIDX` as `IndexBuilder`, `DirEntry` and `Block`), `omp-core::schema` (`Schema::from_whitelist`, JSON in a zstd frame) and `omp-core::meta`. `omp-core::tiles` has `FrameCompressor` (one per thread, picks the (layer, band) dictionary), `TileWriter` (writes `TDIC`, begins the spanning `TDAT`, adds one record per tile, writes `TIDX` on finish) and `TileReader`. The writer is the one 1.2 will use, not only a test writer. V0, MVT, quantizing and simplifying stay in the builder.
+> **`TileReader`:** owns the `Pack`, reads `TDIC` and the 120-byte `TIDX` header at open, loads a zoom's directory on first use (`OnceLock`), and keeps 512 decoded blocks in an LRU. A tile is one positioned read of its record, then one zstd frame per layer. It is `Send + Sync`: prepared dictionaries (`DDict`) are shared, and zstd contexts come from a small pool, so the loader threads of 1.4 can share one reader. It counts bytes read for the debug overlay and bench.
+> **Decoder:** `Layer::decode` takes the payload and fills flat arrays (features, props, part ends, points), so a layer is a handful of allocations and none per point; strings are checked as UTF-8 once and handed out as `&str`. Counts are checked against the bytes left, so a corrupt count cannot allocate gigabytes. It is also faster than phase 0's decoder: in `measure`'s random-read bench on Ohio, V4 decode went from 302 to 174 µs per tile at z10 and 65 to 41 µs at z12.
+> **Byte-identical on Ohio:** `measure ohio-261001.osm.pbf --routing none` before and after gives the same report apart from timings: every layer × zoom × variant byte count, and the same 165,539,632-byte V2 tile store. (`measure` keeps its own zstd settings, without content checksums, so its V3–V5 numbers stay comparable with phase 0.)
+> **Tests:** payload round trip and garbage rejection, `TDIC` round trip, `TIDX` blocks split at 256 tiles and at padding, `SCHM` of the default whitelist, `META` with unknown fields, and a pack round trip: 603 tiles at z0, z1, z6 and z14 with lines, polygons with holes, points, string and integer props, an empty layer, layers left out, a raw-content dictionary, and a 16 KiB `chunk_capacity`, so `TDAT` spans 4+ chunks and padding splits `TIDX` blocks. Missing tiles (absent, z15, x out of range) return `None`; a damaged frame returns an error.
+> **format.md** now states the `TIDX` byte layout (each zoom's directory followed by its blocks, which is how the reader finds where a block ends), that frames carry their content size, and the `META` field types.
 
 ## 1.2 `omp-builder build`: write a tile pack
 

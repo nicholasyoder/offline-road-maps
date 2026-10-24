@@ -12,8 +12,9 @@ use serde::Serialize;
 use zstd::bulk::{Compressor, Decompressor};
 use zstd::zstd_safe::CParameter;
 
-use super::encode::{self, put_varint, varint_len};
 use super::tiles::{Cell, Entry, Variant};
+use omp_core::tile::{BAND_NAMES, Layer, hilbert, zoom_band};
+use omp_core::varint::{len as varint_len, put as put_varint};
 
 const DICT_SIZE: usize = 64 << 10;
 /// Training input per dictionary is capped at this many bytes, sampled evenly.
@@ -22,18 +23,6 @@ const VIEWPORTS: usize = 100;
 /// A 1920×1080 screen of 512 px tiles needs at most 5×4 tiles.
 const VIEWPORT_TILES: (u32, u32) = (5, 4);
 const BENCH_ZOOMS: [u8; 3] = [10, 12, 14];
-
-/// Zoom bands that share a dictionary.
-fn band(z: u8) -> u8 {
-    match z {
-        0..=7 => 0,
-        8..=11 => 1,
-        12..=13 => 2,
-        _ => 3,
-    }
-}
-
-const BAND_NAMES: [&str; 4] = ["z0-7", "z8-11", "z12-13", "z14"];
 
 #[derive(Serialize)]
 pub struct DictInfo {
@@ -123,26 +112,6 @@ impl XorShift {
     }
 }
 
-pub fn hilbert(z: u8, mut x: u32, mut y: u32) -> u64 {
-    let n = 1u64 << z;
-    let mut d = 0u64;
-    let mut s = n / 2;
-    while s > 0 {
-        let rx = u64::from(u64::from(x) & s > 0);
-        let ry = u64::from(u64::from(y) & s > 0);
-        d += s * s * ((3 * rx) ^ ry);
-        if ry == 0 {
-            if rx == 1 {
-                x = (n - 1) as u32 - x;
-                y = (n - 1) as u32 - y;
-            }
-            std::mem::swap(&mut x, &mut y);
-        }
-        s /= 2;
-    }
-    d
-}
-
 type Tile = (u8, u32, u32);
 type GroupKey = (u8, u8, u32, u32);
 /// Benchmark tiles kept after compression: `(layer, tile)` → (raw length, V3 frame, V4 frame).
@@ -164,7 +133,7 @@ pub fn run(store: &Path, entries: &[Entry], layer_names: &[String], level: i32) 
     // Dictionaries per (layer, band).
     let mut groups: BTreeMap<(u8, u8), Vec<&Entry>> = BTreeMap::new();
     for e in entries {
-        groups.entry((e.layer, band(e.z))).or_default().push(e);
+        groups.entry((e.layer, zoom_band(e.z))).or_default().push(e);
     }
     let trained: Vec<((u8, u8), Vec<u8>, DictInfo)> = groups
         .par_iter()
@@ -242,7 +211,7 @@ pub fn run(store: &Path, entries: &[Entry], layer_names: &[String], level: i32) 
             |(plain, with_dict), (i, e)| {
                 let raw = read(&file, e);
                 let v3 = plain.compress(&raw).expect("zstd");
-                let key = (e.layer, band(e.z));
+                let key = (e.layer, zoom_band(e.z));
                 let c = with_dict
                     .entry(key)
                     .or_insert_with(|| compressor(level, &dicts[&key]));
@@ -293,7 +262,7 @@ pub fn run(store: &Path, entries: &[Entry], layer_names: &[String], level: i32) 
                 for e in es {
                     payload.extend_from_slice(&read(&file, e));
                 }
-                let dk = (key.0, band(key.1));
+                let dk = (key.0, zoom_band(key.1));
                 let c = cs
                     .entry(dk)
                     .or_insert_with(|| compressor(level, &dicts[&dk]));
@@ -422,11 +391,11 @@ fn bench(
                                     continue;
                                 }
                                 read += frame.len() as u64;
-                                let d = with_dict.get_mut(&(l, band(z))).unwrap_or(&mut plain);
+                                let d = with_dict.get_mut(&(l, zoom_band(z))).unwrap_or(&mut plain);
                                 let payload = d.decompress(frame, *raw_len as usize)?;
                                 for sec in group_sections(&payload, vp, key)? {
                                     tiles_with_data.insert(sec.0);
-                                    encode::decode_v1(sec.1)?;
+                                    Layer::decode(sec.1.to_vec())?;
                                 }
                             }
                             _ => {
@@ -437,11 +406,14 @@ fn bench(
                                 let (frame, d) = if variant == Variant::V3 {
                                     (v3, &mut plain)
                                 } else {
-                                    (v4, with_dict.get_mut(&(l, band(z))).unwrap_or(&mut plain))
+                                    (
+                                        v4,
+                                        with_dict.get_mut(&(l, zoom_band(z))).unwrap_or(&mut plain),
+                                    )
                                 };
                                 read += frame.len() as u64;
                                 let raw = d.decompress(frame, *raw_len as usize)?;
-                                encode::decode_v1(&raw)?;
+                                Layer::decode(raw)?;
                             }
                         }
                     }
@@ -505,19 +477,4 @@ fn group_sections<'a>(
         pos += len;
     }
     Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hilbert_order_2() {
-        // The order-2 curve visits (0,0) (0,1) (1,1) (1,0).
-        let d: Vec<u64> = [(0, 0), (0, 1), (1, 1), (1, 0)]
-            .iter()
-            .map(|&(x, y)| hilbert(1, x, y))
-            .collect();
-        assert_eq!(d, [0, 1, 2, 3]);
-    }
 }

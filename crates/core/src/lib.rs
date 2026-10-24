@@ -2,6 +2,12 @@
 //!
 //! The pack format is specified in `docs/format.md`.
 
+pub mod meta;
 pub mod normalize;
 pub mod pack;
+pub mod schema;
+pub mod tile;
+pub mod tiles;
+pub mod varint;
 pub mod whitelist;
+mod zframe;

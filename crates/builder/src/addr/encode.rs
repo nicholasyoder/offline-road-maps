@@ -7,8 +7,8 @@ use serde::Serialize;
 
 use super::streets::morton;
 use super::tiger::RangeSrc;
-use crate::measure::encode::put_varint;
 use crate::measure::geom::P;
+use omp_core::varint::put as put_varint;
 
 /// An address attached to a street component.
 pub struct Entry {

@@ -9,8 +9,8 @@ Status of each part:
 | Part | Status |
 |---|---|
 | Container: header, section table, chunking, checksums | **Specified.** Reader and writer in `omp-core::pack`, with round-trip tests. |
-| Metadata and attribution (`META`), schema (`SCHM`) | **Specified.** |
-| Tiles (`TIDX`, `TDIC`, `TDAT`) | **Specified** (encoding V4 from phase 0). |
+| Metadata and attribution (`META`), schema (`SCHM`) | **Specified.** In `omp-core::meta` and `omp-core::schema`. |
+| Tiles (`TIDX`, `TDIC`, `TDAT`) | **Specified** (encoding V4 from phase 0). Codec in `omp-core::tile`, reader and writer in `omp-core::tiles`, with round-trip tests. |
 | Addresses (`ASTR`, `AIDX`, `ASUF`, `AUNI`, `ALSE`, `ARNG`) | **Specified** (encoding A3 from phase 0). |
 | Routing (`RCH*`) | *Provisional*, finalized in Phase 3. |
 | Search (`SFST`, `SPST`, `SENT`) | *Provisional*, finalized in Phase 2. |
@@ -111,12 +111,12 @@ Every section has an XXH3-64 checksum in the section table. The app does **not**
 ## `META`: metadata and attribution (contiguous)
 
 A UTF-8 JSON object, zstd-compressed (one frame). Fields:
-- `region`, `bbox`, `build_time`, `builder_version`, `format_version`.
-- `sources`: the `fetch` manifest. For each input: name, URL, date, SHA-256, license, attribution text. Every OpenAddresses source is listed, including those whose license is `unspecified` (decision 13).
+- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.1"`).
+- `sources`: the `fetch` manifest. For each input: `name`, `url`, `date` (of download, RFC 3339), `sha256`, `license`, and optionally `license_url` and `attribution`. Every OpenAddresses source is listed, including those whose license is `unspecified` (decision 13).
 - `attribution`: the text the app shows on its "About this map" screen, built from `sources` (e.g. "© OpenStreetMap contributors, ODbL", the Statistics Canada NAR licence, each OpenAddresses source's attribution).
 - `settings`: the build options that shaped the data (whitelist version, simplification tolerances, address dedup and attach distances).
 
-JSON keeps this section easy to extend. It is a few hundred KiB at most and is read once.
+JSON keeps this section easy to extend: readers ignore fields they do not know. It is a few hundred KiB at most and is read once.
 
 ## `SCHM`: schema (contiguous)
 
@@ -162,11 +162,11 @@ TDIC  = ndicts:u32  entry*  dict_bytes*
 entry = layer:u8  band:u8  reserved:u16  offset:u32  length:u32    ; offset from the start of TDIC
 ```
 
-A (layer, band) without an entry has no dictionary, and its payloads are compressed without one. North America's dictionaries are 64 KiB each and about 2 MiB in all. The app loads them all at start-up.
+Entries are sorted by (layer, band). A (layer, band) without an entry has no dictionary, and its payloads are compressed without one. North America's dictionaries are 64 KiB each and about 2 MiB in all. The app loads them all at start-up.
 
 ### `TDAT`: tile data (spanning)
 
-The compressed layer payloads, one **record per tile**, with the tile's layers back to back in layer-ID order. Each layer payload is one zstd frame (level 19, content checksum on, no dictionary ID in the frame), compressed with its (layer, band) dictionary. Tiles are stored by zoom, then in Hilbert order within the zoom, the same order as the index. Spatially close tiles are therefore close on disk, so one viewport is usually one or two reads.
+The compressed layer payloads, one **record per tile**, with the tile's layers back to back in layer-ID order. Each layer payload is one zstd frame (level 19, content size and content checksum on, no dictionary ID in the frame), compressed with its (layer, band) dictionary. The reader needs the content size to size its buffer, and refuses frames over 256 MiB. Tiles are stored by zoom, then in Hilbert order within the zoom, the same order as the index. Spatially close tiles are therefore close on disk, so one viewport is usually one or two reads.
 
 ### `TIDX`: tile index (contiguous)
 
@@ -179,9 +179,10 @@ dir_entry  = first_key:u64  data_offset:u64  block_offset:u32  tiles:u32   ; per
 block      = (key_delta:varint  layer_mask:u16  layer_len:varint*)*        ; `tiles` tiles
 ```
 
-- `key` is the tile's Hilbert index `d(z, x, y)` on the 2^z × 2^z grid, using the curve in `omp-builder`'s `compress::hilbert`. `key_delta` is the difference from the previous tile in the block. The first tile's delta is from `first_key`, so it is 0.
+- `key` is the tile's Hilbert index `d(z, x, y)` on the 2^z × 2^z grid, using the curve in `omp_core::tile::hilbert`. `key_delta` is the difference from the previous tile in the block. The first tile's delta is from `first_key`, so it is 0.
 - `layer_mask` has bit *i* set when layer *i* is present. One `layer_len` follows per set bit, in layer order: the compressed length of that layer's frame.
 - Blocks hold 256 tiles. The directory gives each block's first key, the virtual offset in `TDAT` of its first tile, and where the block starts in `TIDX`.
+- **Layout:** the 15 `zoom_dir` entries (120 bytes), then for each zoom in order its directory (`block_count × 24` bytes, at `dir_offset`) followed directly by its blocks. A zoom with no tiles has `block_count` 0 and a `dir_offset` at the current position, so each zoom's bytes end where the next zoom's `dir_offset` starts (or at the end of `TIDX` for z14). A block ends where the next block starts, or at the end of its zoom.
 - **Lookup of `(z, x, y)`:** binary-search zoom `z`'s directory by `first_key` and decode one block (at most 256 entries). Sum the frame lengths of the tiles before the target to get its offset from `data_offset`. Padding at a chunk boundary is never inside a block: the writer starts a new block at the first tile after padding.
 
 ## Addresses

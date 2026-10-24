@@ -19,7 +19,9 @@ use omp_core::whitelist::{Layer, Whitelist};
 use rayon::prelude::*;
 use serde::Serialize;
 
-use super::encode::{self, EXTENT_BITS, Enc};
+use omp_core::tile::{EXTENT_BITS, Enc, encode_layer};
+
+use super::encode;
 use super::geom::{self, BBox, Geometry, Rect};
 use super::osm::Feature;
 
@@ -370,11 +372,11 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
                 })
             })
             .collect();
-        let v1_bytes = encode::encode_v1(&v1);
+        let v1_bytes = encode_layer(&v1);
         if z == MAX_ZOOM {
             for e in &v1 {
                 // Encoded alone, so its strings are counted in full rather than shared.
-                let one = encode::encode_v1(std::slice::from_ref(e));
+                let one = encode_layer(std::slice::from_ref(e));
                 let c = local.class_z14.entry((li, e.class)).or_default();
                 c.0 += one.len() as u64 - 1;
                 c.1 += 1;
@@ -411,7 +413,7 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
         if v2.is_empty() {
             continue;
         }
-        let v2_bytes = encode::encode_v1(&v2);
+        let v2_bytes = encode_layer(&v2);
         local
             .cells
             .entry((Variant::V2, li, z))
