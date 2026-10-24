@@ -1,5 +1,5 @@
-//! Reads a PBF into whitelisted features. Three passes: relations, then ways and nodes in
-//! the order the node-location strategy needs.
+//! Reads a PBF into whitelisted features. Relations first, then ways and nodes in the order
+//! the node-location strategy needs.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -11,7 +11,8 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use super::geom::{self, Assembly, BBox, Geometry, P};
-use super::nodes::{DenseIndex, NodeSet, SparseLocations};
+use super::nodes::{DenseIndex, NodeSet, RankedLocations};
+use super::routing::RoutingStats;
 
 pub struct Feature {
     /// Source element: OSM id × 4 + 0 node, 1 way, 2 relation, 3 other source. Features are
@@ -70,6 +71,8 @@ pub struct ReadStats {
     pub road_tags: BTreeMap<String, u64>,
     pub needed_nodes: u64,
     pub node_set_heap_bytes: u64,
+    /// Bitset, rank index and one 8-byte location per needed node.
+    pub node_locations_heap_bytes: u64,
     pub node_index_disk_bytes: u64,
 }
 
@@ -144,7 +147,6 @@ struct Block {
     missing_refs: u64,
     features: Vec<Feature>,
     way_recs: Vec<WayRec>,
-    needed: Vec<(i64, P)>,
     member_coords: Vec<(i64, Vec<P>)>,
     roads: Vec<Road>,
     rels: Vec<RelRec>,
@@ -268,17 +270,96 @@ fn parse_maxspeed(v: &str) -> Option<f64> {
     v.parse().ok()
 }
 
-pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy) -> Result<OsmData> {
-    let ctx = Ctx {
-        wl,
-        keys: wl.keys().into_iter().collect(),
-        roads_layer: wl
-            .layer_index("roads")
-            .context("whitelist has no roads layer")?,
-        boundaries_layer: wl
-            .layer_index("boundaries")
-            .context("whitelist has no boundaries layer")?,
+impl<'a> Ctx<'a> {
+    fn new(wl: &'a Whitelist) -> Result<Self> {
+        Ok(Ctx {
+            wl,
+            keys: wl.keys().into_iter().collect(),
+            roads_layer: wl
+                .layer_index("roads")
+                .context("whitelist has no roads layer")?,
+            boundaries_layer: wl
+                .layer_index("boundaries")
+                .context("whitelist has no boundaries layer")?,
+        })
+    }
+}
+
+/// Counts the car routing graph like [`super::routing::build`] does, without keeping the roads:
+/// two more passes over the ways, one marking nodes that are intersections or way ends and
+/// one counting the edges between them. For a continent, where the roads do not fit next to
+/// everything else.
+pub fn count_road_graph(path: &Path, wl: &Whitelist, restrictions: u64) -> Result<RoutingStats> {
+    let ctx = Ctx::new(wl)?;
+    let (members, boundaries) = (HashSet::new(), HashMap::new());
+    // `f` sees each road way's `(refs, oneway, routable)`.
+    let roads = |f: &(dyn Fn(&[i64], i8, bool) + Sync)| {
+        pass(path, wl, |block, out| {
+            ways_block(&ctx, block, out, &members, &boundaries);
+            for rec in out.way_recs.drain(..) {
+                if let Some((_, oneway, _, routable)) = rec.road {
+                    f(&rec.refs, oneway, routable);
+                }
+            }
+            Ok(())
+        })
     };
+    let routable = |refs: &[i64], ok: bool| ok && refs.len() >= 2;
+    let (seen, graph_nodes) = (NodeSet::new(), NodeSet::new());
+    let [road_ways, routable_ways, edges, oneway_segments] =
+        [(); 4].map(|_| std::sync::atomic::AtomicU64::new(0));
+    let add = |n: &std::sync::atomic::AtomicU64, v: u64| {
+        n.fetch_add(v, std::sync::atomic::Ordering::Relaxed);
+    };
+    roads(&|refs, _, ok| {
+        add(&road_ways, 1);
+        if !routable(refs, ok) {
+            return;
+        }
+        add(&routable_ways, 1);
+        for &id in refs {
+            if seen.insert(id) {
+                graph_nodes.insert(id);
+            }
+        }
+        graph_nodes.insert(refs[0]);
+        graph_nodes.insert(refs[refs.len() - 1]);
+    })?;
+    drop(seen);
+    roads(&|refs, oneway, ok| {
+        if !routable(refs, ok) {
+            return;
+        }
+        let mut from = refs[0];
+        for &id in &refs[1..] {
+            if !graph_nodes.contains(id) {
+                continue;
+            }
+            if from != id {
+                if oneway == 0 {
+                    add(&edges, 2);
+                } else {
+                    add(&edges, 1);
+                    add(&oneway_segments, 1);
+                }
+            }
+            from = id;
+        }
+    })?;
+    Ok(RoutingStats {
+        road_ways: road_ways.into_inner(),
+        routable_ways: routable_ways.into_inner(),
+        nodes: graph_nodes.len(),
+        edges: edges.into_inner(),
+        oneway_segments: oneway_segments.into_inner(),
+        restriction_relations: restrictions,
+        ch: None,
+    })
+}
+
+/// `keep_roads`: also return the road ways with their coordinates, for [`super::routing::build`].
+pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy, keep_roads: bool) -> Result<OsmData> {
+    let ctx = Ctx::new(wl)?;
     let bbox = header_bbox(path)?;
     let mut stats = ReadStats::default();
     let mut counts = class_counts(wl);
@@ -296,6 +377,9 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy) -> Result<OsmData> 
                 t.nodes += n.nodes;
                 t.ways += n.ways;
                 t.relations += n.relations;
+                for (a, b) in t.area_m2_buckets.iter_mut().zip(n.area_m2_buckets) {
+                    *a += b;
+                }
             }
         }
         for (k, vs) in b.tag_values.drain() {
@@ -332,7 +416,7 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy) -> Result<OsmData> 
         .collect();
     let way_pass = |b: &PrimitiveBlock, out: &mut Block| {
         ways_block(&ctx, b, out, &members, &boundary_ways);
-        Ok(())
+        anyhow::Ok(())
     };
 
     let mut features = Vec::new();
@@ -348,7 +432,7 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy) -> Result<OsmData> 
             // Pass 2: every node into the index. Pass 3: ways, resolved as they are read.
             let index = DenseIndex::create(index_path)?;
             for mut b in pass(path, wl, |block, out| {
-                nodes_block(&ctx, block, out, |id, p| index.set(id, p).map(|_| false))
+                nodes_block(&ctx, block, out, |id, p| index.set(id, p))
             })? {
                 merge_common(&mut b, &mut stats);
                 collect(&mut b);
@@ -357,7 +441,7 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy) -> Result<OsmData> 
             for mut b in pass(path, wl, |block, out| {
                 way_pass(block, out)?;
                 for rec in std::mem::take(&mut out.way_recs) {
-                    resolve_way(rec, |id| index.get(id), out);
+                    resolve_way(rec, |id| index.get(id), keep_roads, out);
                 }
                 Ok(())
             })? {
@@ -366,41 +450,43 @@ pub fn read(path: &Path, wl: &Whitelist, strategy: Strategy) -> Result<OsmData> 
             }
         }
         Strategy::Sparse => {
-            // Pass 2: ways, marking the nodes they need. Pass 3: only those nodes.
-            let mut way_recs = Vec::new();
-            for mut b in pass(path, wl, way_pass)? {
-                merge_common(&mut b, &mut stats);
-                way_recs.append(&mut b.way_recs);
-            }
-            let mut needed = NodeSet::new();
-            for r in &way_recs {
-                for &id in &r.refs {
-                    needed.insert(id);
+            // Pass 2: ways, marking the nodes they need. Pass 3: those nodes, stored by
+            // rank. Pass 4: the ways again, resolved as they are read. Reading the ways twice
+            // is cheaper than holding them, since their refs alone are 8 bytes per vertex.
+            let needed = NodeSet::new();
+            for mut b in pass(path, wl, |block, out| {
+                way_pass(block, out)?;
+                for rec in out.way_recs.drain(..) {
+                    for &id in &rec.refs {
+                        needed.insert(id);
+                    }
                 }
+                Ok(())
+            })? {
+                merge_common(&mut b, &mut stats);
             }
             stats.node_set_heap_bytes = needed.heap_bytes();
-            let mut found = Vec::new();
+            let locs = RankedLocations::new(needed);
+            stats.needed_nodes = locs.len() as u64;
+            stats.node_locations_heap_bytes = locs.heap_bytes();
             for mut b in pass(path, wl, |block, out| {
-                nodes_block(&ctx, block, out, |id, _| Ok(needed.contains(id)))
+                nodes_block(&ctx, block, out, |id, p| {
+                    locs.set(id, p);
+                    Ok(())
+                })
             })? {
                 merge_common(&mut b, &mut stats);
                 collect(&mut b);
-                found.append(&mut b.needed);
             }
-            drop(needed);
-            let locs = SparseLocations::new(found);
-            stats.needed_nodes = locs.len() as u64;
-            let resolved: Vec<Block> = way_recs
-                .into_par_iter()
-                .fold(
-                    || Block::new(wl),
-                    |mut out, rec| {
-                        resolve_way(rec, |id| locs.get(id), &mut out);
-                        out
-                    },
-                )
-                .collect();
-            for mut b in resolved {
+            for mut b in pass(path, wl, |block, out| {
+                // Tag and class counts were taken in pass 2.
+                let mut ways = Block::new(wl);
+                way_pass(block, &mut ways)?;
+                for rec in ways.way_recs {
+                    resolve_way(rec, |id| locs.get(id), keep_roads, out);
+                }
+                Ok(())
+            })? {
                 merge_common(&mut b, &mut stats);
                 collect(&mut b);
             }
@@ -606,20 +692,18 @@ fn ways_block(
     }
 }
 
-/// `node` stores or checks a node location and says whether to keep it as "needed".
+/// `node` stores a node location.
 fn nodes_block(
     ctx: &Ctx,
     block: &PrimitiveBlock,
     out: &mut Block,
-    node: impl Fn(i64, P) -> Result<bool>,
+    node: impl Fn(i64, P) -> Result<()>,
 ) -> Result<()> {
     let mut tags = Vec::new();
     let visit = |out: &mut Block, id: i64, lat: i32, lon: i32, tags: &[(&str, &str)]| {
         out.nodes += 1;
         let p = geom::project_e7(lat, lon);
-        if node(id, p)? {
-            out.needed.push((id, p));
-        }
+        node(id, p)?;
         if !tags.is_empty() && ctx.interesting(tags) {
             out.count_tags(tags);
             for o in classify(ctx, ElementType::Node, tags, &mut out.counts) {
@@ -651,7 +735,7 @@ fn nodes_block(
     Ok(())
 }
 
-fn resolve_way(rec: WayRec, get: impl Fn(i64) -> Option<P>, out: &mut Block) {
+fn resolve_way(rec: WayRec, get: impl Fn(i64) -> Option<P>, keep_roads: bool, out: &mut Block) {
     let mut refs = Vec::with_capacity(rec.refs.len());
     let mut coords = Vec::with_capacity(rec.refs.len());
     for id in rec.refs {
@@ -692,7 +776,7 @@ fn resolve_way(rec: WayRec, get: impl Fn(i64) -> Option<P>, out: &mut Block) {
             props: o.props,
         });
     }
-    if let Some((class, oneway, maxspeed_kmh, routable)) = rec.road {
+    if keep_roads && let Some((class, oneway, maxspeed_kmh, routable)) = rec.road {
         out.roads.push(Road {
             way_id: rec.id,
             class,

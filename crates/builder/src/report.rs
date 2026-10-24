@@ -13,6 +13,14 @@ pub struct ReportArgs {
     /// JSON files written by `measure` (or all by `addr-spike`), one per region.
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
+
+    /// Sum `addr-spike` runs (e.g. one per state and province) into one column with this name.
+    #[arg(long)]
+    sum: Option<String>,
+
+    /// With `--sum`, also write the summed run here, to report it next to other runs.
+    #[arg(long, requires = "sum")]
+    sum_json: Option<PathBuf>,
 }
 
 const VARIANTS: [&str; 6] = ["v0", "v1", "v2", "v3", "v4", "v5"];
@@ -41,9 +49,18 @@ pub fn run(args: ReportArgs) -> Result<()> {
         runs.push(v);
     }
     if runs.iter().all(|r| r["kind"] == "addr") {
+        if let Some(name) = &args.sum {
+            let total = sum_addr_runs(&runs, name);
+            if let Some(p) = &args.sum_json {
+                std::fs::write(p, serde_json::to_string_pretty(&total)?)
+                    .with_context(|| format!("write {}", p.display()))?;
+            }
+            runs = vec![total];
+        }
         print!("{}", addr_report(&runs));
         return Ok(());
     }
+    anyhow::ensure!(args.sum.is_none(), "--sum only applies to addr-spike runs");
     let names: Vec<String> = runs
         .iter()
         .map(|r| {
@@ -198,11 +215,32 @@ pub fn run(args: ReportArgs) -> Result<()> {
     row(&mut out, "Graph edges", &|r| {
         format!("{:.0}", num(&r["routing"]["edges"]))
     });
+    let has_ch = |r: &Value| r["routing"]["ch_edges"].is_number();
+    // For runs that only counted the graph (`--routing graph`), the CH is estimated from the
+    // mean CH-edges-per-edge ratio of the runs that built one.
+    let ratios: Vec<f64> = runs
+        .iter()
+        .filter(|r| has_ch(r))
+        .map(|r| num(&r["routing"]["ch_edges"]) / num(&r["routing"]["edges"]).max(1.0))
+        .collect();
+    let ratio = (!ratios.is_empty()).then(|| ratios.iter().sum::<f64>() / ratios.len() as f64);
     row(&mut out, "CH prepare (s)", &|r| {
-        format!("{:.0}", num(&r["routing"]["ch_prepare_s"]))
+        if has_ch(r) {
+            format!("{:.0}", num(&r["routing"]["ch_prepare_s"]))
+        } else {
+            "–".into()
+        }
     });
     row(&mut out, "CH, compact layout (MiB)", &|r| {
-        mib(num(&r["routing"]["ch_bytes_compact"]))
+        let g = &r["routing"];
+        match ratio {
+            _ if has_ch(r) => mib(num(&g["ch_bytes_compact"])),
+            Some(k) if g["edges"].is_number() => format!(
+                "~{} (est., {k:.2} CH edges per edge)",
+                mib(num(&g["edges"]) * k * 12.0 + num(&g["nodes"]) * 12.0)
+            ),
+            _ => "–".into(),
+        }
     });
     row(&mut out, "Search fst (MiB)", &|r| {
         mib(num(&r["search"]["fst_bytes"]))
@@ -236,6 +274,103 @@ fn pct(a: f64, b: f64) -> String {
     } else {
         "–".into()
     }
+}
+
+/// Fields that identify a row in a list; rows with the same values are summed together.
+const ROW_KEYS: [&str; 7] = [
+    "source",
+    "license",
+    "variant",
+    "dedup_m",
+    "block_kib",
+    "path",
+    "name",
+];
+/// Settings, kept from the first run rather than summed.
+const SETTINGS: [&str; 3] = ["attach_m", "dedup_m", "zstd_level"];
+
+/// Adds `b` into `a`: numbers add (peak RSS takes the maximum), lists of rows are matched by
+/// [`ROW_KEYS`], number lists add element-wise, and strings keep `a`'s value.
+fn add_value(a: &mut Value, b: &Value, key: &str) {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) if !SETTINGS.contains(&key) => {
+            let (x0, y0) = (x.as_f64().unwrap_or(0.0), y.as_f64().unwrap_or(0.0));
+            let v = if key == "peak_rss_mib" {
+                Value::from(x0.max(y0))
+            } else if let (Some(i), Some(j)) = (x.as_u64(), y.as_u64()) {
+                Value::from(i + j)
+            } else {
+                Value::from(x0 + y0)
+            };
+            *x = v.as_number().cloned().unwrap_or_else(|| x.clone());
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            for (k, v) in y {
+                match x.get_mut(k) {
+                    Some(old) => add_value(old, v, k),
+                    None => {
+                        x.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            let row_key = |v: &Value| -> Option<Vec<Value>> {
+                v.is_object()
+                    .then(|| ROW_KEYS.iter().map(|k| v[*k].clone()).collect())
+            };
+            if y.first().is_some_and(Value::is_number) && x.len() == y.len() {
+                for (old, v) in x.iter_mut().zip(y) {
+                    add_value(old, v, key);
+                }
+            } else if y.first().is_some_and(Value::is_object) {
+                for v in y {
+                    let k = row_key(v);
+                    match x.iter_mut().find(|old| row_key(old) == k) {
+                        Some(old) => add_value(old, v, key),
+                        None => x.push(v.clone()),
+                    }
+                }
+            }
+        }
+        (a @ Value::Null, b) => *a = b.clone(),
+        _ => {}
+    }
+}
+
+/// One run that adds up `runs`, with ratios recomputed from the sums.
+fn sum_addr_runs(runs: &[Value], name: &str) -> Value {
+    let mut total = runs[0].clone();
+    for r in &runs[1..] {
+        add_value(&mut total, r, "");
+    }
+    total["region"] = Value::from(name);
+    let regions: Vec<Value> = runs.iter().map(|r| r["region"].clone()).collect();
+    total["summed_regions"] = Value::from(regions);
+    let addresses = num(&total["encoding"]["addresses"]).max(1.0);
+    for v in total["encoding"]["variants"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+    {
+        v["bytes_per_address"] = Value::from(num(&v["total"]) / addresses);
+    }
+    // Runs differ in their sources (no NAR in the US), so cumulative counts are re-added.
+    if let Some(cov) = total["coverage"].as_array_mut() {
+        let pos = |r: &Value| ADDR_SOURCES.iter().position(|(id, _)| r["source"] == *id);
+        cov.sort_by_key(pos);
+        let mut cumulative = 0;
+        for r in cov {
+            cumulative += r["new_addresses"].as_u64().unwrap_or(0);
+            r["cumulative"] = Value::from(cumulative);
+        }
+    }
+    for r in total["ranges"].as_array_mut().into_iter().flatten() {
+        let n = num(&r["ranges"]).max(1.0);
+        r["share_with_osm_point"] = Value::from(num(&r["with_osm_point"]) / n);
+        r["share_with_merged_point"] = Value::from(num(&r["with_merged_point"]) / n);
+    }
+    total
 }
 
 fn find<'a>(list: &'a Value, key: &str, value: &Value) -> Option<&'a Value> {
@@ -461,4 +596,42 @@ fn addr_report(runs: &[Value]) -> String {
         })
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sums_addr_runs() {
+        let us: Value = serde_json::from_str(
+            r#"{"region": "oh", "peak_rss_mib": 10.0, "dedup_m": 250.0,
+                "coverage": [{"source": "osm", "new_addresses": 5, "cumulative": 5},
+                             {"source": "open_addresses", "new_addresses": 10, "cumulative": 15}],
+                "attach": [{"source": "osm", "records": 5, "strict": [1, 2, 3]}],
+                "encoding": {"addresses": 15, "variants": [{"variant": "a3", "total": 30, "bytes_per_address": 2.0}]}}"#,
+        )
+        .unwrap();
+        let ca: Value = serde_json::from_str(
+            r#"{"region": "on", "peak_rss_mib": 20.0, "dedup_m": 250.0,
+                "coverage": [{"source": "osm", "new_addresses": 1, "cumulative": 1},
+                             {"source": "nar", "new_addresses": 4, "cumulative": 5}],
+                "attach": [{"source": "osm", "records": 1, "strict": [1, 1, 1]}],
+                "encoding": {"addresses": 5, "variants": [{"variant": "a3", "total": 20, "bytes_per_address": 4.0}]}}"#,
+        )
+        .unwrap();
+        let t = sum_addr_runs(&[us, ca], "both");
+        assert_eq!(t["region"], "both");
+        assert_eq!(t["peak_rss_mib"], 20.0);
+        assert_eq!(t["dedup_m"], 250.0);
+        let cumulative: Vec<u64> = t["coverage"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["cumulative"].as_u64().unwrap())
+            .collect();
+        assert_eq!(cumulative, [6, 16, 20]);
+        assert_eq!(t["attach"][0]["strict"], serde_json::json!([2, 3, 4]));
+        assert_eq!(t["encoding"]["variants"][0]["bytes_per_address"], 2.5);
+    }
 }

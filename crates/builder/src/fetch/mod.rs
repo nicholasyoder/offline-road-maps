@@ -33,7 +33,7 @@ pub struct FetchArgs {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "osm,water,openaddresses,tiger,oda,nar"
+        default_value = "osm,water,poly,openaddresses,tiger,oda,nar"
     )]
     sources: Vec<Source>,
 
@@ -72,6 +72,8 @@ enum Source {
     Osm,
     /// osmdata.openstreetmap.de ocean polygons (global, one file).
     Water,
+    /// Geofabrik boundary polygons of each state's and province's extract.
+    Poly,
     #[value(name = "openaddresses")]
     OpenAddresses,
     Tiger,
@@ -86,6 +88,7 @@ impl Source {
         match self {
             Self::Osm => "osm",
             Self::Water => "water",
+            Self::Poly => "poly",
             Self::OpenAddresses => "openaddresses",
             Self::Tiger => "tiger",
             Self::Oda => "oda",
@@ -137,6 +140,7 @@ pub fn run(args: FetchArgs, work_dir: &Path) -> Result<()> {
         let planned = match source {
             Source::Osm => sources::osm(&agent, &region, &args.osm_snapshot)?,
             Source::Water => sources::water(),
+            Source::Poly => sources::polys(&index, &region)?,
             Source::OpenAddresses => sources::openaddresses(&agent, &region)?,
             Source::Tiger => sources::tiger(&agent, &region, args.tiger_year)?,
             Source::Oda => sources::oda(&region),
@@ -147,7 +151,7 @@ pub fn run(args: FetchArgs, work_dir: &Path) -> Result<()> {
     }
 
     let manifest_path = out.join("manifest.toml");
-    let mut manifest = Manifest::load_or_default(&manifest_path)?;
+    let manifest = Manifest::load_or_default(&manifest_path)?;
     let (done, todo): (Vec<Job>, Vec<Job>) = jobs
         .into_iter()
         .partition(|j| !args.refresh && is_present(&manifest, &out, j));
@@ -168,10 +172,9 @@ pub fn run(args: FetchArgs, work_dir: &Path) -> Result<()> {
 
     std::fs::create_dir_all(&out).with_context(|| format!("create {}", out.display()))?;
     let start = Instant::now();
-    let (entries, failures) = run_jobs(&agent, &out, todo, args.jobs.max(1));
+    let (entries, failures) = run_jobs(&agent, &out, todo, args.jobs.max(1), &manifest_path);
     let fetched = entries.len();
-    manifest.upsert(entries);
-    manifest.save(&manifest_path)?;
+    save_merged(&manifest_path, &entries)?;
     println!(
         "fetched {fetched} files in {:.0?}; manifest: {}",
         start.elapsed(),
@@ -192,15 +195,28 @@ fn is_present(manifest: &Manifest, out: &Path, job: &Job) -> bool {
         .is_some_and(|e| std::fs::metadata(out.join(&job.path)).is_ok_and(|m| m.len() == e.size))
 }
 
+/// Adds `entries` to the manifest as it is on disk now, so another `fetch` writing the same
+/// manifest keeps its entries.
+fn save_merged(path: &Path, entries: &[FileEntry]) -> Result<()> {
+    let mut manifest = Manifest::load_or_default(path)?;
+    manifest.upsert(entries.iter().cloned());
+    manifest.save(path)
+}
+
+/// How often the manifest is saved during a long fetch, so an interrupted one keeps its files.
+const SAVE_EVERY: Duration = Duration::from_secs(30);
+
 /// Downloads `jobs` on `workers` threads. Returns the new manifest entries and the failures.
 fn run_jobs(
     agent: &Agent,
     out: &Path,
     jobs: Vec<Job>,
     workers: usize,
+    manifest_path: &Path,
 ) -> (Vec<FileEntry>, Vec<(String, anyhow::Error)>) {
     let next = AtomicUsize::new(0);
     let results = Mutex::new((Vec::new(), Vec::new()));
+    let last_save = Mutex::new(Instant::now());
     std::thread::scope(|s| {
         for _ in 0..workers.min(jobs.len()) {
             s.spawn(|| {
@@ -210,6 +226,13 @@ fn run_jobs(
                     match r {
                         Ok(e) => results.0.push(e),
                         Err(e) => results.1.push((job.path.clone(), e)),
+                    }
+                    let mut last = last_save.lock().unwrap();
+                    if last.elapsed() >= SAVE_EVERY {
+                        if let Err(e) = save_merged(manifest_path, &results.0) {
+                            eprintln!("  could not save the manifest: {e:#}");
+                        }
+                        *last = Instant::now();
                     }
                 }
             });

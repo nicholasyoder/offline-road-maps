@@ -19,6 +19,13 @@ pub struct RoutingStats {
     pub edges: u64,
     pub oneway_segments: u64,
     pub restriction_relations: u64,
+    /// The contraction hierarchy; `None` when only the graph was counted.
+    #[serde(flatten)]
+    pub ch: Option<ChStats>,
+}
+
+#[derive(Serialize)]
+pub struct ChStats {
     pub ch_prepare_s: f64,
     pub ch_edges: u64,
     pub ch_shortcuts: u64,
@@ -50,11 +57,15 @@ fn metres(a: P, b: P) -> f64 {
     (dx * dx + dy * dy).sqrt() * geom::metres_per_unit(a)
 }
 
-pub fn build(roads: &[Road], class_names: &[String], restrictions: u64) -> RoutingStats {
-    let routable: Vec<&Road> = roads
+fn routable(roads: &[Road]) -> Vec<&Road> {
+    roads
         .iter()
         .filter(|r| r.routable && r.refs.len() >= 2)
-        .collect();
+        .collect()
+}
+
+pub fn build(roads: &[Road], class_names: &[String], restrictions: u64) -> RoutingStats {
+    let routable = routable(roads);
     // A node is in the graph if two ways share it, a way passes it twice, or a way ends there.
     let mut uses: HashMap<i64, u32> = HashMap::new();
     for r in &routable {
@@ -116,10 +127,12 @@ pub fn build(roads: &[Road], class_names: &[String], restrictions: u64) -> Routi
         edges,
         oneway_segments,
         restriction_relations: restrictions,
-        ch_prepare_s,
-        ch_edges,
-        ch_shortcuts: ch_edges.saturating_sub(graph.get_num_edges() as u64),
-        ch_bytes_fast_paths: ch_edges * 20 + nodes * 12,
-        ch_bytes_compact: ch_edges * 12 + nodes * 12,
+        ch: Some(ChStats {
+            ch_prepare_s,
+            ch_edges,
+            ch_shortcuts: ch_edges.saturating_sub(graph.get_num_edges() as u64),
+            ch_bytes_fast_paths: ch_edges * 20 + nodes * 12,
+            ch_bytes_compact: ch_edges * 12 + nodes * 12,
+        }),
     }
 }

@@ -34,6 +34,24 @@ impl Subdivision {
         }
     }
 
+    /// Every US state (with DC, Puerto Rico and the US Virgin Islands) and Canadian province
+    /// and territory.
+    pub fn all() -> Vec<Self> {
+        let us = US_STATE_FIPS
+            .iter()
+            .map(|&(abbr, fips)| Self::UsState { abbr, fips });
+        let ca = CA_PROVINCES.iter().map(|&abbr| Self::CaProvince { abbr });
+        us.chain(ca).collect()
+    }
+
+    /// ISO 3166-2 code, e.g. `US-OH`.
+    pub fn iso(self) -> String {
+        match self {
+            Self::UsState { abbr, .. } => format!("US-{abbr}"),
+            Self::CaProvince { abbr } => format!("CA-{abbr}"),
+        }
+    }
+
     pub fn from_iso(code: &str) -> Option<Self> {
         if let Some(abbr) = code.strip_prefix("US-") {
             US_STATE_FIPS
@@ -105,6 +123,19 @@ struct Props {
 #[derive(Deserialize)]
 struct Urls {
     pbf: String,
+}
+
+/// The Geofabrik extract that covers exactly one subdivision, e.g. `us/ohio` for `US-OH`.
+pub fn subdivision_extract(index_json: &str, sub: Subdivision) -> Result<String> {
+    let index: Index = serde_json::from_str(index_json).context("parse Geofabrik index")?;
+    let iso = sub.iso();
+    index
+        .features
+        .into_iter()
+        .map(|f| f.properties)
+        .find(|p| p.iso_subdivision == [iso.as_str()])
+        .map(|p| p.id)
+        .with_context(|| format!("no Geofabrik extract for {iso}"))
 }
 
 pub fn resolve(index_json: &str, id: &str) -> Result<Region> {
@@ -210,5 +241,14 @@ mod tests {
         );
         assert!(resolve(INDEX, "mexico").unwrap().subdivisions.is_empty());
         assert!(resolve(INDEX, "ohio").is_err());
+    }
+
+    #[test]
+    fn subdivision_extracts() {
+        let on = Subdivision::from_iso("CA-ON").unwrap();
+        assert_eq!(on.iso(), "CA-ON");
+        assert_eq!(subdivision_extract(INDEX, on).unwrap(), "ontario");
+        let qc = Subdivision::from_iso("CA-QC").unwrap();
+        assert!(subdivision_extract(INDEX, qc).is_err());
     }
 }

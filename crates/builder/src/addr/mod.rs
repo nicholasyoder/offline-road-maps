@@ -24,6 +24,7 @@ use crate::fetch::manifest::Manifest;
 use crate::fetch::regions::Subdivision;
 use crate::measure::geom::{self, P};
 use crate::measure::peak_rss_mib;
+use crate::measure::poly;
 use streets::{Streets, cell};
 
 #[derive(Args)]
@@ -31,9 +32,17 @@ pub struct AddrArgs {
     /// OSM extract (.osm.pbf).
     input: PathBuf,
 
-    /// States or provinces whose address files to read, as ISO codes (`US-OH`, `CA-QC`).
+    /// States or provinces whose address files to read, as ISO codes (`US-OH`, `CA-QC`), or
+    /// `all` for every US state and Canadian province.
     #[arg(long = "subdivision", required = true)]
     subdivisions: Vec<String>,
+
+    /// Run each subdivision on its own. OSM is read once; its address points and
+    /// interpolation ranges go to the first subdivision whose boundary contains them
+    /// (`<inputs>/poly/<ISO>.poly`, from `fetch --sources poly`), and its streets to every
+    /// subdivision they are near. `--json` is then a directory with one `<ISO>.json` each.
+    #[arg(long)]
+    each: bool,
 
     /// Sources to read.
     #[arg(
@@ -56,7 +65,8 @@ pub struct AddrArgs {
     #[arg(long)]
     json: PathBuf,
 
-    /// Directory for sample TSVs [default: <json dir>/<region>-samples].
+    /// Directory for sample TSVs [default: <json dir>/<region>-samples; with --each,
+    /// <json dir>/<ISO>-samples].
     #[arg(long)]
     samples: Option<PathBuf>,
 
@@ -368,6 +378,13 @@ struct Stages {
 }
 
 impl Stages {
+    fn new() -> Self {
+        Self {
+            list: Vec::new(),
+            t: Instant::now(),
+        }
+    }
+
     fn done(&mut self, name: &'static str) {
         let secs = self.t.elapsed().as_secs_f64();
         let rss = peak_rss_mib();
@@ -565,32 +582,129 @@ fn select(
 
 pub fn run(args: AddrArgs, work_dir: &Path) -> Result<()> {
     let start = Instant::now();
-    let mut stages = Stages {
-        list: Vec::new(),
-        t: Instant::now(),
-    };
-    let subs: Vec<Subdivision> = args
-        .subdivisions
-        .iter()
-        .map(|s| {
+    let mut stages = Stages::new();
+    let mut subs: Vec<Subdivision> = Vec::new();
+    for s in &args.subdivisions {
+        if s.eq_ignore_ascii_case("all") {
+            subs.extend(Subdivision::all());
+            continue;
+        }
+        subs.push(
             Subdivision::from_iso(&s.to_uppercase())
-                .with_context(|| format!("unknown subdivision {s:?}; use e.g. US-OH or CA-QC"))
-        })
-        .collect::<Result<_>>()?;
-    let region = args.region.clone().unwrap_or_else(|| {
-        let name = args.input.file_name().unwrap_or_default().to_string_lossy();
-        name.split(['-', '.']).next().unwrap_or_default().to_owned()
-    });
+                .with_context(|| format!("unknown subdivision {s:?}; use e.g. US-OH or CA-QC"))?,
+        );
+    }
+    subs.dedup();
     let inputs = args
         .inputs
         .clone()
         .unwrap_or_else(|| work_dir.join("inputs"));
-    let samples_dir = args.samples.clone().unwrap_or_else(|| {
-        args.json
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join(format!("{region}-samples"))
-    });
+    let read_osm = args.sources.contains(&Input::Osm);
+
+    if !args.each {
+        let region = args.region.clone().unwrap_or_else(|| {
+            let name = args.input.file_name().unwrap_or_default().to_string_lossy();
+            name.split(['-', '.']).next().unwrap_or_default().to_owned()
+        });
+        let samples_dir = args.samples.clone().unwrap_or_else(|| {
+            args.json
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(format!("{region}-samples"))
+        });
+        let osm = read_osm.then(|| osm::read(&args.input)).transpose()?;
+        stages.done("osm");
+        let run = Run {
+            region,
+            subs: &subs,
+            json: args.json.clone(),
+            samples_dir,
+            start,
+            stages,
+        };
+        return run_one(&args, &inputs, run, osm);
+    }
+
+    let polys: Vec<poly::Poly> = subs
+        .iter()
+        .map(|s| poly::Poly::read(&inputs.join(format!("poly/{}.poly", s.iso()))))
+        .collect::<Result<_>>()?;
+    std::fs::create_dir_all(&args.json)?;
+    let mut parts: Vec<Option<osm::OsmAddresses>> = match read_osm {
+        true => {
+            let all = osm::read(&args.input)?;
+            stages.done("osm");
+            let (parts, split) = osm::split(all, &polys, STREET_MARGIN_DEG);
+            stages.done("split");
+            let report = SplitReport {
+                kind: "addr-split",
+                input: args.input.display().to_string(),
+                subdivisions: subs.iter().map(|s| s.iso()).collect(),
+                wall_s: start.elapsed().as_secs_f64(),
+                peak_rss_mib: peak_rss_mib(),
+                stages: std::mem::take(&mut stages.list),
+                split,
+            };
+            let path = args.json.join("osm-split.json");
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)
+                .with_context(|| format!("write {}", path.display()))?;
+            parts.into_iter().map(Some).collect()
+        }
+        false => subs.iter().map(|_| None).collect(),
+    };
+    for (i, sub) in subs.iter().enumerate() {
+        let iso = sub.iso();
+        let run = Run {
+            json: args.json.join(format!("{iso}.json")),
+            samples_dir: match &args.samples {
+                Some(d) => d.join(&iso),
+                None => args.json.join(format!("{iso}-samples")),
+            },
+            region: iso,
+            subs: std::slice::from_ref(sub),
+            start: Instant::now(),
+            stages: Stages::new(),
+        };
+        run_one(&args, &inputs, run, parts[i].take())?;
+    }
+    Ok(())
+}
+
+/// Streets this far outside a subdivision's boundary still go to it, for addresses near the
+/// border (about 5 km).
+const STREET_MARGIN_DEG: f64 = 0.05;
+
+#[derive(Serialize)]
+struct SplitReport {
+    kind: &'static str,
+    input: String,
+    subdivisions: Vec<String>,
+    wall_s: f64,
+    peak_rss_mib: f64,
+    stages: Vec<Stage>,
+    split: osm::SplitStats,
+}
+
+/// One merge run: its name, subdivisions and outputs.
+struct Run<'a> {
+    region: String,
+    subs: &'a [Subdivision],
+    json: PathBuf,
+    samples_dir: PathBuf,
+    start: Instant,
+    stages: Stages,
+}
+
+/// Merges the address sources of `run.subs` with the OSM records already read.
+fn run_one(args: &AddrArgs, inputs: &Path, run: Run, osm: Option<osm::OsmAddresses>) -> Result<()> {
+    let Run {
+        region,
+        subs,
+        json,
+        samples_dir,
+        start,
+        mut stages,
+    } = run;
     std::fs::create_dir_all(&samples_dir)?;
 
     let mut files = vec![FileRow {
@@ -602,7 +716,7 @@ pub fn run(args: AddrArgs, work_dir: &Path) -> Result<()> {
         kept: 0,
         conflicts: 0,
     }];
-    let sel = select(&args, &inputs, &subs, &mut files)?;
+    let sel = select(args, inputs, subs, &mut files)?;
     eprintln!(
         "addr-spike {region}: {} OpenAddresses files, {} TIGER files, NAR {}, ODA {}",
         sel.openaddresses.len(),
@@ -613,14 +727,10 @@ pub fn run(args: AddrArgs, work_dir: &Path) -> Result<()> {
 
     // Extract.
     let mut raws: Vec<Raw> = Vec::new();
-    let osm = if sel.osm {
-        let mut o = osm::read(&args.input)?;
+    let osm = osm.filter(|_| sel.osm).map(|mut o| {
         raws.append(&mut o.raws);
-        Some(o)
-    } else {
-        None
-    };
-    stages.done("osm");
+        o
+    });
     let oa = if sel.openaddresses.is_empty() {
         None
     } else {
@@ -1077,7 +1187,7 @@ pub fn run(args: AddrArgs, work_dir: &Path) -> Result<()> {
         kind: "addr",
         region,
         input: args.input.display().to_string(),
-        subdivisions: args.subdivisions.clone(),
+        subdivisions: subs.iter().map(|s| s.iso()).collect(),
         attach_m: args.attach_m,
         dedup_m: args.dedup_m,
         zstd_level: args.zstd_level,
@@ -1111,14 +1221,14 @@ pub fn run(args: AddrArgs, work_dir: &Path) -> Result<()> {
         ranges: range_rows.into_values().collect(),
         encoding,
     };
-    if let Some(dir) = args.json.parent() {
+    if let Some(dir) = json.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(&args.json, serde_json::to_string_pretty(&report)?)
-        .with_context(|| format!("write {}", args.json.display()))?;
+    std::fs::write(&json, serde_json::to_string_pretty(&report)?)
+        .with_context(|| format!("write {}", json.display()))?;
     eprintln!(
         "wrote {} and {} in {:.0} s, peak RSS {:.0} MiB",
-        args.json.display(),
+        json.display(),
         samples_dir.display(),
         report.wall_s,
         report.peak_rss_mib

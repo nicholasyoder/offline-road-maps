@@ -7,6 +7,7 @@ pub(crate) mod encode;
 pub(crate) mod geom;
 pub(crate) mod nodes;
 mod osm;
+pub(crate) mod poly;
 mod routing;
 mod search;
 mod tiles;
@@ -52,6 +53,12 @@ pub struct MeasureArgs {
     #[arg(long)]
     water: Option<PathBuf>,
 
+    /// Keep only the ocean pieces that meet this boundary (`.poly`, e.g. from `fetch --sources
+    /// poly`), not every piece in the PBF's bbox. Matters for a continent, whose bbox holds
+    /// whole oceans.
+    #[arg(long)]
+    clip_poly: Option<PathBuf>,
+
     /// Directory for the temporary tile store [default: <work dir>/tmp].
     #[arg(long)]
     temp: Option<PathBuf>,
@@ -59,9 +66,17 @@ pub struct MeasureArgs {
     #[arg(long, default_value_t = 19)]
     zstd_level: i32,
 
-    /// Skip the contraction hierarchy (slow on large regions).
-    #[arg(long)]
-    no_routing: bool,
+    /// Routing estimate: build the contraction hierarchy, only count the road graph (for a
+    /// continent, where the CH does not fit), or skip it.
+    #[arg(long, value_enum, default_value_t = Routing::Ch)]
+    routing: Routing,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Routing {
+    Ch,
+    Graph,
+    None,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -117,7 +132,10 @@ struct Stage {
 #[derive(Serialize)]
 struct WaterStats {
     file: String,
+    clip_poly: Option<String>,
     records_scanned: u64,
+    /// Pieces in the bbox but not meeting `clip_poly`, dropped.
+    outside_poly: u64,
     polygons: u64,
 }
 
@@ -212,19 +230,18 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
     };
 
     eprintln!("measure {region}: {}", args.input.display());
-    let mut data = osm::read(&args.input, &wl, strategy)?;
+    let mut data = osm::read(&args.input, &wl, strategy, args.routing == Routing::Ch)?;
     stages.done("read");
 
-    let routing = if args.no_routing {
-        None
-    } else {
-        let roads = &wl.layers[wl.layer_index("roads").context("no roads layer")?];
-        let names: Vec<String> = roads.classes.iter().map(|c| c.name.clone()).collect();
-        Some(routing::build(
-            &data.roads,
-            &names,
-            data.stats.restriction_relations,
-        ))
+    let restrictions = data.stats.restriction_relations;
+    let routing = match args.routing {
+        Routing::Ch => {
+            let roads = &wl.layers[wl.layer_index("roads").context("no roads layer")?];
+            let names: Vec<String> = roads.classes.iter().map(|c| c.name.clone()).collect();
+            Some(routing::build(&data.roads, &names, restrictions))
+        }
+        Routing::Graph => Some(osm::count_road_graph(&args.input, &wl, restrictions)?),
+        Routing::None => None,
     };
     data.roads = Vec::new();
     stages.done("routing");
@@ -244,10 +261,18 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
                 .iter()
                 .position(|c| c.external && c.name == "ocean")
                 .context("no external ocean class in the water layer")?;
-            let (feats, scanned) = water::read(&water_zip, bbox, layer as u8, class as u16)?;
+            let clip = args
+                .clip_poly
+                .as_deref()
+                .map(poly::Poly::read)
+                .transpose()?;
+            let (feats, scanned, outside) =
+                water::read(&water_zip, bbox, clip.as_ref(), layer as u8, class as u16)?;
             let stats = WaterStats {
                 file: water_zip.display().to_string(),
+                clip_poly: args.clip_poly.as_ref().map(|p| p.display().to_string()),
                 records_scanned: scanned,
+                outside_poly: outside,
                 polygons: feats.len() as u64,
             };
             data.features.extend(feats);

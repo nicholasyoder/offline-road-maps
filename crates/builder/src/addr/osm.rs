@@ -13,10 +13,12 @@ use serde::Serialize;
 
 use super::tiger::{Range, RangeSrc};
 use super::{Raw, Src};
-use crate::measure::geom::{self, P};
-use crate::measure::nodes::{NodeSet, SparseLocations};
+use crate::measure::geom::{self, BBox, P};
+use crate::measure::nodes::{NodeSet, RankedLocations};
+use crate::measure::poly::Poly;
 
 /// A named highway way. Addresses attach to these.
+#[derive(Clone)]
 pub struct StreetWay {
     pub id: i64,
     /// `name` first, then alternates and each `ref`.
@@ -174,7 +176,6 @@ struct WayBlock {
 
 #[derive(Default)]
 struct NodeBlock {
-    locs: Vec<(i64, P)>,
     raws: Vec<Raw>,
     /// Numbered nodes on interpolation ways: `(id, number, addr:street)`.
     endpoints: Vec<(i64, String, String)>,
@@ -239,15 +240,13 @@ fn ways_block(block: &PrimitiveBlock, out: &mut WayBlock) {
 fn nodes_block(
     block: &PrimitiveBlock,
     out: &mut NodeBlock,
-    needed: &NodeSet,
+    locs: &RankedLocations,
     endpoints: &HashSet<i64>,
 ) {
     let mut tags = Vec::new();
     let visit = |out: &mut NodeBlock, id: i64, lat: i32, lon: i32, tags: &[(&str, &str)]| {
         let p = geom::project_e7(lat, lon);
-        if needed.contains(id) {
-            out.locs.push((id, p));
-        }
+        locs.set(id, p);
         if tags.is_empty() {
             return;
         }
@@ -287,6 +286,102 @@ fn merge(into: &mut OsmStats, s: &OsmStats) {
     into.number_lists += s.number_lists;
 }
 
+#[derive(Serialize)]
+pub struct SplitStats {
+    /// The whole read; the per-subdivision runs only count streets and interpolation ranges.
+    pub osm: OsmStats,
+    pub points: u64,
+    pub ranges: u64,
+    pub streets: u64,
+    /// In no subdivision's boundary (other countries, open water).
+    pub points_outside: u64,
+    pub ranges_outside: u64,
+    /// Per subdivision, in the order given: points, ranges and streets it got.
+    pub per_subdivision: Vec<[u64; 3]>,
+}
+
+/// Splits `all` by `polys`: each address point and interpolation range (by its first
+/// vertex) goes to the first polygon that contains it, and each street to every polygon
+/// whose bounds, grown by `margin_deg`, its bounds touch.
+pub fn split(
+    all: OsmAddresses,
+    polys: &[Poly],
+    margin_deg: f64,
+) -> (Vec<OsmAddresses>, SplitStats) {
+    let owner = |p: P| polys.iter().position(|poly| poly.contains(p));
+    let point_owner: Vec<Option<usize>> = all.raws.par_iter().map(|r| owner(r.p)).collect();
+    let range_owner: Vec<Option<usize>> = all
+        .ranges
+        .par_iter()
+        .map(|r| r.line.first().and_then(|&p| owner(p)))
+        .collect();
+    let bounds: Vec<BBox> = polys.iter().map(|p| p.bbox(margin_deg)).collect();
+    let street_owners: Vec<Vec<usize>> = all
+        .streets
+        .par_iter()
+        .map(|s| {
+            let b = BBox::of(s.coords.iter().copied());
+            let rect = [b.min[0], b.min[1], b.max[0], b.max[1]].map(i64::from);
+            (0..polys.len())
+                .filter(|&i| geom::bbox_overlaps(&bounds[i], &rect))
+                .collect()
+        })
+        .collect();
+
+    let mut parts: Vec<OsmAddresses> = polys
+        .iter()
+        .map(|_| OsmAddresses {
+            raws: Vec::new(),
+            ranges: Vec::new(),
+            streets: Vec::new(),
+            stats: OsmStats::default(),
+        })
+        .collect();
+    let mut stats = SplitStats {
+        points: all.raws.len() as u64,
+        ranges: all.ranges.len() as u64,
+        streets: all.streets.len() as u64,
+        osm: all.stats,
+        points_outside: 0,
+        ranges_outside: 0,
+        per_subdivision: Vec::new(),
+    };
+    for (r, o) in all.raws.into_iter().zip(point_owner) {
+        match o {
+            Some(i) => parts[i].raws.push(r),
+            None => stats.points_outside += 1,
+        }
+    }
+    for (r, o) in all.ranges.into_iter().zip(range_owner) {
+        match o {
+            Some(i) => {
+                let part = &mut parts[i];
+                part.stats.interpolation_ranges += 1;
+                part.stats.interpolation_numbers += r.numbers();
+                part.ranges.push(r);
+            }
+            None => stats.ranges_outside += 1,
+        }
+    }
+    for (s, owners) in all.streets.into_iter().zip(street_owners) {
+        if let Some((&last, rest)) = owners.split_last() {
+            for &i in rest {
+                parts[i].streets.push(s.clone());
+            }
+            parts[last].streets.push(s);
+        }
+    }
+    for p in &mut parts {
+        p.stats.street_ways = p.streets.len() as u64;
+        stats.per_subdivision.push([
+            p.raws.len() as u64,
+            p.ranges.len() as u64,
+            p.stats.street_ways,
+        ]);
+    }
+    (parts, stats)
+}
+
 pub fn read(path: &Path) -> Result<OsmAddresses> {
     let mut stats = OsmStats::default();
     let mut streets = Vec::new();
@@ -302,7 +397,7 @@ pub fn read(path: &Path) -> Result<OsmAddresses> {
     stats.street_ways = streets.len() as u64;
     stats.interpolation_ways = interps.len() as u64;
 
-    let mut needed = NodeSet::new();
+    let needed = NodeSet::new();
     let all_refs = streets
         .iter()
         .flat_map(|s| &s.refs)
@@ -313,19 +408,16 @@ pub fn read(path: &Path) -> Result<OsmAddresses> {
     }
     let endpoint_ids: HashSet<i64> = interps.iter().flat_map(|i| i.refs.clone()).collect();
 
-    let mut locs = Vec::new();
+    let locs = RankedLocations::new(needed);
     let mut raws = Vec::new();
     let mut endpoints: HashMap<i64, (String, String)> = HashMap::new();
     for mut b in pass(path, NodeBlock::default, |block, out| {
-        nodes_block(block, out, &needed, &endpoint_ids)
+        nodes_block(block, out, &locs, &endpoint_ids)
     })? {
         merge(&mut stats, &b.stats);
-        locs.append(&mut b.locs);
         raws.append(&mut b.raws);
         endpoints.extend(b.endpoints.into_iter().map(|(id, n, s)| (id, (n, s))));
     }
-    drop(needed);
-    let locs = SparseLocations::new(locs);
 
     for s in &mut streets {
         let refs = std::mem::take(&mut s.refs);
@@ -365,7 +457,7 @@ pub fn read(path: &Path) -> Result<OsmAddresses> {
 /// numbered nodes themselves are already address points.
 fn interpolate(
     i: &Interp,
-    locs: &SparseLocations,
+    locs: &RankedLocations,
     endpoints: &HashMap<i64, (String, String)>,
     out: &mut Vec<Range>,
     stats: &mut OsmStats,

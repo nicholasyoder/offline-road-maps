@@ -1,7 +1,10 @@
 //! Cuts features into a z0–z14 tile pyramid and measures the uncompressed encodings.
 //!
 //! Each feature is clipped down a quadtree: a child tile clips its parent's fragment, and
-//! fragments that fit entirely in a child are borrowed, not copied. V2 sections are written
+//! fragments that fit entirely in a child are borrowed, not copied. Zooms below
+//! [`SPLIT_ZOOM`] are cut from only the features shown there; from it down, each split tile
+//! is cut on its own from the features its bbox touches, so memory stays at a few split
+//! tiles' features rather than the whole region's at every low zoom. V2 sections are written
 //! to a temp file for the compression variants in `compress`.
 
 use std::borrow::Cow;
@@ -21,6 +24,7 @@ use super::geom::{self, BBox, Geometry, Rect};
 use super::osm::Feature;
 
 pub const MAX_ZOOM: u8 = 14;
+const SPLIT_ZOOM: u8 = 6;
 /// Clip buffer around each tile, in grid units (of 4096).
 const BUFFER: i64 = 64;
 
@@ -152,16 +156,52 @@ pub fn build(features: &[Feature], wl: &Whitelist, store_path: &Path) -> Result<
         }),
         minzoom,
     };
-    let root: Vec<Frag> = features
+    let minzoom = |f: &Feature| ctx.minzoom[f.layer as usize][f.class as usize];
+    let low: Vec<Frag> = features
         .iter()
-        .filter(|f| ctx.minzoom[f.layer as usize][f.class as usize] <= MAX_ZOOM)
+        .filter(|f| minzoom(f) < SPLIT_ZOOM)
         .map(|f| Frag {
             f,
             bbox: f.geom.bbox(),
             geom: Cow::Borrowed(&f.geom),
         })
         .collect();
-    walk(&ctx, 0, 0, 0, &root);
+    walk(&ctx, 0, 0, 0, &low, SPLIT_ZOOM - 1);
+    drop(low);
+
+    // (split tile, feature) for every tile a feature's bbox touches.
+    let n = 1u32 << SPLIT_ZOOM;
+    let mut split: Vec<(u32, u32)> = features
+        .par_iter()
+        .enumerate()
+        .filter(|(_, f)| minzoom(f) <= MAX_ZOOM)
+        .flat_map_iter(|(i, f)| {
+            let b = f.geom.bbox();
+            let size = 1i64 << (32 - u32::from(SPLIT_ZOOM));
+            let range = |lo: u32, hi: u32| {
+                let first = ((i64::from(lo) - size) / size).max(0) as u32;
+                let last = ((i64::from(hi) + size) / size).min(i64::from(n) - 1) as u32;
+                first..=last
+            };
+            let (xs, ys) = (range(b.min[0], b.max[0]), range(b.min[1], b.max[1]));
+            ys.flat_map(move |y| xs.clone().map(move |x| (x, y)))
+                .filter(move |&(x, y)| geom::bbox_overlaps(&b, &tile_rect(SPLIT_ZOOM, x, y)))
+                .map(move |(x, y)| (y * n + x, i as u32))
+        })
+        .collect();
+    split.par_sort_unstable();
+    split.par_chunk_by(|a, b| a.0 == b.0).for_each(|group| {
+        let (x, y) = (group[0].0 % n, group[0].0 / n);
+        let rect = tile_rect(SPLIT_ZOOM, x, y);
+        let frags: Vec<Frag> = group
+            .iter()
+            .filter_map(|&(_, i)| {
+                let f = &features[i as usize];
+                cut(f, &f.geom, f.geom.bbox(), &rect)
+            })
+            .collect();
+        walk(&ctx, SPLIT_ZOOM, x, y, &frags, MAX_ZOOM);
+    });
 
     let mut stats = Stats::default();
     for s in ctx.stats {
@@ -187,37 +227,43 @@ fn tile_rect(z: u8, x: u32, y: u32) -> Rect {
     [x0 - buf, y0 - buf, x0 + size + buf, y0 + size + buf]
 }
 
-fn walk(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
+/// The part of `geom` (of feature `f`, with bounds `bbox`) in `rect`, borrowed if it lies
+/// entirely inside.
+fn cut<'a>(f: &'a Feature, geom: &'a Geometry, bbox: BBox, rect: &Rect) -> Option<Frag<'a>> {
+    if !geom::bbox_overlaps(&bbox, rect) {
+        None
+    } else if geom::bbox_inside(&bbox, rect) {
+        Some(Frag {
+            f,
+            geom: Cow::Borrowed(geom),
+            bbox,
+        })
+    } else {
+        geom::clip(geom, rect).map(|g| Frag {
+            f,
+            bbox: g.bbox(),
+            geom: Cow::Owned(g),
+        })
+    }
+}
+
+/// Emits the tile and its descendants down to zoom `last`.
+fn walk(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag], last: u8) {
     if frags.is_empty() {
         return;
     }
     emit(ctx, z, x, y, frags);
-    if z == MAX_ZOOM {
+    if z == last {
         return;
     }
     (0..4u32).into_par_iter().for_each(|i| {
         let (cx, cy) = (2 * x + (i & 1), 2 * y + (i >> 1));
         let rect = tile_rect(z + 1, cx, cy);
-        let child: Vec<Frag> = frags
+        let kids: Vec<Frag> = frags
             .iter()
-            .filter(|f| geom::bbox_overlaps(&f.bbox, &rect))
-            .filter_map(|f| {
-                if geom::bbox_inside(&f.bbox, &rect) {
-                    Some(Frag {
-                        f: f.f,
-                        geom: Cow::Borrowed(&*f.geom),
-                        bbox: f.bbox,
-                    })
-                } else {
-                    geom::clip(&f.geom, &rect).map(|g| Frag {
-                        f: f.f,
-                        bbox: g.bbox(),
-                        geom: Cow::Owned(g),
-                    })
-                }
-            })
+            .filter_map(|f| cut(f.f, &f.geom, f.bbox, &rect))
             .collect();
-        walk(ctx, z + 1, cx, cy, &child);
+        walk(ctx, z + 1, cx, cy, &kids, last);
     });
 }
 

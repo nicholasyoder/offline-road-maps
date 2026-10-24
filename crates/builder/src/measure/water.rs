@@ -1,5 +1,6 @@
 //! Ocean polygons from osmdata.openstreetmap.de `water-polygons-split-4326.zip`, read
-//! straight from the zip and clipped to the region's bounding box.
+//! straight from the zip and clipped to the region's bounding box, optionally keeping only
+//! the pieces that meet the region's polygon.
 
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -9,9 +10,18 @@ use anyhow::{Context, Result, bail};
 
 use super::geom::{self, BBox, Geometry, P, Rect};
 use super::osm::Feature;
+use super::poly::Poly;
 
-/// Reads every polygon whose bbox meets `bbox` and returns it as a `layer`/`class` feature.
-pub fn read(zip_path: &Path, bbox: BBox, layer: u8, class: u16) -> Result<(Vec<Feature>, u64)> {
+/// Reads every polygon whose bbox meets `bbox` (and that meets `clip`, if given) and returns
+/// it as a `layer`/`class` feature, with the number of records scanned and of pieces dropped
+/// by `clip`.
+pub fn read(
+    zip_path: &Path,
+    bbox: BBox,
+    clip: Option<&Poly>,
+    layer: u8,
+    class: u16,
+) -> Result<(Vec<Feature>, u64, u64)> {
     let file = File::open(zip_path).with_context(|| format!("open {}", zip_path.display()))?;
     let mut zip = zip::ZipArchive::new(BufReader::new(file))?;
     let name = zip
@@ -39,6 +49,7 @@ pub fn read(zip_path: &Path, bbox: BBox, layer: u8, class: u16) -> Result<(Vec<F
     }
     let mut features = Vec::new();
     let mut scanned = 0u64;
+    let mut outside = 0u64;
     let mut rec = [0u8; 8];
     let mut buf = Vec::new();
     loop {
@@ -77,6 +88,10 @@ pub fn read(zip_path: &Path, bbox: BBox, layer: u8, class: u16) -> Result<(Vec<F
                 rings.push(ring);
             }
         }
+        if clip.is_some_and(|c| !rings.iter().any(|r| c.meets(r))) {
+            outside += 1;
+            continue;
+        }
         if let Some(g) = geom::clip(&Geometry::Polygon(rings), &rect) {
             features.push(Feature {
                 id: scanned as i64 * 4 + 3,
@@ -87,5 +102,5 @@ pub fn read(zip_path: &Path, bbox: BBox, layer: u8, class: u16) -> Result<(Vec<F
             });
         }
     }
-    Ok((features, scanned))
+    Ok((features, scanned, outside))
 }

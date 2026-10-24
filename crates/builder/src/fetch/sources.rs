@@ -9,7 +9,7 @@ use ureq::Agent;
 
 use super::http::{get_json, get_string};
 use super::manifest::License;
-use super::regions::{Region, Subdivision};
+use super::regions::{self, Region, Subdivision};
 use super::{Job, LicenseSpec, Source};
 
 pub fn osm(agent: &Agent, region: &Region, snapshot: &str) -> Result<Vec<Job>> {
@@ -55,6 +55,35 @@ pub fn water() -> Vec<Job> {
         expected_md5: None,
         license: LicenseSpec::Known(odbl()),
     }]
+}
+
+/// Boundary polygons (`.poly`) of Geofabrik extracts: the region's own, saved as
+/// `poly/<region id>.poly` (for `measure --clip-poly`), and each subdivision's, saved as
+/// `poly/<ISO code>.poly` (for `addr-spike --each`). Geofabrik publishes only the current
+/// polygons, so they are not date-pinned.
+pub fn polys(index_json: &str, region: &Region) -> Result<Vec<Job>> {
+    let job = |r: &Region, path: String| -> Result<Job> {
+        let base = r
+            .latest_pbf
+            .strip_suffix("-latest.osm.pbf")
+            .with_context(|| format!("unexpected Geofabrik URL {}", r.latest_pbf))?;
+        Ok(Job {
+            path,
+            source: Source::Poly,
+            source_id: Some(r.id.clone()),
+            url: format!("{base}.poly"),
+            expected_size: None,
+            expected_md5: None,
+            license: LicenseSpec::Known(odbl()),
+        })
+    };
+    let mut jobs = vec![job(region, format!("poly/{}.poly", region.id))?];
+    for &sub in &region.subdivisions {
+        let id = regions::subdivision_extract(index_json, sub)?;
+        let r = regions::resolve(index_json, &id)?;
+        jobs.push(job(&r, format!("poly/{}.poly", sub.iso()))?);
+    }
+    Ok(jobs)
 }
 
 /// TIGER/Line `ADDRFEAT`: one zip per county, listed from the Census directory index.
@@ -172,7 +201,16 @@ struct OaJob {
 /// Returns the license and the source-definition URL it was read from.
 pub fn openaddresses_license(agent: &Agent, job: u64, layer: &str) -> Result<(License, String)> {
     let meta: OaJob = get_json(agent, &format!("{OA_API}/job/{job}"))?;
-    let def: Value = get_json(agent, &meta.source)?;
+    let def: Value = match get_json(agent, &meta.source) {
+        Ok(def) => def,
+        // Some jobs point at a source definition on `master` that has since been deleted.
+        Err(e) if matches!(e.downcast_ref(), Some(ureq::Error::StatusCode(404))) => {
+            let mut l = oa_license(&Value::Null, layer);
+            l.name = "unspecified (source definition deleted upstream)".into();
+            return Ok((l, meta.source));
+        }
+        Err(e) => return Err(e),
+    };
     Ok((oa_license(&def, layer), meta.source))
 }
 

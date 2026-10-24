@@ -23,7 +23,7 @@ If the measured North America total is over **15 GB**, stop and revisit scope (z
 | 0.2 Test regions and `fetch` | **Done** 2026-10-23 | Ohio, Ontario and Quebec inputs fetched (5.0 GB). NAR chosen over ODA. 79 of 92 Ohio OpenAddresses sources have no license in their metadata. |
 | 0.3 Builder spike | **Done** 2026-10-23 | `measure` and `report` run on Ohio, Ontario and Quebec. V4 is 134 / 580 / 912 MiB. Lakes and streams are 60–72% of the Canadian tiles. Needed-nodes-only beats the dense index on Ohio; North America is still to confirm. |
 | 0.4 Address spike | **Done** 2026-10-23 | `addr-spike` run on Ohio, Ontario and Quebec. Merged 4.95M / 5.58M / 4.24M addresses, at 1.9–2.0 B each with A3. OSM alone has 12–40% of them. 89 of 92 Ohio OA sources have no license name; without them Ohio drops to 1.13M. Dedup at 250 m. ODA dropped. |
-| 0.5 North America run | Not started | |
+| 0.5 North America run | In progress | Builder changes for a continent are done and checked on Ohio, Ontario and Quebec. The North America inputs are still downloading (Geofabrik is throttled to about 150–300 KB/s per connection). The runs themselves remain. |
 | 0.6 Size table and `format.md` | Not started | |
 
 ## Environment notes
@@ -211,7 +211,7 @@ omp-builder fetch --region us/ohio --sources osm,openaddresses,tiger,oda,nar --o
 > **Whitelist findings** (per-class rows and all tag values are in the JSON):
 > - **Water is the biggest lever in Canada.** Lakes are 39% / 53% and streams 21% / 19% of z14 V1 bytes in Ontario / Quebec (3.0M lakes and 2.2M streams in Quebec, mostly CanVec imports). In Ohio they are 5% and 3%. 0.5 needs a size-based lake minzoom and a stream decision (z14 only, or none).
 > - **`service` roads** (Ohio ablations, `tile = false`): dropping only subtagged ones (driveways, parking aisles, …) saves 9 MiB, 7% of V4. Dropping all `service` roads saves 21 MiB (16%). In Canada service roads are only 1–2% of z14. Driveways alone are 11.6% of Ohio z14.
-> - **POIs are not a size lever:** under 1.3 MiB per region with all categories, parking included (55k–95k lots, mostly 500–10,000 m²).
+> - **POIs are not a size lever:** under 1.3 MiB per region with all categories, parking included (51k–93k lots). *Corrected in 0.5:* the area buckets first counted only parking relations, not closed ways. With ways counted, 29–39% of lots are under 500 m², 38–40% are 500–2,000 m², 20–27% are 2,000–10,000 m² and 3–5% are larger.
 > - **Boundaries:** admin 9 and 10 exist (Ontario 559 level-10 relations) but stay `tile = false`. Their need for search is left to Phase 2.
 > - **Addresses** (not tiled; feeds 0.4): 0.60M / 2.5M / 1.5M OSM address points. Ontario and Quebec also have 649k / 442k `addr:interpolation` ways.
 >
@@ -284,7 +284,7 @@ omp-builder measure <input.pbf> [--whitelist <file>] [--nodes sparse|dense --nod
 omp-builder report out/*.json > docs/size-table.md
 ```
 
-Every variant is computed on every run, since they share the tiling, so there is no `--variants` flag. `--no-routing` skips the contraction hierarchy.
+Every variant is computed on every run, since they share the tiling, so there is no `--variants` flag. `--routing ch|graph|none` (added in 0.5) builds the contraction hierarchy, only counts the road graph, or skips routing.
 
 **Done when:** `measure` runs on Ohio, Ontario and Quebec, and the JSON holds feature counts, vertex counts and bytes for every layer × zoom × variant, plus build time and peak RAM.
 
@@ -411,6 +411,47 @@ Exceptions (letter suffixes, units, unmatched points with full coordinates) go i
 ---
 
 ## 0.5 Full North America run
+
+> **In progress 2026-10-24.** The builder changes for a continent are done. The North America inputs are still downloading, and the runs remain.
+>
+> **Why the builder had to change** (projected from Quebec, scaled by PBF size, 16.8×):
+> - The 0.3 read path would have needed about 100 GB. It held every way's refs, plus 32 bytes per needed node at peak (`(id, location)` pairs, then a sorted copy).
+> - `fast_paths` and its `HashMap` over every road node would not fit for a continent.
+> - The z0–z5 tiling held frag lists for the whole region at every level.
+> - `addr-spike` has no spatial filter, so 66 runs over the North America extract would count its OSM addresses 66 times.
+>
+> **Changes** (output checked against the 0.3 and 0.4 JSON; identical except where noted):
+> - **Node locations:** the needed-nodes bitset now has a rank index, and each location goes into one 8-byte slot at its rank. Way refs are read again in a fourth pass instead of being held.
+>   - Read-stage peak: Ohio 3.0 → 2.1 GB, Ontario 7.9 → 4.6 GB, Quebec 8.9 → 4.8 GB.
+>   - `addr-spike` uses the same store.
+> - **Tiling:** z0–z5 come from only the features shown there. From z6 down, each z6 tile is cut on its own from the features its bbox touches. Quebec's overall peak drops 7.4 → 5.8 GB, and every cell is byte-identical.
+> - **Routing:** `measure --routing graph` counts graph nodes and edges with two bitsets, in two extra passes over the ways, and keeps no roads. The counts match the CH build exactly on Ohio (2,211,466 nodes, 5,281,643 edges). `report` estimates the CH size of a graph-only run from the CH-edges-per-edge ratio of the regional runs (1.48–1.52).
+> - **Ocean:** `measure --clip-poly` keeps only the ocean pieces that meet the extract's Geofabrik `.poly`. On the provinces this drops Quebec from 218 to 107 pieces and Ontario from 50 to 14, about 1% of V4 (Quebec 912 → 906 MiB). For North America, whose bbox holds whole oceans, it matters much more.
+> - **Addresses:** `addr-spike --subdivision all --each` reads OSM once, then runs each state and province on its own. Each point and interpolation range goes to the first `.poly` that contains it, and each street to every subdivision within about 5 km. On the Ohio extract, `--each` matches the 0.4 run except for 27 of 604k OSM points outside Ohio's polygon.
+> - **Reports:** `report --sum <name> [--sum-json <file>]` adds up per-subdivision address runs.
+> - **Fetch:**
+>   - `--sources poly` fetches the region's and each subdivision's `.poly`.
+>   - Interrupted downloads resume with HTTP ranges, and the manifest is saved every 30 s (merged with the copy on disk, so two `fetch` runs can share it).
+>   - An OpenAddresses source whose definition was deleted upstream (`us/ca/berkeley`, 404) is recorded as `unspecified (source definition deleted upstream)` instead of failing.
+> - **Bug fixed:** area buckets of POIs made from closed ways were dropped when blocks were merged. Only relations were counted, so the 0.3 parking distribution was wrong (corrected above).
+>
+> **Projected memory for North America:** about 52 GB at the end of the read. That is 1.75 GB of bitset, about 15 GB of location slots for about 1.85 billion needed nodes, and about 35 GB of features. It is close to the roughly 53 GB available. `measure` runs under `systemd-run --user --scope -p MemoryMax=56G -p MemorySwapMax=0`, so an OOM kills only the builder. If it fails, the fallback is to run `measure` in two bands of z6 tile columns. Locations stay whole, but each band keeps half the features. The bands' JSON are then summed.
+>
+> **Dense index on North America: skipped.** It needs about 108 GB of zero-filled writes on exFAT, and `/` has 24 GB free. Needed-nodes-only already won on Ohio.
+>
+> **Remaining:** finish the fetch, then run (with `B`, `I=$OMP_WORK/inputs`, `M=$OMP_WORK/measure/na`):
+> ```
+> $B measure $I/osm/ohio-261001.osm.pbf    --json $M/ohio.json
+> $B measure $I/osm/ontario-261001.osm.pbf --json $M/ontario.json --clip-poly $I/poly/ontario.poly
+> $B measure $I/osm/quebec-261001.osm.pbf  --json $M/quebec.json  --clip-poly $I/poly/quebec.poly
+> systemd-run --user --scope -p MemoryMax=56G -p MemorySwapMax=0 \
+>   $B measure $I/osm/north-america-261001.osm.pbf --json $M/north-america.json --routing graph --clip-poly $I/poly/north-america.poly
+> $B addr-spike $I/osm/north-america-261001.osm.pbf --subdivision all --each --sources osm,openaddresses,nar,tiger --json $M/addr
+> $B addr-spike $I/osm/north-america-261001.osm.pbf --subdivision all --each --sources osm,openaddresses,nar,tiger --exclude-license unspecified --json $M/addr-licensed
+> $B report $M/ohio.json $M/ontario.json $M/quebec.json $M/north-america.json
+> $B report --sum US --sum-json $M/addr/sum-us.json $M/addr/US-*.json   # and Canada, North America
+> ```
+> Geofabrik's `north-america` extract also covers Mexico and Greenland. Tiles include them; addresses cover only the US and Canada. Addresses outside every `.poly` are counted in `osm-split.json`.
 
 Run after 0.3 and 0.4 have picked their candidate variants (at most two per layer).
 
