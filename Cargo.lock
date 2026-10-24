@@ -2240,6 +2240,13 @@ name = "omp-app"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "omp-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "windows-sys 0.61.2",
+ "winit",
 ]
 
 [[package]]

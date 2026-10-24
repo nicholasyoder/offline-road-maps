@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use zstd::bulk::Compressor;
 use zstd::zstd_safe::{DCtx, DDict};
@@ -118,6 +119,25 @@ impl Tile {
     pub fn layer(&self, id: u8) -> Option<&Layer> {
         self.layers.iter().find(|(l, _)| *l == id).map(|(_, l)| l)
     }
+
+    /// Heap bytes held by the decoded layers.
+    pub fn heap_bytes(&self) -> usize {
+        self.layers.capacity() * std::mem::size_of::<(u8, Layer)>()
+            + self
+                .layers
+                .iter()
+                .map(|(_, l)| l.heap_bytes())
+                .sum::<usize>()
+    }
+}
+
+/// Where the time of one [`TileReader::tile_timed`] went.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TileTiming {
+    /// Finding the tile in `TIDX` (a block read on a cache miss) and reading its record.
+    pub read: Duration,
+    /// Decompressing and decoding the layers.
+    pub decode: Duration,
 }
 
 #[derive(Default)]
@@ -299,8 +319,16 @@ impl TileReader {
 
     /// Reads and decodes tile `z/x/y`: one positioned read, then one zstd frame per layer.
     pub fn tile(&self, z: u8, x: u32, y: u32) -> io::Result<Option<Tile>> {
+        self.tile_timed(z, x, y).map(|(t, _)| t)
+    }
+
+    /// [`Self::tile`], also saying how long the read and the decode took.
+    pub fn tile_timed(&self, z: u8, x: u32, y: u32) -> io::Result<(Option<Tile>, TileTiming)> {
+        let t0 = Instant::now();
+        let mut timing = TileTiming::default();
         let Some(loc) = self.locate(z, x, y)? else {
-            return Ok(None);
+            timing.read = t0.elapsed();
+            return Ok((None, timing));
         };
         let len = loc.len();
         let end = self.tdat.offset + self.tdat.len;
@@ -309,6 +337,8 @@ impl TileReader {
         }
         let bytes = self.pack.read(loc.offset, len as usize)?;
         self.bytes_read.fetch_add(len, Ordering::Relaxed);
+        let t1 = Instant::now();
+        timing.read = t1 - t0;
         let mut dctx = self.dctx.lock().unwrap().pop().unwrap_or_else(DCtx::create);
         let mut layers = Vec::with_capacity(loc.layers.len());
         let mut at = 0;
@@ -324,7 +354,8 @@ impl TileReader {
         })();
         self.dctx.lock().unwrap().push(dctx);
         res.map_err(|e| invalid(format!("tile {z}/{x}/{y}: {e}")))?;
-        Ok(Some(Tile { layers, bytes: len }))
+        timing.decode = t1.elapsed();
+        Ok((Some(Tile { layers, bytes: len }), timing))
     }
 }
 

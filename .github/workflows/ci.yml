@@ -18,6 +18,14 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: No network crates in the app
+        # The app must work fully offline (roadmap §5); fail if any target pulls one in.
+        run: |
+          found=$(for t in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin; do
+            cargo tree -p omp-app -e normal --prefix none --target "$t"
+          done | sed 's/ (\*)//' | sort -u |
+            grep -E '^(hyper|reqwest|ureq|curl|curl-sys|isahc|attohttpc|surf|tokio|async-std|rustls|native-tls|openssl|h2|http|socket2|mio|tungstenite|url) v' || true)
+          if [ -n "$found" ]; then echo "omp-app depends on network crates:"; echo "$found"; exit 1; fi
 
   build-linux:
     # 22.04 keeps the glibc requirement at 2.35.

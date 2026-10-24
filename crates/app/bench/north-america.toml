@@ -1,0 +1,138 @@
+# Bench flight across North America: the exit-criteria flight of phase1-plan.md.
+# Jumps between cities, pans and zooms at every zoom from z3 to z17.
+# omp-app --bench crates/app/bench/north-america.toml --pack $OMP_WORK/packs/north-america
+#
+# Each step moves to lat/lon/zoom at once (seconds = 0, a jump, which then waits until the
+# view is fully detailed) or linearly over `seconds`. `hold` stays put afterwards.
+name = "north-america"
+window = [1280, 800]
+
+[[step]]
+label = "continent z3"
+lat = 45.0
+lon = -100.0
+zoom = 3
+hold = 1
+
+[[step]]
+label = "zoom to z5"
+zoom = 5
+seconds = 3
+
+[[step]]
+label = "Manhattan z12"
+lat = 40.758
+lon = -73.9855
+zoom = 12
+
+[[step]]
+label = "zoom to z15"
+zoom = 15
+seconds = 3
+
+[[step]]
+label = "pan to Lower Manhattan"
+lat = 40.7075
+lon = -74.0113
+seconds = 4
+
+[[step]]
+label = "zoom to z17"
+zoom = 17
+seconds = 2
+
+[[step]]
+label = "zoom out to z9"
+zoom = 9
+seconds = 4
+
+[[step]]
+label = "Chicago z13"
+lat = 41.8781
+lon = -87.6298
+zoom = 13
+
+[[step]]
+label = "pan to O'Hare"
+lat = 41.9742
+lon = -87.9073
+seconds = 5
+
+[[step]]
+label = "Montreal z11"
+lat = 45.5019
+lon = -73.5674
+zoom = 11
+
+[[step]]
+label = "zoom to z14"
+zoom = 14
+seconds = 3
+
+[[step]]
+label = "Toronto z10"
+lat = 43.6532
+lon = -79.3832
+zoom = 10
+
+[[step]]
+label = "Toronto to Ottawa z10"
+lat = 45.4215
+lon = -75.6972
+seconds = 6
+
+[[step]]
+label = "Banff z9"
+lat = 51.1784
+lon = -115.5708
+zoom = 9
+
+[[step]]
+label = "zoom to z12"
+zoom = 12
+seconds = 3
+
+[[step]]
+label = "Vancouver z14"
+lat = 49.2827
+lon = -123.1207
+zoom = 14
+
+[[step]]
+label = "Mexico City z12"
+lat = 19.4326
+lon = -99.1332
+zoom = 12
+
+[[step]]
+label = "zoom out to z4"
+zoom = 4
+seconds = 6
+
+[[step]]
+label = "San Francisco z5"
+lat = 40.0
+lon = -122.0
+zoom = 5
+
+[[step]]
+label = "pan east at z5"
+lon = -75.0
+seconds = 8
+
+[[step]]
+label = "Arctic z4"
+lat = 70.0
+lon = -100.0
+zoom = 4
+
+[[step]]
+label = "zoom to z6"
+zoom = 6
+seconds = 3
+
+[[step]]
+label = "Anchorage z11"
+lat = 61.2181
+lon = -149.9003
+zoom = 11

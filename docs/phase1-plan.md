@@ -28,7 +28,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.1 Shared tile codec and pack reader | **Done** 2026-10-24 | `omp-core::{tile, tiles, schema, meta, varint}`; `measure` output on Ohio unchanged. |
 | 1.2 `omp-builder build`: write a tile pack | **Done** 2026-10-24 | Delaware, Ohio and North America packs; North America is 8.1 GiB in 3 chunks, built in 24 min at 43 GiB peak. |
 | 1.3 Label and shield data in the builder | **Done** 2026-10-24 | Whitelist v2: state and water labels, a `labels` layer of polylabel points, `routes` for shields, merged lines, one tile per point. North America tiles −297 MiB (−3.6%); pack 8,001 MiB in 2 chunks. |
-| 1.4 App skeleton: pack, camera, tile loading, bench | Not started | |
+| 1.4 App skeleton: pack, camera, tile loading, bench | **Done** 2026-10-24 | Tile outlines, loader pool, 96 MiB cache, F3 overlay, `--bench`. North America flight: 0.45 ms p95 frame (outlines only), RSS peak 212 MiB, worst cold jump 132 ms on SATA SSD. |
 | 1.5 Geometry renderer | Not started | |
 | 1.6 Style file and default style | Not started | |
 | 1.7 Text and label placement | Not started | |
@@ -39,6 +39,8 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 ## Environment notes
 
 As in [phase 0](phase0-plan.md#environment-notes): builder data in `$OMP_WORK` on the exFAT disk, `target/` on `/`. Packs are written to `$OMP_WORK/packs/`. For the app, put a pack under `maps/` next to the executable, or pass `--pack <dir>`.
+
+**Bench runs:** `omp-app --bench crates/app/bench/<flight>.toml --pack $OMP_WORK/packs/<region> --out $OMP_WORK/measure/bench/<name>.json`, from a release build. For a cold run without `sudo`, remount the work disk first (`udisksctl unmount -b /dev/sda1 && udisksctl mount -b /dev/sda1`), which drops its page cache. The bench opens its own window; on Linux it uses X11 so frames are not paced by the Wayland compositor.
 
 **Hardware for 1.10** (owner, 2026-10-24): a Windows PC, a laptop from 2012 or later, and one from before 2012 (low priority). The **USB stick** is needed only in 1.10, plus an optional early check after 1.5. It should be at least 16 GB, formatted FAT32 so the pack's chunks are tested for real. A USB 2 stick, or a USB 3 stick in a USB 2 port, gives the worst-case numbers.
 
@@ -181,6 +183,23 @@ Replace the stub window with the real structure, drawing only tile outlines and 
 
 **Done when:** the app opens the Ohio and North America packs, pans and zooms smoothly over tile outlines, keeps its view across restarts, and `--bench` produces a JSON report.
 
+> **Done 2026-10-24** (the commit that adds `crates/app/src/bench.rs`).
+> **Code** (`crates/app/src/`): `camera` (Web Mercator in 0‥1 world units, 512-point tiles as format.md's `area` assumes, z0–z18, clamped so the centre stays within the pack's bbox plus a quarter viewport; `Motion` does inertia and the animated zoom), `tiles` (`TileId`, `tile_zoom` = `floor(zoom + 0.5)` capped at z14, `select` = visible tiles nearest the centre first plus a one-tile margin, clipped to the pack bbox; `plan` draws a loaded ancestor up to 8 levels up, else four loaded children, else a placeholder), `loader` (`available_parallelism − 1` workers, 2–6; the UI's wanted list replaces the queue every frame, so stale requests are dropped unread; each result wakes the UI), `cache` (LRU by bytes, 96 MiB, never evicts what the current frame uses), `config`, `packs`, `memory` (VmRSS/VmHWM on Linux, `GetProcessMemoryInfo` on Windows) and `app` (input, outlines, F3 overlay, Ctrl+O pack picker, notices). `omp-core` gained `TileReader::tile_timed` (read and decode time per tile) and `Layer`/`Tile::heap_bytes` for the cache budget. The cache holds the decoded `Tile` itself, so the budget shows up in RSS; 1.5 adds the tessellated form.
+> **Input:** drag with inertia, wheel (half a zoom per notch, animated) and pinch around the cursor, double-click zooms in, arrows pan, +/− zoom. Repaints only on input, motion or an arrived tile.
+> **Portable config:** `config.toml` next to the executable (`pack`, `[view]`, `debug_overlay`), written through a temp file 5 s after the view settles and on exit; if the folder is not writable it falls back to `$XDG_CONFIG_HOME`/`%APPDATA%`/`~/Library/Application Support` and shows a notice. The pack path is stored relative to the executable when inside its folder, so a stick at another drive letter still works. Pack choice: `--pack <dir>` (a folder, a parent of pack folders, or the `.omp.000` file), else `maps/` next to the executable (one level of subfolders), else the pack used last; with several, the last one used, else the picker. Checked: a second start without `--pack` reopened the Ohio pack at the saved view.
+> **No network:** `cargo tree` for Linux, Windows and macOS has no HTTP, TLS, socket or async-runtime crate; CI now fails if one appears.
+> **Bench:** `omp-app --bench <flight.toml> [--pack <dir>] [--out <file>]`. Flights in `crates/app/bench/` (`ohio.toml`, `north-america.toml`: 23 steps, z3–z17, ~150 s) are lists of jumps (which wait until the view is fully detailed, timeout 20 s) and linear flights. The JSON has start-up to first full frame, frame interval and CPU time (mean, p50, p95, p99, max), per-step frames, incomplete frames, time to full detail and bytes read, tile latency (first request to decoded) split into read and decode, bytes read, RSS peak and end, cache peak, and the wgpu adapter. Vsync is off during the bench, and on Linux it uses X11 (XWayland) when `DISPLAY` is set, because Wayland compositors pace frames to the display even then (16.7 ms intervals on Wayland, 0.4 ms on X11).
+> **Results** (dev machine, Radeon GFX1200 via Vulkan/RADV, pack on the SATA SSD `$OMP_WORK`; reports in `$OMP_WORK/measure/bench/`):
+>
+> | Flight | Frames | Interval p50 / p95 / max | Start-up | Tile latency p50 / p95 / max | Read p95 | Decode p95 | Read | RSS peak |
+> |---|---:|---:|---:|---:|---:|---:|---:|---:|
+> | Ohio, warm | 74,753 | 0.39 / 0.45 / 14.7 ms | 94 ms | 0.48 / 1.55 / 2.4 ms | 0.07 ms | 0.73 ms | 12.3 MiB | 182 MiB |
+> | North America, warm | 133,188 | 0.38 / 0.45 / 14.8 ms | 97 ms | 0.49 / 2.5 / 4.5 ms | 0.07 ms | 0.69 ms | 42.4 MiB | 212 MiB |
+> | North America, cold (disk remounted) | 133,158 | 0.38 / 0.45 / 17.3 ms | 110 ms | 1.9 / 132 / 610 ms | 6.4 ms | 0.74 ms | 41.8 MiB | 211 MiB |
+>
+> Frames are cheap because only outlines are drawn; they say nothing yet about criterion 1. Cold, every jump was fully detailed within 132 ms (Chicago z13; Montreal z11 95 ms, the rest under 10 ms). The slow ones are the first visit to a zoom, which reads that zoom's whole `TIDX` directory (read max 450 ms). The cache filled its 96 MiB on both flights. RSS is about 90 MiB of wgpu, driver and egui plus the cache, so the 300 MB budget leaves about 110 MB for the GPU buffers and labels of 1.5–1.8. The decoded `Layer` keeps its whole decompressed payload for its strings next to the decoded points, which can be trimmed if memory gets tight. The release binary is 11.0 MB stripped.
+> **Open:** the tile zoom rounding (`floor(zoom + 0.5)`) stays a first guess until 1.5 draws real geometry. Not checked here: Windows (CI builds it; the RSS code is Windows-only and is compiled only there), USB, and a cold first-zoom-directory read on USB 2, which is the likely worst case for criterion 2 (1.10). Screenshots wait for `--render` in 1.5.
+
 ## 1.5 Geometry renderer
 
 Draw polygons and lines with wgpu, inside egui. Roadmap §5 chose `wgpu` + `lyon`.
@@ -290,7 +309,7 @@ Settled while planning (2026-10-24):
 12. **`name` only** in tiles, no `name:en`/`name:fr` (1.3).
 
 Open, to settle in their steps:
-- Tile zoom choice for a fractional zoom, and the overzoom limit (1.4, 1.5).
+- Tile zoom choice for a fractional zoom (1.4 starts with `floor(zoom + 0.5)`; tune in 1.5). Overzoom goes to z18, four levels past z14 (1.4).
 - The state-by-state shield table: how many distinct shapes are worth drawing (1.8).
 - The default units rule for the scale bar in a pack that covers both countries (1.9).
 

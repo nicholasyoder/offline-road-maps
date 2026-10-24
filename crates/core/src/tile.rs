@@ -342,6 +342,17 @@ impl Layer {
     pub fn vertices(&self) -> usize {
         self.points.len()
     }
+
+    /// Heap bytes held, for the app's cache budget.
+    pub fn heap_bytes(&self) -> usize {
+        use std::mem::size_of;
+        self.bytes.capacity()
+            + self.strings.capacity() * size_of::<Range<u32>>()
+            + self.features.capacity() * size_of::<Feature>()
+            + self.props.capacity() * size_of::<(u8, Value)>()
+            + self.part_ends.capacity() * size_of::<u32>()
+            + self.points.capacity() * size_of::<Point>()
+    }
 }
 
 // --- TDIC ---

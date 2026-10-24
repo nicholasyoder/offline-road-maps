@@ -1,0 +1,707 @@
+//! The window: the map view (tile outlines for now), input, the debug overlay (F3) and the
+//! pack picker (Ctrl+O).
+
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use omp_core::tiles::Tile;
+
+use crate::bench::{Bench, FrameSample, ReportContext};
+use crate::cache::Cache;
+use crate::camera::{Camera, Motion};
+use crate::config::{self, Config, Location, View};
+use crate::loader::{Done, Loader};
+use crate::packs::{self, Opened};
+use crate::tiles::{self, Cover, TileId};
+
+/// CPU-side tile cache budget (phase1-plan.md 1.4); GPU buffers come on top in 1.5.
+const CACHE_BUDGET: usize = 96 << 20;
+/// Keyboard pan speed, points per second.
+const KEY_PAN: f64 = 700.0;
+/// How often a changed view is written to `config.toml`.
+const SAVE_EVERY: Duration = Duration::from_secs(5);
+/// Tile timings kept for the overlay's averages.
+const RECENT_TILES: usize = 256;
+
+/// What the app was started with.
+pub struct Startup {
+    pub exe_dir: PathBuf,
+    pub config: Location,
+    /// First-chunk files found, and the one to open.
+    pub found: Vec<PathBuf>,
+    pub chosen: Option<PathBuf>,
+    pub notices: Vec<String>,
+    pub bench: Option<Bench>,
+    pub started: Instant,
+}
+
+enum TileData {
+    Empty,
+    /// Kept decoded, so the cache budget and RSS are real; 1.5 adds the tessellated form.
+    Tile(Tile),
+    Error,
+}
+
+#[derive(Default)]
+struct TileStats {
+    loaded: usize,
+    empty: usize,
+    errors: usize,
+    last_error: Option<String>,
+    /// Recent (latency, read, decode) in ms.
+    recent: VecDeque<[f32; 3]>,
+}
+
+struct MapState {
+    opened: Opened,
+    loader: Loader,
+    cache: Cache<TileData>,
+    camera: Camera,
+    motion: Motion,
+    stats: TileStats,
+    /// Set until the first frame, which gives the viewport size to fit the pack to.
+    fit_on_first_frame: bool,
+    view: FrameView,
+}
+
+/// What the last frame showed, for the overlay.
+#[derive(Default, Clone, Copy)]
+struct FrameView {
+    tile_zoom: u8,
+    visible: usize,
+    drawn: usize,
+    fallbacks: usize,
+    missing: usize,
+    detailed: bool,
+}
+
+pub struct App {
+    exe_dir: PathBuf,
+    cfg_loc: Location,
+    cfg: Config,
+    found: Vec<PathBuf>,
+    picker: bool,
+    map: Option<MapState>,
+    notices: Vec<String>,
+    bench: Option<Bench>,
+    started: Instant,
+    first_full: Option<Duration>,
+    last_frame: Option<Instant>,
+    /// Recent frames: (start, interval ms, cpu ms).
+    frames: VecDeque<(Instant, f32, f32)>,
+    saved_view: Option<View>,
+    last_save: Instant,
+    cursor: Option<[f64; 2]>,
+    adapter: String,
+}
+
+impl App {
+    pub fn new(cc: &eframe::CreationContext<'_>, s: Startup) -> Self {
+        let (cfg, err) = s.config.load();
+        let mut notices = s.notices;
+        notices.extend(s.config.fallback.clone());
+        notices.extend(err);
+        let adapter = cc
+            .wgpu_render_state
+            .as_ref()
+            .map_or_else(String::new, |rs| {
+                let i = rs.adapter.get_info();
+                format!("{} ({:?})", i.name, i.backend)
+            });
+        let mut app = Self {
+            exe_dir: s.exe_dir,
+            cfg_loc: s.config,
+            saved_view: cfg.view,
+            cfg,
+            picker: s.chosen.is_none() && s.found.len() > 1,
+            found: s.found,
+            map: None,
+            notices,
+            bench: s.bench,
+            started: s.started,
+            first_full: None,
+            last_frame: None,
+            frames: VecDeque::new(),
+            last_save: Instant::now(),
+            cursor: None,
+            adapter,
+        };
+        if let Some(p) = s.chosen {
+            app.open(&cc.egui_ctx, &p);
+        }
+        app
+    }
+
+    fn open(&mut self, ctx: &egui::Context, first_chunk: &Path) {
+        // Close the old pack first, so its loader threads stop.
+        self.map = None;
+        let opened = match packs::open(first_chunk) {
+            Ok(o) => o,
+            Err(e) => {
+                self.notices.push(format!("Could not open the pack: {e}"));
+                return;
+            }
+        };
+        let dir = packs::pack_dir(first_chunk);
+        let same_pack = self
+            .cfg
+            .pack
+            .as_ref()
+            .is_some_and(|p| config::resolve_path(p, &self.exe_dir) == dir);
+        let mut camera = Camera::new(opened.bounds);
+        let mut fit = true;
+        if let (true, Some(v)) = (same_pack, self.cfg.view) {
+            camera.set_lonlat(v.lon, v.lat, v.zoom);
+            fit = !camera.contains_center();
+        }
+        let ctx2 = ctx.clone();
+        let loader = Loader::new(
+            opened.reader.clone(),
+            Loader::default_threads(),
+            move || ctx2.request_repaint(),
+        );
+        self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
+        self.map = Some(MapState {
+            opened,
+            loader,
+            cache: Cache::new(CACHE_BUDGET),
+            camera,
+            motion: Motion::default(),
+            stats: TileStats::default(),
+            fit_on_first_frame: fit,
+            view: FrameView::default(),
+        });
+        self.first_full = None;
+        if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
+            let w = b.flight.window;
+            m.camera.size = [f64::from(w[0]), f64::from(w[1])];
+            m.fit_on_first_frame = false;
+            b.start(&mut m.camera, m.opened.reader.bytes_read());
+        }
+    }
+
+    fn save_config(&mut self) {
+        if self.bench.is_some() {
+            return;
+        }
+        if let Some(m) = &self.map {
+            let [lon, lat] = m.camera.lonlat();
+            self.cfg.view = Some(View {
+                lat,
+                lon,
+                zoom: m.camera.zoom,
+            });
+        }
+        if let Err(e) = self.cfg_loc.save(&self.cfg) {
+            self.notices.push(format!(
+                "Could not save {}: {e}",
+                self.cfg_loc.path.display()
+            ));
+        }
+        self.saved_view = self.cfg.view;
+        self.last_save = Instant::now();
+    }
+
+    /// Saves a changed view once it has been still for a while; wakes the app for it.
+    fn maybe_save(&mut self, ctx: &egui::Context) {
+        let Some(m) = &self.map else { return };
+        if self.bench.is_some() || m.motion.moving() {
+            return;
+        }
+        let [lon, lat] = m.camera.lonlat();
+        let v = View {
+            lat,
+            lon,
+            zoom: m.camera.zoom,
+        };
+        if self.saved_view == Some(v) {
+            return;
+        }
+        match SAVE_EVERY.checked_sub(self.last_save.elapsed()) {
+            Some(wait) if !wait.is_zero() => ctx.request_repaint_after(wait),
+            _ => self.save_config(),
+        }
+    }
+}
+
+impl MapState {
+    fn take_results(&mut self, bench: &mut Option<Bench>) {
+        let done: Vec<Done> = self.loader.poll().collect();
+        for d in done {
+            if let Some(b) = bench {
+                b.tile(&d);
+            }
+            let s = &mut self.stats;
+            s.recent.push_back([
+                d.latency.as_secs_f32() * 1e3,
+                d.timing.read.as_secs_f32() * 1e3,
+                d.timing.decode.as_secs_f32() * 1e3,
+            ]);
+            if s.recent.len() > RECENT_TILES {
+                s.recent.pop_front();
+            }
+            let (data, bytes) = match d.result {
+                Ok(Some(t)) => {
+                    s.loaded += 1;
+                    let bytes = std::mem::size_of::<Tile>() + t.heap_bytes();
+                    (TileData::Tile(t), bytes)
+                }
+                Ok(None) => {
+                    s.empty += 1;
+                    (TileData::Empty, 0)
+                }
+                Err(e) => {
+                    s.errors += 1;
+                    s.last_error = Some(e.to_string());
+                    (TileData::Error, 0)
+                }
+            };
+            self.cache.insert(d.id, data, bytes + 64);
+        }
+    }
+
+    fn input(&mut self, ui: &egui::Ui, resp: &egui::Response, origin: Pos2, dt: f64) {
+        let cam = &mut self.camera;
+        if resp.dragged() {
+            let d = resp.drag_delta();
+            cam.pan([f64::from(d.x), f64::from(d.y)]);
+            self.motion.velocity = [0.0, 0.0];
+        }
+        if resp.drag_stopped() {
+            let v = ui.input(|i| i.pointer.velocity());
+            self.motion.velocity = [f64::from(v.x), f64::from(v.y)];
+        }
+        let center = [cam.size[0] / 2.0, cam.size[1] / 2.0];
+        let anchor = resp.hover_pos().map_or(center, |p| {
+            [f64::from(p.x - origin.x), f64::from(p.y - origin.y)]
+        });
+        if resp.double_clicked() {
+            self.motion.zoom(1.0, anchor);
+        }
+        if resp.hovered() {
+            ui.input(|i| {
+                for e in &i.events {
+                    match e {
+                        egui::Event::MouseWheel { unit, delta, .. } => {
+                            let dz = match unit {
+                                egui::MouseWheelUnit::Line => f64::from(delta.y) * 0.5,
+                                egui::MouseWheelUnit::Point => f64::from(delta.y) / 200.0,
+                                egui::MouseWheelUnit::Page => f64::from(delta.y) * 2.0,
+                            };
+                            self.motion.zoom(dz, anchor);
+                        }
+                        // Pinch.
+                        egui::Event::Zoom(f) if *f > 0.0 => {
+                            cam.zoom_around(f64::from(*f).log2(), anchor);
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+        ui.input(|i| {
+            if i.focused {
+                let key = |k| if i.key_down(k) { 1.0 } else { 0.0 };
+                let dx = key(egui::Key::ArrowLeft) - key(egui::Key::ArrowRight);
+                let dy = key(egui::Key::ArrowUp) - key(egui::Key::ArrowDown);
+                if dx != 0.0 || dy != 0.0 {
+                    cam.pan([dx * KEY_PAN * dt, dy * KEY_PAN * dt]);
+                    self.motion.velocity = [0.0, 0.0];
+                }
+                if i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals) {
+                    self.motion.zoom(1.0, center);
+                }
+                if i.key_pressed(egui::Key::Minus) {
+                    self.motion.zoom(-1.0, center);
+                }
+            }
+        });
+    }
+
+    fn keys_held(ui: &egui::Ui) -> bool {
+        ui.input(|i| {
+            [
+                egui::Key::ArrowLeft,
+                egui::Key::ArrowRight,
+                egui::Key::ArrowUp,
+                egui::Key::ArrowDown,
+            ]
+            .into_iter()
+            .any(|k| i.key_down(k))
+        })
+    }
+
+    /// Picks, requests and draws the tiles for the current camera.
+    fn draw(&mut self, painter: &egui::Painter, origin: Pos2) {
+        let cam = &self.camera;
+        self.cache.next_frame();
+        let z = tiles::tile_zoom(cam.zoom);
+        let sel = tiles::select(z, cam.visible(), self.opened.bounds);
+        let cache = &self.cache;
+        let plan = tiles::plan(&sel.visible, |t| cache.contains(t));
+        let wanted: Vec<TileId> = sel
+            .visible
+            .iter()
+            .chain(&sel.margin)
+            .copied()
+            .filter(|&t| !self.cache.contains(t))
+            .collect();
+        self.loader.request(&wanted);
+        for &t in sel.margin.iter().chain(plan.iter().map(|(t, _)| t)) {
+            self.cache.get(t);
+        }
+
+        let to_screen = |w: [f64; 2]| {
+            let p = cam.world_to_screen(w);
+            Pos2::new(origin.x + p[0] as f32, origin.y + p[1] as f32)
+        };
+        let world_rect =
+            |r: [f64; 4]| Rect::from_min_max(to_screen([r[0], r[1]]), to_screen([r[2], r[3]]));
+        painter.rect_stroke(
+            world_rect(self.opened.bounds),
+            0.0,
+            Stroke::new(2.0, Color32::from_rgb(90, 140, 200)),
+            StrokeKind::Middle,
+        );
+        let mut view = FrameView {
+            tile_zoom: z,
+            visible: sel.visible.len(),
+            drawn: plan.len(),
+            detailed: sel.visible.iter().all(|&t| self.cache.contains(t)),
+            ..Default::default()
+        };
+        for &(t, cover) in &plan {
+            let r = world_rect(t.world_rect()).shrink(1.0);
+            let data = self.cache.get(t);
+            let (stroke, fill) = match (cover, data) {
+                (Cover::Missing, _) => (
+                    Color32::from_gray(150),
+                    Color32::from_rgba_unmultiplied(160, 160, 160, 40),
+                ),
+                (_, Some(TileData::Error)) => (
+                    Color32::from_rgb(200, 40, 40),
+                    Color32::from_rgba_unmultiplied(200, 40, 40, 40),
+                ),
+                (Cover::Parent, _) => (Color32::from_rgb(220, 140, 30), Color32::TRANSPARENT),
+                (Cover::Child, _) => (Color32::from_rgb(60, 160, 80), Color32::TRANSPARENT),
+                (Cover::Exact, Some(TileData::Empty)) => {
+                    (Color32::from_gray(200), Color32::TRANSPARENT)
+                }
+                (Cover::Exact, _) => (
+                    Color32::from_rgb(70, 90, 120),
+                    Color32::from_rgba_unmultiplied(70, 110, 170, 18),
+                ),
+            };
+            match cover {
+                Cover::Missing => view.missing += 1,
+                Cover::Parent | Cover::Child => view.fallbacks += 1,
+                Cover::Exact => {}
+            }
+            painter.rect_filled(r, 0.0, fill);
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0, stroke), StrokeKind::Inside);
+            if cover == Cover::Exact && r.width() > 150.0 {
+                let text = match data {
+                    Some(TileData::Tile(tile)) => {
+                        let features: usize =
+                            tile.layers.iter().map(|(_, l)| l.features.len()).sum();
+                        let vertices: usize = tile.layers.iter().map(|(_, l)| l.vertices()).sum();
+                        format!(
+                            "{t}\n{features} features, {vertices} vertices\n{:.1} KiB read, {:.0} KiB decoded",
+                            tile.bytes as f64 / 1024.0,
+                            tile.heap_bytes() as f64 / 1024.0
+                        )
+                    }
+                    Some(TileData::Empty) => format!("{t}\nempty"),
+                    Some(TileData::Error) => format!("{t}\nerror"),
+                    None => t.to_string(),
+                };
+                painter.text(
+                    r.min + Vec2::new(6.0, 6.0),
+                    Align2::LEFT_TOP,
+                    text,
+                    FontId::monospace(11.0),
+                    Color32::from_gray(70),
+                );
+            }
+        }
+        self.view = view;
+    }
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let t0 = Instant::now();
+        let interval = self.last_frame.map_or(Duration::ZERO, |l| t0 - l);
+        self.last_frame = Some(t0);
+        let dt = interval.as_secs_f64().min(0.1);
+        let ctx = ui.ctx().clone();
+
+        if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
+            self.cfg.debug_overlay = !self.cfg.debug_overlay;
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O)) && self.bench.is_none()
+        {
+            self.picker = !self.picker;
+        }
+
+        let mut map_rect = Rect::NOTHING;
+        let mut animate = false;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(Color32::from_rgb(244, 242, 236)))
+            .show(ui, |ui| {
+                let rect = ui.max_rect();
+                map_rect = rect;
+                let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+                let painter = ui.painter_at(rect);
+                let Some(m) = &mut self.map else {
+                    let msg = if self.found.is_empty() {
+                        format!(
+                            "No map pack found.\nPut a pack in {} or start with --pack <folder>.",
+                            self.exe_dir.join("maps").display()
+                        )
+                    } else {
+                        "Choose a pack (Ctrl+O).".into()
+                    };
+                    painter.text(
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        msg,
+                        FontId::proportional(16.0),
+                        Color32::DARK_GRAY,
+                    );
+                    return;
+                };
+                m.camera.size = [f64::from(rect.width()), f64::from(rect.height())];
+                if m.fit_on_first_frame {
+                    m.camera.fit_bounds();
+                    m.fit_on_first_frame = false;
+                }
+                m.camera.clamp();
+                m.take_results(&mut self.bench);
+                if self.bench.is_none() {
+                    m.input(ui, &resp, rect.min, dt);
+                    m.motion.step(&mut m.camera, dt);
+                    animate = m.motion.moving() || MapState::keys_held(ui);
+                    self.cursor = resp.hover_pos().map(|p| {
+                        let w = m.camera.screen_to_world([
+                            f64::from(p.x - rect.min.x),
+                            f64::from(p.y - rect.min.y),
+                        ]);
+                        crate::camera::world_to_lonlat(w)
+                    });
+                }
+                m.draw(&painter, rect.min);
+                if m.view.detailed && self.first_full.is_none() {
+                    self.first_full = Some(self.started.elapsed());
+                }
+            });
+
+        if self.cfg.debug_overlay {
+            self.overlay(&ctx, map_rect);
+        }
+        self.picker_window(&ctx);
+        self.notices_window(&ctx);
+
+        let cpu = t0.elapsed();
+        self.frames
+            .push_back((t0, interval.as_secs_f32() * 1e3, cpu.as_secs_f32() * 1e3));
+        while self
+            .frames
+            .front()
+            .is_some_and(|f| t0 - f.0 > Duration::from_secs(2))
+        {
+            self.frames.pop_front();
+        }
+
+        if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
+            let sample = FrameSample {
+                interval,
+                cpu,
+                detailed: m.view.detailed,
+                cache_bytes: m.cache.bytes(),
+                bytes_read: m.opened.reader.bytes_read(),
+            };
+            let rc = ReportContext {
+                pack: m.opened.first_chunk.display().to_string(),
+                adapter: self.adapter.clone(),
+                pixels_per_point: ctx.pixels_per_point(),
+                cache_budget: m.cache.budget,
+            };
+            if let Some(report) = b.end_frame(sample, &mut m.camera, &rc) {
+                eprint!("{}", report.summary());
+                let out = b.out().to_path_buf();
+                match serde_json::to_string_pretty(&report)
+                    .map_err(std::io::Error::other)
+                    .and_then(|j| std::fs::write(&out, j + "\n"))
+                {
+                    Ok(()) => eprintln!("report written to {}", out.display()),
+                    Err(e) => eprintln!("could not write {}: {e}", out.display()),
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            animate = true;
+        } else if self.bench.is_some() {
+            eprintln!("bench: no pack is open");
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if animate {
+            ctx.request_repaint();
+        }
+        self.maybe_save(&ctx);
+    }
+
+    fn on_exit(&mut self) {
+        self.save_config();
+    }
+}
+
+impl App {
+    fn overlay(&self, ctx: &egui::Context, map_rect: Rect) {
+        let mut lines = Vec::new();
+        let n = self.frames.len().max(1) as f32;
+        let span = self
+            .frames
+            .back()
+            .zip(self.frames.front())
+            .map_or(0.0, |(b, f)| (b.0 - f.0).as_secs_f32());
+        let fps = if span > 0.0 { (n - 1.0) / span } else { 0.0 };
+        let mut cpu: Vec<f32> = self.frames.iter().map(|f| f.2).collect();
+        cpu.sort_by(f32::total_cmp);
+        let p95 = cpu
+            .get(((cpu.len() as f32 - 1.0) * 0.95).round() as usize)
+            .copied()
+            .unwrap_or(0.0);
+        let last = self.frames.back().map_or((0.0, 0.0), |f| (f.1, f.2));
+        lines.push(format!(
+            "{fps:5.1} fps   frame {:5.2} ms   cpu {:5.2} ms (p95 {p95:.2})",
+            last.0, last.1
+        ));
+        if let Some(m) = &self.map {
+            let [lon, lat] = m.camera.lonlat();
+            let v = m.view;
+            lines.push(format!(
+                "zoom {:.2} (tiles z{})   {lat:.5}, {lon:.5}",
+                m.camera.zoom, v.tile_zoom
+            ));
+            if let Some([lon, lat]) = self.cursor {
+                lines.push(format!("cursor {lat:.5}, {lon:.5}"));
+            }
+            let (queued, reading) = m.loader.pending();
+            lines.push(format!(
+                "tiles: {} visible, {} drawn ({} fallback, {} missing), {queued} queued, {reading} reading",
+                v.visible, v.drawn, v.fallbacks, v.missing
+            ));
+            lines.push(format!(
+                "cache: {} tiles, {:.1} / {:.0} MiB",
+                m.cache.len(),
+                mib(m.cache.bytes() as u64),
+                mib(m.cache.budget as u64)
+            ));
+            let s = &m.stats;
+            let k = s.recent.len().max(1) as f32;
+            let avg = |i: usize| s.recent.iter().map(|r| r[i]).sum::<f32>() / k;
+            lines.push(format!(
+                "loaded {} + {} empty, {} errors   last {}: latency {:.2} ms, read {:.2} ms, decode {:.2} ms",
+                s.loaded,
+                s.empty,
+                s.errors,
+                s.recent.len(),
+                avg(0),
+                avg(1),
+                avg(2)
+            ));
+            lines.push(format!(
+                "read from pack: {:.1} MiB",
+                mib(m.opened.reader.bytes_read())
+            ));
+            if let Some(e) = &s.last_error {
+                lines.push(format!("last error: {e}"));
+            }
+        }
+        if let Some(u) = crate::memory::usage() {
+            lines.push(format!(
+                "RSS {:.0} MiB (peak {:.0})",
+                mib(u.rss),
+                mib(u.peak)
+            ));
+        }
+        if let Some(t) = self.first_full {
+            lines.push(format!(
+                "first full frame after {:.0} ms",
+                t.as_secs_f64() * 1e3
+            ));
+        }
+        if !self.adapter.is_empty() {
+            lines.push(self.adapter.clone());
+        }
+        egui::Area::new(egui::Id::unique("debug-overlay"))
+            .fixed_pos(map_rect.min + Vec2::new(8.0, 8.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new(lines.join("\n")).monospace().size(12.0));
+                });
+            });
+    }
+
+    fn picker_window(&mut self, ctx: &egui::Context) {
+        if !self.picker {
+            return;
+        }
+        let mut open = true;
+        let mut chosen = None;
+        egui::Window::new("Open a pack")
+            .open(&mut open)
+            .collapsible(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                if self.found.is_empty() {
+                    ui.label("No packs found.");
+                }
+                for p in &self.found {
+                    let dir = packs::pack_dir(p);
+                    let shown = config::store_path(&dir, &self.exe_dir);
+                    let current = self
+                        .map
+                        .as_ref()
+                        .is_some_and(|m| &m.opened.first_chunk == p);
+                    if ui
+                        .selectable_label(current, shown.display().to_string())
+                        .clicked()
+                    {
+                        chosen = Some(p.clone());
+                    }
+                }
+            });
+        if let Some(p) = chosen {
+            self.open(ctx, &p);
+            open = false;
+        }
+        self.picker = open;
+    }
+
+    fn notices_window(&mut self, ctx: &egui::Context) {
+        if self.notices.is_empty() {
+            return;
+        }
+        let mut dismiss = false;
+        egui::Window::new("Notice")
+            .collapsible(false)
+            .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -24.0))
+            .show(ctx, |ui| {
+                for n in &self.notices {
+                    ui.label(n);
+                }
+                dismiss = ui.button("OK").clicked();
+            });
+        if dismiss {
+            self.notices.clear();
+        }
+    }
+}
+
+fn mib(b: u64) -> f64 {
+    b as f64 / (1024.0 * 1024.0)
+}
