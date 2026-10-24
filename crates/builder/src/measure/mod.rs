@@ -3,9 +3,9 @@
 //! layer × zoom × encoding variant, plus routing and search size estimates.
 
 mod compress;
-mod encode;
-mod geom;
-mod nodes;
+pub(crate) mod encode;
+pub(crate) mod geom;
+pub(crate) mod nodes;
 mod osm;
 mod routing;
 mod search;
@@ -153,7 +153,7 @@ struct MvtRow {
 }
 
 /// Peak resident set size so far, from /proc (Linux only; 0 elsewhere).
-fn peak_rss_mib() -> f64 {
+pub(crate) fn peak_rss_mib() -> f64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|s| {

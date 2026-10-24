@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+mod addr;
 mod fetch;
 mod measure;
 mod report;
@@ -26,7 +27,9 @@ enum Command {
     Fetch(fetch::FetchArgs),
     /// Phase 0 spike: tile a PBF through the whitelist and report sizes per layer, zoom and encoding.
     Measure(measure::MeasureArgs),
-    /// Print Markdown size tables from `measure` JSON files.
+    /// Phase 0 spike: merge address sources onto OSM streets and measure coverage and size.
+    AddrSpike(addr::AddrArgs),
+    /// Print Markdown size tables from `measure` or `addr-spike` JSON files.
     Report(report::ReportArgs),
 }
 
@@ -47,6 +50,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Fetch(args) => fetch::run(args, &dir)?,
         Command::Measure(args) => measure::run(args, &dir)?,
+        Command::AddrSpike(args) => addr::run(args, &dir)?,
         Command::Report(args) => report::run(args)?,
     }
     Ok(())

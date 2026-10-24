@@ -59,11 +59,11 @@ Everything else is unmaintained, server-based (Dawarich Atlas), Windows-only (Ma
 | Source | Used for | License | Notes |
 |---|---|---|---|
 | OSM planet or Geofabrik extracts (`.osm.pbf`) | Roads, places, POIs, land and water, OSM addresses | ODbL (attribution and share-alike apply to the derived database) | The planet file is about 87 GB (July 2026). Geofabrik offers continent, country and US-state extracts. |
-| **OpenAddresses** | Fills house-number gaps in the US and Canada | Varies per source. Some sources need attribution and some are share-alike. Licenses are listed in each source's metadata, but many sources state none (79 of 92 in Ohio). | **Essential for "full address support"**, because OSM house-number coverage in North America is patchy. The builder must keep a list of the sources used and their attribution. |
+| **OpenAddresses** | Fills house-number gaps in the US and Canada | Varies per source. Some sources need attribution and some are share-alike. Licenses are listed in each source's metadata, but many sources name none (89 of 92 in Ohio). | **Essential for "full address support"**, because OSM house-number coverage in North America is patchy. OSM alone has 12% of Ohio's merged addresses and 34–40% in Ontario and Quebec. Without the sources that name no license, Ohio drops from 4.95M to 1.13M addresses. The builder must keep a list of the sources used and their attribution. |
 | **US Census TIGER/Line `ADDRFEAT`** | House-number ranges along each US street block, used to estimate a location when no exact address point exists | Public domain | Distributed per county, for example `tl_2025_<county>_addrfeat.zip`. These are *potential* ranges, so the app labels estimated locations "approximate". |
-| **Statistics Canada National Address Register (NAR)** | Canadian address points | Statistics Canada Open Licence (attribution) | Updated regularly (release `202606` used in Phase 0); one national zip of about 1.6 GB. Building coordinates for 99.8% of Quebec and 82% of Ontario civic addresses; most of the rest have only a blockface point. Chosen over the 2021 **Open Database of Addresses** (ODA, OGL – Canada), which has fewer addresses (Quebec 1.2M vs 3.2M). ODA is kept only if Phase 0 shows it adds coverage. See [phase 0, step 0.2](phase0-plan.md#02-test-regions-and-fetch). |
+| **Statistics Canada National Address Register (NAR)** | Canadian address points | Statistics Canada Open Licence (attribution) | Updated regularly (release `202606` used in Phase 0); one national zip of about 1.6 GB. Building coordinates for 99.8% of Quebec and 82% of Ontario civic addresses; most of the rest have only a blockface point. Chosen over the 2021 **Open Database of Addresses** (ODA, OGL – Canada), which has fewer addresses (Quebec 1.2M vs 3.2M) and adds only 1.1% in Ontario and 0.2% in Quebec on top of NAR, so it is not used. See phase 0 steps [0.2](phase0-plan.md#02-test-regions-and-fetch) and [0.4](phase0-plan.md#04-address-spike-ohio-first-then-ontario-and-quebec). |
 
-The builder **deduplicates** across sources, matching on normalized street, house number and a distance threshold. OSM wins when sources conflict. Each address keeps a 1-bit "source" flag so the app can show where it came from.
+The builder **deduplicates** across sources, matching on normalized street, house number and a distance threshold (250 m on the same street, from phase 0). OSM wins when sources conflict. Each address keeps a 1-bit "source" flag so the app can show where it came from. OSM `addr:interpolation` ways are kept as ranges, like TIGER.
 
 ## 4. Size budget (estimates; Phase 0 checks them)
 
@@ -74,10 +74,10 @@ Leaving out buildings, paths and walking/bike data removes most of the bulk. Hou
 | Rendering tiles: no buildings or paths, zoom 14 max, simplified, custom encoding plus zstd dictionaries | 3–5 GB | 15–25 GB |
 | Car routing graph (contraction hierarchy) | 1–1.5 GB | 3–6 GB |
 | Search: places, streets, POIs | about 0.5 GB | 2–4 GB |
-| **House-number addresses** (about 150–200M points in North America after merging) | 1.5–3 GB | 6–15 GB (depends on open data elsewhere) |
+| **House-number addresses** (about 150–200M points in North America after merging) | 1.5–3 GB estimated; **about 0.3–0.5 GB** from the phase 0 test regions (1.9–2.0 B per address, plus about 0.4 B per address for US TIGER ranges; street names are counted under search) | 6–15 GB (depends on open data elsewhere) |
 | **Total** | **about 6–10 GB** | **about 30–50 GB** — well under the 100 GB stretch target |
 
-Addresses are stored grouped by street rather than as standalone points. Each street keeps a sorted run of `(house number, offset along the street)` pairs, delta-encoded. This should come to only a few bytes per address instead of a full coordinate and name each time. That grouping is the main reason the address budget is feasible.
+Addresses are stored grouped by street rather than as standalone points. Each street keeps a sorted run of `(house number, offset along the street)` pairs, delta-encoded. This should come to only a few bytes per address instead of a full coordinate and name each time. That grouping is the main reason the address budget is feasible. Measured in phase 0 (A3, with zstd over blocks of streets): 1.9–2.0 bytes per address, units and unattached points included.
 
 ## 5. Key technical decisions
 

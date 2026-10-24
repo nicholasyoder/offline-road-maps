@@ -1,8 +1,8 @@
 //! `omp-builder fetch`: downloads a region's inputs and records them in `manifest.toml`.
 
 mod http;
-mod manifest;
-mod regions;
+pub(crate) mod manifest;
+pub(crate) mod regions;
 mod sources;
 
 use std::path::{Path, PathBuf};

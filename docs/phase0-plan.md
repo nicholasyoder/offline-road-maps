@@ -22,7 +22,7 @@ If the measured North America total is over **15 GB**, stop and revisit scope (z
 | 0.1 Workspace and CI | **Done** 2026-10-23 | CI green on `master`. Two manual checks open: launch the Windows `.exe`, and the old-laptop test. |
 | 0.2 Test regions and `fetch` | **Done** 2026-10-23 | Ohio, Ontario and Quebec inputs fetched (5.0 GB). NAR chosen over ODA. 79 of 92 Ohio OpenAddresses sources have no license in their metadata. |
 | 0.3 Builder spike | **Done** 2026-10-23 | `measure` and `report` run on Ohio, Ontario and Quebec. V4 is 134 / 580 / 912 MiB. Lakes and streams are 60–72% of the Canadian tiles. Needed-nodes-only beats the dense index on Ohio; North America is still to confirm. |
-| 0.4 Address spike | Not started | |
+| 0.4 Address spike | **Done** 2026-10-23 | `addr-spike` run on Ohio, Ontario and Quebec. Merged 4.95M / 5.58M / 4.24M addresses, at 1.9–2.0 B each with A3. OSM alone has 12–40% of them. 89 of 92 Ohio OA sources have no license name; without them Ohio drops to 1.13M. Dedup at 250 m. ODA dropped. |
 | 0.5 North America run | Not started | |
 | 0.6 Size table and `format.md` | Not started | |
 
@@ -292,6 +292,80 @@ Every variant is computed on every run, since they share the tiling, so there is
 
 ## 0.4 Address spike (Ohio first, then Ontario and Quebec)
 
+> **Done 2026-10-23** (the commit that adds `omp-builder addr-spike`).
+> **Reproduce** (inputs from 0.2; the `report` output is `$M/addr-table-0.4.md`, and sample TSVs go in `$M/<region>-samples/`):
+> ```
+> M=$OMP_WORK/measure/addr; I=$OMP_WORK/inputs/osm
+> $B addr-spike $I/ohio-261001.osm.pbf    --subdivision US-OH --json $M/ohio.json      # 17 s, 2.7 GB
+> $B addr-spike $I/ontario-261001.osm.pbf --subdivision CA-ON --json $M/ontario.json   # 40 s, 5.8 GB
+> $B addr-spike $I/quebec-261001.osm.pbf  --subdivision CA-QC --json $M/quebec.json    # 37 s, 4.2 GB
+> $B addr-spike $I/ohio-261001.osm.pbf    --subdivision US-OH --exclude-license unspecified --region ohio-licensed --json $M/ohio-licensed.json
+> $B report $M/ohio.json $M/ontario.json $M/quebec.json
+> ```
+> Defaults: attach within 200 m, dedup within 250 m, zstd 19. The 100/200/500 m attach rates and the 25/50/100/250/1000 m dedup results are always computed. Output is deterministic.
+>
+> | | Ohio | Ontario | Quebec |
+> |---|---:|---:|---:|
+> | Unique addresses, OSM only | 576k | 2,261k | 1,437k |
+> | + OpenAddresses | 4,947k | 4,909k | 4,126k |
+> | + NAR building points | – | 5,245k | 4,233k |
+> | + ODA | – | 5,304k (+59k, 1.1%) | 4,242k (+9k, 0.2%) |
+> | + NAR blockface only (approximate) | – | 5,581k | 4,244k |
+> | Units (separate table) | 0.70M | 2.78M | 1.80M |
+> | Attached to an OSM street (200 m) | 94.2% | 93.7% | 96.1% |
+> | TIGER ranges with a point: OSM only → merged | 8.6% → 69.6% | – | – |
+> | Conflicts at 100 / 250 m | 24k / 8.5k | 303k / 111k | 154k / 67k |
+> | **A3 bytes per address** (side tables included) | **1.95** | **1.91** | **1.89** |
+> | A1 / A2 / A4 bytes per address | 3.78 / 3.67 / 2.35 | 5.06 / 4.94 / 2.30 | 4.36 / 4.24 / 2.31 |
+> | A3 total (MiB) | 9.2 | 10.2 | 7.6 |
+> | TIGER fallback ranges (MiB) | 1.9 (420k ranges, 5.3 B each) | – | – |
+>
+> **Address decision: yes, the merge gives full address support** in all three regions, at about 2 bytes per address, plus about 0.4 B per address for US TIGER fallback ranges.
+> - OSM alone has 12% of Ohio's merged addresses, 40% of Ontario's and 34% of Quebec's.
+> - Merged totals are close to dwelling counts: Ohio 4.95M civic addresses plus 0.70M units (about 5.2M housing units); Quebec 4.24M.
+> - In Ohio, 70% of TIGER ranges now have a point. The other 30% (420k ranges) stay as approximate interpolation.
+> - **Licensing caveat:** 89 of the 92 Ohio OpenAddresses sources state no license name (79 state nothing; 10 require attribution without naming one). Excluding `unspecified` cuts Ohio to 1.13M addresses (OSM 576k plus 557k from Cuyahoga, Clermont and Medina) and TIGER range coverage to 13%. "Full" US address support depends on how Phase 5 treats those sources.
+>
+> **Encoding: A3.**
+> - A3 is A2 (5 m offsets) plus zstd over blocks of streets.
+> - Street runs are 6.9 / 6.8 / 5.4 MiB. Each address costs one varint (number delta, then side, OSM and approximate bits) plus one zigzag varint for the offset delta.
+> - Side tables: units 0.4 / 1.1 / 0.9 MiB, unattached points with names and coordinates 1.9 / 2.1 / 1.1 MiB, and suffixes 0.2 MiB or less.
+> - zstd halves the size. A4's lateral distance adds 20%. Keep it in reserve in case long rural driveways geocode badly.
+> - Block size barely matters: 4 KiB blocks are 3.6% larger than 32 KiB, and 8 KiB blocks 1.8% larger. So Phase 2 can use small blocks for random access.
+> - Street names are not counted here. They are shared with search, and the address store refers to street records (connected same-name ways, offsets measured along them).
+>
+> **Normalization** (in `omp-core`, shared with Phase 2):
+> - USPS/Canada Post abbreviations, French types and directions, and ordinals ("21st", "Twenty-First" and "21e" give "21").
+> - Route designators: `ST RTE 180` = `State Route 180` = `SR 180` = OSM `ref`.
+> - A second, loose key drops types, directions, articles and designators, strips plural "s", and sorts and joins the words. It catches `VALLEYVISTA DR`, `Jackie's Bend`/`JACKIES`, `Line 14`/`14th Line` and `PETANQUE, CROIS DE LA`.
+> - Exact-key attach at 200 m is 87–97% depending on source. The loose key adds 1–7 points.
+> - Unparseable house numbers are 0.5% or less per source. Empty numbers are separate: OpenAddresses Ohio 3.3%, nearly all of it **Butler County, whose OA output has no house numbers at all** (153,823 records).
+> - What still fails to attach (samples in `unattached.tsv`): streets missing from OSM, spelling differences (Dixon/Dixion, Bloxam/Bloxham), and prefixes like "Oro-Medonte Line 4". Fuzzy matching is left to Phase 2.
+>
+> **Dedup threshold: 250 m on the same street, same direction set and same number.** NAR blockface points merge with any exact point on the street within 1 km.
+> - Within 100 m, almost every pair is clearly one address.
+> - Most pairs left at 100 m are 100–1,000 m apart *along* the street, and 72–88% are on the same side. Same-number duplicates that close on one street don't occur in US or Canadian civic numbering, so one source placed the address wrongly.
+> - Conflicts concentrate in a few sources: OA Carroll County, Ohio (22% of its records), NAR in Ontario (201k), and the Quebec province-wide OA source vs OSM (85k). OSM disagrees with itself in 42k Ontario and 42k Quebec cases.
+> - Conflicts left at 250 m stay as separate addresses: 0.2% in Ohio, 2.0% in Ontario, 1.6% in Quebec.
+>
+> **Spot check** (50 merged addresses per region and 100 conflicts per region in the samples; 51 merged and 27 conflicts reviewed):
+> - All 51 merged addresses attach to the right street, 1–126 m away. One matched through `ref` (`148 ROUTE` → `Rue Principale`, ref 148).
+> - Conflict categories:
+>   1. 5 of 27 are 20–160 km apart on long routes (SR 4, US 42, Route 105): different towns, correctly kept apart.
+>   2. About 18 are 250 m–1.1 km apart on rural roads: one address, one source off.
+>   3. About 4 are 1.5–3 km apart and ambiguous.
+> - This review used the data only, not aerial imagery.
+>
+> **Other findings:**
+> - **OSM interpolation ways are ranges, not points.** Ontario's 561k ranges would expand to 20.5M numbers, against 5.6M real addresses. In Canada 99.97% of them already have points, so they add nothing there.
+> - **Drop ODA:** it adds 1.1% in Ontario and 0.2% in Quebec, and it is 2021 data. The reader stays in the builder.
+> - NAR blockface-only points add 277k (5%) in Ontario, stored as approximate.
+>
+> Still open:
+> - An aerial-imagery check of the conflict sample (`conflicts.tsv` has OSM links).
+> - Memory: about 0.3 KB per input record (Ontario: 5.8 GB for 20.5M points and ranges; Ohio: 2.7 GB for 8.9M). All of North America in one process would not fit in 62 GB, so 0.5 should run `addr-spike` once per state and province and sum the results. A `--subdivision all` or region option would help.
+> - Fuzzy name matching, and a decision on `unspecified` licenses (Phase 5).
+
 ### Pipeline
 
 1. **Extract** address records from each source into one shared form: `{source, house number (raw), street (raw), unit, city, postcode, lat, lon}`.
@@ -342,6 +416,7 @@ Run after 0.3 and 0.4 have picked their candidate variants (at most two per laye
 
 - Check that `$OMP_WORK` is mounted. Fetch North America OSM, OpenAddresses for the US and Canada, all TIGER `ADDRFEAT` counties (about 3,200 files) and NAR (the Canadian source chosen in 0.2) for every province.
 - Run `measure` and the address pipeline on all of it. Record wall time, peak RSS and peak temp disk: these are the first numbers for the Phase 5 `BUILDING.md` hardware section.
+- `addr-spike` needs about 0.3 KB of RAM per input record, so run it per state and province (the extract can stay `north-america`) and sum the results.
 - If the run does not fit in 62 GB RAM, that is itself a finding. Switch to the needed-nodes-only strategy or region tiling and note it.
 
 **Done when:** every row of the size table has a North America measurement.
@@ -397,12 +472,15 @@ Settled 2026-10-23:
 4. **Canadian provinces:** both Ontario and Quebec.
 
 Settled by Phase 0 data:
-5. **Canadian address source:** NAR, with ODA kept only if 0.4 shows it adds coverage (2026-10-23, see 0.2).
+5. **Canadian address source:** NAR. ODA is dropped: it adds 1.1% in Ontario and 0.2% in Quebec, and it is 2021 data (2026-10-23, see 0.2 and 0.4).
 6. **Tile encoding candidate:** V4 (zstd 19 with per-layer, per-zoom-band dictionaries) for 0.5. V5 is kept in reserve only (2026-10-23, see 0.3).
 7. **Tile index:** sparse and Hilbert-ordered, not dense offset arrays (2026-10-23, see 0.3).
 8. **POIs:** keep every category in the whitelist; they are under 1% of tile bytes (2026-10-23, see 0.3).
+9. **Address encoding:** A3 (per-street runs of number and 5 m offset deltas, zstd over blocks of streets, plus side tables for units, suffixes and unattached points). 1.9–2.0 bytes per address (2026-10-23, see 0.4).
+10. **Address dedup:** same street, same direction set and same number within 250 m. NAR blockface points merge within 1 km. Attach to OSM streets within 200 m (2026-10-23, see 0.4).
+11. **OSM `addr:interpolation`:** kept as ranges like TIGER, never expanded into points (2026-10-23, see 0.4).
 
-Still open, to be settled by Phase 0 data: the node-location strategy (needed-nodes-only leads; confirm on North America), the lake/stream and `service` road cut-offs, and the address dedup threshold.
+Still open, to be settled by Phase 0 data: the node-location strategy (needed-nodes-only leads; confirm on North America), and the lake/stream and `service` road cut-offs. Settle before Phase 5: how to treat OpenAddresses sources with no license name (most US address coverage depends on them).
 
 ## Out of scope for Phase 0
 

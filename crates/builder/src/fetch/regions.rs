@@ -34,7 +34,7 @@ impl Subdivision {
         }
     }
 
-    fn from_iso(code: &str) -> Option<Self> {
+    pub fn from_iso(code: &str) -> Option<Self> {
         if let Some(abbr) = code.strip_prefix("US-") {
             US_STATE_FIPS
                 .iter()
