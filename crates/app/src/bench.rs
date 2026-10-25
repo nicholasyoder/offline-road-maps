@@ -6,8 +6,8 @@
 //! `seconds = 0`) or linearly in Mercator and zoom over `seconds`; then, if `wait` is set
 //! (the default for jumps), waits until the view is fully detailed; then holds for `hold`
 //! seconds. Steps run on wall time, so a slow machine draws fewer frames of the same path.
-//! After the last step the app is left alone for [`IDLE`] without redrawing, to measure its
-//! idle CPU use.
+//! After the last step the app is left alone without redrawing: [`SETTLE`] for the last
+//! tiles and frames, then [`IDLE`] to measure its idle CPU use.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -20,7 +20,9 @@ use crate::loader::Done;
 /// Longest wait for a view to become fully detailed.
 const DETAIL_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How long the app idles after the flight.
+/// After the flight, before idle CPU is measured.
+pub const SETTLE: Duration = Duration::from_secs(2);
+/// How long idle CPU is measured.
 pub const IDLE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Deserialize)]
@@ -128,8 +130,10 @@ pub struct Bench {
     cache_peak: usize,
     bytes_read_start: u64,
     finished: bool,
-    /// After the flight: its report, and when the idle period began, with the CPU time then.
-    idle: Option<(Report, Instant, Option<Duration>)>,
+    /// After the flight: its report, and when it ended.
+    idle: Option<(Report, Instant)>,
+    /// When idle CPU began to be measured, with the CPU time then, and the frames since.
+    measure: Option<(Instant, Option<Duration>, usize)>,
     done: bool,
 }
 
@@ -168,6 +172,7 @@ impl Bench {
             bytes_read_start: 0,
             finished: false,
             idle: None,
+            measure: None,
             done: false,
         }
     }
@@ -291,25 +296,40 @@ impl Bench {
 
     /// Starts the idle period with the flight's report.
     pub fn start_idle(&mut self, report: Report) {
-        self.idle = Some((report, Instant::now(), crate::memory::cpu_time()));
+        self.idle = Some((report, Instant::now()));
     }
 
+    /// Called once a frame.
     pub fn poll(&mut self) -> Poll {
-        let Some((_, start, _)) = &self.idle else {
+        let Some((_, end)) = &self.idle else {
             return if self.done {
                 Poll::Idle(IDLE)
             } else {
                 Poll::Flying
             };
         };
-        if let Some(left) = IDLE.checked_sub(start.elapsed()).filter(|d| !d.is_zero()) {
-            return Poll::Idle(left);
+        let left = |since: Instant, span: Duration| {
+            span.checked_sub(since.elapsed()).filter(|d| !d.is_zero())
+        };
+        let Some((start, _, frames)) = &mut self.measure else {
+            if let Some(wait) = left(*end, SETTLE) {
+                return Poll::Idle(wait);
+            }
+            self.measure = Some((Instant::now(), crate::memory::cpu_time(), 0));
+            return Poll::Idle(IDLE);
+        };
+        *frames += 1;
+        if let Some(wait) = left(*start, IDLE) {
+            return Poll::Idle(wait);
         }
-        let (mut report, start, cpu) = self.idle.take().unwrap();
+        let (mut report, _) = self.idle.take().unwrap();
+        let (start, cpu, frames) = self.measure.take().unwrap();
         report.idle_cpu_percent = cpu.zip(crate::memory::cpu_time()).map(|(a, b)| {
             let p = (b - a).as_secs_f64() / start.elapsed().as_secs_f64() * 100.0;
             (p * 100.0).round() / 100.0
         });
+        // Not counting this last frame, which only ends the measurement.
+        report.idle_frames = frames - 1;
         self.done = true;
         Poll::Done(Box::new(report))
     }
@@ -366,6 +386,7 @@ impl Bench {
             rss_end: mem.map(|m| m.rss),
             rss_peak: mem.map(|m| m.peak),
             idle_cpu_percent: None,
+            idle_frames: 0,
             cache_budget: ctx.cache_budget,
             cache_peak: self.cache_peak,
             steps,
@@ -435,6 +456,8 @@ pub struct Report {
     pub rss_peak: Option<u64>,
     /// CPU use over the idle period after the flight, as a percentage of one core.
     pub idle_cpu_percent: Option<f64>,
+    /// Frames drawn while idle CPU was measured; nothing asks for one, so 0 is expected.
+    pub idle_frames: usize,
     pub cache_budget: usize,
     pub cache_peak: usize,
     pub steps: Vec<StepReport>,
@@ -478,7 +501,7 @@ impl Report {
         let mut s = format!(
             "{}: {} frames, interval p50 {:.2} / p95 {:.2} / max {:.1} ms, cpu p95 {:.2} ms, labels p95 {:.2} ms\n\
              start-up {} ms; tiles {} loaded + {} absent, {} errors; latency p50 {:.2} / p95 {:.2} ms, read p95 {:.2} ms, decode p95 {:.2} ms, prepare p95 {:.2} ms\n\
-             {:.1} MiB read; RSS peak {} MiB; cache peak {:.1} MiB of {:.0}; idle CPU {}%\n",
+             {:.1} MiB read; RSS peak {} MiB; cache peak {:.1} MiB of {:.0}; idle CPU {}% ({} frames)\n",
             self.flight,
             self.frames,
             self.interval_ms.p50,
@@ -502,6 +525,7 @@ impl Report {
             mib(self.cache_budget as u64),
             self.idle_cpu_percent
                 .map_or("-".into(), |v| format!("{v:.2}")),
+            self.idle_frames,
         );
         for st in &self.steps {
             let detail = match (st.detail_ms, st.timed_out) {

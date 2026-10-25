@@ -15,6 +15,7 @@ mod config;
 mod labels;
 mod layers;
 mod loader;
+mod logger;
 mod memory;
 mod mesh;
 mod packs;
@@ -95,6 +96,7 @@ fn parse_args() -> Result<Args, String> {
 
 fn main() -> ExitCode {
     let started = Instant::now();
+    logger::init();
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
@@ -205,6 +207,15 @@ fn main() -> ExitCode {
                 .out
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(format!("bench-{}.json", flight.name)));
+            // A first line, so a log that stops here shows the app did start.
+            eprintln!(
+                "omp-app {}: bench {} on {}",
+                env!("CARGO_PKG_VERSION"),
+                path.display(),
+                chosen
+                    .as_ref()
+                    .map_or(String::new(), |p| p.display().to_string())
+            );
             Some(bench::Bench::new(flight, path.clone(), out, started))
         }
         None => None,

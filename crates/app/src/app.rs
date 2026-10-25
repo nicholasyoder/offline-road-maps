@@ -181,6 +181,9 @@ impl App {
             let i = rs.adapter.get_info();
             format!("{} ({:?})", i.name, i.backend)
         });
+        if s.bench.is_some() {
+            eprintln!("adapter: {adapter}");
+        }
         if let Some(rs) = rs {
             let r = Renderer::new(&rs.device, rs.target_format, s.msaa);
             rs.renderer.write().callback_resources.insert(r);

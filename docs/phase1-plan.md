@@ -36,7 +36,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.7 Text and label placement | **Done** 2026-10-25 | Noto Sans subset to Latin (196 KB), shaped with `harfrust`, SDF glyphs from `skrifa` outlines; greedy placement with hysteresis and fade-in, line labels along roads and rivers, POI markers. Placement p95 0.28 ms a frame; North America flight p95 frame 1.05 ms; binary 11.8 MB. |
 | 1.8 Shields and POI icons | **Done** 2026-10-25 | 16 shield designs (`omp_core::routes::shield`) and 11 Maki icons, drawn as distance fields in the glyph atlas. Real shields on 97% of US and 95% of Canadian motorway ways; North America flight p95 frame 1.26 ms; binary 11.9 MB. |
 | 1.9 Viewer UI | **Done** 2026-10-25 (Linux) | Scale bar (miles, km or both, following the pack), zoom buttons, cursor coordinates, credit line; Layers menu with 9 toggles applied at draw time; About this map; Verify pack on a thread, cancellable; error dialogs for a damaged pack or tile; all saved in `config.toml`. North America flight p95 frame 1.39 ms; binary 12.2 MB. Running it on Windows is left to 1.10. |
-| 1.10 Performance, USB and hardware checks | In progress | USB stick ready (16 GB SanDisk Cruzer Blade, USB 2, FAT32); bench measures idle CPU. Dev machine from the stick, cold: all criteria pass (p95 1.17 ms, start-up 1.46 s, slowest jump 632 ms, RSS 144 MiB, idle 0.10%). Windows PC and laptops remain. |
+| 1.10 Performance, USB and hardware checks | In progress | Dev machine from the USB 2 stick, cold: all criteria pass. Latitude 7490 on Linux (UHD 620): p95 12.3 ms, RSS 145 MiB, but one silent failed start; on Windows 11 it never opened. E6430 (Windows 10, no GPU driver) and the pre-2012 laptop ran on software renderers at 3–8 fps. Reruns with diagnostics remain. |
 
 ## Environment notes
 
@@ -519,7 +519,24 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 > | Dev, USB 2 stick | warm | same | 69,164 | 0.68 / 1.15 / 17.6 ms | 117 ms | 19 ms (Toronto z10) | 5.7 / 22.6 / 59 ms | 0.10 / 8.8 ms | 146 MiB | 0.10% | 12.2 MB |
 >
 > On the dev machine every criterion passes from the USB 2 stick, cold: p95 frame 1.17 ms (target 16.7), start-up 1.46 s (3 s), slowest jump 632 ms (2 s), RSS 144 MiB (300 MB), idle 0.10%, binary 12.2 MB Linux and 10.8 MB Windows (30 MB). The cold cost is in the first reads: start-up is 1.3 s slower than warm, and the one read near 1 s is the first visit to Manhattan's zooms (their `TIDX` blocks); after that, jumps were detailed within 42 ms. No USB 3 run: the stick is USB 2 only.
-> **Remaining:** the Windows PC, the 2012-or-newer laptop and the pre-2012 laptop; then roadmap §6.
+> | Latitude E6430 (i5-3380M, HD 4000), Windows 10 | cold | Microsoft Basic Render Driver (DX12) | 413 | 120 / 329 / 986 ms | 2,322 ms | 552 ms (continent z3) | 32.9 / 125 / 221 ms | 7.1 / 127 ms | 342 MiB | 9.37%* | 10.8 MB |
+> | E6430 | warm | same | 421 | 117 / 305 / 937 ms | 812 ms | 387 ms (Chicago z13) | 19.6 / 106 / 196 ms | 0.33 / 55 ms | 340 MiB | 9.22%* | 10.8 MB |
+> | Pre-2012 laptop (Pentium P6100, Intel Ironlake), Debian 12 | cold | llvmpipe (Vulkan) | 213 | 316 / 485 / 1,279 ms | 3,352 ms | 2,249 ms (continent z3) | 436 / 1,275 / 2,150 ms | 9.5 / 46 ms | 332 MiB | 10.4%* | 12.2 MB |
+> | Pre-2012 laptop | warm | same | 207 | 319 / 498 / 672 ms | 930 ms | 835 ms (Mexico City z12) | 326 / 1,165 / 2,112 ms | 0.19 / 23 ms | 347 MiB | 10.4%* | 12.2 MB |
+> | Latitude 7490 (i7-8650U, UHD 620), Debian 13, 1.67 px/pt | cold | — | the run ended at once with no output and no report | | | | | | | | |
+> | 7490, Debian 13 | warm | UHD 620 (KBL GT2) (Vulkan) | 6,231 | 8.0 / 12.3 / 87 ms | 304 ms | 85 ms (continent z3) | 26.3 / 77 / 133 ms | 12.7 / 55 ms | 145 MiB | 0.10% | 12.2 MB |
+> | Latitude 7490, Windows 11 | both | — | the window never opened; both logs empty, no reports, no error seen | | | | | | | | |
+>
+> \* Measured from the moment the flight ended; with a software renderer that took in one or two late frames of ~0.5 s of CPU each. The bench now waits 2 s before measuring and counts the frames drawn while it measures (`idle_frames`); with llvmpipe forced on the dev machine (`WGPU_BACKEND=gl LIBGL_ALWAYS_SOFTWARE=1`, Ohio) that gives 1.8% and 0 frames.
+>
+> **Reading the results (2026-10-25):**
+> - **E6430:** Windows has no graphics driver installed ("Microsoft Basic Display Adapter"), so wgpu got only WARP, the DX12 software renderer: 3–8 fps and 340 MiB RSS (the "GPU" buffers are in the process). Not an app problem; rerun with Intel's HD 4000 driver, which has no DX12 or Vulkan, so wgpu should pick GL.
+> - **Pre-2012 laptop:** Ironlake has no Vulkan and only OpenGL 2.1, below wgpu's GL backend (GLES 3.0), so Mesa's llvmpipe is all it gets: ~3 fps, RSS 332–347 MiB. As decision 2 allows, recorded and skipped.
+> - **7490 on Linux:** with its GPU it passes the laptop target with room to spare (p95 12.3 ms against 33, at 2,133 × 1,333 px), RSS 145 MiB, idle 0.10%. But the cold run died silently, and on Windows 11 neither run started. A crash in the graphics stack or Windows blocking the unsigned `.exe` (Smart App Control) are the leading guesses; the logs held nothing to tell them apart.
+> - **Software rendering misses criterion 3** (RSS over 300 MB) as well as criterion 1, because the renderer's buffers count as process memory. The app now prints egui-wgpu's warning when it gets a software rasterizer; phase 2 could tell the user in the window too.
+>
+> **Diagnostics added** for the reruns: bench mode prints a first line and the chosen adapter; `logger.rs` prints eframe, winit and wgpu log records to stderr (`OMP_LOG`, default warn); both scripts record each run's exit code, set `RUST_BACKTRACE=1`, and when no report comes out retry with each backend (`WGPU_BACKEND` dx12 / vulkan / gl on Windows, vulkan / gl on Linux) at `OMP_LOG=info`. `run-bench.bat` also records the Smart App Control state.
+> **Remaining:** rerun on the 7490 (Windows 11 and Linux) with the diagnostics, and on the E6430 with its graphics driver; then roadmap §6.
 
 ---
 

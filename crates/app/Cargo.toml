@@ -11,6 +11,8 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 # Shaping and glyph outlines for labels: the versions egui already uses (text.rs).
 harfrust = { version = "0.12.0", default-features = false, features = ["std"] }
+# Already in the tree through wgpu; logger.rs prints its records.
+log = "0.4.34"
 lyon_tessellation = "1.0.23"
 omp-core.workspace = true
 png = "0.18.1"
