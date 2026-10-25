@@ -25,6 +25,7 @@ use omp_core::tile::{EXTENT_BITS, Feature, GeomType, Layer, MAX_ZOOM, int_value}
 use omp_core::tiles::Tile;
 
 use crate::camera::Camera;
+use crate::layers::Hidden;
 use crate::render::{GlyphInstance, gpu_color};
 use crate::shapes::{self, ICON_LAYERS, Plate, SHIELD_FONT};
 use crate::style::{Font, IconStyle, Label, Placement, RankProps, Rgba, Style};
@@ -385,11 +386,13 @@ pub struct Placer {
 impl Placer {
     /// Places the labels of `sources` for `cam`. `now` is the frame's time, for fading in;
     /// `None` shows every label at once (`--render`). `srgb`: the target is sRGB.
+    #[allow(clippy::too_many_arguments)]
     pub fn place(
         &mut self,
         cam: &Camera,
         pixels_per_point: f32,
         style: &Style,
+        hidden: &Hidden,
         sources: &[Source],
         srgb: bool,
         now: Option<Instant>,
@@ -442,6 +445,10 @@ impl Placer {
                 let Some(sym) = style.symbols(l.layer, l.class) else {
                     continue;
                 };
+                let shields = matches!(l.content, Content::Shields(_));
+                if hidden.label(l.layer, l.class, shields) {
+                    continue;
+                }
                 // Size and zooms, the room a line label needs either side of its anchor, in
                 // ems, and where its first anchor is, in spacings.
                 let (priority, size, zooms, half, phase) = match &l.content {
@@ -1046,7 +1053,7 @@ mod tests {
             square,
             cap: None,
         }];
-        p.place(cam, 1.0, style, &src, false, None)
+        p.place(cam, 1.0, style, &Hidden::default(), &src, false, None)
     }
 
     /// The labels shown, by key, with their anchors in world coordinates.
@@ -1324,12 +1331,13 @@ mod tests {
         }];
         let mut p = Placer::default();
         let t0 = Instant::now();
-        let a = p.place(&cam, 1.0, &style, &src, false, Some(t0));
+        let a = p.place(&cam, 1.0, &style, &Hidden::default(), &src, false, Some(t0));
         assert!(a.fading && a.glyphs.iter().all(|g| g.color[3] == 0));
         let b = p.place(
             &cam,
             1.0,
             &style,
+            &Hidden::default(),
             &src,
             false,
             Some(t0 + std::time::Duration::from_millis(100)),
@@ -1344,6 +1352,7 @@ mod tests {
             &cam,
             1.0,
             &style,
+            &Hidden::default(),
             &src,
             false,
             Some(t0 + std::time::Duration::from_millis(300)),

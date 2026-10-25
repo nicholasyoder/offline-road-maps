@@ -1,5 +1,6 @@
-//! The window: the map view, input, the debug overlay (F3, with tile outlines) and the pack
-//! picker (Ctrl+O).
+//! The window: the map view, input, the controls over the map (scale bar, zoom buttons,
+//! cursor coordinates, credit line, the Layers and Menu buttons), its dialogs (pack picker,
+//! About this map, Verify pack, errors) and the debug overlay (F3, with tile outlines).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -14,12 +15,15 @@ use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
 use crate::config::{self, Config, Location, View};
 use crate::labels::{self, Placer, TileLabels};
+use crate::layers::{Hidden, Layers};
 use crate::loader::{self, Done, Loader};
 use crate::mesh;
 use crate::packs::{self, Opened};
 use crate::render::{self, GpuMesh, MapCallback, Renderer};
+use crate::scale::{self, Units};
 use crate::style::{Style, StyleFile};
 use crate::tiles::{self, Cover, Known, Resolved, TileId};
+use crate::verify::{Outcome, Verify};
 
 /// Tile cache budget: the tiles' vertex data, which lives on the GPU (phase1-plan.md 1.4).
 const CACHE_BUDGET: usize = 96 << 20;
@@ -95,6 +99,13 @@ struct MapState {
     fit_on_first_frame: bool,
     view: FrameView,
     placer: Placer,
+    /// What the layer toggles hide, and the toggles it was made for.
+    hidden: Hidden,
+    hidden_for: Option<Layers>,
+    /// The scale bar's units unless the config sets them.
+    units: Units,
+    /// A tile failed to load and "Verify pack" was suggested.
+    error_suggested: bool,
 }
 
 /// What the last frame showed, for the overlay.
@@ -129,7 +140,8 @@ pub struct App {
     last_frame: Option<Instant>,
     /// Recent frames: (start, interval ms, cpu ms).
     frames: VecDeque<(Instant, f32, f32)>,
-    saved_view: Option<View>,
+    /// The config as last saved.
+    saved: Config,
     last_save: Instant,
     cursor: Option<[f64; 2]>,
     adapter: String,
@@ -141,6 +153,14 @@ pub struct App {
     /// changes.
     style_mtime: Option<SystemTime>,
     style_checked: Instant,
+    /// A pack that could not be opened, and why.
+    pack_error: Option<String>,
+    /// A tile could not be read; offer to verify the pack.
+    tile_error: Option<String>,
+    verify: Option<Verify>,
+    about: bool,
+    /// The picker's folder field.
+    path_input: String,
 }
 
 impl App {
@@ -149,6 +169,8 @@ impl App {
         let mut notices = s.notices;
         notices.extend(s.config.fallback.clone());
         notices.extend(err);
+        // The map is light, so its controls and dialogs are too, whatever the system theme.
+        cc.egui_ctx.set_theme(egui::Theme::Light);
         let rs = cc.wgpu_render_state.as_ref();
         let adapter = rs.map_or_else(String::new, |rs| {
             let i = rs.adapter.get_info();
@@ -161,9 +183,10 @@ impl App {
         let mut app = Self {
             exe_dir: s.exe_dir,
             cfg_loc: s.config,
-            saved_view: cfg.view,
+            saved: cfg.clone(),
             cfg,
-            picker: s.chosen.is_none() && s.found.len() > 1,
+            // With no pack to open, the picker, whose folder field can find one.
+            picker: s.chosen.is_none() && s.bench.is_none(),
             found: s.found,
             map: None,
             notices,
@@ -181,6 +204,11 @@ impl App {
             style_mtime: mtime(&s.style_path),
             style_path: s.style_path,
             style_checked: Instant::now(),
+            pack_error: None,
+            tile_error: None,
+            verify: None,
+            about: false,
+            path_input: String::new(),
         };
         if let Some(p) = s.chosen {
             app.open(&cc.egui_ctx, &p);
@@ -189,12 +217,14 @@ impl App {
     }
 
     fn open(&mut self, ctx: &egui::Context, first_chunk: &Path) {
-        // Close the old pack first, so its loader threads stop.
+        // Close the old pack first, so its loader threads and a check of it stop.
         self.map = None;
+        self.verify = None;
+        self.tile_error = None;
         let opened = match packs::open(first_chunk) {
             Ok(o) => o,
             Err(e) => {
-                self.notices.push(format!("Could not open the pack: {e}"));
+                self.pack_error = Some(e);
                 return;
             }
         };
@@ -218,6 +248,7 @@ impl App {
         let style = compile_style(&self.style, &opened);
         let loader = start_loader(&opened, &style, device, ctx);
         self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
+        let units = packs::default_units(opened.meta.as_ref().ok());
         self.map = Some(MapState {
             opened,
             style,
@@ -229,6 +260,10 @@ impl App {
             fit_on_first_frame: fit,
             view: FrameView::default(),
             placer: Placer::default(),
+            hidden: Hidden::default(),
+            hidden_for: None,
+            units,
+            error_suggested: false,
         });
         self.first_full = None;
         if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
@@ -270,13 +305,12 @@ impl App {
             m.loader = start_loader(&m.opened, &m.style, device, ctx);
             m.cache = Cache::new(CACHE_BUDGET);
             m.placer = Placer::default();
+            m.hidden_for = None;
         }
     }
 
-    fn save_config(&mut self) {
-        if self.bench.is_some() {
-            return;
-        }
+    /// Puts the camera's view into the config.
+    fn update_view(&mut self) {
         if let Some(m) = &self.map {
             let [lon, lat] = m.camera.lonlat();
             self.cfg.view = Some(View {
@@ -285,29 +319,31 @@ impl App {
                 zoom: m.camera.zoom,
             });
         }
+    }
+
+    fn save_config(&mut self) {
+        if self.bench.is_some() {
+            return;
+        }
+        self.update_view();
         if let Err(e) = self.cfg_loc.save(&self.cfg) {
             self.notices.push(format!(
                 "Could not save {}: {e}",
                 self.cfg_loc.path.display()
             ));
         }
-        self.saved_view = self.cfg.view;
+        self.saved = self.cfg.clone();
         self.last_save = Instant::now();
     }
 
-    /// Saves a changed view once it has been still for a while; wakes the app for it.
+    /// Saves a changed config (view, pack, toggles, units) once the map has been still for
+    /// a while; wakes the app for it.
     fn maybe_save(&mut self, ctx: &egui::Context) {
-        let Some(m) = &self.map else { return };
-        if self.bench.is_some() || m.motion.moving() {
+        if self.bench.is_some() || self.map.as_ref().is_some_and(|m| m.motion.moving()) {
             return;
         }
-        let [lon, lat] = m.camera.lonlat();
-        let v = View {
-            lat,
-            lon,
-            zoom: m.camera.zoom,
-        };
-        if self.saved_view == Some(v) {
+        self.update_view();
+        if self.cfg == self.saved {
             return;
         }
         match SAVE_EVERY.checked_sub(self.last_save.elapsed()) {
@@ -437,8 +473,9 @@ impl MapState {
                 }
             });
         }
+        let typing = ui.ctx().egui_wants_keyboard_input();
         ui.input(|i| {
-            if i.focused {
+            if i.focused && !typing {
                 let key = |k| if i.key_down(k) { 1.0 } else { 0.0 };
                 let dx = key(egui::Key::ArrowLeft) - key(egui::Key::ArrowRight);
                 let dy = key(egui::Key::ArrowUp) - key(egui::Key::ArrowDown);
@@ -469,9 +506,21 @@ impl MapState {
         })
     }
 
-    /// Picks, requests and draws the tiles for the current camera; with `outlines`, also the
-    /// tile outlines and their numbers.
-    fn draw(&mut self, painter: &egui::Painter, rect: Rect, ppp: f32, srgb: bool, outlines: bool) {
+    /// Picks, requests and draws the tiles for the current camera, with what `layers` shows;
+    /// with `outlines`, also the tile outlines and their numbers.
+    fn draw(
+        &mut self,
+        painter: &egui::Painter,
+        rect: Rect,
+        ppp: f32,
+        srgb: bool,
+        layers: &Layers,
+        outlines: bool,
+    ) {
+        if self.hidden_for.as_ref() != Some(layers) {
+            self.hidden = Hidden::new(layers, &self.style, &self.opened.schema);
+            self.hidden_for = Some(*layers);
+        }
         let cam = &self.camera;
         self.cache.next_frame();
         let z = tiles::tile_zoom(cam.zoom);
@@ -537,7 +586,7 @@ impl MapState {
                 capped.push((t, cap, s, m.clone()));
             }
         }
-        let paints = render::paints(&self.style, cam.zoom, ppp, srgb);
+        let paints = render::paints(&self.style, &self.hidden, cam.zoom, ppp, srgb);
         let mut frame = render::layout(cam, ppp, paints, draws, capped, &self.style.pass_cap);
         let t0 = Instant::now();
         let sources: Vec<labels::Source> = plan
@@ -553,9 +602,15 @@ impl MapState {
                 _ => None,
             })
             .collect();
-        let placed = self
-            .placer
-            .place(cam, ppp, &self.style, &sources, srgb, Some(t0));
+        let placed = self.placer.place(
+            cam,
+            ppp,
+            &self.style,
+            &self.hidden,
+            &sources,
+            srgb,
+            Some(t0),
+        );
         frame.glyphs = placed.glyphs;
         frame.atlas = self.placer.atlas.take_uploads();
         view.labels = placed.labels;
@@ -668,8 +723,8 @@ impl eframe::App for App {
                         "Choose a pack (Ctrl+O).".into()
                     };
                     painter.text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
+                        rect.center_top() + Vec2::new(0.0, 60.0),
+                        Align2::CENTER_TOP,
                         msg,
                         FontId::proportional(16.0),
                         Color32::DARK_GRAY,
@@ -683,6 +738,10 @@ impl eframe::App for App {
                 }
                 m.camera.clamp();
                 m.take_results(&mut self.bench);
+                if m.stats.errors > 0 && !m.error_suggested && self.bench.is_none() {
+                    m.error_suggested = true;
+                    self.tile_error = m.stats.last_error.clone();
+                }
                 if self.bench.is_none() {
                     m.input(ui, &resp, rect.min, dt);
                     m.motion.step(&mut m.camera, dt);
@@ -696,7 +755,19 @@ impl eframe::App for App {
                     });
                 }
                 let outlines = self.cfg.debug_overlay;
-                m.draw(&painter, rect, ctx.pixels_per_point(), self.srgb, outlines);
+                // The bench draws every layer, whatever the config says.
+                let layers = match self.bench {
+                    Some(_) => Layers::default(),
+                    None => self.cfg.layers,
+                };
+                m.draw(
+                    &painter,
+                    rect,
+                    ctx.pixels_per_point(),
+                    self.srgb,
+                    &layers,
+                    outlines,
+                );
                 if m.view.detailed && self.first_full.is_none() {
                     self.first_full = Some(self.started.elapsed());
                 }
@@ -705,7 +776,11 @@ impl eframe::App for App {
         if self.cfg.debug_overlay {
             self.overlay(&ctx, map_rect);
         }
+        self.controls(&ctx, map_rect);
         self.picker_window(&ctx);
+        self.about_window(&ctx);
+        self.verify_window(&ctx);
+        self.error_windows(&ctx);
         self.notices_window(&ctx);
 
         let cpu = t0.elapsed();
@@ -871,10 +946,14 @@ impl App {
         egui::Window::new("Open a pack")
             .open(&mut open)
             .collapsible(false)
+            .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 if self.found.is_empty() {
-                    ui.label("No packs found.");
+                    ui.label(format!(
+                        "No packs found in {}.",
+                        self.exe_dir.join("maps").display()
+                    ));
                 }
                 for p in &self.found {
                     let dir = packs::pack_dir(p);
@@ -890,12 +969,360 @@ impl App {
                         chosen = Some(p.clone());
                     }
                 }
+                ui.separator();
+                ui.label("Or open the pack in a folder:");
+                ui.horizontal(|ui| {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut self.path_input)
+                            .hint_text("folder or .omp.000 file")
+                            .desired_width(320.0),
+                    );
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ui.button("Open").clicked() || enter) && !self.path_input.trim().is_empty()
+                    {
+                        let dir = PathBuf::from(self.path_input.trim());
+                        let found = packs::find(&dir);
+                        match found.as_slice() {
+                            [] => {
+                                self.pack_error =
+                                    Some(format!("No pack (*.omp.000) in {}", dir.display()));
+                            }
+                            [one] => chosen = Some(one.clone()),
+                            _ => self.found = found,
+                        }
+                    }
+                });
             });
         if let Some(p) = chosen {
             self.open(ctx, &p);
             open = false;
         }
         self.picker = open;
+    }
+
+    /// The buttons and readouts over the map: Layers and Menu at the top right; the scale
+    /// bar and the cursor's coordinates at the bottom left; the zoom buttons and the credit
+    /// line at the bottom right.
+    fn controls(&mut self, ctx: &egui::Context, map_rect: Rect) {
+        let Some(m) = &mut self.map else { return };
+        let panel = egui::Frame::popup(&ctx.global_style())
+            .inner_margin(egui::Margin::symmetric(6, 4))
+            .fill(Color32::from_white_alpha(215));
+        // Top right.
+        let mut action = None;
+        egui::Area::new(egui::Id::unique("map-menus"))
+            .fixed_pos(map_rect.right_top() + Vec2::new(-8.0, 8.0))
+            .pivot(Align2::RIGHT_TOP)
+            .show(ctx, |ui| {
+                panel.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let stay_open = egui::containers::menu::MenuConfig::new()
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                        egui::containers::menu::MenuButton::new("Layers")
+                            .config(stay_open)
+                            .ui(ui, |ui| {
+                                let layers = &mut self.cfg.layers;
+                                for (i, (name, on)) in layers.entries().into_iter().enumerate() {
+                                    if i == 5 {
+                                        ui.separator();
+                                        ui.label(egui::RichText::new("Points of interest").small());
+                                    }
+                                    ui.checkbox(on, name);
+                                }
+                            });
+                        egui::containers::menu::MenuButton::new("Menu").ui(ui, |ui| {
+                            ui.menu_button("Scale bar units", |ui| {
+                                let auto = format!("As the map ({})", m.units.name());
+                                ui.radio_value(&mut self.cfg.units, None, auto);
+                                for u in Units::ALL {
+                                    ui.radio_value(&mut self.cfg.units, Some(u), u.name());
+                                }
+                            });
+                            ui.separator();
+                            if ui.button("Open a pack…  (Ctrl+O)").clicked() {
+                                action = Some(Action::Pick);
+                            }
+                            if ui.button("Verify pack…").clicked() {
+                                action = Some(Action::Verify);
+                            }
+                            if ui.button("About this map…").clicked() {
+                                action = Some(Action::About);
+                            }
+                            ui.separator();
+                            ui.checkbox(&mut self.cfg.debug_overlay, "Debug overlay  (F3)");
+                        });
+                    })
+                });
+            });
+
+        // Bottom left: scale bar and coordinates.
+        let units = self.cfg.units.unwrap_or(m.units);
+        let mpp = scale::metres_per_point(m.camera.lonlat()[1], m.camera.scale());
+        let cursor = self.cursor;
+        egui::Area::new(egui::Id::unique("map-scale"))
+            .fixed_pos(map_rect.left_bottom() + Vec2::new(8.0, -8.0))
+            .pivot(Align2::LEFT_BOTTOM)
+            .interactable(false)
+            .show(ctx, |ui| {
+                panel.show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    scale_bar(ui, mpp, units);
+                    let text = cursor.map_or_else(String::new, |[lon, lat]| lonlat_text(lon, lat));
+                    ui.add_space(3.0);
+                    ui.label(egui::RichText::new(text).size(11.0).color(INK));
+                });
+            });
+
+        // Bottom right: zoom buttons above the credit line.
+        let credit = match &m.opened.meta {
+            Ok(meta) if !meta.attribution.is_empty() => meta.attribution.clone(),
+            _ => "© OpenStreetMap contributors".into(),
+        };
+        let credit_rect = egui::Area::new(egui::Id::unique("map-credit"))
+            .fixed_pos(map_rect.right_bottom())
+            .pivot(Align2::RIGHT_BOTTOM)
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(Color32::from_white_alpha(190))
+                    .inner_margin(egui::Margin::symmetric(4, 1))
+                    .show(ui, |ui| {
+                        let label =
+                            egui::Label::new(egui::RichText::new(credit).size(10.5).color(INK))
+                                .sense(Sense::click());
+                        if ui.add(label).on_hover_text("About this map").clicked() {
+                            action = Some(Action::About);
+                        }
+                    });
+            })
+            .response
+            .rect;
+        let center = [m.camera.size[0] / 2.0, m.camera.size[1] / 2.0];
+        egui::Area::new(egui::Id::unique("map-zoom"))
+            .fixed_pos(Pos2::new(map_rect.right() - 8.0, credit_rect.top() - 8.0))
+            .pivot(Align2::RIGHT_BOTTOM)
+            .show(ctx, |ui| {
+                panel.show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let button = |ui: &mut egui::Ui, text: &str, tip: &str| {
+                        let b = egui::Button::new(egui::RichText::new(text).size(20.0))
+                            .min_size(Vec2::splat(32.0));
+                        ui.add(b).on_hover_text(tip).clicked()
+                    };
+                    if button(ui, "+", "Zoom in  (+)") {
+                        m.motion.zoom(1.0, center);
+                    }
+                    if button(ui, "\u{2212}", "Zoom out  (\u{2212})") {
+                        m.motion.zoom(-1.0, center);
+                    }
+                });
+            });
+
+        match action {
+            Some(Action::Pick) => self.picker = true,
+            Some(Action::Verify) => self.start_verify(ctx),
+            Some(Action::About) => self.about = true,
+            None => {}
+        }
+    }
+
+    fn start_verify(&mut self, ctx: &egui::Context) {
+        let Some(m) = &self.map else { return };
+        let ctx = ctx.clone();
+        self.verify = Some(Verify::start(
+            m.opened.reader.clone(),
+            omp_core::tiles::TileReader::pack,
+            move || ctx.request_repaint(),
+        ));
+    }
+
+    fn about_window(&mut self, ctx: &egui::Context) {
+        if !self.about {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("About this map")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(520.0);
+                let Some(m) = &self.map else {
+                    ui.label("No pack is open.");
+                    return;
+                };
+                let pack = m.opened.reader.pack();
+                let info = &pack.info;
+                ui.heading(&info.name);
+                egui::Grid::new("about-grid")
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        let mut row = |k: &str, v: String| {
+                            ui.label(egui::RichText::new(k).strong());
+                            ui.label(v);
+                            ui.end_row();
+                        };
+                        row("Built", packs::date(info.build_time));
+                        row("Data as of", info.snapshot.clone());
+                        if let Ok(meta) = &m.opened.meta {
+                            for src in &meta.sources {
+                                let date = src.date.get(..10).unwrap_or(&src.date);
+                                row(&src.name, format!("{}, downloaded {date}", src.license));
+                            }
+                            row(
+                                "Builder",
+                                format!("{}, format {}", meta.builder_version, meta.format_version),
+                            );
+                        }
+                        let dir = packs::pack_dir(&m.opened.first_chunk);
+                        let chunks = match pack.chunks() {
+                            1 => "1 file".to_string(),
+                            n => format!("{n} files"),
+                        };
+                        row("Pack", format!("{} ({chunks})", dir.display()));
+                    });
+                ui.separator();
+                match &m.opened.meta {
+                    Ok(meta) => {
+                        ui.label(&meta.attribution);
+                        // Sources' own attributions that the pack's does not already carry.
+                        let mut shown: Vec<&str> = vec![&meta.attribution];
+                        for src in meta.sources.iter().filter_map(|s| s.attribution.as_deref()) {
+                            if !shown.iter().any(|s| s.contains(src)) {
+                                ui.label(src);
+                                shown.push(src);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        ui.label(format!("© OpenStreetMap contributors. ({e})"));
+                    }
+                }
+                ui.separator();
+                ui.label(format!("Offline Road Maps {}", env!("CARGO_PKG_VERSION")));
+            });
+        self.about = open;
+    }
+
+    fn verify_window(&mut self, ctx: &egui::Context) {
+        let Some(v) = &mut self.verify else { return };
+        let outcome = v.outcome();
+        let (done, total) = v.progress();
+        let secs = v.elapsed().as_secs_f64();
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new("Verify pack")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_width(380.0);
+                match &outcome {
+                    None => {
+                        ui.label("Checking every part of the pack against its checksum…");
+                        let f = if total > 0 {
+                            done as f32 / total as f32
+                        } else {
+                            0.0
+                        };
+                        ui.add(egui::ProgressBar::new(f).show_percentage());
+                        ui.label(format!(
+                            "{:.0} of {:.0} MiB, {}",
+                            mib(done),
+                            mib(total),
+                            seconds(secs)
+                        ));
+                        close = ui.button("Cancel").clicked();
+                    }
+                    Some(o) => {
+                        match o {
+                            Outcome::Intact { sections, bytes } => ui.label(format!(
+                                "The pack is intact: all {sections} sections ({:.0} MiB) \
+                                 match their checksums. Checked in {}.",
+                                mib(*bytes),
+                                seconds(secs)
+                            )),
+                            Outcome::Damaged(ids) => ui.colored_label(
+                                ERROR,
+                                format!(
+                                    "The pack is damaged: {} {} not match {} checksum. \
+                                     Copy the pack again from where it came from, or \
+                                     build it again.",
+                                    ids.join(", "),
+                                    if ids.len() == 1 { "does" } else { "do" },
+                                    if ids.len() == 1 { "its" } else { "their" },
+                                ),
+                            ),
+                            Outcome::Failed(e) => {
+                                ui.colored_label(ERROR, format!("The pack could not be read: {e}"))
+                            }
+                            Outcome::Cancelled => ui.label("Cancelled."),
+                        };
+                        close = ui.button("Close").clicked();
+                    }
+                }
+            });
+        if !open || close {
+            // Dropping it stops the check.
+            self.verify = None;
+        }
+    }
+
+    fn error_windows(&mut self, ctx: &egui::Context) {
+        if let Some(e) = &self.pack_error {
+            let mut close = false;
+            let mut pick = false;
+            egui::Window::new("Could not open the map")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_max_width(480.0);
+                    ui.colored_label(ERROR, e);
+                    ui.label(
+                        "The pack may be incomplete (a chunk file missing), damaged, or made \
+                         for a newer version of the app.",
+                    );
+                    ui.horizontal(|ui| {
+                        pick = ui.button("Choose a pack…").clicked();
+                        close = ui.button("OK").clicked();
+                    });
+                });
+            if pick {
+                self.picker = true;
+            }
+            if pick || close {
+                self.pack_error = None;
+            }
+        }
+        if let Some(e) = &self.tile_error {
+            let mut close = false;
+            let mut verify = false;
+            egui::Window::new("Part of the map could not be read")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_max_width(480.0);
+                    ui.colored_label(ERROR, e);
+                    ui.label(
+                        "The pack may be damaged. Verify it to find out; it takes a minute or \
+                         more for a large pack.",
+                    );
+                    ui.horizontal(|ui| {
+                        verify = ui.button("Verify pack").clicked();
+                        close = ui.button("Not now").clicked();
+                    });
+                });
+            if verify {
+                self.start_verify(ctx);
+            }
+            if verify || close {
+                self.tile_error = None;
+            }
+        }
     }
 
     fn notices_window(&mut self, ctx: &egui::Context) {
@@ -915,6 +1342,64 @@ impl App {
         if dismiss {
             self.notices.clear();
         }
+    }
+}
+
+/// What a click in the controls asks for, done once their UI is drawn.
+enum Action {
+    Pick,
+    Verify,
+    About,
+}
+
+/// Text and lines over the map.
+const INK: Color32 = Color32::from_gray(40);
+const ERROR: Color32 = Color32::from_rgb(180, 30, 30);
+
+/// One bar per unit, at most 120 points long: miles with its ticks up, kilometres below it
+/// with its ticks down.
+fn scale_bar(ui: &mut egui::Ui, metres_per_point: f64, units: Units) {
+    const MAX: f64 = 120.0;
+    let bars: &[(bool, bool)] = match units {
+        Units::Miles => &[(true, true)],
+        Units::Kilometres => &[(false, true)],
+        Units::Both => &[(true, true), (false, false)],
+    };
+    let stroke = Stroke::new(1.5, INK);
+    for &(imperial, up) in bars {
+        let (len, text) = scale::bar(metres_per_point, MAX, imperial);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(MAX as f32 + 52.0, 13.0), Sense::hover());
+        let p = ui.painter();
+        let (x0, x1) = (rect.left() + 1.0, rect.left() + 1.0 + len as f32);
+        let (y, tip) = match up {
+            true => (rect.bottom() - 0.75, rect.top() + 3.0),
+            false => (rect.top() + 0.75, rect.bottom() - 3.0),
+        };
+        p.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], stroke);
+        p.line_segment([Pos2::new(x0, y), Pos2::new(x0, tip)], stroke);
+        p.line_segment([Pos2::new(x1, y), Pos2::new(x1, tip)], stroke);
+        p.text(
+            Pos2::new(x1 + 5.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            text,
+            FontId::proportional(11.0),
+            INK,
+        );
+    }
+}
+
+/// `40.12345° N, 83.12345° W`.
+fn lonlat_text(lon: f64, lat: f64) -> String {
+    let ns = if lat < 0.0 { 'S' } else { 'N' };
+    let ew = if lon < 0.0 { 'W' } else { 'E' };
+    format!("{:.5}° {ns}, {:.5}° {ew}", lat.abs(), lon.abs())
+}
+
+fn seconds(s: f64) -> String {
+    if s < 10.0 {
+        format!("{s:.1} s")
+    } else {
+        format!("{s:.0} s")
     }
 }
 

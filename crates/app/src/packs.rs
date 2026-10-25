@@ -3,11 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use omp_core::meta::{self, Meta};
 use omp_core::pack::Pack;
 use omp_core::schema::{self, Schema};
 use omp_core::tiles::TileReader;
 
 use crate::camera::lonlat_to_world;
+use crate::scale::Units;
 
 /// First-chunk files (`<name>.omp.000`) in `dir` and its direct subfolders, sorted. `dir` may
 /// also be a first-chunk file itself.
@@ -58,10 +60,18 @@ pub struct Opened {
     pub bounds: [f64; 4],
     /// Layer, class and prop names, which the style is resolved against.
     pub schema: Schema,
+    /// For "About this map"; a pack opens without it.
+    pub meta: Result<Meta, String>,
 }
 
 pub fn open(first_chunk: &Path) -> Result<Opened, String> {
-    let err = |e: std::io::Error| format!("{}: {e}", first_chunk.display());
+    let err = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::UnexpectedEof => format!(
+            "{}: the file ends too early; it may not have been copied completely",
+            first_chunk.display()
+        ),
+        _ => format!("{}: {e}", first_chunk.display()),
+    };
     let pack = Pack::open(first_chunk).map_err(err)?;
     let [w, s, e, n] = pack.info.bbox.map(|v| f64::from(v) * 1e-7);
     let [x0, y0] = lonlat_to_world(w, n);
@@ -71,6 +81,13 @@ pub fn open(first_chunk: &Path) -> Result<Opened, String> {
         .copied()
         .ok_or_else(|| format!("{}: the pack has no SCHM section", first_chunk.display()))?;
     let schema = Schema::decode(&pack.read_section(&section).map_err(err)?).map_err(err)?;
+    let meta = match pack.section(meta::ID) {
+        Some(s) => pack
+            .read_section(s)
+            .and_then(|b| Meta::decode(&b))
+            .map_err(|e| format!("META could not be read: {e}")),
+        None => Err("the pack has no META section".into()),
+    };
     let reader = TileReader::open(pack).map_err(err)?;
     let bounds = if x1 > x0 && y1 > y0 {
         [x0, y0, x1, y1]
@@ -82,7 +99,48 @@ pub fn open(first_chunk: &Path) -> Result<Opened, String> {
         reader: Arc::new(reader),
         bounds,
         schema,
+        meta,
     })
+}
+
+/// The scale bar's units for a pack: miles for a US pack, kilometres for a Canadian or
+/// Mexican one, both for a pack that covers several countries or is not known. Told by the
+/// OSM extract's URL (Geofabrik's `north-america/us/…`, `…/canada/…`, `…/mexico…`).
+pub fn default_units(meta: Option<&Meta>) -> Units {
+    let mut found = None;
+    for s in meta.into_iter().flat_map(|m| &m.sources) {
+        if !s.name.starts_with("osm") {
+            continue;
+        }
+        let url = s.url.to_ascii_lowercase();
+        let u = if url.contains("/us/") || url.contains("/us-") {
+            Units::Miles
+        } else if url.contains("/canada") || url.contains("/mexico") {
+            Units::Kilometres
+        } else {
+            Units::Both
+        };
+        if found.is_some_and(|f| f != u) {
+            return Units::Both;
+        }
+        found = Some(u);
+    }
+    found.unwrap_or(Units::Both)
+}
+
+/// `YYYY-MM-DD` of Unix seconds, UTC.
+pub fn date(unix: i64) -> String {
+    // Howard Hinnant's civil_from_days.
+    let z = unix.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 #[cfg(test)]
@@ -116,5 +174,39 @@ mod tests {
         );
         assert_eq!(find(&found[1]), vec![found[1].clone()]);
         assert_eq!(pack_dir(&found[1]), d.path().join("ohio"));
+    }
+
+    #[test]
+    fn units_follow_the_country() {
+        let meta = |urls: &[&str]| Meta {
+            sources: urls
+                .iter()
+                .map(|u| omp_core::meta::Source {
+                    name: "osm x".into(),
+                    url: (*u).into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let gf = "https://download.geofabrik.de/";
+        let us = format!("{gf}north-america/us/ohio-261001.osm.pbf");
+        let ca = format!("{gf}north-america/canada/quebec-261001.osm.pbf");
+        let mx = format!("{gf}north-america/mexico-261001.osm.pbf");
+        let na = format!("{gf}north-america-261001.osm.pbf");
+        assert_eq!(default_units(Some(&meta(&[&us]))), Units::Miles);
+        assert_eq!(default_units(Some(&meta(&[&ca]))), Units::Kilometres);
+        assert_eq!(default_units(Some(&meta(&[&mx]))), Units::Kilometres);
+        assert_eq!(default_units(Some(&meta(&[&na]))), Units::Both);
+        assert_eq!(default_units(Some(&meta(&[&us, &ca]))), Units::Both);
+        assert_eq!(default_units(None), Units::Both);
+    }
+
+    #[test]
+    fn dates() {
+        assert_eq!(date(0), "1970-01-01");
+        // inspect: "built 2026-10-25T04:06:55Z".
+        assert_eq!(date(1_792_901_215), "2026-10-25");
+        assert_eq!(date(951_782_400), "2000-02-29");
     }
 }

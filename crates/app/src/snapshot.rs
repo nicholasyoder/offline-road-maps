@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use crate::camera::Camera;
 use crate::labels::{self, Placer, TileLabels};
+use crate::layers::Hidden;
 use crate::render::{self, GpuMesh, Renderer};
 use crate::style::{Style, StyleFile};
 use crate::tiles::{self, Known, TileId};
@@ -162,7 +163,13 @@ impl Snapshot {
         let gl = adapter.get_info().backend == eframe::wgpu::Backend::Gl;
         let samples = if gl { 1 } else { self.msaa };
         let mut renderer = Renderer::new(&device, render::OFFSCREEN_FORMAT, samples);
-        let paints = render::paints(&style, cam.zoom, self.pixels_per_point, renderer.srgb);
+        let paints = render::paints(
+            &style,
+            &Hidden::default(),
+            cam.zoom,
+            self.pixels_per_point,
+            renderer.srgb,
+        );
         let capped = plan.capped.iter().filter_map(|&(t, cap, s)| {
             let m = known.get(&s).cloned().flatten()?;
             Some((t, cap, s, m.0))
@@ -194,6 +201,7 @@ impl Snapshot {
             &cam,
             self.pixels_per_point,
             &style,
+            &Hidden::default(),
             &sources,
             renderer.srgb,
             None,

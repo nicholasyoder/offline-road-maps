@@ -502,6 +502,18 @@ impl Pack {
 
     /// [`Pack::verify`], calling `progress(bytes hashed, total)` every 8 MiB.
     pub fn verify_with(&self, mut progress: impl FnMut(u64, u64)) -> io::Result<Vec<[u8; 4]>> {
+        self.verify_until(|done, total| {
+            progress(done, total);
+            true
+        })
+    }
+
+    /// [`Pack::verify_with`], stopped with [`io::ErrorKind::Interrupted`] when `progress`
+    /// returns `false` (the app's "Verify pack", which can be cancelled).
+    pub fn verify_until(
+        &self,
+        mut progress: impl FnMut(u64, u64) -> bool,
+    ) -> io::Result<Vec<[u8; 4]>> {
         const STEP: u64 = 8 << 20;
         let total: u64 = self.sections.iter().map(|s| s.len).sum();
         let mut done = 0;
@@ -514,7 +526,9 @@ impl Pack {
                 h.update(&self.read(v, n as usize)?);
                 v += n;
                 done += n;
-                progress(done, total);
+                if !progress(done, total) {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
             }
             if h.digest() != s.checksum {
                 bad.push(s.id);
@@ -578,6 +592,13 @@ mod tests {
         let mut last = (0, 0);
         p.verify_with(|done, total| last = (done, total)).unwrap();
         assert_eq!(last, (last.1, meta.len + tdat.len + tidx.len));
+        let mut calls = 0;
+        let stopped = p.verify_until(|_, _| {
+            calls += 1;
+            false
+        });
+        assert_eq!(stopped.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(calls, 1);
         assert!(p.read_section(&tdat).is_err());
     }
 

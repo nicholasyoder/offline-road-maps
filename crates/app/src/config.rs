@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::layers::Layers;
+use crate::scale::Units;
+
 const FILE: &str = "config.toml";
 const APP_DIR: &str = "offline-road-maps";
 
@@ -23,6 +26,9 @@ pub struct Config {
     pub debug_overlay: bool,
     /// Antialiasing samples: 4 by default; 1 turns MSAA off, for GPUs that cannot do it.
     pub msaa: Option<u32>,
+    /// The scale bar's units; unset, they follow the pack.
+    pub units: Option<Units>,
+    pub layers: Layers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -164,6 +170,12 @@ mod tests {
             }),
             debug_overlay: true,
             msaa: Some(1),
+            units: Some(Units::Kilometres),
+            layers: Layers {
+                rail: false,
+                food: false,
+                ..Layers::default()
+            },
         };
         assert_eq!(cfg.pack.as_deref(), Some(Path::new("maps/ohio")));
         loc.save(&cfg).unwrap();
@@ -184,5 +196,8 @@ mod tests {
     fn unknown_keys_are_ignored() {
         let c: Config = toml::from_str("debug_overlay = true\nfuture = 1\n").unwrap();
         assert!(c.debug_overlay);
+        // A config from before a toggle existed shows that layer.
+        let c: Config = toml::from_str("[layers]\nrail = false\n").unwrap();
+        assert!(!c.layers.rail && c.layers.labels && c.layers.fuel);
     }
 }

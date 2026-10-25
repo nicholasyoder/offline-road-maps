@@ -22,6 +22,7 @@ use eframe::egui_wgpu::{self, wgpu};
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
+use crate::layers::Hidden;
 use crate::mesh::{Mesh, Segment, Vertex};
 use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, Rgba, Style};
 use crate::text::{ATLAS, Upload};
@@ -180,16 +181,24 @@ pub fn gpu_color(c: Rgba, srgb_target: bool) -> [f32; 4] {
 }
 
 /// The style's paints at a zoom, in pixels.
-pub fn paints(style: &Style, zoom: f64, pixels_per_point: f32, srgb_target: bool) -> Vec<GpuPaint> {
+pub fn paints(
+    style: &Style,
+    hidden: &Hidden,
+    zoom: f64,
+    pixels_per_point: f32,
+    srgb_target: bool,
+) -> Vec<GpuPaint> {
     let z = zoom as f32;
     let ppp = pixels_per_point;
     let color = |c: Rgba| gpu_color(c, srgb_target);
     style
         .paints
         .iter()
-        .map(|p| {
-            // Outside its zoom range: transparent, and lines of no width are not drawn.
-            if !p.shown_at(z) {
+        .enumerate()
+        .map(|(i, p)| {
+            // Outside its zoom range or toggled off: transparent, and lines of no width are
+            // not drawn.
+            if !p.shown_at(z) || hidden.paint(i) {
                 return GpuPaint::default();
             }
             let width = p.width.at(z);
