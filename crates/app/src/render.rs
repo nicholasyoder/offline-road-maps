@@ -28,6 +28,7 @@ use crate::pool::{Alloc, Kind, Pool};
 use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, Rgba, Style};
 use crate::text::{ATLAS, Upload};
 use crate::tiles::TileId;
+use crate::upload;
 
 /// MSAA sample count, for the window (eframe's `multisampling`) and `--render`, unless
 /// `config.toml` or `--msaa` turn it off.
@@ -294,6 +295,8 @@ pub struct Renderer {
     atlas: wgpu::Texture,
     text_bg: wgpu::BindGroup,
     glyphs: wgpu::Buffer,
+    /// For the per-frame buffers.
+    upload: upload::Upload,
     pub srgb: bool,
     pub samples: u32,
 }
@@ -435,6 +438,7 @@ impl Renderer {
             stride,
             capacity: 64,
             square,
+            upload: upload::Upload::new(device, 1 << 20),
             srgb: format.is_srgb(),
             samples,
         }
@@ -610,8 +614,14 @@ impl Renderer {
         (buf, bg)
     }
 
-    /// Uploads the frame's uniforms.
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
+    /// Uploads the frame's uniforms, glyphs and transforms; the copies go in `encoder`.
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+    ) {
         let n_transforms = frame.tiles.len() + frame.sources.len();
         if n_transforms > self.capacity {
             self.capacity = n_transforms.next_power_of_two();
@@ -622,9 +632,17 @@ impl Renderer {
             size: frame.size,
             _pad: [0.0; 2],
         };
-        queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
+        let up = &mut self.upload;
+        up.write(
+            queue,
+            encoder,
+            &self.globals,
+            0,
+            bytemuck::bytes_of(&globals),
+        );
         let n = frame.paints.len().min(MAX_PAINTS);
-        queue.write_buffer(&self.paints, 0, bytemuck::cast_slice(&frame.paints[..n]));
+        let paints = bytemuck::cast_slice(&frame.paints[..n]);
+        up.write(queue, encoder, &self.paints, 0, paints);
         for u in &frame.atlas {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -654,10 +672,16 @@ impl Renderer {
         if glyph_bytes > self.glyphs.size() {
             self.glyphs = Self::glyph_buffer(device, frame.glyphs.len().next_power_of_two());
         }
-        if glyph_bytes > 0 {
-            queue.write_buffer(&self.glyphs, 0, bytemuck::cast_slice(&frame.glyphs));
-        }
+        let up = &mut self.upload;
+        up.write(
+            queue,
+            encoder,
+            &self.glyphs,
+            0,
+            bytemuck::cast_slice(&frame.glyphs),
+        );
         if frame.tiles.is_empty() {
+            up.finish(encoder);
             return;
         }
         // The tiles' transforms, then the sources'.
@@ -673,7 +697,8 @@ impl Renderer {
             let at = i * self.stride as usize;
             data[at..at + 16].copy_from_slice(bytemuck::bytes_of(&tr));
         }
-        queue.write_buffer(&self.transforms, 0, &data);
+        up.write(queue, encoder, &self.transforms, 0, &data);
+        up.finish(encoder);
     }
 
     /// Draws the frame. `offset` is where the viewport's top-left is in the render target, and
@@ -806,11 +831,11 @@ impl egui_wgpu::CallbackTrait for MapCallback {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen: &egui_wgpu::ScreenDescriptor,
-        _encoder: &mut wgpu::CommandEncoder,
+        encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(r) = resources.get_mut::<Renderer>() {
-            r.prepare(device, queue, &self.0);
+            r.prepare(device, queue, encoder, &self.0);
         }
         Vec::new()
     }
@@ -896,8 +921,8 @@ pub fn draw_offscreen(
         (renderer.samples > 1).then(|| texture(renderer.samples, wgpu::TextureUsages::empty()));
     let resolved_view = resolved.create_view(&Default::default());
     let msaa_view = msaa.as_ref().map(|t| t.create_view(&Default::default()));
-    renderer.prepare(device, queue, frame);
     let mut enc = device.create_command_encoder(&Default::default());
+    renderer.prepare(device, queue, &mut enc, frame);
     {
         let c = |v: u8| f64::from(v) / 255.0;
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {

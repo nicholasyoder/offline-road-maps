@@ -4,7 +4,8 @@
 //! DX12 puts every buffer on a 64 KiB boundary, and Intel's GL driver for the HD 4000 never
 //! gave deleted buffers' memory back, so RSS grew with every tile loaded (phase1-plan.md,
 //! 1.10). Now tiles take ranges of shared slabs, written with `write_buffer` from the loader
-//! threads, and give them back when their mesh is dropped.
+//! threads (through upload.rs; with a staging belt, the copies are recorded in an encoder
+//! that [`Pool::end_frame`] submits), and give them back when their mesh is dropped.
 //!
 //! A range given back is reused only [`HOLD`] frames later, so a frame still in flight never
 //! sees it overwritten. An empty slab is released when another slab of its kind is empty
@@ -14,6 +15,8 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use eframe::egui_wgpu::wgpu;
+
+use crate::upload::Upload;
 
 /// Size of a slab; a larger upload gets a slab of its own size.
 pub const SLAB: u64 = 8 << 20;
@@ -93,6 +96,8 @@ pub struct Pool {
     device: wgpu::Device,
     queue: wgpu::Queue,
     state: Mutex<State>,
+    /// Copies waiting for the next submit.
+    staging: Mutex<(Upload, Option<wgpu::CommandEncoder>)>,
 }
 
 /// A range of a slab, given back when dropped.
@@ -129,15 +134,21 @@ impl Drop for Alloc {
 
 impl Pool {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Arc<Self> {
+        let upload = Upload::new(&device, 4 << 20);
         Arc::new(Self {
             device,
             queue,
             state: Mutex::default(),
+            staging: Mutex::new((upload, None)),
         })
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn staging(&self) -> MutexGuard<'_, (Upload, Option<wgpu::CommandEncoder>)> {
+        self.staging.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Copies `data`, whose length is a multiple of 4, into a free range.
@@ -190,7 +201,17 @@ impl Pool {
                 }
             }
         };
-        self.queue.write_buffer(&buffer, range.start, data);
+        {
+            let mut st = self.staging();
+            let (upload, encoder) = &mut *st;
+            let enc = encoder.get_or_insert_with(|| {
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("tile uploads"),
+                    })
+            });
+            upload.write(&self.queue, enc, &buffer, range.start, data);
+        }
         Alloc {
             pool: self.clone(),
             buffer,
@@ -200,8 +221,17 @@ impl Pool {
         }
     }
 
-    /// Once a frame: ranges held long enough become free, and spare empty slabs go.
+    /// Once a frame, before the frame is submitted: submits the copies waiting; then ranges
+    /// held long enough become free, and spare empty slabs go.
     pub fn end_frame(&self) {
+        let encoder = {
+            let mut st = self.staging();
+            let (upload, encoder) = &mut *st;
+            encoder.take().inspect(|e| upload.finish(e))
+        };
+        if let Some(e) = encoder {
+            self.queue.submit([e.finish()]);
+        }
         let mut st = self.lock();
         st.frame += 1;
         let frame = st.frame;

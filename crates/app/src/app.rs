@@ -626,10 +626,13 @@ impl MapState {
         view.candidates = placed.candidates;
         view.fading = placed.fading;
         view.label_time = t0.elapsed();
-        painter.add(egui_wgpu::Callback::new_paint_callback(
-            rect,
-            MapCallback(frame),
-        ));
+        // OMP_BENCH_NO_MAP: everything but drawing the map, to see what the rest costs.
+        if std::env::var_os("OMP_BENCH_NO_MAP").is_none() {
+            painter.add(egui_wgpu::Callback::new_paint_callback(
+                rect,
+                MapCallback(frame),
+            ));
+        }
         self.view = view;
         if outlines {
             self.outlines(painter, rect.min, &plan.draws);

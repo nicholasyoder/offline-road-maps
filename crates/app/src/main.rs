@@ -27,6 +27,7 @@ mod snapshot;
 mod style;
 mod text;
 mod tiles;
+mod upload;
 mod verify;
 
 use std::path::PathBuf;

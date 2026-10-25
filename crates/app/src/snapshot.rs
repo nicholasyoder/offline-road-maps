@@ -214,6 +214,8 @@ impl Snapshot {
         frame.atlas = placer.atlas.take_uploads();
         let atlas_fill = placer.atlas.fill();
         let no_map = crate::app::NO_MAP.to_array();
+        // The tiles' copies first.
+        pool.end_frame();
         let pixels = render::draw_offscreen(&device, &queue, &mut renderer, &frame, no_map)?;
         write_png(&self.out, self.size, &pixels)
             .map_err(|e| format!("{}: {e}", self.out.display()))?;
