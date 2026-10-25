@@ -59,6 +59,10 @@ const SHIELD_EM: f32 = 16.0;
 const BORDER: f32 = 0.09;
 /// Numbers wider than this many ems get no shield.
 const MAX_TEXT: f32 = 3.2;
+/// The least room between a number and the inside of the border, in ems.
+const TEXT_ROOM: f32 = 0.1;
+/// Shields are made at most this wide, in ems.
+const MAX_WIDTH: f32 = 31.0;
 
 /// How a shield design looks. Sizes are in ems of the shield's text.
 struct Design {
@@ -77,6 +81,13 @@ struct Design {
     text: Rgba,
     /// The middle of the text, as a share of the height from the top.
     text_y: f32,
+    /// The number's size, as a share of the shield's em.
+    text_size: f32,
+    /// Text too wide for `min_width` is set smaller, down to this share of `text_size`.
+    shrink: f32,
+    /// Wider than `min_width`, the outline grows in height too, keeping its shape (Ohio's
+    /// outline looks wrong stretched).
+    keep_aspect: bool,
 }
 
 const WHITE: Rgba = [255, 255, 255, 255];
@@ -97,31 +108,45 @@ const PLAIN: Design = Design {
     band: None,
     text: BLACK,
     text_y: 0.5,
+    text_size: 1.0,
+    shrink: 1.0,
+    keep_aspect: false,
 };
+
+impl Design {
+    /// The height for a width, in ems.
+    fn height(&self, w: f32) -> f32 {
+        match self.keep_aspect {
+            true => self.height * (w / self.min_width).max(1.0),
+            false => self.height,
+        }
+    }
+}
 
 fn design(s: Shield) -> Design {
     match s {
+        // The digits sit just under the band, where the sides are still straight.
         Shield::Interstate => Design {
             outline: interstate,
-            height: 1.55,
-            min_width: 1.55,
-            pad: 0.28,
+            height: 1.7,
+            min_width: 1.7,
+            pad: 0.35,
             border: WHITE,
             body: BLUE,
-            band: Some((RED, 0.3)),
+            band: Some((RED, 0.24)),
             text: WHITE,
-            text_y: 0.62,
+            text_y: 0.53,
             ..PLAIN
         },
         Shield::InterstateBusiness => Design {
             outline: interstate,
-            height: 1.55,
-            min_width: 1.55,
-            pad: 0.28,
+            height: 1.7,
+            min_width: 1.7,
+            pad: 0.35,
             border: WHITE,
             body: GREEN,
             text: WHITE,
-            text_y: 0.55,
+            text_y: 0.5,
             ..PLAIN
         },
         Shield::UsRoute => Design {
@@ -129,7 +154,7 @@ fn design(s: Shield) -> Design {
             height: 1.5,
             min_width: 1.5,
             pad: 0.3,
-            text_y: 0.45,
+            text_y: 0.44,
             ..PLAIN
         },
         Shield::Circle => Design {
@@ -143,10 +168,12 @@ fn design(s: Shield) -> Design {
         Shield::Box => PLAIN,
         Shield::Diamond => Design {
             outline: diamond,
-            height: 1.7,
-            min_width: 1.9,
+            height: 2.0,
+            min_width: 2.0,
             stretch: 1.75,
             pad: 0.1,
+            text_size: 0.8,
+            shrink: 0.75,
             ..PLAIN
         },
         Shield::Keystone => Design {
@@ -165,7 +192,7 @@ fn design(s: Shield) -> Design {
             border: WHITE,
             body: GREEN,
             text: WHITE,
-            text_y: 0.42,
+            text_y: 0.4,
             ..PLAIN
         },
         Shield::Ohio => Design {
@@ -175,6 +202,8 @@ fn design(s: Shield) -> Design {
             stretch: 1.1,
             pad: 0.25,
             text_y: 0.47,
+            shrink: 0.75,
+            keep_aspect: true,
             ..PLAIN
         },
         Shield::County => Design {
@@ -185,7 +214,7 @@ fn design(s: Shield) -> Design {
             border: [242, 190, 0, 255],
             body: [22, 84, 168, 255],
             text: [255, 214, 51, 255],
-            text_y: 0.42,
+            text_y: 0.4,
             ..PLAIN
         },
         Shield::TransCanada => Design {
@@ -204,7 +233,7 @@ fn design(s: Shield) -> Design {
             height: 1.75,
             min_width: 1.55,
             pad: 0.28,
-            text_y: 0.6,
+            text_y: 0.54,
             ..PLAIN
         },
         Shield::QuebecAutoroute => Design {
@@ -214,9 +243,9 @@ fn design(s: Shield) -> Design {
             pad: 0.28,
             border: WHITE,
             body: BLUE,
-            band: Some((RED, 0.27)),
+            band: Some((RED, 0.22)),
             text: WHITE,
-            text_y: 0.58,
+            text_y: 0.5,
             ..PLAIN
         },
         Shield::QuebecRoute => Design {
@@ -251,12 +280,15 @@ pub struct Plate {
     /// In eighths of an em.
     pub width: u8,
     pub text: Text,
+    /// The text's size, as a share of the shield's em.
+    pub text_scale: f32,
 }
 
 impl Plate {
     /// Width and height, in ems.
     pub fn size(&self) -> [f32; 2] {
-        [f32::from(self.width) / 8.0, design(self.shield).height]
+        let w = f32::from(self.width) / 8.0;
+        [w, design(self.shield).height(w)]
     }
 
     /// The layers drawn, bottom first, with their colours.
@@ -279,7 +311,7 @@ impl Plate {
     /// The text's colour, and where its middle is from the top, in ems.
     pub fn text_at(&self) -> (Rgba, f32) {
         let d = design(self.shield);
-        (d.text, d.text_y * d.height)
+        (d.text, d.text_y * self.size()[1])
     }
 
     /// Heap and inline bytes, for the tile cache.
@@ -301,11 +333,21 @@ pub fn plate(shield: Shield, reference: &str) -> Option<Plate> {
         return None;
     }
     let d = design(shield);
-    let w = (text.width * d.stretch + 2.0 * d.pad).max(d.min_width);
+    let room = (d.min_width - 2.0 * d.pad) / d.stretch;
+    let text_scale = d.text_size * (room / (text.width * d.text_size)).clamp(d.shrink, 1.0);
+    let tw = text.width * text_scale;
+    // The padding gives each design its proportions; then it widens until the number is
+    // clear of the border, as pointed and round shapes narrow around it.
+    let w = (tw * d.stretch + 2.0 * d.pad).max(d.min_width);
+    let mut width = (w * 8.0).ceil() as u8;
+    while f32::from(width) / 8.0 < MAX_WIDTH && !fits(&d, f32::from(width) / 8.0, tw, text_scale) {
+        width += 1;
+    }
     let plate = Plate {
         shield,
-        width: (w * 8.0).ceil().min(255.0) as u8,
+        width,
         text,
+        text_scale,
     };
     for (key, _) in plate.layers() {
         sdf(key);
@@ -316,9 +358,56 @@ pub fn plate(shield: Shield, reference: &str) -> Option<Plate> {
     Some(plate)
 }
 
+/// Whether a number `tw` ems wide, at `scale` of the em, is [`TEXT_ROOM`] clear of the
+/// border of design `d` drawn `w` wide: its box's corners and the middles of its sides are
+/// inside the outline, at least the border and that room in.
+fn fits(d: &Design, w: f32, tw: f32, scale: f32) -> bool {
+    let h = d.height(w);
+    // Flattened as it is drawn.
+    let mut pen = Flatten::new([SHIELD_EM; 2], [0.0; 2]);
+    (d.outline)(&mut pen, w, h);
+    pen.close();
+    let th = 2.0 * text::MID_CAP * scale;
+    let (x0, x1) = ((w - tw) / 2.0, (w + tw) / 2.0);
+    let (y0, y1) = (d.text_y * h - th / 2.0, d.text_y * h + th / 2.0);
+    let (xm, ym) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    [
+        [x0, y0],
+        [x1, y0],
+        [x0, y1],
+        [x1, y1],
+        [xm, y0],
+        [xm, y1],
+        [x0, ym],
+        [x1, ym],
+    ]
+    .iter()
+    .all(|&p| depth(&pen.segs, p.map(|v| v * SHIELD_EM)) >= (BORDER + TEXT_ROOM) * SHIELD_EM)
+}
+
+/// How far point `p` is inside the outline `segs` (nonzero winding); negative outside.
+fn depth(segs: &[text::Segment], p: [f32; 2]) -> f32 {
+    let mut winding = 0;
+    let mut d2 = f32::MAX;
+    for &[a, b] in segs {
+        if (a[1] <= p[1]) != (b[1] <= p[1]) {
+            let t = (p[1] - a[1]) / (b[1] - a[1]);
+            if a[0] + t * (b[0] - a[0]) < p[0] {
+                winding += if b[1] > a[1] { 1 } else { -1 };
+            }
+        }
+        let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+        let (qx, qy) = (p[0] - a[0], p[1] - a[1]);
+        let t = ((qx * ex + qy * ey) / (ex * ex + ey * ey)).clamp(0.0, 1.0);
+        d2 = d2.min((qx - t * ex).powi(2) + (qy - t * ey).powi(2));
+    }
+    if winding != 0 { d2.sqrt() } else { -d2.sqrt() }
+}
+
 fn shield_sdf(s: Shield, layer: u8, width: u8) -> Option<GlyphSdf> {
     let d = design(s);
-    let (w, h) = (f32::from(width) / 8.0, d.height);
+    let w = f32::from(width) / 8.0;
+    let h = d.height(w);
     let mut pen = Flatten::new([SHIELD_EM; 2], [0.0; 2]);
     (d.outline)(&mut pen, w, h);
     pen.close();
@@ -384,7 +473,7 @@ fn interstate(pen: &mut Flatten, w: f32, h: f32) {
     pen.move_to(0.0, 0.05 * h);
     pen.quad_to(0.25 * w, -0.03 * h, w / 2.0, 0.1 * h);
     pen.quad_to(0.75 * w, -0.03 * h, w, 0.05 * h);
-    shield_sides(pen, w, h, 0.4 * h);
+    shield_sides(pen, w, h, 0.6 * h);
     pen.close();
 }
 
@@ -394,7 +483,7 @@ fn us_route(pen: &mut Flatten, w: f32, h: f32) {
     pen.move_to(s, 0.0);
     pen.line_to(w - s, 0.0);
     pen.quad_to(w - 0.15 * s, 0.05 * h, w, 0.16 * h);
-    shield_sides(pen, w, h, 0.45 * h);
+    shield_sides(pen, w, h, 0.55 * h);
     pen.line_to(0.0, 0.16 * h);
     pen.quad_to(0.15 * s, 0.05 * h, s, 0.0);
     pen.close();
@@ -404,7 +493,7 @@ fn us_route(pen: &mut Flatten, w: f32, h: f32) {
 fn heater(pen: &mut Flatten, w: f32, h: f32) {
     pen.move_to(0.0, 0.0);
     pen.line_to(w, 0.0);
-    shield_sides(pen, w, h, 0.45 * h);
+    shield_sides(pen, w, h, 0.62 * h);
     pen.close();
 }
 
@@ -421,7 +510,7 @@ fn crowned(pen: &mut Flatten, w: f32, h: f32) {
     ] {
         pen.line_to(x * w, y * h);
     }
-    shield_sides(pen, w, h, 0.5 * h);
+    shield_sides(pen, w, h, 0.66 * h);
     pen.close();
 }
 
@@ -449,7 +538,7 @@ fn spade(pen: &mut Flatten, w: f32, h: f32) {
     pen.move_to(r, 0.0);
     pen.line_to(w - r, 0.0);
     pen.quad_to(w, 0.0, w, r);
-    shield_sides(pen, w, h, 0.3 * h);
+    shield_sides(pen, w, h, 0.5 * h);
     pen.line_to(0.0, r);
     pen.quad_to(0.0, 0.0, r, 0.0);
     pen.close();
@@ -474,9 +563,9 @@ fn pentagon(pen: &mut Flatten, w: f32, h: f32) {
         &[
             [0.0, 0.0],
             [w, 0.0],
-            [w, 0.62 * h],
+            [w, 0.7 * h],
             [w / 2.0, h],
-            [0.0, 0.62 * h],
+            [0.0, 0.7 * h],
         ],
     );
 }
@@ -768,6 +857,79 @@ mod tests {
         assert_eq!(Icon::named("no such icon"), None);
     }
 
+    const ALL: [Shield; 16] = [
+        Shield::Interstate,
+        Shield::InterstateBusiness,
+        Shield::UsRoute,
+        Shield::Circle,
+        Shield::Box,
+        Shield::Diamond,
+        Shield::Keystone,
+        Shield::Spade,
+        Shield::Ohio,
+        Shield::County,
+        Shield::TransCanada,
+        Shield::Ontario,
+        Shield::QuebecAutoroute,
+        Shield::QuebecRoute,
+        Shield::Mexico,
+        Shield::Generic,
+    ];
+
+    #[test]
+    fn numbers_fit_inside_every_shield_body() {
+        // The digits' box: cap height around the text's middle, with a little room.
+        let cap = 2.0 * text::MID_CAP;
+        // Less than TEXT_ROOM: the field is sampled a pixel at a time.
+        let margin = 0.03;
+        let mut bad = Vec::new();
+        for s in ALL {
+            for number in ["5", "75", "275"] {
+                let p = plate(s, number).unwrap();
+                let [w, _] = p.size();
+                let (_, mid) = p.text_at();
+                let (tw, th) = (p.text.width * p.text_scale, cap * p.text_scale);
+                let body = sdf(p.layers().nth(1).unwrap().0).unwrap();
+                let (x0, x1) = ((w - tw) / 2.0 - margin, (w + tw) / 2.0 + margin);
+                let (y0, y1) = (mid - th / 2.0 - margin, mid + th / 2.0 + margin);
+                for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                    if value(&body, x, y) <= INSIDE {
+                        bad.push(format!("{s:?} {number}: ({x:.2}, {y:.2}) in {w:.2} wide"));
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "outside the body:\n{}", bad.join("\n"));
+    }
+
+    #[test]
+    #[ignore = "prints the shield sizes, to judge proportions"]
+    fn print_sizes() {
+        for s in ALL {
+            let sizes: Vec<String> = ["5", "75", "275"]
+                .iter()
+                .map(|n| {
+                    let p = plate(s, n).unwrap();
+                    let [w, h] = p.size();
+                    format!("{w:.2}×{h:.2}")
+                })
+                .collect();
+            println!("{s:?}: {}", sizes.join("  "));
+        }
+    }
+
+    #[test]
+    fn ohio_keeps_its_shape_for_long_numbers() {
+        let two = plate(Shield::Ohio, "33").unwrap();
+        let three = plate(Shield::Ohio, "315").unwrap();
+        assert!(two.text_scale < 1.0 && three.text_scale == 0.75);
+        let ([w2, h2], [w3, h3]) = (two.size(), three.size());
+        assert!(
+            w3 > w2 && (w3 / h3 - w2 / h2).abs() < 0.01,
+            "{w2}×{h2}, {w3}×{h3}"
+        );
+    }
+
     #[test]
     fn svg_paths_handle_relative_and_smooth_commands() {
         let mut a = Flatten::new([1.0; 2], [0.0; 2]);
@@ -790,7 +952,7 @@ mod tests {
     fn shields_fit_their_numbers_and_draw_their_layers() {
         let one = plate(Shield::Interstate, "5").unwrap();
         let three = plate(Shield::Interstate, "275").unwrap();
-        assert_eq!(one.size(), [1.625, 1.55]);
+        assert_eq!(one.size(), [1.75, 1.7]);
         assert!(three.size()[0] > one.size()[0] + 0.5);
         // Border, body and the red band, in their colours.
         let layers: Vec<_> = three.layers().collect();
@@ -813,25 +975,7 @@ mod tests {
         assert!(plate(Shield::Box, "").is_none());
         assert!(plate(Shield::Generic, "ᐃ").is_none());
         // Every design draws.
-        use Shield::*;
-        for s in [
-            Interstate,
-            InterstateBusiness,
-            UsRoute,
-            Circle,
-            Box,
-            Diamond,
-            Keystone,
-            Spade,
-            Ohio,
-            County,
-            TransCanada,
-            Ontario,
-            QuebecAutoroute,
-            QuebecRoute,
-            Mexico,
-            Generic,
-        ] {
+        for s in ALL {
             let p = plate(s, "138").unwrap();
             let [w, h] = p.size();
             for (key, _) in p.layers() {

@@ -848,14 +848,15 @@ fn shield_layout(
             });
         }
         let (color, mid) = p.text_at();
-        let x = (left + (pw - p.text.width * size) / 2.0).round();
-        let baseline = top + mid * size + MID_CAP * size;
+        let ts = p.text_scale * size;
+        let x = (left + (pw - p.text.width * ts) / 2.0).round();
+        let baseline = top + mid * size + MID_CAP * ts;
         for g in &p.text.glyphs {
             pens.push(Pen {
-                at: [x + g.x * size, baseline + g.y * size],
+                at: [x + g.x * ts, baseline + g.y * ts],
                 dir: [1.0, 0.0],
                 sprite: Sprite::Glyph(SHIELD_FONT, g.id),
-                size,
+                size: ts,
                 ink: Ink::Fixed {
                     color,
                     halo: NO_HALO,
