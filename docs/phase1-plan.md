@@ -36,7 +36,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.7 Text and label placement | **Done** 2026-10-25 | Noto Sans subset to Latin (196 KB), shaped with `harfrust`, SDF glyphs from `skrifa` outlines; greedy placement with hysteresis and fade-in, line labels along roads and rivers, POI markers. Placement p95 0.28 ms a frame; North America flight p95 frame 1.05 ms; binary 11.8 MB. |
 | 1.8 Shields and POI icons | **Done** 2026-10-25 | 16 shield designs (`omp_core::routes::shield`) and 11 Maki icons, drawn as distance fields in the glyph atlas. Real shields on 97% of US and 95% of Canadian motorway ways; North America flight p95 frame 1.26 ms; binary 11.9 MB. |
 | 1.9 Viewer UI | **Done** 2026-10-25 (Linux) | Scale bar (miles, km or both, following the pack), zoom buttons, cursor coordinates, credit line; Layers menu with 9 toggles applied at draw time; About this map; Verify pack on a thread, cancellable; error dialogs for a damaged pack or tile; all saved in `config.toml`. North America flight p95 frame 1.39 ms; binary 12.2 MB. Running it on Windows is left to 1.10. |
-| 1.10 Performance, USB and hardware checks | In progress | Frame targets pass on every machine with a GPU (dev 1.17 ms cold from USB 2; 7490 12–17 ms; E6430 20.3 ms on GL). Windows uses DX12 and GL only (Intel's Vulkan driver crashed). Pooled tile slabs brought the 7490 (DX12) to 373 MiB, flat; the E6430 (GL) still grows ~0.35 MiB a frame: uploads now go through a staging belt, Windows reruns remain. |
+| 1.10 Performance, USB and hardware checks | In progress | Frame targets pass on every machine with a GPU (dev 1.17 ms cold from USB 2; 7490 12–17 ms; E6430 20.3 ms on GL). Windows uses DX12 and GL only (Intel's Vulkan driver crashed). Pooled tile slabs brought the 7490 (DX12) to 373 MiB, flat. The E6430 (GL) leaks ~0.3 MiB per frame presented, map or not; a vsync run remains. |
 
 ## Environment notes
 
@@ -567,7 +567,17 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 > - **E6430, GL:** RSS still climbs, 117 → 1,345 MiB (was 1,524). Per step it follows frames drawn, not tiles: +186 MiB in "pan east at z5" (14 tiles), +43 MiB in "zoom to z17" (no tiles), about 0.35 MiB a frame. Every frame writes four buffers with `Queue::write_buffer`, and on GL each call makes a GL staging buffer and deletes it; the old Intel driver looks to keep every deleted buffer's memory (an Intel Windows GL leak of this kind was reported for pixel buffer objects in 2012).
 >
 > **Second fix (upload.rs):** every write (the renderer's per-frame buffers, and tile geometry from the loader threads) now goes through a `StagingBelt`, whose staging buffers are mapped again and reused (`finish_and_recall_on_submit`). Tile copies are recorded in the pool's encoder and submitted by `Pool::end_frame` before egui's frame; the renderer's copies go in egui's encoder. `OMP_UPLOAD=queue` restores the old path, and `OMP_BENCH_NO_MAP=1` skips drawing the map (egui still writes its own buffers with the queue), for the comparison on the E6430 (`run-compare.bat` on the stick). Screenshots byte-identical. Dev machine, North America, warm, belt / queue: Vulkan p95 1.17 / 1.14 ms, RSS 129 / 130 MiB; GL (radeonsi) RSS 149 / 149 MiB, flat. On GL the belt also cut tile latency p95 from 69 to 18 ms, since `write_buffer` was stalling the loader threads.
-> **Remaining:** `run-bench.bat` on both Windows machines and `run-compare.bat` on the E6430; then roadmap §6.
+>
+> **Belt result (2026-10-25), E6430, GL, North America:**
+>
+> | Run | Frames | RSS peak | Per frame |
+> |---|---|---|---|
+> | staging belt (default then) | 3,858 | **6,087 MiB** | 1.58 MiB |
+> | `OMP_UPLOAD=queue` | 3,833 | 1,345 MiB | 0.35 MiB |
+> | `OMP_BENCH_NO_MAP=1` (queue) | 10,389 | 3,176 MiB | 0.30 MiB |
+>
+> The belt made it four times worse (this driver also leaks on re-mapping a buffer), and the 7490 a little worse too (DX12, 396 MiB against 373). **Reverted:** `Queue::write_buffer` again, `upload.rs` gone. More telling, without the map the leak is still 0.30 MiB a frame: drawing only egui's controls and presenting costs almost all of it, and the map's own writes about 0.05 MiB. So it is per frame presented, not per upload. The bench presents without vsync; normal use has it. `OMP_BENCH_VSYNC=1` now keeps vsync in the bench, and `run-compare.bat` runs the flight with vsync, with and without the map.
+> **Remaining:** `run-compare.bat` on the E6430: if RSS stays flat with vsync, the leak is a no-vsync artefact of this driver and real use is not affected; if not, record it as a driver bug of the HD 4000 on Windows GL. Then roadmap §6.
 
 ---
 

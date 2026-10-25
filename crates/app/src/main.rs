@@ -27,7 +27,6 @@ mod snapshot;
 mod style;
 mod text;
 mod tiles;
-mod upload;
 mod verify;
 
 use std::path::PathBuf;
@@ -213,8 +212,11 @@ fn main() -> ExitCode {
                 .with_inner_size(flight.window)
                 .with_resizable(false);
             // Frame times are only meaningful without vsync. Wayland compositors still pace
-            // frames to the display, so use X11 (XWayland) when there is one.
-            options.wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
+            // frames to the display, so use X11 (XWayland) when there is one. OMP_BENCH_VSYNC
+            // keeps vsync, to compare (the HD 4000's GL driver leaked per frame without it).
+            if std::env::var_os("OMP_BENCH_VSYNC").is_none() {
+                options.wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
+            }
             #[cfg(target_os = "linux")]
             if std::env::var_os("DISPLAY").is_some() {
                 options.event_loop_builder = Some(Box::new(|b| {
