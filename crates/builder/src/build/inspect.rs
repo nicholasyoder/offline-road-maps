@@ -275,6 +275,7 @@ fn describe(sl: &schema::Layer, layer: &Layer, f: &Feature) -> String {
     let shape = match layer.geom(f) {
         Geom::Point(p) => format!("point {},{}", p[0], p[1]),
         Geom::Lines(l) => format!("{} line(s)", l.len()),
+        Geom::Polygon(r) if r.iter().map(Vec::len).sum::<usize>() <= 16 => format!("{r:?}"),
         Geom::Polygon(r) => format!("{} ring(s)", r.len()),
     };
     format!("{class} {shape} {}", props.join(" "))

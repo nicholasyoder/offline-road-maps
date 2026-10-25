@@ -67,6 +67,22 @@ The labels and shields cost 25 MiB; merging saves about 326 MiB (measured with a
 
 Almost all of it is open ocean inside the region's `.poly`: tiles at z13–z14 that hold nothing but one ocean square. Quebec's pack grew from 742.5 to 751.0 MiB; Ohio has no ocean. The North America total becomes **about 12,950 MiB (12.6 GiB, 13.6 GB)**. Leaving out full-ocean tiles whose parent is also full ocean (the app would draw the parent) would win most of it back; that is [phase 1 step 1.5b](phase1-plan.md#15b-leave-out-full-ocean-tiles).
 
+### After phase 1 step 1.5b: left-out tiles
+
+[Step 1.5b](phase1-plan.md#15b-leave-out-full-ocean-tiles) leaves out every tile whose only content is one polygon covering the tile and its buffer, when the parent already shows that polygon; the app draws the nearest stored ancestor instead ([format.md](format.md#left-out-tiles)). Most are open ocean, but 5.6M tiles inside large protected areas (Greenland's and northern Canada's parks among them) also go. North America, MiB:
+
+| | 1.5 pack | 1.5b pack | Change |
+|---|---:|---:|---:|
+| Water tiles | 4,710.7 | 3,828.4 | −882.2 |
+| Land cover tiles | 2,122.2 | 2,010.2 | −112.0 |
+| All tiles | 8,922.9 | 7,928.7 | −994.2 |
+| Tile index (`TIDX`) | 274.8 | 95.0 | −179.8 |
+| Tiles stored | 64.0M | 17.9M | −46.1M |
+| zstd frames | 79.2M | 33.1M | −46.1M |
+| Pack | 9,200 | 8,026 | −1,174 |
+
+Left out: 40.1M ocean tiles, 5.6M protected-area tiles, 0.24M lake tiles and 0.16M wood or forest tiles. With the ocean alone the pack was 8,162 MiB, so the land polygons save another 137 MiB. Quebec's pack went from 751.0 to 743.5 MiB, Ohio's from 116.4 to 116.1 (lakes only), Delaware's stayed at 8.1. The North America total becomes **about 11,780 MiB (11.5 GiB, 12.3 GB)**, 0.53× CoMaps.
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

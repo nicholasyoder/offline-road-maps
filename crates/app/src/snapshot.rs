@@ -1,6 +1,7 @@
 //! `omp-app --render`: draws one view offscreen to a PNG, without a window. For reviewing
 //! renderer and style changes, and for the reference screenshots in `docs/screenshots/`.
 
+use std::collections::HashMap;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use std::time::Instant;
 use crate::camera::Camera;
 use crate::render::{self, GpuMesh, Renderer};
 use crate::style::Style;
-use crate::tiles::{self, TileId};
+use crate::tiles::{self, Known, TileId};
 use crate::{loader, mesh, packs};
 
 pub struct Snapshot {
@@ -80,41 +81,63 @@ impl Snapshot {
         cam.size = self.size.map(|v| f64::from(v) / ppp);
         cam.set_lonlat(self.lon, self.lat, self.zoom);
         let z = tiles::tile_zoom(cam.zoom);
-        let wanted = tiles::select(z, cam.visible(), opened.bounds).visible;
+        let visible = tiles::select(z, cam.visible(), opened.bounds).visible;
 
         let (adapter, device, queue) = render::headless_device()?;
-        let next = AtomicUsize::new(0);
         let failed = AtomicUsize::new(0);
-        let mut loaded: Vec<(TileId, Option<Arc<GpuMesh>>)> = Vec::new();
+        // `None`: not in the pack. Read in rounds: the visible tiles, then the ancestors of
+        // those left out, until each has a stored ancestor or none.
+        let mut known: HashMap<TileId, Option<Arc<GpuMesh>>> = HashMap::new();
         let mut errors = Vec::new();
-        std::thread::scope(|s| {
-            let workers: Vec<_> = (0..loader::default_threads())
-                .map(|_| {
-                    s.spawn(|| {
-                        let mut out = Vec::new();
-                        while let Some(&id) = wanted.get(next.fetch_add(1, Ordering::Relaxed)) {
-                            let r = opened.reader.tile(id.z, id.x, id.y).map(|t| {
-                                t.map(|t| {
-                                    let m = mesh::build(&t, &style);
-                                    failed.fetch_add(m.failed, Ordering::Relaxed);
-                                    Arc::new(GpuMesh::upload(&device, &m))
-                                })
-                            });
-                            out.push((id, r));
-                        }
-                        out
+        let state = |known: &HashMap<TileId, Option<Arc<GpuMesh>>>, t| {
+            known.get(&t).map(|m| match m {
+                Some(_) => Known::Loaded,
+                None => Known::Absent,
+            })
+        };
+        let mut plan = tiles::plan(&visible, |t| state(&known, t));
+        while !plan.need.is_empty() {
+            let wanted = &plan.need;
+            let next = AtomicUsize::new(0);
+            std::thread::scope(|s| {
+                let workers: Vec<_> = (0..loader::default_threads())
+                    .map(|_| {
+                        s.spawn(|| {
+                            let mut out = Vec::new();
+                            while let Some(&id) = wanted.get(next.fetch_add(1, Ordering::Relaxed)) {
+                                let r = opened.reader.tile(id.z, id.x, id.y).map(|t| {
+                                    t.map(|t| {
+                                        let m = mesh::build(&t, &style);
+                                        failed.fetch_add(m.failed, Ordering::Relaxed);
+                                        Arc::new(GpuMesh::upload(&device, &m))
+                                    })
+                                });
+                                out.push((id, r));
+                            }
+                            out
+                        })
                     })
-                })
-                .collect();
-            for w in workers {
-                for (id, r) in w.join().expect("tile worker") {
-                    match r {
-                        Ok(m) => loaded.push((id, m)),
-                        Err(e) => errors.push(format!("{id}: {e}")),
+                    .collect();
+                for w in workers {
+                    for (id, r) in w.join().expect("tile worker") {
+                        match r {
+                            Ok(m) => known.insert(id, m),
+                            // Reported, and drawn from its ancestor.
+                            Err(e) => {
+                                errors.push(format!("{id}: {e}"));
+                                known.insert(id, None)
+                            }
+                        };
                     }
                 }
-            }
-        });
+            });
+            plan = tiles::plan(&visible, |t| state(&known, t));
+        }
+        let loaded: Vec<(TileId, Option<Arc<GpuMesh>>)> = plan
+            .draws
+            .iter()
+            .map(|&(t, _)| (t, known.get(&t).cloned().flatten()))
+            .collect();
         let loaded_in = t0.elapsed();
         let mesh_bytes: usize = loaded
             .iter()

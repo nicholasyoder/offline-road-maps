@@ -30,7 +30,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.3 Label and shield data in the builder | **Done** 2026-10-24 | Whitelist v2: state and water labels, a `labels` layer of polylabel points, `routes` for shields, merged lines, one tile per point. North America tiles −297 MiB (−3.6%); pack 8,001 MiB in 2 chunks. |
 | 1.4 App skeleton: pack, camera, tile loading, bench | **Done** 2026-10-24 | Tile outlines, loader pool, 96 MiB cache, F3 overlay, `--bench`. North America flight: 0.45 ms p95 frame (outlines only), RSS peak 212 MiB, worst cold jump 132 ms on SATA SSD. |
 | 1.5 Geometry renderer | **Done** 2026-10-24 | wgpu fills (lyon) and screen-width lines with casings, per-tile scissor, MSAA 4×, `--render`. Ohio flight 0.69 ms p95 frame; North America RSS peak 162 MiB. Ocean pieces were being dropped by the builder: fixed, North America pack now 9,200 MiB. |
-| 1.5b Leave out full-ocean tiles | Not started | Next session. Format change (a missing tile is drawn from its nearest stored ancestor); rebuild the packs. |
+| 1.5b Leave out full-ocean tiles | **Done** 2026-10-24 | Format 0.2: a missing tile is drawn from its nearest stored ancestor. Tiles that one polygon covers are left out (40.1M ocean, 5.6M protected area). North America 8,026 MiB (was 9,200), 17.9M tiles (was 64.0M); renders unchanged. |
 | 1.5c Tile size experiments: frame overhead, per-layer max zoom | Not started | After 1.5b. Two measured experiments; keep what pays. |
 | 1.6 Style file and default style | Not started | |
 | 1.7 Text and label placement | Not started | |
@@ -257,7 +257,36 @@ Checked on the 1.5 pack (2026-10-24, design review): a full-ocean tile is about 
 
 **Done when:** format.md describes left-out tiles, the North America pack no longer stores full-ocean tiles whose parent is full ocean, the ocean renders the same as in the 1.5 screenshots, and the size table and roadmap §4 have the new numbers.
 
+> **Done 2026-10-24** (the commit that adds `geom::rects_cover`). Format **0.2** ([format.md, Left-out tiles](format.md#left-out-tiles)): a missing tile means "draw the nearest stored ancestor". The minor version is bumped because a 0.1 reader would draw left-out tiles as land.
+> **Builder** (`measure/tiles.rs`): a tile at z1–z14 is left out when its whole V2 content is one polygon covering the tile and its buffer, and that polygon's `minzoom` is below the tile's zoom, so the parent shows it. The test runs on the encoded output, so anything else, even only in the buffer, keeps the tile. It is not limited to the ocean: big parks, lakes and forests qualify by the same argument. The `minzoom` condition was added after the first full build dropped 16 z6 tiles inside Greenland's national park: protected areas start at z6, and the z5 ancestor does not have them. A startup assertion checks that every tolerance is under half the buffer. `build` prints what it left out, per zoom and per class.
+> **Split lines:** `water-polygons-split` pieces **overlap** along the whole-degree lines, by about 0.0013° (238 grid units at z14) on 75° W. So a dissolve that cancels shared edges does not work (the first try left a land-coloured strip along 75° W, which even-odd filling made out of the overlap). A tile's ocean pieces are now merged into one square only when they are all rectangles that together cover the tile (`geom::rects_cover`), which is the full-ocean case. A general union would only help the tiles that keep several ocean pieces: in Quebec, 2,048 tiles with about 5 MiB raw, so at most 0.7% of the pack. It is not done.
+> **Lakes and land cover:** checked with the same counter. In Quebec they are 14.6k tiles (under 1 MiB). In North America, protected areas are 5.6M tiles (317 MiB raw), so they are left out too: 137 MiB of the pack.
+> **App:** `tiles::resolve` walks up past tiles known to be absent; `tiles::plan` draws the stored ancestor (`Cover::Ancestor`) or, when nothing is stored up to z0, bare land (`Cover::Empty`), and returns the next tiles to read (`need`): a wanted tile, or the next ancestor up from an absent one. The view is "fully detailed" when `need` is empty, which the bench uses. Absent answers stay in the tile cache (64 bytes each) and are kept in use while the view needs them, so panning over open ocean does not walk the index again; the decoded `TIDX` blocks are cached as before. `--render` reads in rounds until every visible tile resolves. The F3 overlay outlines stand-in ancestors in blue.
+> **Packs** (`$OMP_WORK/measure/build/*-1.5b.log`; the 1.5 packs are kept in `$OMP_WORK/packs/1.5/`):
+>
+> | Pack | Size (was) | Tiles stored (was) | Left out |
+> |---|---:|---:|---:|
+> | Delaware | 8.1 MiB (8.1) | 3,254 (3,660) | 406 ocean |
+> | Ohio | 116.1 MiB (116.4) | 47,003 (55,649) | 8,645 lake, 1 farmland |
+> | Quebec | 743.5 MiB (751.0) | 878,657 (1,114,780) | 221k ocean, 8k protected area, 4k lake, 2k wood |
+> | North America | **8,026 MiB** (9,200), 2 chunks (4,095 + 3,931) | **17.9M** (64.0M) | 40.1M ocean, 5.6M protected area, 0.24M lake, 0.16M wood and forest |
+>
+> North America: water tiles 3,828 MiB (was 4,711), land cover 2,010 (2,122), all tiles 7,929 (8,923), `TIDX` 95 MiB (275), 33.1M frames (79.2M). The target was most of the 1.2 GiB back: 1.15 GiB came back. Build 24.2 min at 43.0 GiB peak. `verify` passes on all four.
+> **Renders:** the 1.5 app on the 1.5 packs against this one on the new packs, pixel by pixel: 91 North America views (the 11 reference spots, and open Pacific, Atlantic and Gulf, the California coast, Wood Buffalo, Gates of the Arctic, two Greenland spots, Hudson Bay and Lake Superior, each at z5–z16), 48 Quebec views and 30 Delaware views are **identical**. `render.sh` gives pixel-identical screenshots, so they are not recommitted.
+> **Bench** (dev machine, as in 1.5; `$OMP_WORK/measure/bench/*-1.5b*.json`):
+>
+> | Flight | Frames | Interval p50 / p95 / max | Start-up | Tile latency p50 / p95 / max | Read p95 / max | Tiles loaded + absent | Read | RSS peak |
+> |---|---:|---:|---:|---:|---:|---:|---:|---:|
+> | Ohio, warm | 47,116 | 0.60 / 0.69 / 17.7 ms | 117 ms | 3.4 / 19.6 / 41 ms | 0.1 / 1 ms | 529 + 48 | 12.4 MiB | 117 MiB |
+> | North America, warm | 83,586 | 0.60 / 0.69 / 17.9 ms | 123 ms | 4.7 / 21.1 / 64 ms | 0.1 / 2 ms | 1,182 + 55 | 37.4 MiB | 121 MiB |
+> | North America, cold (disk remounted) | 83,602 | 0.60 / 0.69 / 117 ms | 230 ms | 6.2 / 24.2 / 61 ms | 1.5 / 6 ms | 1,187 + 56 | 37.5 MiB | 124 MiB |
+>
+> Every jump was fully detailed within 39 ms. The flight reads 37 MiB instead of 62, and RSS peaks about 40 MiB lower. A one-off pause of 117–192 ms in the first step (start-up), with under 10 ms of CPU in any frame, showed up on the first runs; reruns of Ohio and warm North America did not repeat it (max 18 ms, as in 1.5), so it is outside the frame work, probably window start-up.
+> **Open:** label data drawn from an ancestor must be clipped to the left-out tile's square (1.7). A cold first walk up over open ocean reads up to one `TIDX` block per zoom; on USB this belongs to 1.10's cold-read checks.
+
 ## 1.5c Tile size experiments: frame overhead and per-layer max zoom
+
+> **Baseline from 1.5b** (North America): 33.1M frames (was 79.2M), so the magic number and checksum come to about 250 MiB. z14 is now water 1,554 MiB and land cover 734 MiB; all water 3,828, all land cover 2,010.
 
 Added after the design review of 2026-10-24 (owner). Two experiments that could save space without losing features. Each one is measured, and kept only if it pays. Run them after 1.5b, on its packs, so the numbers are not inflated by the ocean tiles. Both change the format; whatever is kept goes into format.md and bumps the minor version.
 
@@ -384,9 +413,9 @@ Settled while planning (2026-10-24):
 12. **`name` only** in tiles, no `name:en`/`name:fr` (1.3).
 13. **Tile zoom for a fractional zoom:** `floor(zoom + 0.5)`, overzooming z14 up to z18 (1.4, kept in 1.5).
 14. **MSAA 4×** in the window and in `--render`, with `msaa = 1` in `config.toml` to turn it off (1.5).
+15. **Left-out tiles** (1.5b, owner 2026-10-24): every missing tile is drawn from its nearest stored ancestor, with no flag. Slivers cannot occur while every tolerance is under half the buffer, which the builder asserts. Tiles that one polygon covers are left out, ocean or not, when the parent shows that polygon.
 
 Open, to settle in their steps:
-- **Full-ocean tiles** (found in 1.5): to be left out in [step 1.5b](#15b-leave-out-full-ocean-tiles) (owner, 2026-10-24). Decided: every missing tile is drawn from its nearest stored ancestor, with no flag (owner, 2026-10-24). The design review showed that slivers cannot occur while every tolerance is under half the buffer, so no fallback flag is planned.
 - **Frame overhead and per-layer max zoom** (design review, 2026-10-24): measured in [step 1.5c](#15c-tile-size-experiments-frame-overhead-and-per-layer-max-zoom); the owner decides what to keep from the numbers and screenshots.
 - The state-by-state shield table: how many distinct shapes are worth drawing (1.8).
 - The default units rule for the scale bar in a pack that covers both countries (1.9).

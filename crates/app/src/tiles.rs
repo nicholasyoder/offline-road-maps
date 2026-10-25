@@ -93,11 +93,50 @@ pub fn select(z: u8, view: [f64; 4], bounds: [f64; 4]) -> Selection {
     sel
 }
 
+/// What the cache knows about a tile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Known {
+    /// Loaded and ready to draw.
+    Loaded,
+    /// Not in the pack: it is drawn from its nearest stored ancestor (format.md).
+    Absent,
+}
+
+/// What stands for tile `t` once its absent ancestors are skipped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resolved {
+    /// `t` itself or its nearest stored ancestor, loaded.
+    Stored(TileId),
+    /// Neither `t` nor any ancestor is stored: bare land.
+    Empty,
+    /// This tile (`t` or an ancestor) has not been read yet.
+    Unknown(TileId),
+}
+
+/// Walks up from `t` past the tiles known to be absent.
+pub fn resolve(t: TileId, known: impl Fn(TileId) -> Option<Known>) -> Resolved {
+    let mut at = t;
+    loop {
+        match known(at) {
+            Some(Known::Loaded) => return Resolved::Stored(at),
+            None => return Resolved::Unknown(at),
+            Some(Known::Absent) => match at.parent() {
+                Some(p) => at = p,
+                None => return Resolved::Empty,
+            },
+        }
+    }
+}
+
 /// How a tile in [`plan`] stands in for the view's tiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cover {
     /// The wanted tile itself.
     Exact,
+    /// The nearest stored ancestor of wanted tiles the pack leaves out.
+    Ancestor,
+    /// A wanted tile with nothing stored at or above it, drawn as bare land.
+    Empty,
     /// An ancestor drawn for wanted tiles that have not loaded yet.
     Parent,
     /// A child, one of four that together cover a wanted tile that has not loaded yet.
@@ -109,23 +148,58 @@ pub enum Cover {
 /// Ancestors tried as fallbacks; z14 data drawn at z18 is already four levels of overzoom.
 const MAX_PARENT_LEVELS: u8 = 8;
 
-/// What to draw for the `visible` tiles, given which tiles are loaded (`has`). Sorted by
-/// zoom, so fallback parents come first and are drawn underneath.
-pub fn plan(visible: &[TileId], has: impl Fn(TileId) -> bool) -> Vec<(TileId, Cover)> {
-    let mut out = Vec::with_capacity(visible.len());
-    let mut parents = HashSet::new();
+/// What to draw for a view.
+#[derive(Debug, Default, PartialEq)]
+pub struct Plan {
+    /// Sorted by zoom, so ancestors come first and are drawn underneath.
+    pub draws: Vec<(TileId, Cover)>,
+    /// Tiles still to read before the view is fully detailed: wanted tiles, or the next
+    /// ancestor up from a left-out one. In `visible` order.
+    pub need: Vec<TileId>,
+}
+
+impl Plan {
+    /// Whether every visible tile is drawn from its own data or its stored ancestor's.
+    pub fn detailed(&self) -> bool {
+        self.need.is_empty()
+    }
+}
+
+/// What to draw for the `visible` tiles, given what the cache knows (`known`).
+pub fn plan(visible: &[TileId], known: impl Fn(TileId) -> Option<Known>) -> Plan {
+    let mut out = Plan::default();
+    let mut drawn = HashSet::new();
+    let loaded = |t: TileId| known(t) == Some(Known::Loaded);
     for &t in visible {
-        if has(t) {
-            out.push((t, Cover::Exact));
-            continue;
+        let unknown = match resolve(t, &known) {
+            Resolved::Stored(a) => {
+                let cover = if a == t {
+                    Cover::Exact
+                } else {
+                    Cover::Ancestor
+                };
+                if drawn.insert(a) {
+                    out.draws.push((a, cover));
+                }
+                continue;
+            }
+            Resolved::Empty => {
+                out.draws.push((t, Cover::Empty));
+                continue;
+            }
+            Resolved::Unknown(u) => u,
+        };
+        if !out.need.contains(&unknown) {
+            out.need.push(unknown);
         }
-        let mut p = t.parent();
+        // Until it is known, draw any loaded ancestor of the unknown tile, else its children.
+        let mut p = unknown.parent();
         let mut found = false;
         for _ in 0..MAX_PARENT_LEVELS {
             let Some(a) = p else { break };
-            if has(a) {
-                if parents.insert(a) {
-                    out.push((a, Cover::Parent));
+            if loaded(a) {
+                if drawn.insert(a) {
+                    out.draws.push((a, Cover::Parent));
                 }
                 found = true;
                 break;
@@ -136,13 +210,13 @@ pub fn plan(visible: &[TileId], has: impl Fn(TileId) -> bool) -> Vec<(TileId, Co
             continue;
         }
         let kids = t.children();
-        if t.z < MAX_ZOOM && kids.iter().all(|&c| has(c)) {
-            out.extend(kids.map(|c| (c, Cover::Child)));
+        if unknown == t && t.z < MAX_ZOOM && kids.iter().all(|&c| loaded(c)) {
+            out.draws.extend(kids.map(|c| (c, Cover::Child)));
         } else {
-            out.push((t, Cover::Missing));
+            out.draws.push((t, Cover::Missing));
         }
     }
-    out.sort_by_key(|(t, _)| t.z);
+    out.draws.sort_by_key(|(t, _)| t.z);
     out
 }
 
@@ -194,11 +268,42 @@ mod tests {
         .into_iter()
         .chain(TileId::new(5, 12, 10).children())
         .collect();
-        let p = plan(&want, |t| loaded.contains(&t));
-        assert_eq!(p[0], (TileId::new(3, 2, 2), Cover::Parent));
-        assert!(p.contains(&(TileId::new(5, 10, 10), Cover::Exact)));
-        assert_eq!(p.iter().filter(|(_, c)| *c == Cover::Child).count(), 4);
-        let none = plan(&want[..1], |_| false);
-        assert_eq!(none, vec![(want[0], Cover::Missing)]);
+        let p = plan(&want, |t| loaded.contains(&t).then_some(Known::Loaded));
+        assert_eq!(p.draws[0], (TileId::new(3, 2, 2), Cover::Parent));
+        assert!(p.draws.contains(&(TileId::new(5, 10, 10), Cover::Exact)));
+        assert_eq!(
+            p.draws.iter().filter(|(_, c)| *c == Cover::Child).count(),
+            4
+        );
+        assert_eq!(p.need, want[1..]);
+        let none = plan(&want[..1], |_| None);
+        assert_eq!(none.draws, vec![(want[0], Cover::Missing)]);
+    }
+
+    #[test]
+    fn left_out_tiles_are_drawn_from_their_stored_ancestor() {
+        // 14/100/100 and 13/50/50 are left out, 12/25/25 is stored; 14/101/100 is stored.
+        let want = [TileId::new(14, 100, 100), TileId::new(14, 101, 100)];
+        let (t14, t13, t12) = (want[0], TileId::new(13, 50, 50), TileId::new(12, 25, 25));
+        let mut known = std::collections::HashMap::from([
+            (t14, Known::Absent),
+            (want[1], Known::Loaded),
+            (t12, Known::Loaded),
+        ]);
+        // 13/50/50 not read yet: it is needed next, and 12/25/25 stands in meanwhile.
+        let p = plan(&want, |t| known.get(&t).copied());
+        assert_eq!(p.need, vec![t13]);
+        assert_eq!(p.draws[0], (t12, Cover::Parent));
+        known.insert(t13, Known::Absent);
+        let p = plan(&want, |t| known.get(&t).copied());
+        assert!(p.detailed());
+        assert_eq!(
+            p.draws,
+            vec![(t12, Cover::Ancestor), (want[1], Cover::Exact)]
+        );
+        // Nothing stored all the way up: bare land.
+        let p = plan(&want[..1], |_| Some(Known::Absent));
+        assert_eq!(p.draws, vec![(t14, Cover::Empty)]);
+        assert!(p.detailed());
     }
 }

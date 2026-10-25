@@ -9,7 +9,7 @@ use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 
 pub const MAGIC: [u8; 8] = *b"\x89OMP\r\n\x1a\n";
 pub const MAJOR: u16 = 0;
-pub const MINOR: u16 = 1;
+pub const MINOR: u16 = 2;
 /// Chunk pages and section alignment.
 pub const PAGE: u64 = 4096;
 /// Payload bytes per chunk file, so a file stays under FAT32's 4 GiB − 1 byte.

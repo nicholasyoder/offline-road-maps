@@ -290,6 +290,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let store_path = temp.join(format!("{file_name}-build.v2"));
     let mut store = Store::create(&store_path)?;
     let mut t = Instant::now();
+    let mut cut = tiles::Stats::default();
     for k in 0..args.bands {
         let band = Band { k, n: args.bands };
         if args.bands > 1 {
@@ -322,7 +323,13 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
             }));
             log_stage("water", &mut t);
         }
-        tiles::cut_pyramid(&data.features, &wl, &mut store, band, false);
+        cut.merge(tiles::cut_pyramid(
+            &data.features,
+            &wl,
+            &mut store,
+            band,
+            false,
+        ));
         drop(data);
         log_stage("tiles", &mut t);
     }
@@ -479,6 +486,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         mib(sum.raw),
         mib(sum.bytes)
     );
+    print_left_out(&cut, &wl);
     eprintln!(
         "wrote {} in {} chunk(s), {:.1} MiB (tiles {} B, TIDX {} B, TDIC {} dictionaries); \
          {:.0} s, peak RSS {:.0} MiB, temp store {:.1} MiB",
@@ -493,6 +501,36 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         mib(store_bytes)
     );
     Ok(())
+}
+
+/// Tiles left out (one polygon covering them), per zoom and per class.
+fn print_left_out(cut: &tiles::Stats, wl: &Whitelist) {
+    use std::collections::BTreeMap;
+    let mut zooms: BTreeMap<u8, u64> = BTreeMap::new();
+    let mut classes: BTreeMap<(u8, u16), (u64, u64)> = BTreeMap::new();
+    for (&(z, l, c), &(t, b)) in &cut.left_out {
+        *zooms.entry(z).or_default() += t;
+        let e = classes.entry((l, c)).or_default();
+        e.0 += t;
+        e.1 += b;
+    }
+    let per_zoom: Vec<String> = zooms.iter().map(|(z, t)| format!("z{z} {t}")).collect();
+    eprintln!(
+        "  left out: {} tiles covered by one polygon ({})",
+        zooms.values().sum::<u64>(),
+        per_zoom.join(", ")
+    );
+    let mut classes: Vec<_> = classes.into_iter().collect();
+    classes.sort_by_key(|c| std::cmp::Reverse(c.1.0));
+    for ((l, c), (t, b)) in classes {
+        let layer = &wl.layers[l as usize];
+        eprintln!(
+            "    {}/{}: {t} tiles, {:.1} MiB raw",
+            layer.name,
+            layer.classes[c as usize].name,
+            mib(b)
+        );
+    }
 }
 
 /// The `XX-YY.poly` files in `dir`, sorted by name; none if `dir` does not exist.

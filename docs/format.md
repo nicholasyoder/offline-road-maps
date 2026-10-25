@@ -1,6 +1,6 @@
 # Pack format
 
-*Version 0.1 (draft), 2026-10-24. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md).*
+*Version 0.2 (draft), 2026-10-24. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out.*
 
 A **pack** holds everything the app needs for one region: map tiles, addresses, and later routing, search and style data. It is built by `omp-builder` and read by `omp-app`, usually from a USB flash drive. This document is the contract between the two.
 
@@ -112,7 +112,7 @@ Every section has an XXH3-64 checksum in the section table. The app does **not**
 ## `META`: metadata and attribution (contiguous)
 
 A UTF-8 JSON object, zstd-compressed (one frame). Fields:
-- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.1"`).
+- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.2"`).
 - `sources`: the `fetch` manifest. For each input: `name`, `url`, `date` (of download, RFC 3339), `sha256`, `license`, and optionally `license_url` and `attribution`. Every OpenAddresses source is listed, including those whose license is `unspecified` (decision 13).
 - `attribution`: the text the app shows on its "About this map" screen, built from `sources` (e.g. "© OpenStreetMap contributors, ODbL", the Statistics Canada NAR licence, each OpenAddresses source's attribution).
 - `settings`: the build options that shaped the data (whitelist version, simplification tolerances, address dedup and attach distances).
@@ -130,6 +130,18 @@ The style (Phase 1) refers to layers and classes by name. The app resolves names
 ## Tiles
 
 Tiles cover zooms 0–14. The app overzooms z14 tiles for higher zooms. Each tile is cut with a buffer of 64 grid units on every side, so lines and polygon edges continue a little past the tile's edge and strokes join cleanly. **Point features are not buffered:** each point is in exactly one tile per zoom, the one whose grid holds it (coordinates 0–4095), so the app never sees the same label or icon twice.
+
+### Left-out tiles
+
+**A tile that is not stored is drawn from its nearest stored ancestor**, scaled up and clipped to the tile's square, as z14 tiles are for zooms past 14. There is no flag for it: the reader looks up the tile, then its parent, and so on up to z0. If no ancestor is stored either, the tile is bare land. Empty land tiles and left-out tiles are handled the same way.
+
+The builder leaves out a tile (z1–z14) when all it would hold is **one polygon covering the whole tile and its buffer**, open ocean or the inside of a large park, protected area, lake or forest, and that polygon **already shows at the parent's zoom** (its `minzoom` is lower than the tile's). Anything else in the tile, even only in its buffer (a ferry route, a boundary, an island, a second land cover), keeps it.
+
+This is safe because a tile holds everything its ancestors hold in its square: features are only filtered by `minzoom` and thinned (minimum line length and ring area), and both drop more at lower zooms. A left-out tile's one polygon is in its parent too, by the `minzoom` condition, and is far too large to be thinned there. So the parent shows the same thing in the tile's square, and level by level so does the nearest stored ancestor. Where a tile is empty, its ancestors have nothing there either. (Without the `minzoom` condition, a protected area that starts at z6 and covers a whole z6 tile would be left to a z5 ancestor that does not have it, as an early build did in Greenland.)
+
+The ocean comes from `water-polygons-split`, whose pieces are cut along whole-degree lines and overlap there (by about 0.0013° on the 75° W line off Delaware, some 110 m), so open ocean on such a line is two to four pieces. When a tile's ocean pieces are rectangles that together cover the tile and its buffer, the builder stores them as one square, so such a tile is left out too.
+
+**Simplification cannot leave slivers.** An ancestor's edges are simplified, so they are up to its tolerance away from the real ones, and could in principle reach into a left-out square. They cannot: a left-out child is covered out to its 64-unit buffer, which is 32 units in its parent's grid, so the polygon's real edge (a coastline, a park boundary) is at least 32 parent units from the child's square. Every simplification tolerance stays under 32 units at every zoom (the largest is 16, water and land cover at z14), so the parent's simplified edge stays outside the square. The same holds level by level up to the stored ancestor. The builder asserts the tolerance bound, so a whitelist change cannot break it unnoticed.
 
 ### Layer payload (encoding V2)
 
@@ -197,7 +209,7 @@ The compressed layer payloads, one **record per tile**, with the tile's layers b
 
 ### `TIDX`: tile index (contiguous)
 
-Sparse and Hilbert-ordered (decision 7). For North America it is about 110 MiB over all zooms (1.2% of tile bytes); dense offset arrays over each zoom's bounding box would be 3.2 GiB, because most cells are empty (95% of Quebec's z14 bounding box).
+Sparse and Hilbert-ordered (decision 7). For North America it is about 95 MiB over all zooms (1.2% of tile bytes, with left-out tiles; 275 MiB before them); dense offset arrays over each zoom's bounding box would be 3.2 GiB, because most cells are empty (95% of Quebec's z14 bounding box).
 
 ```
 TIDX       = zoom_dir[15]  block*

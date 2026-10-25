@@ -256,6 +256,96 @@ pub fn ring_area<T: Copy + Into<f64>>(ring: &[[T; 2]]) -> f64 {
     s / 2.0
 }
 
+/// Whether the rings, each an axis-aligned rectangle, together cover `rect`
+/// (`[x0, y0, x1, y1]`). `water-polygons-split` pieces overlap a little along the lines they
+/// were cut on, so open ocean comes as two to four rectangles that overlap.
+pub fn rects_cover<'a>(rings: impl IntoIterator<Item = &'a [[i32; 2]]>, rect: [i32; 4]) -> bool {
+    let mut rects = Vec::new();
+    for ring in rings {
+        let r = drop_collinear(ring.to_vec());
+        let axis_aligned = r.len() == 4
+            && (0..4).all(|i| {
+                let (a, b) = (r[i], r[(i + 1) % 4]);
+                a[0] == b[0] || a[1] == b[1]
+            });
+        if !axis_aligned {
+            return false;
+        }
+        let b = BBoxI::of(&r);
+        rects.push([b.0[0], b.0[1], b.1[0], b.1[1]]);
+    }
+    // Every cell of the grid the rectangles' edges cut `rect` into must be in one of them.
+    let cuts = |lo: usize, hi: usize| {
+        let mut v: Vec<i32> = rects
+            .iter()
+            .flat_map(|r| [r[lo], r[hi]])
+            .chain([rect[lo], rect[hi]])
+            .filter(|&c| (rect[lo]..=rect[hi]).contains(&c))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    let (xs, ys) = (cuts(0, 2), cuts(1, 3));
+    xs.windows(2).all(|x| {
+        ys.windows(2).all(|y| {
+            rects
+                .iter()
+                .any(|r| r[0] <= x[0] && x[1] <= r[2] && r[1] <= y[0] && y[1] <= r[3])
+        })
+    })
+}
+
+/// Min and max corners of integer points.
+struct BBoxI([i32; 2], [i32; 2]);
+
+impl BBoxI {
+    fn of(pts: &[[i32; 2]]) -> Self {
+        let mut b = BBoxI([i32::MAX; 2], [i32::MIN; 2]);
+        for p in pts {
+            b.0 = [b.0[0].min(p[0]), b.0[1].min(p[1])];
+            b.1 = [b.1[0].max(p[0]), b.1[1].max(p[1])];
+        }
+        b
+    }
+}
+
+/// Removes points that lie on the straight line through their neighbours, and spikes.
+fn drop_collinear(ring: Vec<[i32; 2]>) -> Vec<[i32; 2]> {
+    let cross = |a: [i32; 2], b: [i32; 2], c: [i32; 2]| {
+        let (ux, uy) = (i64::from(b[0] - a[0]), i64::from(b[1] - a[1]));
+        let (vx, vy) = (i64::from(c[0] - b[0]), i64::from(c[1] - b[1]));
+        ux * vy - uy * vx
+    };
+    let mut pts = ring;
+    loop {
+        let n = pts.len();
+        let mut v: Vec<[i32; 2]> = Vec::with_capacity(n);
+        for &p in &pts {
+            while v.len() >= 2 && cross(v[v.len() - 2], v[v.len() - 1], p) == 0 {
+                v.pop();
+            }
+            if v.last() != Some(&p) {
+                v.push(p);
+            }
+        }
+        // The wrap-around at the ring's start.
+        while v.len() >= 3 && cross(v[v.len() - 2], v[v.len() - 1], v[0]) == 0 {
+            v.pop();
+        }
+        while v.len() >= 3 && cross(v[v.len() - 1], v[0], v[1]) == 0 {
+            v.remove(0);
+        }
+        if v.len() > 1 && v.first() == v.last() {
+            v.pop();
+        }
+        if v.len() == n || v.len() < 3 {
+            return v;
+        }
+        pts = v;
+    }
+}
+
 /// Douglas–Peucker on tile-local integer points. Keeps the endpoints.
 pub fn simplify(pts: &[[i32; 2]], tolerance: f64) -> Vec<[i32; 2]> {
     if pts.len() <= 2 || tolerance <= 0.0 {
@@ -560,6 +650,36 @@ pub fn assemble(members: &[(&[P], bool)]) -> Assembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_rects_cover() {
+        let rect = [-64, -64, 4160, 4160];
+        // Two pieces overlapping along a split line, one with a collinear point.
+        let a = [
+            [-64, 4160],
+            [-64, -64],
+            [2849, -64],
+            [2849, 2000],
+            [2849, 4160],
+        ];
+        let b = [[4160, -64], [4160, 4160], [2611, 4160], [2611, -64]];
+        assert!(rects_cover([&a[..], &b[..]], rect));
+        // A gap between them, or a piece that is not a rectangle, is not a cover.
+        let c = [[4160, -64], [4160, 4160], [2900, 4160], [2900, -64]];
+        assert!(!rects_cover([&a[..], &c[..]], rect));
+        let tri = [[-64, -64], [4160, -64], [4160, 4160]];
+        assert!(!rects_cover([&a[..], &tri[..]], rect));
+        // Four quarters meeting in the middle.
+        let q = |x0, y0, x1, y1| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        let qs = [
+            q(-64, -64, 2100, 2100),
+            q(2000, -64, 4160, 2100),
+            q(-64, 2000, 2100, 4160),
+            q(2000, 2000, 4160, 4160),
+        ];
+        assert!(rects_cover(qs.iter().map(Vec::as_slice), rect));
+        assert!(!rects_cover(qs[..3].iter().map(Vec::as_slice), rect));
+    }
 
     #[test]
     fn projection_round_trips() {

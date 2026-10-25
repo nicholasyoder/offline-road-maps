@@ -44,8 +44,9 @@ impl<V> Cache<V> {
         self.bytes
     }
 
-    pub fn contains(&self, id: TileId) -> bool {
-        self.map.contains_key(&id)
+    /// The tile, without marking it as used.
+    pub fn peek(&self, id: TileId) -> Option<&V> {
+        self.map.get(&id).map(|e| &e.value)
     }
 
     /// The tile, marked as used in this frame.
@@ -111,7 +112,7 @@ mod tests {
         assert!(c.get(t(0)).is_some());
         c.insert(t(3), 3, 100);
         // t(1) was the least recently used.
-        assert!(!c.contains(t(1)) && c.contains(t(0)) && c.contains(t(3)));
+        assert!(c.peek(t(1)).is_none() && c.peek(t(0)).is_some() && c.peek(t(3)).is_some());
         assert_eq!(c.bytes(), 300);
         // Everything used this frame stays, even over budget.
         for x in [0, 2, 3] {

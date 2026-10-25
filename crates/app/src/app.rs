@@ -18,7 +18,7 @@ use crate::mesh;
 use crate::packs::{self, Opened};
 use crate::render::{self, GpuMesh, MapCallback, Renderer};
 use crate::style::Style;
-use crate::tiles::{self, Cover, TileId};
+use crate::tiles::{self, Cover, Known, Resolved, TileId};
 
 /// Tile cache budget: the tiles' vertex data, which lives on the GPU (phase1-plan.md 1.4).
 const CACHE_BUDGET: usize = 96 << 20;
@@ -46,7 +46,8 @@ pub struct Startup {
 }
 
 enum TileData {
-    Empty,
+    /// Not in the pack; drawn from its nearest stored ancestor.
+    Absent,
     Mesh(Arc<GpuMesh>, TileInfo),
     Error,
 }
@@ -65,7 +66,7 @@ struct TileInfo {
 #[derive(Default)]
 struct TileStats {
     loaded: usize,
-    empty: usize,
+    absent: usize,
     errors: usize,
     /// Polygons that could not be tessellated.
     failed: usize,
@@ -296,8 +297,8 @@ impl MapState {
                     (TileData::Mesh(mesh, info), bytes)
                 }
                 Ok(None) => {
-                    s.empty += 1;
-                    (TileData::Empty, 0)
+                    s.absent += 1;
+                    (TileData::Absent, 0)
                 }
                 Err(e) => {
                     s.errors += 1;
@@ -388,35 +389,56 @@ impl MapState {
         let z = tiles::tile_zoom(cam.zoom);
         let sel = tiles::select(z, cam.visible(), self.opened.bounds);
         let cache = &self.cache;
-        let plan = tiles::plan(&sel.visible, |t| cache.contains(t));
-        let wanted: Vec<TileId> = sel
-            .visible
+        let known = |t| {
+            cache.peek(t).map(|d| match d {
+                TileData::Absent => Known::Absent,
+                TileData::Mesh(..) | TileData::Error => Known::Loaded,
+            })
+        };
+        let plan = tiles::plan(&sel.visible, known);
+        // The margin's next unread tiles, past the absent ones, so short pans find them ready.
+        let margin: Vec<TileId> = sel
+            .margin
             .iter()
-            .chain(&sel.margin)
-            .copied()
-            .filter(|&t| !self.cache.contains(t))
+            .filter_map(|&t| match tiles::resolve(t, known) {
+                Resolved::Unknown(u) => Some(u),
+                _ => None,
+            })
             .collect();
+        let mut wanted = plan.need.clone();
+        for t in margin {
+            if !wanted.contains(&t) {
+                wanted.push(t);
+            }
+        }
         self.loader.request(&wanted);
-        for &t in sel.margin.iter().chain(plan.iter().map(|(t, _)| t)) {
-            self.cache.get(t);
+        // Keep what this frame uses, absent tiles included, from being evicted.
+        for &t in sel.visible.iter().chain(&sel.margin) {
+            let mut at = Some(t);
+            while let Some(a) = at {
+                at = match self.cache.get(a) {
+                    Some(TileData::Absent) => a.parent(),
+                    _ => None,
+                };
+            }
         }
         let mut view = FrameView {
             tile_zoom: z,
             visible: sel.visible.len(),
-            drawn: plan.len(),
-            detailed: sel.visible.iter().all(|&t| self.cache.contains(t)),
+            drawn: plan.draws.len(),
+            detailed: plan.detailed(),
             ..Default::default()
         };
-        let mut draws = Vec::with_capacity(plan.len());
-        for &(t, cover) in &plan {
+        let mut draws = Vec::with_capacity(plan.draws.len());
+        for &(t, cover) in &plan.draws {
             match cover {
                 Cover::Missing => view.missing += 1,
                 Cover::Parent | Cover::Child => view.fallbacks += 1,
-                Cover::Exact => {}
+                Cover::Exact | Cover::Ancestor | Cover::Empty => {}
             }
-            match self.cache.get(t) {
-                Some(TileData::Mesh(m, _)) => draws.push((t, Some(m.clone()))),
-                Some(TileData::Empty) => draws.push((t, None)),
+            match (cover, self.cache.get(t)) {
+                (Cover::Empty, _) => draws.push((t, None)),
+                (_, Some(TileData::Mesh(m, _))) => draws.push((t, Some(m.clone()))),
                 _ => {}
             }
         }
@@ -428,7 +450,7 @@ impl MapState {
         ));
         self.view = view;
         if outlines {
-            self.outlines(painter, rect.min, &plan);
+            self.outlines(painter, rect.min, &plan.draws);
         }
     }
 
@@ -454,11 +476,12 @@ impl MapState {
                 (_, Some(TileData::Error)) => Color32::from_rgb(200, 40, 40),
                 (Cover::Parent, _) => Color32::from_rgb(220, 140, 30),
                 (Cover::Child, _) => Color32::from_rgb(60, 160, 80),
-                (Cover::Exact, Some(TileData::Empty)) => Color32::from_gray(200),
+                (Cover::Empty, _) => Color32::from_gray(200),
+                (Cover::Ancestor, _) => Color32::from_rgb(40, 120, 200),
                 (Cover::Exact, _) => Color32::from_rgb(70, 90, 120),
             };
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, stroke), StrokeKind::Inside);
-            if cover == Cover::Exact && r.width() > 150.0 {
+            if matches!(cover, Cover::Exact | Cover::Ancestor | Cover::Empty) && r.width() > 150.0 {
                 let text = match data {
                     Some(TileData::Mesh(m, i)) => {
                         let failed = match i.failed {
@@ -473,8 +496,9 @@ impl MapState {
                             m.bytes as f64 / 1024.0
                         )
                     }
-                    Some(TileData::Empty) => format!("{t}\nempty"),
+                    _ if cover == Cover::Empty => format!("{t}\nnothing stored"),
                     Some(TileData::Error) => format!("{t}\nerror"),
+                    Some(TileData::Absent) => format!("{t}\nabsent"),
                     None => t.to_string(),
                 };
                 painter.text(
@@ -663,9 +687,9 @@ impl App {
             let k = s.recent.len().max(1) as f32;
             let avg = |i: usize| s.recent.iter().map(|r| r[i]).sum::<f32>() / k;
             lines.push(format!(
-                "loaded {} + {} empty, {} errors, {} polygons failed   last {}: latency {:.2} ms, read {:.2} ms, decode {:.2} ms, tessellate {:.2} ms",
+                "loaded {} + {} absent, {} errors, {} polygons failed   last {}: latency {:.2} ms, read {:.2} ms, decode {:.2} ms, tessellate {:.2} ms",
                 s.loaded,
-                s.empty,
+                s.absent,
                 s.errors,
                 s.failed,
                 s.recent.len(),

@@ -81,10 +81,13 @@ pub struct Stats {
     pub mvt: BTreeMap<u8, (u64, u64, u64)>,
     /// `(layer, class)` → V1 bytes and features at z14, each feature encoded on its own.
     pub class_z14: BTreeMap<(u8, u16), (u64, u64)>,
+    /// `(zoom, layer, class)` → tiles left out because all they held was one polygon of that
+    /// class covering the tile and its buffer, and the V2 bytes they would have had.
+    pub left_out: BTreeMap<(u8, u8, u16), (u64, u64)>,
 }
 
 impl Stats {
-    fn merge(&mut self, o: Stats) {
+    pub fn merge(&mut self, o: Stats) {
         for (k, c) in o.cells {
             self.cells.entry(k).or_default().add(&c);
         }
@@ -96,6 +99,11 @@ impl Stats {
         }
         for (k, (a, b)) in o.class_z14 {
             let e = self.class_z14.entry(k).or_default();
+            e.0 += a;
+            e.1 += b;
+        }
+        for (k, (a, b)) in o.left_out {
+            let e = self.left_out.entry(k).or_default();
             e.0 += a;
             e.1 += b;
         }
@@ -150,6 +158,8 @@ struct Ctx<'a> {
     wl: &'a Whitelist,
     /// `[layer][class]`, `u8::MAX` for classes not in tiles.
     minzoom: Vec<Vec<u8>>,
+    /// The water layer's external ocean class, whose pieces are dissolved in each tile.
+    ocean: Option<(u8, u16)>,
     /// Also measure V0, V1 and MVT; without it only V2 is encoded (for `build`).
     measure: bool,
     stats: Vec<Mutex<Stats>>,
@@ -257,8 +267,29 @@ pub fn cut_pyramid(
     band: Band,
     measure: bool,
 ) -> Stats {
+    // A left-out tile is drawn from its nearest stored ancestor (format.md). That relies on
+    // simplification moving an edge less than the half buffer a child's buffer is in its
+    // parent's grid, so no simplified coastline reaches into a full-ocean child's square.
+    for layer in &wl.layers {
+        for z in 0..=MAX_ZOOM {
+            let tol = thinning(z, layer).0;
+            assert!(
+                tol < (BUFFER / 2) as f64,
+                "layer {} z{z}: tolerance {tol} must stay under half the {BUFFER}-unit buffer",
+                layer.name
+            );
+        }
+    }
     let minzoom = minzooms(wl);
+    let ocean = wl.layer_index("water").and_then(|l| {
+        let c = wl.layers[l]
+            .classes
+            .iter()
+            .position(|c| c.external && c.name == "ocean")?;
+        Some((l as u8, c as u16))
+    });
     let ctx = Ctx {
+        ocean,
         wl,
         stats: (0..rayon::current_num_threads() + 1)
             .map(|_| Mutex::default())
@@ -377,6 +408,8 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
     let mut mvt_layers = Vec::new();
     // z14 drops nothing: rings that collapse are simplified again, down to the default.
     let floor = (z >= MAX_ZOOM).then_some(Z14_TOLERANCE);
+    // The layer, class and V2 bytes of a layer that is one feature covering the whole tile.
+    let mut full: Option<(u8, u16, u64)> = None;
     for (li, frags) in by_layer.iter().enumerate() {
         if frags.is_empty() {
             continue;
@@ -410,6 +443,10 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
             Some(mode) => merge_lines(v1, mode, layer.props.iter().position(|p| p == "oneway")),
             None => v1,
         };
+        let v1 = match ctx.ocean {
+            Some((ol, oc)) if ol == li => dissolve_ocean(v1, oc),
+            _ => v1,
+        };
         let v2: Vec<Enc> = v1
             .into_iter()
             .filter_map(|e| {
@@ -442,7 +479,30 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
                 &layer.props,
             ));
         }
+        // The parent must show the feature too, so it has to start at a lower zoom: a park
+        // whose class starts at z6 cannot be left to a z5 ancestor that does not have it.
+        let shown_above = |class: u16| {
+            frags
+                .iter()
+                .filter(|f| f.f.class == class)
+                .all(|f| feature_minzoom(&ctx.minzoom, f.f) < z)
+        };
+        if v2.len() == 1 && covers_tile(&v2[0].geom) && shown_above(v2[0].class) {
+            full = Some((li, v2[0].class, v2_bytes.len() as u64));
+        }
         sections.push((li, v2_bytes));
+    }
+    // A tile holding only one polygon over its whole square and buffer (open ocean, a large
+    // park or lake) adds nothing to its parent, which the app draws in its place (format.md,
+    // "Left-out tiles").
+    if z > 0
+        && sections.len() == 1
+        && let Some((li, class, bytes)) = full
+    {
+        local = Stats::default();
+        local.left_out.insert((z, li, class), (1, bytes));
+        sections.clear();
+        mvt_layers.clear();
     }
     if !mvt_layers.is_empty() {
         let (raw, gz) = encode::mvt_tile_gzip(&mvt_layers);
@@ -469,6 +529,55 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
     }
     let slot = rayon::current_thread_index().map_or(0, |i| i + 1);
     ctx.stats[slot].lock().unwrap().merge(local);
+}
+
+/// Replaces the tile's ocean pieces (class `ocean`) with one square when together they cover
+/// the tile and its buffer, so a full-ocean tile is one feature wherever the split lines run.
+fn dissolve_ocean(feats: Vec<Enc>, ocean: u16) -> Vec<Enc> {
+    let (lo, hi) = (-(BUFFER as i32), (1 << EXTENT_BITS) + BUFFER as i32);
+    let pieces = feats.iter().filter(|e| e.class == ocean).count();
+    let rings: Vec<&[Point]> = feats
+        .iter()
+        .filter(|e| e.class == ocean)
+        .filter_map(|e| match &e.geom {
+            Geom::Polygon(r) if r.len() == 1 => Some(r[0].as_slice()),
+            _ => None,
+        })
+        .collect();
+    if pieces < 2 || rings.len() < pieces || !geom::rects_cover(rings, [lo, lo, hi, hi]) {
+        return feats;
+    }
+    let mut out = Vec::with_capacity(feats.len() + 1 - pieces);
+    let mut square = Some(vec![vec![[lo, lo], [hi, lo], [hi, hi], [lo, hi]]]);
+    for e in feats {
+        if e.class != ocean {
+            out.push(e);
+        } else if let Some(rings) = square.take() {
+            out.push(Enc {
+                geom: Geom::Polygon(rings),
+                ..e
+            });
+        }
+    }
+    out
+}
+
+/// Whether `g` is a polygon covering the whole tile and its buffer.
+fn covers_tile(g: &Geom) -> bool {
+    let Geom::Polygon(rings) = g else {
+        return false;
+    };
+    let side = f64::from((1 << EXTENT_BITS) + 2 * BUFFER as i32);
+    // Rings are inside the clip rectangle and do not overlap, so only a full cover has its
+    // area. Corner points rule out a ring of the right area shifted by rounding.
+    rings.iter().map(|r| geom::ring_area(r)).sum::<f64>() == side * side
+        && rings.iter().any(|r| {
+            let lo = -(BUFFER as i32);
+            let hi = (1 << EXTENT_BITS) + BUFFER as i32;
+            [[lo, lo], [hi, lo], [hi, hi], [lo, hi]]
+                .iter()
+                .all(|c| r.contains(c))
+        })
 }
 
 /// Joins line pieces of the same class and props that meet end to end (decision 5): each
@@ -705,6 +814,28 @@ mod tests {
         assert_eq!(out[0].geom, line(&[[0, 0], [5, 0], [9, 9]]));
         assert_eq!(out[1].props, &p2[..]);
         assert_eq!(out[2].geom, Geom::Point([1, 1]));
+    }
+
+    #[test]
+    fn full_ocean_pieces_become_one_square() {
+        let props: Vec<(u8, Box<str>)> = Vec::new();
+        let poly = |x0, x1| Geom::Polygon(vec![vec![[x0, -64], [x1, -64], [x1, 4160], [x0, 4160]]]);
+        let ocean = |geom| Enc {
+            class: 0,
+            props: &props,
+            geom,
+        };
+        // Two pieces overlapping along a split line: one square that covers the tile.
+        let out = dissolve_ocean(vec![ocean(poly(-64, 2849)), ocean(poly(2611, 4160))], 0);
+        assert_eq!(out.len(), 1);
+        assert!(covers_tile(&out[0].geom));
+        // With a gap they stay apart, and neither covers the tile.
+        let out = dissolve_ocean(vec![ocean(poly(-64, 2000)), ocean(poly(2100, 4160))], 0);
+        assert_eq!(out.len(), 2);
+        assert!(!covers_tile(&out[0].geom));
+        // One piece over all of it covers the tile as it is.
+        assert!(covers_tile(&poly(-64, 4160)));
+        assert!(!covers_tile(&poly(-63, 4160)));
     }
 
     #[test]

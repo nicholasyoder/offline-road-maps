@@ -99,7 +99,7 @@ struct TileLog {
     decode: Vec<f64>,
     prepare: Vec<f64>,
     loaded: usize,
-    empty: usize,
+    absent: usize,
     errors: usize,
 }
 
@@ -187,7 +187,7 @@ impl Bench {
         let t = &mut self.tiles;
         match &d.result {
             Ok(Some(_)) => t.loaded += 1,
-            Ok(None) => t.empty += 1,
+            Ok(None) => t.absent += 1,
             Err(_) => t.errors += 1,
         }
         t.latency.push(ms(d.latency));
@@ -305,7 +305,7 @@ impl Bench {
             cpu_ms: Summary::of(&mut self.cpu),
             tiles: TilesReport {
                 loaded: self.tiles.loaded,
-                empty: self.tiles.empty,
+                absent: self.tiles.absent,
                 errors: self.tiles.errors,
                 latency_ms: Summary::of(&mut self.tiles.latency),
                 read_ms: Summary::of(&mut self.tiles.read),
@@ -388,7 +388,7 @@ pub struct Report {
 #[derive(Debug, Serialize)]
 pub struct TilesReport {
     pub loaded: usize,
-    pub empty: usize,
+    pub absent: usize,
     pub errors: usize,
     /// From the first request to the decoded tile being ready.
     pub latency_ms: Summary,
@@ -422,7 +422,7 @@ impl Report {
         let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
         let mut s = format!(
             "{}: {} frames, interval p50 {:.2} / p95 {:.2} / max {:.1} ms, cpu p95 {:.2} ms\n\
-             start-up {} ms; tiles {} loaded + {} empty, {} errors; latency p50 {:.2} / p95 {:.2} ms, read p95 {:.2} ms, decode p95 {:.2} ms, prepare p95 {:.2} ms\n\
+             start-up {} ms; tiles {} loaded + {} absent, {} errors; latency p50 {:.2} / p95 {:.2} ms, read p95 {:.2} ms, decode p95 {:.2} ms, prepare p95 {:.2} ms\n\
              {:.1} MiB read; RSS peak {} MiB; cache peak {:.1} MiB of {:.0}\n",
             self.flight,
             self.frames,
@@ -432,7 +432,7 @@ impl Report {
             self.cpu_ms.p95,
             self.startup_ms.map_or("-".into(), |v| format!("{v:.0}")),
             self.tiles.loaded,
-            self.tiles.empty,
+            self.tiles.absent,
             self.tiles.errors,
             self.tiles.latency_ms.p50,
             self.tiles.latency_ms.p95,
