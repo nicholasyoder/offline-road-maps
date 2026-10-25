@@ -30,6 +30,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.3 Label and shield data in the builder | **Done** 2026-10-24 | Whitelist v2: state and water labels, a `labels` layer of polylabel points, `routes` for shields, merged lines, one tile per point. North America tiles −297 MiB (−3.6%); pack 8,001 MiB in 2 chunks. |
 | 1.4 App skeleton: pack, camera, tile loading, bench | **Done** 2026-10-24 | Tile outlines, loader pool, 96 MiB cache, F3 overlay, `--bench`. North America flight: 0.45 ms p95 frame (outlines only), RSS peak 212 MiB, worst cold jump 132 ms on SATA SSD. |
 | 1.5 Geometry renderer | **Done** 2026-10-24 | wgpu fills (lyon) and screen-width lines with casings, per-tile scissor, MSAA 4×, `--render`. Ohio flight 0.69 ms p95 frame; North America RSS peak 162 MiB. Ocean pieces were being dropped by the builder: fixed, North America pack now 9,200 MiB. |
+| 1.5b Leave out full-ocean tiles | Not started | Next session. Format change; rebuild the packs. |
 | 1.6 Style file and default style | Not started | |
 | 1.7 Text and label placement | Not started | |
 | 1.8 Shields and POI icons | Not started | |
@@ -235,6 +236,20 @@ Draw polygons and lines with wgpu, inside egui. Roadmap §5 chose `wgpu` + `lyon
 > **Seams:** none seen in the screenshots or at tile edges checked pixel by pixel (Delaware z9, a row across a tile edge). Overzoom to z18 works (Columbus z18, Manhattan z17).
 > **Open:** the full-ocean tiles (Decisions); old hardware and Windows (1.10); `--render` on GL without MSAA; dashes restart at tile edges; translucent fills are fine, but a translucent line would still darken where segments overlap (no line uses one).
 
+## 1.5b Leave out full-ocean tiles
+
+Added after 1.5 (owner, 2026-10-24). With the ocean fixed, North America stores about 40M tiles at z13–z14 that hold nothing but one ocean square covering the tile, which costs about 1.2 GiB (1,036 MiB of tiles and 163 MiB of `TIDX`; see [size-table.md](size-table.md#after-phase-1-step-15-the-ocean)). Those tiles add nothing their parent does not already show.
+
+- **Format:** a tile that is not stored is drawn from its **nearest stored ancestor**, scaled up, as the app already does for overzoom past z14. Decide how the app tells such a tile from a truly empty one, and write it in format.md:
+  - either every missing tile means "use the ancestor" (simplest; an empty land tile's ancestor is empty or nearly so there, but its coarser features would show through);
+  - or the ancestor says so: a flag on its `TIDX` entry meaning "my missing descendants are covered by me", so a missing tile without the flag is still empty.
+- **Builder:** after cutting, leave out a tile whose only content is one ocean polygon covering the whole tile plus its buffer, when its parent is the same (so the parent can stand in). Anything else in the tile (a maritime boundary, a ferry, an island) keeps it. Check whether the same rule is worth applying to full-tile lakes and land cover (Hudson Bay, the Great Lakes, large forests).
+- **App:** `tiles::plan` draws the stored ancestor for a left-out tile, and the loader stops asking for tiles below it. The bench's "fully detailed" counts such a tile as loaded once its ancestor is. The style's line widths already work at any scale.
+- **Measure** on Quebec and North America: tiles stored, tile bytes, `TIDX` bytes and pack size, against the 1.5 packs (North America 9,200 MiB, 64.0M tiles). The target is most of the 1.2 GiB back, so the pack is near 8.0 GiB again.
+- Rebuild Delaware, Quebec and North America; rerun `verify`, the North America bench (warm and cold) and `docs/screenshots/render.sh`, and check that open ocean is still drawn at every zoom with no seams.
+
+**Done when:** format.md describes left-out tiles, the North America pack no longer stores full-ocean tiles whose parent is full ocean, the ocean renders the same as in the 1.5 screenshots, and the size table and roadmap §4 have the new numbers.
+
 ## 1.6 Style file and default style
 
 - **Format:** TOML, like the whitelist. Rules per layer and class: draw order, fill and stroke colors, line width and casing width as functions of zoom (stops with linear interpolation), dashes, minimum and maximum zoom, and label rules (font, size, color, halo, priority, the prop to use, placement: point, line or area label point) plus the icon or shield for POIs and routes.
@@ -303,7 +318,7 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 
 ```
 1.1 tile codec + reader ─► 1.2 build (Delaware, Ohio) ─┬─► 1.3 label + shield data ──────────────┐
-                        └─► 1.4 app skeleton ───────────┴─► 1.5 geometry ─► 1.6 style ─► 1.7 labels ─► 1.8 shields ─► 1.9 UI ─► 1.10 checks
+                        └─► 1.4 app skeleton ───────────┴─► 1.5 geometry ─► 1.5b ocean tiles ─► 1.6 style ─► 1.7 labels ─► 1.8 shields ─► 1.9 UI ─► 1.10 checks
                                                              (USB check optional here)
 ```
 
@@ -331,7 +346,7 @@ Settled while planning (2026-10-24):
 14. **MSAA 4×** in the window and in `--render`, with `msaa = 1` in `config.toml` to turn it off (1.5).
 
 Open, to settle in their steps:
-- **Full-ocean tiles** (found in 1.5): storing the open ocean costs North America about 1.2 GiB (40M tiles that are one ocean square each, at z13–z14). One option is to let a missing tile mean "draw the nearest stored ancestor" (the app already does this for overzoom) and have the builder leave out a tile that is only a full-tile ocean polygon when its parent is too. That is a format change; not done yet.
+- **Full-ocean tiles** (found in 1.5): to be left out in [step 1.5b](#15b-leave-out-full-ocean-tiles) (owner, 2026-10-24). Still open there: whether every missing tile means "draw the ancestor", or only those the ancestor flags.
 - The state-by-state shield table: how many distinct shapes are worth drawing (1.8).
 - The default units rule for the scale bar in a pack that covers both countries (1.9).
 

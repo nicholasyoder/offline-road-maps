@@ -65,7 +65,7 @@ The labels and shields cost 25 MiB; merging saves about 326 MiB (measured with a
 | Tiles stored | 23.7M | 64.0M | +40.3M |
 | Pack | 8,001 | 9,200 | +1,199 |
 
-Almost all of it is open ocean inside the region's `.poly`: tiles at z13–z14 that hold nothing but one ocean square. Quebec's pack grew from 742.5 to 751.0 MiB; Ohio has no ocean. The North America total becomes **about 12,950 MiB (12.6 GiB, 13.6 GB)**. Leaving out full-ocean tiles whose parent is also full ocean (the app would draw the parent) would win most of it back; it is an open question in the [phase 1 plan](phase1-plan.md#decisions).
+Almost all of it is open ocean inside the region's `.poly`: tiles at z13–z14 that hold nothing but one ocean square. Quebec's pack grew from 742.5 to 751.0 MiB; Ohio has no ocean. The North America total becomes **about 12,950 MiB (12.6 GiB, 13.6 GB)**. Leaving out full-ocean tiles whose parent is also full ocean (the app would draw the parent) would win most of it back; that is [phase 1 step 1.5b](phase1-plan.md#15b-leave-out-full-ocean-tiles).
 
 ## What the columns mean
 
