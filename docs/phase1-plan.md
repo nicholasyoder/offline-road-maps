@@ -31,6 +31,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.4 App skeleton: pack, camera, tile loading, bench | **Done** 2026-10-24 | Tile outlines, loader pool, 96 MiB cache, F3 overlay, `--bench`. North America flight: 0.45 ms p95 frame (outlines only), RSS peak 212 MiB, worst cold jump 132 ms on SATA SSD. |
 | 1.5 Geometry renderer | **Done** 2026-10-24 | wgpu fills (lyon) and screen-width lines with casings, per-tile scissor, MSAA 4×, `--render`. Ohio flight 0.69 ms p95 frame; North America RSS peak 162 MiB. Ocean pieces were being dropped by the builder: fixed, North America pack now 9,200 MiB. |
 | 1.5b Leave out full-ocean tiles | Not started | Next session. Format change (a missing tile is drawn from its nearest stored ancestor); rebuild the packs. |
+| 1.5c Tile size experiments: frame overhead, per-layer max zoom | Not started | After 1.5b. Two measured experiments; keep what pays. |
 | 1.6 Style file and default style | Not started | |
 | 1.7 Text and label placement | Not started | |
 | 1.8 Shields and POI icons | Not started | |
@@ -240,13 +241,53 @@ Draw polygons and lines with wgpu, inside egui. Roadmap §5 chose `wgpu` + `lyon
 
 Added after 1.5 (owner, 2026-10-24). With the ocean fixed, North America stores about 40M tiles at z13–z14 that hold nothing but one ocean square covering the tile, which costs about 1.2 GiB (1,036 MiB of tiles and 163 MiB of `TIDX`; see [size-table.md](size-table.md#after-phase-1-step-15-the-ocean)). Those tiles add nothing their parent does not already show.
 
-- **Format:** **every tile that is not stored is drawn from its nearest stored ancestor**, scaled up, as the app already does for overzoom past z14 (owner, 2026-10-24). No flag in `TIDX`: an empty land tile and a left-out ocean tile are handled the same way. This is safe because a tile holds everything its ancestor holds in its square (features are only filtered by `minzoom`), so the ancestor has nothing there either. The one difference is simplification: the ancestor's edges can be off by up to half a pixel at the ancestor's zoom, so a nearby coastline or forest edge could reach a few pixels into the square when the ancestor is several levels up. That needs a run of empty zooms right next to an edge, which should be rare. If the screenshots show such slivers, fall back to a flag on the ancestor's `TIDX` entry meaning "my missing descendants are covered by me". Write the rule in format.md.
-- **Builder:** after cutting, leave out a tile whose only content is one ocean polygon covering the whole tile plus its buffer, when its parent is the same (so the parent can stand in). Anything else in the tile (a maritime boundary, a ferry, an island) keeps it. Check whether the same rule is worth applying to full-tile lakes and land cover (Hudson Bay, the Great Lakes, large forests).
+Checked on the 1.5 pack (2026-10-24, design review): a full-ocean tile is about 23 bytes of `TDAT` plus about 4 of `TIDX`, and about 13 of the 23 are the zstd frame's own overhead (see [1.5c](#15c-tile-size-experiments-frame-overhead-and-per-layer-max-zoom)). The count is large because Geofabrik's North America `.poly` takes in a wide stretch of open ocean: z14 tile 14/1802/6461, about 2,000 km off California, is stored.
+
+- **Format:** **every tile that is not stored is drawn from its nearest stored ancestor**, scaled up, as the app already does for overzoom past z14 (owner, 2026-10-24). No flag in `TIDX`: an empty land tile and a left-out ocean tile are handled the same way. This is safe because a tile holds everything its ancestor holds in its square (features are only filtered by `minzoom`), so the ancestor has nothing there either. Write the rule in format.md, with the argument below for why simplification cannot leave slivers.
+- **Simplification cannot leave slivers.** The worry was that the ancestor's simplified edges, up to its tolerance off, could reach into a left-out square. They cannot: a left-out child is full ocean out to its 64-unit buffer, which is 32 units in its parent's grid, so the real coastline is at least 32 parent units from the child's square. Every tolerance in the whitelist is at most 16 units (water and land cover 6 / 8 / 16 at z12 / z13 / z14, 4 elsewhere), so the parent's simplified edge stays outside it. The same holds level by level up to the stored ancestor. So no flag on the ancestor's `TIDX` entry is needed. Add a builder assertion that every tolerance stays under half the buffer, so a later whitelist change cannot break this unnoticed.
+- **Builder:** after cutting, leave out a tile whose only content is ocean that **together** covers the whole tile plus its buffer, when its parent is the same (so the parent can stand in). Anything else in the tile (a maritime boundary, a ferry, an island) keeps it.
+  - "Together" matters: `water-polygons-split` is cut along whole-degree lines, so tiles on those lines hold 2–4 ocean pieces, not one (tile 14/5097/6202, at 40°N 68°W, has 4 ocean squares at every zoom from z10 to z14). A rule that looked for one covering polygon would keep all of them.
+  - Better still, **dissolve the ocean pieces of one tile into one polygon** before encoding, so the split lines vanish everywhere. Then the full-ocean test is "one ocean polygon covering tile and buffer" again. That may also shrink water at low zooms, where a tile holds many pieces with shared edges along the split lines: measure the water bytes per zoom against 1.5.
+  - Check whether the same rule is worth applying to full-tile lakes and land cover (Hudson Bay, the Great Lakes, large forests).
 - **App:** `tiles::plan` draws the stored ancestor for a left-out tile, and the loader stops asking for tiles below it. The bench's "fully detailed" counts such a tile as loaded once its ancestor is. The style's line widths already work at any scale.
+  - Finding the ancestor can take several `TIDX` lookups (z14 missing, z13 missing, …), and a cold first read of a zoom's directory was already 1.4's slowest read. Cache "not stored" answers next to the decoded `TIDX` blocks, so panning over open ocean does not repeat the walk.
+  - Label data drawn from an ancestor must be clipped to the left-out tile's square, as its geometry already is by the scissor (see [1.7](#17-text-and-label-placement)).
 - **Measure** on Quebec and North America: tiles stored, tile bytes, `TIDX` bytes and pack size, against the 1.5 packs (North America 9,200 MiB, 64.0M tiles). The target is most of the 1.2 GiB back, so the pack is near 8.0 GiB again.
 - Rebuild Delaware, Quebec and North America; rerun `verify`, the North America bench (warm and cold) and `docs/screenshots/render.sh`, and check that open ocean is still drawn at every zoom with no seams.
 
 **Done when:** format.md describes left-out tiles, the North America pack no longer stores full-ocean tiles whose parent is full ocean, the ocean renders the same as in the 1.5 screenshots, and the size table and roadmap §4 have the new numbers.
+
+## 1.5c Tile size experiments: frame overhead and per-layer max zoom
+
+Added after the design review of 2026-10-24 (owner). Two experiments that could save space without losing features. Each one is measured, and kept only if it pays. Run them after 1.5b, on its packs, so the numbers are not inflated by the ocean tiles. Both change the format; whatever is kept goes into format.md and bumps the minor version.
+
+### A. zstd frame overhead
+
+Each layer of each tile is compressed as its own zstd **frame**. Every frame carries a fixed wrapper, whatever is inside it: a 4-byte magic number that says "this is zstd", a frame header (about 2 bytes here), a 3-byte block header, and a 4-byte checksum, so about 13 bytes in all. For a 2 KiB tile that is noise, but most frames are tiny. The 1.5 North America pack has **79.2M frames, and 60.7M of them are under 40 bytes**. A full-ocean tile is 23 bytes, of which about 10 are the actual square. The magic number and checksum alone come to about 600 MiB over the pack (79.2M × 8 bytes), and about 300 MiB once 1.5b has left out the ocean tiles. Neither is needed per frame:
+- the reader knows from `TIDX` exactly where each frame starts and how long it is, so the magic number tells it nothing;
+- `verify` already covers corruption, and the section checksums catch it.
+
+Variants, measured against the 1.5b pack:
+- **F1: magicless frames.** zstd's `format` parameter (`ZSTD_f_zstd1_magicless`, in the experimental API; check what the `zstd` crate exposes). Saves 4 bytes per frame and changes nothing else.
+- **F2: no per-frame checksum.** Either none at all, or one checksum per tile instead of per frame. A corrupt tile must then fail cleanly in the payload decoder rather than in zstd: check that `omp-core::tile` returns an error, without panicking, on truncated or garbled payloads (a fuzz test). That also matters for `verify`'s "suggested when a tile fails to decode" (1.9).
+- **F3: tiny payloads stored raw**, without zstd, below a size threshold, flagged in `TIDX` (for example `layer_len << 1 | raw`). This saves the whole wrapper on frames where compression gains nothing. Try a few thresholds.
+- **F4: one frame per tile** instead of one per layer, as a comparison only. It saves the most wrappers, but loses the per-layer dictionaries, so it is likely worse.
+
+Measure tile bytes, `TIDX` bytes and pack size on Quebec and North America, plus decode time p95 from the North America bench. Keep the variants that save meaningful space (say over 100 MiB on North America) without a measurable decode-time cost.
+
+### B. Per-layer max zoom
+
+Store a polygon layer only up to some zoom *M*, and draw it from the tile at *M*, scaled up, at higher zooms, while the other layers still come from the current tile. Water (4.7 GiB) and land cover (2.1 GiB) are 6.8 of the 8.9 GiB of tiles in the 1.5 pack. Their z14 bytes are the most this can save per layer: land cover 811 MiB, water 2,210 MiB (part of which is ocean that 1.5b removes anyway).
+
+- **Cost in quality:** a layer drawn from z13 has z13's simplification (8 grid units, about one z13 pixel), so edges sit up to about 2 px off at z14 and 8 px at z16. Road-heavy places will show it most: shorelines next to roads, bridges over rivers, ferries meeting their docks, and islands in lakes.
+- **Variants:** land cover to z13; land cover to z12; water areas to z13 (water lines such as rivers and canals stay to z14, since they sit under road bridges). If the water layer mixes lines and areas, splitting it into two layers may be needed first.
+- **Classes:** a class whose `minzoom` is above *M* would disappear. List such classes in the affected layers, and either lower their `minzoom` to *M* or keep the layer to z14.
+- **Format:** a `maxzoom` per layer in `SCHM` (a minor-version addition), so the app knows the layer is not missing from higher tiles.
+- **Builder:** stop emitting the layer above its `maxzoom`. A tile left with nothing else is left out, as in 1.5b.
+- **App:** draw a capped layer from the tile at its `maxzoom`, which the loader then also needs at higher zooms. Rendering already goes pass by pass across tiles, so the ancestor's land cover pass, scissored to the current tile, is drawn where the current tile's would be. This reuses 1.5b's ancestor drawing.
+- **Quality check:** render `docs/screenshots/render.sh`'s spots at z14, z15 and z17 with each variant next to the 1.5b pack, and add a few spots for the cases above (a lakeshore road in Ontario, a river bridge, a coastal town). The owner judges the screenshots.
+
+**Done when:** both experiments are measured on Quebec and North America and the results are written under this step; the owner has decided what to keep; any kept variant is in format.md, the builder and the app; the packs are rebuilt and verified; the bench and screenshots are rerun; and the size table and roadmap §4 have the new numbers.
 
 ## 1.6 Style file and default style
 
@@ -268,7 +309,8 @@ The roadmap's main renderer risk (§7). Latin script only, which covers English,
 - **Placement**, from the visible tiles every time the view settles, and incrementally while it moves:
   - point labels for places, POIs and area label points, with candidate positions around the point;
   - line labels for roads and rivers, glyph by glyph along the line, only where the line is straight enough, spaced out along long roads, never upside down;
-  - one label per name in the viewport for roads, deduplicated across tile pieces.
+  - one label per name in the viewport for roads, deduplicated across tile pieces;
+  - a tile drawn from a stored ancestor (1.5b's left-out tiles, overzoom, and 1.5c's capped layers) contributes only the ancestor's labels inside that tile's own square, or neighbours' labels appear twice.
 - **Collision:** greedy by priority (place class and population, capital, road class, area size), with a screen-space grid index. Labels placed in the previous frame keep their place while they still fit (hysteresis), so panning does not make them jump or flicker. Labels fade in.
 - The cost of placement is in the bench report; budget about 3 ms a frame on the dev machine.
 
@@ -316,7 +358,7 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 
 ```
 1.1 tile codec + reader ─► 1.2 build (Delaware, Ohio) ─┬─► 1.3 label + shield data ──────────────┐
-                        └─► 1.4 app skeleton ───────────┴─► 1.5 geometry ─► 1.5b ocean tiles ─► 1.6 style ─► 1.7 labels ─► 1.8 shields ─► 1.9 UI ─► 1.10 checks
+                        └─► 1.4 app skeleton ───────────┴─► 1.5 geometry ─► 1.5b ocean tiles ─► 1.5c size experiments ─► 1.6 style ─► 1.7 labels ─► 1.8 shields ─► 1.9 UI ─► 1.10 checks
                                                              (USB check optional here)
 ```
 
@@ -344,7 +386,8 @@ Settled while planning (2026-10-24):
 14. **MSAA 4×** in the window and in `--render`, with `msaa = 1` in `config.toml` to turn it off (1.5).
 
 Open, to settle in their steps:
-- **Full-ocean tiles** (found in 1.5): to be left out in [step 1.5b](#15b-leave-out-full-ocean-tiles) (owner, 2026-10-24). Decided: every missing tile is drawn from its nearest stored ancestor, with no flag (owner, 2026-10-24).
+- **Full-ocean tiles** (found in 1.5): to be left out in [step 1.5b](#15b-leave-out-full-ocean-tiles) (owner, 2026-10-24). Decided: every missing tile is drawn from its nearest stored ancestor, with no flag (owner, 2026-10-24). The design review showed that slivers cannot occur while every tolerance is under half the buffer, so no fallback flag is planned.
+- **Frame overhead and per-layer max zoom** (design review, 2026-10-24): measured in [step 1.5c](#15c-tile-size-experiments-frame-overhead-and-per-layer-max-zoom); the owner decides what to keep from the numbers and screenshots.
 - The state-by-state shield table: how many distinct shapes are worth drawing (1.8).
 - The default units rule for the scale bar in a pack that covers both countries (1.9).
 
