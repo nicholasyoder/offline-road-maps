@@ -36,7 +36,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.7 Text and label placement | **Done** 2026-10-25 | Noto Sans subset to Latin (196 KB), shaped with `harfrust`, SDF glyphs from `skrifa` outlines; greedy placement with hysteresis and fade-in, line labels along roads and rivers, POI markers. Placement p95 0.28 ms a frame; North America flight p95 frame 1.05 ms; binary 11.8 MB. |
 | 1.8 Shields and POI icons | **Done** 2026-10-25 | 16 shield designs (`omp_core::routes::shield`) and 11 Maki icons, drawn as distance fields in the glyph atlas. Real shields on 97% of US and 95% of Canadian motorway ways; North America flight p95 frame 1.26 ms; binary 11.9 MB. |
 | 1.9 Viewer UI | **Done** 2026-10-25 (Linux) | Scale bar (miles, km or both, following the pack), zoom buttons, cursor coordinates, credit line; Layers menu with 9 toggles applied at draw time; About this map; Verify pack on a thread, cancellable; error dialogs for a damaged pack or tile; all saved in `config.toml`. North America flight p95 frame 1.39 ms; binary 12.2 MB. Running it on Windows is left to 1.10. |
-| 1.10 Performance, USB and hardware checks | In progress | Frame targets pass on every machine with a GPU (dev 1.17 ms cold from USB 2; 7490 12–17 ms; E6430 20.3 ms on GL). Windows uses DX12 and GL only (Intel's Vulkan driver crashed). Pooled tile slabs brought the 7490 (DX12) to 373 MiB, flat. The E6430 (GL) leaks ~0.3 MiB per frame presented, map or not; a vsync run remains. |
+| 1.10 Performance, USB and hardware checks | **Done** 2026-10-25 | From the USB 2 stick, cold: dev p95 1.17 ms, start-up 1.46 s, slowest jump 0.63 s, RSS 144 MiB, idle 0.1%. Laptops pass the 33 ms target (7490 12–14 ms; E6430 20 ms). Windows: Vulkan left out (Intel driver crash); tile geometry pooled (7490 DX12 629 → 373 MiB, flat). Open: the HD 4000's Windows GL path leaks ~0.35 MiB per frame presented (wgpu WGL present / driver). |
 
 ## Environment notes
 
@@ -506,7 +506,7 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 
 **Done when:** every exit criterion has a measured number, on every machine above, written here and in roadmap §6.
 
-> **In progress 2026-10-25.** The stick is a 16 GB SanDisk Cruzer Blade (USB 2 only, so every USB number is the worst case; there is no USB 3 run), formatted FAT32 with the label `OMPTEST`. It holds the North America pack (6.1 GiB in 2 chunks) in `maps/`, both apps, `bench/north-america.toml`, and `run-bench.bat` / `run-bench.sh`, which run the flight cold then warm and write reports and machine details to `results/`.
+> **Done 2026-10-25** (commits from `040894a` to the one that adds this summary). The stick is a 16 GB SanDisk Cruzer Blade (USB 2 only, so every USB number is the worst case; there is no USB 3 run), formatted FAT32 with the label `OMPTEST`. It holds the North America pack (6.1 GiB in 2 chunks) in `maps/`, both apps, `bench/north-america.toml`, and `run-bench.bat` / `run-bench.sh`, which run the flight cold then warm and write reports and machine details to `results/`.
 > **Idle CPU:** after the last step the bench now leaves the window alone for 10 s without redrawing and records the process's CPU time over it as `idle_cpu_percent` (`memory::cpu_time`: `/proc/self/stat` on Linux, `GetProcessTimes` on Windows). Ohio on the dev machine: 0.00%.
 > **Finding:** Linux mounts FAT32 sticks with `showexec`, so only `.exe`/`.bat`/`.com` files are executable and `omp-app` cannot run straight from the stick. `run-bench.sh` copies it to `/tmp` first. Phase 2's packaging should allow for this (a launcher script run with `sh`, or a note in the README).
 > **Copy and verify:** writing the 6.1 GiB pack to the stick took 23 min (4.7 MB/s). `omp-builder verify` on the stick after a remount: OK, 6,213.6 MiB in 172 s (36 MiB/s read).
@@ -577,7 +577,23 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 > | `OMP_BENCH_NO_MAP=1` (queue) | 10,389 | 3,176 MiB | 0.30 MiB |
 >
 > The belt made it four times worse (this driver also leaks on re-mapping a buffer), and the 7490 a little worse too (DX12, 396 MiB against 373). **Reverted:** `Queue::write_buffer` again, `upload.rs` gone. More telling, without the map the leak is still 0.30 MiB a frame: drawing only egui's controls and presenting costs almost all of it, and the map's own writes about 0.05 MiB. So it is per frame presented, not per upload. The bench presents without vsync; normal use has it. `OMP_BENCH_VSYNC=1` now keeps vsync in the bench, and `run-compare.bat` runs the flight with vsync, with and without the map.
-> **Remaining:** `run-compare.bat` on the E6430: if RSS stays flat with vsync, the leak is a no-vsync artefact of this driver and real use is not affected; if not, record it as a driver bug of the HD 4000 on Windows GL. Then roadmap §6.
+>
+> **Vsync result (2026-10-25), E6430, GL, `OMP_BENCH_VSYNC=1`:** with the map, 1,639 frames at ~32 fps, RSS 109 → 786 MiB (0.41 MiB a frame); without the map, 1,713 frames, 89 → 553 MiB (0.27 MiB a frame). Vsync is not the cause: RSS grows with every frame presented, whatever is drawn. On Windows, wgpu's GL backend (`wgpu-hal` `gles/wgl.rs`) keeps its context on a hidden window and, every frame, makes it current on the app window's DC (`GetDC` / `wglMakeCurrent`), blits and swaps; old Intel GL drivers are known for leaks around such switches. Nothing in the app causes it, and this GPU has no DX12 or Vulkan under Windows, so GL is its only backend. Real use: no growth while still (no frames), about 12 MiB/s while the map moves at 30 fps. **Open:** report it to wgpu with the numbers; options if it matters: a patched `wgl.rs` that keeps one DC, or Linux on such machines (the 7490 on Linux is flat at 145 MiB).
+>
+> **Summary: the exit criteria on every machine** (cold = from the USB 2 stick, first run after plugging in or remounting):
+>
+> | Criterion | Dev (Linux, RX 9060 XT) | Latitude 7490 Linux (UHD 620, Vulkan) | Latitude 7490 Windows 11 (UHD 620, DX12) | Latitude E6430 Windows 10 (HD 4000, GL) | Pre-2012 (Pentium P6100, llvmpipe) |
+> |---|---|---|---|---|---|
+> | 1. Frame p95 (dev < 16.7 ms, laptop < 33 ms) | 1.17 ms ✓ | 12.3 ms ✓ | 12.2–14.2 ms ✓ | 20.3–21.1 ms ✓ | 485 ms ✗ (software) |
+> | 2. Cold start-up (< 3 s) | 1.46 s ✓ | 0.51 s ✓ | 0.83–1.88 s ✓ | 1.7–3.1 s (one of four over) | 3.4 s ✗ |
+> | 2. Slowest jump to full detail (< 2 s on USB 2) | 0.63 s ✓ | 0.10 s ✓ | 0.18 s ✓ | 0.41 s ✓ | 2.2 s ✗ |
+> | 3. Peak RSS (< 300 MB) | 144 MiB ✓ | 145 MiB ✓ | 373 MiB, flat (over; slack allowed) | grows ~0.35 MiB a frame (driver) ✗ | 332–347 MiB ✗ |
+> | 4. Idle CPU | 0.10% ✓ | 0.0–0.1% ✓ | 0.0% ✓ | 0.0% ✓ | 1.8%* |
+> | 5. Binary (< 30 MB) | 12.7 MB ✓ | 12.7 MB ✓ | 11.3 MB ✓ | 11.3 MB ✓ | 12.7 MB ✓ |
+> | 6. Runs | ✓ | ✓ (one silent failed start, not reproduced) | ✓ after leaving out Vulkan | ✓ with Intel's driver (WARP before) | runs, ~3 fps; recorded and skipped (decision 2) |
+>
+> \* Measured with the settled method on the dev machine with llvmpipe forced; the P6100's 10.4% was the old method.
+> Criterion 7 (looks like a road map) was judged in 1.5–1.8 from the reference screenshots, which render byte-identical after the changes here.
 
 ---
 
