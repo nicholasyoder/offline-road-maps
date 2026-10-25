@@ -33,7 +33,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.5b Leave out full-ocean tiles | **Done** 2026-10-24 | Format 0.2: a missing tile is drawn from its nearest stored ancestor. Tiles that one polygon covers are left out (40.1M ocean, 5.6M protected area). North America 8,026 MiB (was 9,200), 17.9M tiles (was 64.0M); renders unchanged. |
 | 1.5c Tile size experiments: frame overhead, per-layer max zoom | **Done** 2026-10-25 | Kept (owner): F1+F2 (magicless frames, no checksum) and land cover and water areas capped at z13, as format 0.3 with a `waterways` layer. North America **6,214 MiB** (was 8,026), 12.6M tiles; renders at z13 and below unchanged; bench unchanged. |
 | 1.6 Style file and default style | **Done** 2026-10-25 | `data/style.toml` compiled in, `style.toml` next to the executable or `--style` overrides it, debug builds reload it. Road atlas look tuned at the 11 reference spots; label, icon and shield rules are in the style for 1.7–1.8. |
-| 1.7 Text and label placement | Not started | |
+| 1.7 Text and label placement | **Done** 2026-10-25 | Noto Sans subset to Latin (196 KB), shaped with `harfrust`, SDF glyphs from `skrifa` outlines; greedy placement with hysteresis and fade-in, line labels along roads and rivers, POI markers. Placement p95 0.28 ms a frame; North America flight p95 frame 1.05 ms; binary 11.8 MB. |
 | 1.8 Shields and POI icons | Not started | |
 | 1.9 Viewer UI | Not started | |
 | 1.10 Performance, USB and hardware checks | Not started | Needs the USB stick, the Windows PC and both laptops. |
@@ -282,7 +282,7 @@ Checked on the 1.5 pack (2026-10-24, design review): a full-ocean tile is about 
 > | North America, cold (disk remounted) | 83,602 | 0.60 / 0.69 / 117 ms | 230 ms | 6.2 / 24.2 / 61 ms | 1.5 / 6 ms | 1,187 + 56 | 37.5 MiB | 124 MiB |
 >
 > Every jump was fully detailed within 39 ms. The flight reads 37 MiB instead of 62, and RSS peaks about 40 MiB lower. A one-off pause of 117–192 ms in the first step (start-up), with under 10 ms of CPU in any frame, showed up on the first runs; reruns of Ohio and warm North America did not repeat it (max 18 ms, as in 1.5), so it is outside the frame work, probably window start-up.
-> **Open:** label data drawn from an ancestor must be clipped to the left-out tile's square (1.7). A cold first walk up over open ocean reads up to one `TIDX` block per zoom; on USB this belongs to 1.10's cold-read checks.
+> **Open:** ~~label data drawn from an ancestor must be clipped to the left-out tile's square~~ (done in 1.7). A cold first walk up over open ocean reads up to one `TIDX` block per zoom; on USB this belongs to 1.10's cold-read checks.
 
 ## 1.5c Tile size experiments: frame overhead and per-layer max zoom
 
@@ -374,7 +374,7 @@ Store a polygon layer only up to some zoom *M*, and draw it from the tile at *M*
 > | North America, cold (disk remounted) | 83,669 | 0.60 / 0.69 / 18.5 ms | 135 ms | 6.0 / 24.3 / 66 ms | 1.5 / 3.8 ms | 0.94 ms | 1,190 + 57 | 34.4 MiB | 124 MiB |
 >
 > The same as 1.5b within noise; every jump was fully detailed within 38 ms. The flight reads 34 MiB instead of 37. A first warm North America run had the one-off start-up pause seen in 1.5b (199 ms); the rerun did not.
-> - **Open:** label data from a capped layer's source must be clipped to each tile's square, as for left-out tiles (1.7). The capped sources are not preloaded for the margin ring, so a pan into a new z13 square at z14+ shows its land cover one read late (not seen in the bench).
+> - **Open:** ~~label data from a capped layer's source must be clipped to each tile's square~~ (done in 1.7). The capped sources are not preloaded for the margin ring, so a pan into a new z13 square at z14+ shows its land cover one read late (not seen in the bench).
 
 ## 1.6 Style file and default style
 
@@ -410,6 +410,29 @@ The roadmap's main renderer risk (§7). Latin script only, which covers English,
 - The cost of placement is in the bench report; budget about 3 ms a frame on the dev machine.
 
 **Done when:** places, roads, water and POI names are labelled at every zoom without overlaps, labels stay still while panning, the screenshots show it, and the bench still meets 60 fps p95 on the dev machine.
+
+> **Done 2026-10-25** (the commit that adds `crates/app/src/labels.rs`).
+> **Fonts** ([crates/app/data/fonts/](../crates/app/data/fonts/)): Noto Sans 2.015 Regular, Italic and Bold, unhinted, from the notofonts release, subset by `subset.sh` (fontTools) to Basic Latin, Latin-1, Latin Extended-A, -B and Additional, general punctuation, € and №, keeping only the `kern` feature: 64 KB each, **196 KB** in all (the estimate was 1–2 MB). `OFL.txt` sits next to them; the README and roadmap §8 say so.
+> **Text** (`text.rs`): shaped with **`harfrust`**, glyph outlines from **`skrifa`**: the shaper and font reader egui 0.37 already uses (it no longer uses `ab_glyph`), so kerning comes from the font's `GPOS` at no cost in binary size, and no hand-made kerning was needed (decision 9 updated). One shape plan per face (Latin, left to right), made once: planning on every call was most of the cost. Text is laid out in ems; point labels wider than 8 em break at spaces. Names with a character the fonts lack (Inuktitut syllabics, CJK) are not labelled. **Distance fields** are exact: the distance from each atlas pixel to the nearest segment of the flattened outline, signed by nonzero winding, at 32 pixels per em, reaching 6 pixels out (which bounds the halo) and 2 in. Loader threads make the fields of the glyphs their tiles use (kept for the session); the UI thread packs them on first use into a 1024² single-channel atlas (shelves; when full it starts over the next frame). `text.wgsl` draws one instanced quad per glyph, every halo first and then every glyph, so no halo covers a letter.
+> **Labels** (`labels.rs`): taken out of each tile on the loader thread: the features whose label rule shows at a zoom the tile is drawn at (z−1.5 as a child stand-in, to z+0.5, or on for z14), shaped once per name per tile, with a rank within their priority from `population` (log₁₀), `capital` (+2) and `area`. Leaving out labels the tile is never drawn with was needed: the nine z12 tiles around Mexico City held 49,393 labels, mostly street pieces whose names only show from z15 (1,168 after), and extracting them doubled tile latency. **Placement**, every frame on the UI thread: candidates in the viewport sorted by priority and rank (ties by text and position, so tile order does not matter), placed greedily against a 64-pixel grid of boxes. Point labels are centred on their point; POIs get a marker (a bullet glyph until 1.8's icons) and their name right, left, below or above it, whichever is free. Line labels are laid glyph by glyph along the line, centred on anchors every 1024 tile units (128 points at the tile's zoom, closer in an overzoomed or fallback tile), where neighbouring glyphs turn less than 26° and the label less than 69° in all, flipped to read left to right. Line labels with the same text stay 400 points apart, which also keeps a road's pieces in neighbouring tiles from repeating its name. **Hysteresis:** a label shown in the last frame (same layer and text within 3 points on the map) gets +6 priority, enough to keep its place against peers but not against a class 10 above; anchors are fixed points of the tile data, so labels do not slide while panning. New labels fade in over 0.2 s (the window repaints until they are done).
+> **Stand-in tiles:** `tiles::plan` now lists, for each visible tile, which loaded tile's labels stand for it and in which square: a left-out tile's stored ancestor, a parent while the tile loads, or each of four children; a capped layer's labels come from its source. Only labels anchored inside the square are placed, so no label appears twice. This closes the open items of 1.5b and 1.5c. The labels go into the tile cache with the mesh and count against its budget.
+> **Checks:** unit tests for no overlaps and the same labels at the same map positions over 20 small pans, a shown label keeping its place against a higher-ranked one coming on screen, line labels upright and left out on a zigzag, a stand-in tile labelling only its square, fade-in, and a POI's name moving beside its marker when a label takes its first spot. `docs/screenshots/` is re-rendered with labels; a check at Times Square z16 caught POIs never being placed (each name was tested against its own marker), now fixed. The F3 overlay shows labels placed of candidates, placement time and glyphs in the atlas; `--render` prints labels and their time.
+> **Bench** (`$OMP_WORK/measure/bench/*-1.7*.json`; the report now has `labels_ms`, part of `cpu_ms`):
+>
+> | Flight | Frames | Interval p50 / p95 / max | Labels p50 / p95 / max | Start-up | Tile latency p50 / p95 / max | Read p95 / max | Prepare p50 / p95 | Tiles loaded + absent | Read | RSS peak |
+> |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+> | Ohio, warm | 40,662 | 0.70 / 0.85 / 18.5 ms | 0.05 / 0.14 / 1.1 ms | 110 ms | 3.8 / 19.7 / 39 ms | 0.07 / 0.9 ms | 1.6 / 10.6 ms | 530 + 49 | 12.2 MiB | 125 MiB |
+> | North America, warm | 64,520 | 0.77 / 1.05 / 20.0 ms | 0.08 / 0.28 / 1.6 ms | 119 ms | 5.8 / 22.2 / 57 ms | 0.10 / 0.8 ms | 1.9 / 9.5 ms | 1,200 + 57 | 34.6 MiB | 134 MiB |
+> | North America, cold (disk remounted) | 64,584 | 0.77 / 1.05 / 18.5 ms | 0.08 / 0.28 / 2.5 ms | 120 ms | 7.5 / 29.6 / 265 ms | 1.75 / 264 ms | 1.8 / 10.1 ms | 1,188 + 54 | 34.3 MiB | 135 MiB |
+>
+> Against 1.5c: the p95 frame is 1.05 ms instead of 0.69 (labels 0.28 ms of it, the rest drawing the glyphs), far inside 16.7 ms; placement stays well under the 3 ms budget. Tile prepare p50 is 1.9 ms instead of 1.5 (labels: about 0.1 ms a tile, up to 1 ms for a dense z14 tile, mostly shaping many distinct POI and street names), and tile latency is as before. RSS peak is 10 MiB higher. Every jump was fully detailed within 36 ms, except in the first cold run, where one read took 198 ms right after the remount (Manhattan z12 in 191 ms); the cold rerun had a 264 ms read elsewhere. The disk, not the app: read time is the positioned read alone. The release binary is 11.8 MB stripped (was 11.5).
+> **Open:**
+> - Judged from screenshots, tests and the bench, not yet by watching the window in use: the owner should pan and zoom around a city to confirm that labels do not flicker.
+> - Tuning: POIs are dense at z16 in Manhattan (every named restaurant gets a name); the spacing constants (anchor spacing, 400-point repeat, +6 hysteresis) are first guesses.
+> - Halos are translucent (`#ffffffd9`) and drawn per glyph, so where neighbouring glyphs' halos overlap they are slightly more opaque; not visible in the screenshots.
+> - Each glyph of a line label follows the chord of the line under it, so on tight curves letters sit on straight pieces. Fine for roads and rivers at the bend limits above.
+> - Shaped names are not shared between tiles; a cache would cut the z14 shaping cost if tile latency ever needs it.
+> - Labels are cut by the viewport edge rather than kept fully on screen; labels whose anchor leaves the viewport disappear.
 
 ## 1.8 Shields and POI icons
 
@@ -473,7 +496,7 @@ Settled while planning (2026-10-24):
 6. **One pack open at a time**, with a picker if `maps/` holds several. Several packs at once is left for later (owner did not choose it for phase 1).
 7. **North up, no map rotation** in phase 1, like Streets & Trips. It keeps tile clipping to axis-aligned squares.
 8. **The style lives in the app, not the pack:** a compiled-in TOML style with a `style.toml` override (or `--style`), and no `STYL` section. Draw order is the renderer's fixed pass order, then rule order within a pass (1.6).
-9. **Text:** SDF glyph atlas in the map pass, Latin script, kerning but no complex shaping; no `cosmic-text`/`rustybuzz` for now. Update roadmap §5 when 1.7 confirms it.
+9. **Text:** SDF glyph atlas in the map pass, Latin script; no `cosmic-text`/`rustybuzz`. Confirmed in 1.7, with shaping and kerning by `harfrust` and outlines from `skrifa`, which egui already uses (roadmap §5 updated).
 10. **Viewer extras in phase 1:** scale bar, zoom buttons, cursor coordinates and layer toggles (owner, 2026-10-24). No night style yet.
 11. **`routes` replaces `ref`** on roads (1.3): it carries the same refs, sorted, with their networks.
 12. **`name` only** in tiles, no `name:en`/`name:fr` (1.3).

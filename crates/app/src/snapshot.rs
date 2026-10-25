@@ -9,10 +9,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::camera::Camera;
+use crate::labels::{self, Placer, TileLabels};
 use crate::render::{self, GpuMesh, Renderer};
 use crate::style::{Style, StyleFile};
 use crate::tiles::{self, Known, TileId};
 use crate::{loader, mesh, packs};
+
+/// A loaded tile: its mesh and labels.
+type Loaded = Option<(Arc<GpuMesh>, Arc<TileLabels>)>;
 
 pub struct Snapshot {
     pub pack: PathBuf,
@@ -92,9 +96,9 @@ impl Snapshot {
         let failed = AtomicUsize::new(0);
         // `None`: not in the pack. Read in rounds: the visible tiles, then the ancestors of
         // those left out, until each has a stored ancestor or none.
-        let mut known: HashMap<TileId, Option<Arc<GpuMesh>>> = HashMap::new();
+        let mut known: HashMap<TileId, Loaded> = HashMap::new();
         let mut errors = Vec::new();
-        let state = |known: &HashMap<TileId, Option<Arc<GpuMesh>>>, t| {
+        let state = |known: &HashMap<TileId, Loaded>, t| {
             known.get(&t).map(|m| match m {
                 Some(_) => Known::Loaded,
                 None => Known::Absent,
@@ -115,7 +119,8 @@ impl Snapshot {
                                     t.map(|t| {
                                         let m = mesh::build(&t, &style);
                                         failed.fetch_add(m.failed, Ordering::Relaxed);
-                                        Arc::new(GpuMesh::upload(&device, &m))
+                                        let l = labels::extract(id, &t, &style);
+                                        (Arc::new(GpuMesh::upload(&device, &m)), Arc::new(l))
                                     })
                                 });
                                 out.push((id, r));
@@ -142,7 +147,7 @@ impl Snapshot {
         let loaded: Vec<(TileId, Option<Arc<GpuMesh>>)> = plan
             .draws
             .iter()
-            .map(|&(t, _)| (t, known.get(&t).cloned().flatten()))
+            .map(|&(t, _)| (t, known.get(&t).cloned().flatten().map(|m| m.0)))
             .collect();
         let loaded_in = t0.elapsed();
         let mesh_bytes: usize = loaded
@@ -160,9 +165,9 @@ impl Snapshot {
         let paints = render::paints(&style, cam.zoom, self.pixels_per_point, renderer.srgb);
         let capped = plan.capped.iter().filter_map(|&(t, cap, s)| {
             let m = known.get(&s).cloned().flatten()?;
-            Some((t, cap, s, m))
+            Some((t, cap, s, m.0))
         });
-        let frame = render::layout(
+        let mut frame = render::layout(
             &cam,
             self.pixels_per_point,
             paints,
@@ -170,13 +175,40 @@ impl Snapshot {
             capped,
             &style.pass_cap,
         );
+        let t1 = Instant::now();
+        let sources: Vec<labels::Source> = plan
+            .labels
+            .iter()
+            .filter_map(|&(tile, square, cap)| {
+                let (_, l) = known.get(&tile)?.as_ref()?;
+                Some(labels::Source {
+                    labels: l,
+                    tile,
+                    square,
+                    cap,
+                })
+            })
+            .collect();
+        let mut placer = Placer::default();
+        let placed = placer.place(
+            &cam,
+            self.pixels_per_point,
+            &style,
+            &sources,
+            renderer.srgb,
+            None,
+        );
+        let label_ms = t1.elapsed().as_secs_f64() * 1e3;
+        let n_labels = placed.labels;
+        frame.glyphs = placed.glyphs;
+        frame.atlas = placer.atlas.take_uploads();
         let no_map = crate::app::NO_MAP.to_array();
         let pixels = render::draw_offscreen(&device, &queue, &mut renderer, &frame, no_map)?;
         write_png(&self.out, self.size, &pixels)
             .map_err(|e| format!("{}: {e}", self.out.display()))?;
         let info = adapter.get_info();
         let mut msg = format!(
-            "{}: z{:.2} (tiles z{z}), {tiles} tiles, {:.1} MiB mesh, loaded in {:.0} ms, {:.0} ms in all ({} {:?}, MSAA {samples})",
+            "{}: z{:.2} (tiles z{z}), {tiles} tiles, {:.1} MiB mesh, loaded in {:.0} ms, {n_labels} labels in {label_ms:.1} ms, {:.0} ms in all ({} {:?}, MSAA {samples})",
             self.out.display(),
             cam.zoom,
             mesh_bytes as f64 / (1024.0 * 1024.0),

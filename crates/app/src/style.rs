@@ -142,12 +142,13 @@ impl Paint {
     }
 }
 
-/// Text style for a class's labels, placed by step 1.7.
-#[allow(dead_code)] // Read by label placement (1.7).
+/// Text style for a class's labels (labels.rs).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Label {
     /// The prop the text comes from.
     pub prop: String,
+    /// Its key in the layer, set by [`Style::compile`].
+    pub key: Option<u8>,
     pub font: Font,
     /// Text size in points.
     pub size: Stops,
@@ -162,7 +163,8 @@ pub struct Label {
     pub maxzoom: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+/// In the order of the bundled fonts (text.rs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Font {
     Regular,
@@ -170,7 +172,7 @@ pub enum Font {
     Bold,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Placement {
     /// At the feature's point, with candidate positions around it.
@@ -180,13 +182,13 @@ pub enum Placement {
 }
 
 /// What is drawn on top of a class's geometry: its label, POI icon and route shields.
-#[allow(dead_code)] // Read by labels (1.7) and shields and icons (1.8).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Symbols {
     pub label: Option<Label>,
     /// The POI icon's name.
     pub icon: Option<String>,
     /// Route shields from the `routes` prop.
+    #[allow(dead_code)] // Read by shields (1.8).
     pub shields: bool,
 }
 
@@ -251,7 +253,6 @@ pub struct Style {
     /// Per layer ID, per class ID: how its geometry is drawn.
     pub classes: Vec<Vec<Option<ClassStyle>>>,
     /// Per layer ID, per class ID: its label, icon and shields.
-    #[allow(dead_code)] // Read by labels (1.7) and shields and icons (1.8).
     pub symbols: Vec<Vec<Option<Symbols>>>,
     /// Per style ID. Style ID 0 is the land under each tile.
     pub paints: Vec<Paint>,
@@ -260,6 +261,18 @@ pub struct Style {
     /// Per pass (`Pass as usize`), the zoom above which it is drawn from the tile at that
     /// zoom: the `maxzoom` of the layers drawn in it (format 0.3).
     pub pass_cap: [Option<u8>; PASSES],
+    /// Per layer ID: its `maxzoom` in the pack, if it is capped.
+    pub layer_cap: Vec<Option<u8>>,
+    /// Per layer ID: the props that rank its labels.
+    pub rank_props: Vec<RankProps>,
+}
+
+/// Prop keys that order a layer's labels among those of the same priority.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RankProps {
+    pub population: Option<u8>,
+    pub capital: Option<u8>,
+    pub area: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -324,7 +337,18 @@ impl Style {
                 }
                 None => None,
             };
-            let sym = (rule.symbols != Symbols::default()).then(|| rule.symbols.clone());
+            let mut sym = rule.symbols.clone();
+            if let Some(label) = &mut sym.label {
+                label.key = layer.prop(&label.prop);
+                if label.key.is_none() {
+                    warnings.push(format!(
+                        "style: the pack has no prop {}.{}; {}/{} is not labelled",
+                        rule.layer, label.prop, rule.layer, rule.classes[0]
+                    ));
+                    sym.label = None;
+                }
+            }
+            let sym = (sym != Symbols::default()).then_some(sym);
             for c in ids {
                 let (l, c) = (l as usize, c as usize);
                 if cs.is_some() {
@@ -347,6 +371,16 @@ impl Style {
             paints,
             roads,
             pass_cap,
+            layer_cap: schema.layers.iter().map(|l| l.maxzoom).collect(),
+            rank_props: schema
+                .layers
+                .iter()
+                .map(|l| RankProps {
+                    population: l.prop("population"),
+                    capital: l.prop("capital"),
+                    area: l.prop("area"),
+                })
+                .collect(),
         };
         (style, warnings)
     }
@@ -363,6 +397,18 @@ impl Style {
         v.sort_unstable();
         v.dedup();
         v
+    }
+
+    pub fn symbols(&self, layer: u8, class: u16) -> Option<&Symbols> {
+        self.symbols
+            .get(layer as usize)?
+            .get(class as usize)?
+            .as_ref()
+    }
+
+    /// The label rule of a class, if it has one.
+    pub fn label(&self, layer: u8, class: u16) -> Option<&Label> {
+        self.symbols(layer, class)?.label.as_ref()
     }
 
     pub fn class(&self, layer: u8, class: u16) -> Option<&ClassStyle> {
@@ -731,6 +777,7 @@ mod file {
         let (minzoom, maxzoom) = zooms(l.minzoom, l.maxzoom)?;
         Ok(Label {
             prop: l.prop.unwrap_or_else(|| "name".into()),
+            key: None,
             font: l.font.unwrap_or(Font::Regular),
             size: n.stops(l.size.as_ref().unwrap_or(&Num::One(12.0)))?,
             color: n.color(l.color.as_deref().unwrap_or("#333333"))?,
@@ -751,6 +798,10 @@ mod tests {
 
     fn schema() -> Schema {
         Schema::from_whitelist(&Whitelist::parse(WHITELIST).unwrap())
+    }
+
+    fn layer_prop(schema: &Schema, layer: &str, prop: &str) -> Option<u8> {
+        schema.layer(layer)?.1.prop(prop)
     }
 
     #[test]
@@ -802,6 +853,10 @@ mod tests {
             .unwrap();
         assert!(sym.shields);
         assert_eq!(sym.label.as_ref().unwrap().placement, Placement::Line);
+        assert_eq!(
+            sym.label.as_ref().unwrap().key,
+            layer_prop(&schema, "roads", "name")
+        );
         // The default whitelist caps land cover and water areas at z13, not the waterways.
         assert_eq!(style.pass_cap[Pass::Landcover as usize], Some(13));
         assert_eq!(style.pass_cap[Pass::Water as usize], Some(13));

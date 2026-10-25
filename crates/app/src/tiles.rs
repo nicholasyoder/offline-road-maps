@@ -157,6 +157,11 @@ pub struct Plan {
     /// tile at or above the cap zoom whose capped layers are drawn in `tile`'s square, once
     /// it is loaded (format 0.3, layer `maxzoom`).
     pub capped: Vec<(TileId, u8, TileId)>,
+    /// Where each visible tile's labels come from: `(tile, square, cap)` draws the labels of
+    /// loaded `tile` whose anchor is in `square`'s square, so an ancestor standing in for some
+    /// tiles adds no labels where others are drawn from their own data. With `cap`, only those
+    /// of the layers capped at that zoom.
+    pub labels: Vec<(TileId, TileId, Option<u8>)>,
     /// Tiles still to read before the view is fully detailed: wanted tiles, the next
     /// ancestor up from a left-out one, or a capped layer's source. In `visible` order.
     pub need: Vec<TileId>,
@@ -187,6 +192,7 @@ pub fn plan(visible: &[TileId], caps: &[u8], known: impl Fn(TileId) -> Option<Kn
                 if drawn.insert(a) {
                     out.draws.push((a, cover));
                 }
+                out.labels.push((a, t, None));
                 continue;
             }
             Resolved::Empty => {
@@ -207,6 +213,7 @@ pub fn plan(visible: &[TileId], caps: &[u8], known: impl Fn(TileId) -> Option<Kn
                 if drawn.insert(a) {
                     out.draws.push((a, Cover::Parent));
                 }
+                out.labels.push((a, t, None));
                 found = true;
                 break;
             }
@@ -218,6 +225,7 @@ pub fn plan(visible: &[TileId], caps: &[u8], known: impl Fn(TileId) -> Option<Kn
         let kids = t.children();
         if unknown == t && t.z < MAX_ZOOM && kids.iter().all(|&c| loaded(c)) {
             out.draws.extend(kids.map(|c| (c, Cover::Child)));
+            out.labels.extend(kids.map(|c| (c, c, None)));
         } else {
             out.draws.push((t, Cover::Missing));
         }
@@ -236,6 +244,18 @@ pub fn plan(visible: &[TileId], caps: &[u8], known: impl Fn(TileId) -> Option<Kn
             }
         }
     }
+    // A capped layer's labels come from the tile its geometry is drawn from.
+    let capped: Vec<_> = out
+        .labels
+        .iter()
+        .flat_map(|&(t, square, _)| {
+            out.capped
+                .iter()
+                .filter(move |c| c.0 == t)
+                .map(move |&(_, cap, s)| (s, square, Some(cap)))
+        })
+        .collect();
+    out.labels.extend(capped);
     out
 }
 
@@ -295,6 +315,10 @@ mod tests {
             4
         );
         assert_eq!(p.need, want[1..]);
+        // The parent's labels only where it stands in; each child's in its own square.
+        assert!(p.labels.contains(&(TileId::new(3, 2, 2), want[1], None)));
+        assert!(p.labels.contains(&(want[0], want[0], None)));
+        assert_eq!(p.labels.len(), 1 + 1 + 4);
         let none = plan(&want[..1], &[], |_| None);
         assert_eq!(none.draws, vec![(want[0], Cover::Missing)]);
     }
@@ -320,6 +344,7 @@ mod tests {
             p.draws,
             vec![(t12, Cover::Ancestor), (want[1], Cover::Exact)]
         );
+        assert_eq!(p.labels, vec![(t12, t14, None), (want[1], want[1], None)]);
         // Nothing stored all the way up: bare land.
         let p = plan(&want[..1], &[], |_| Some(Known::Absent));
         assert_eq!(p.draws, vec![(t14, Cover::Empty)]);
@@ -345,6 +370,10 @@ mod tests {
         let p = plan(&[t14], &[12], |t| known.get(&t).copied());
         assert!(p.detailed());
         assert_eq!(p.capped, vec![(t14, 12, TileId::new(11, 12, 12))]);
+        assert_eq!(
+            p.labels,
+            vec![(t14, t14, None), (TileId::new(11, 12, 12), t14, Some(12))]
+        );
         // A tile at or below the cap draws its own.
         known.insert(t13, Known::Loaded);
         let p = plan(&[t13], &[13], |t| known.get(&t).copied());

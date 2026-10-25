@@ -11,6 +11,8 @@
 //! A pass whose layers are capped below a tile's zoom (format 0.3, layer `maxzoom`) is drawn
 //! in that tile from its source, the stored tile at the cap zoom, with the source's transform
 //! and the tile's scissor.
+//!
+//! Labels go on top, as glyph quads from the distance field atlas (text.rs, `text.wgsl`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +24,7 @@ use wgpu::util::DeviceExt;
 use crate::camera::Camera;
 use crate::mesh::{Mesh, Segment, Vertex};
 use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, Rgba, Style};
+use crate::text::{ATLAS, Upload};
 use crate::tiles::TileId;
 
 /// MSAA sample count, for the window (eframe's `multisampling`) and `--render`, unless
@@ -112,6 +115,29 @@ pub struct Frame {
     pub paints: Vec<GpuPaint>,
     pub tiles: Vec<TileDraw>,
     pub sources: Vec<SourceDraw>,
+    /// Label glyphs, drawn over the map.
+    pub glyphs: Vec<GlyphInstance>,
+    /// Glyphs new to the atlas.
+    pub atlas: Vec<Upload>,
+}
+
+/// One label glyph, as `text.wgsl` draws it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct GlyphInstance {
+    /// The quad's centre in viewport pixels.
+    pub center: [f32; 2],
+    /// The text's direction, a unit vector; the quad's other axis is a quarter turn on.
+    pub axis: [f32; 2],
+    /// Half the quad's width and height, in pixels.
+    pub half: [f32; 2],
+    /// Its atlas rectangle, 0–1: `[x0, y0, x1, y1]`.
+    pub uv: [f32; 4],
+    /// Straight alpha, in the target's colour space.
+    pub color: [u8; 4],
+    pub halo: [u8; 4],
+    /// Pixels per atlas pixel, and the halo's width in pixels.
+    pub scale: [f32; 2],
 }
 
 #[repr(C)]
@@ -140,21 +166,24 @@ struct TileTransform {
     _pad: f32,
 }
 
+/// A style colour for the GPU, 0–1 with straight alpha: linear for an sRGB target.
+pub fn gpu_color(c: Rgba, srgb_target: bool) -> [f32; 4] {
+    let f = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        match srgb_target {
+            true if v <= 0.04045 => v / 12.92,
+            true => ((v + 0.055) / 1.055).powf(2.4),
+            false => v,
+        }
+    };
+    [f(c[0]), f(c[1]), f(c[2]), f32::from(c[3]) / 255.0]
+}
+
 /// The style's paints at a zoom, in pixels.
 pub fn paints(style: &Style, zoom: f64, pixels_per_point: f32, srgb_target: bool) -> Vec<GpuPaint> {
     let z = zoom as f32;
     let ppp = pixels_per_point;
-    let color = |c: Rgba| {
-        let f = |v: u8| {
-            let v = f32::from(v) / 255.0;
-            match srgb_target {
-                true if v <= 0.04045 => v / 12.92,
-                true => ((v + 0.055) / 1.055).powf(2.4),
-                false => v,
-            }
-        };
-        [f(c[0]), f(c[1]), f(c[2]), f32::from(c[3]) / 255.0]
-    };
+    let color = |c: Rgba| gpu_color(c, srgb_target);
     style
         .paints
         .iter()
@@ -248,6 +277,8 @@ pub fn layout(
         paints,
         tiles,
         sources,
+        glyphs: Vec::new(),
+        atlas: Vec::new(),
     }
 }
 
@@ -267,6 +298,11 @@ pub struct Renderer {
     capacity: usize,
     /// The land square every tile is drawn on, style ID 0.
     square: (wgpu::Buffer, wgpu::Buffer),
+    glyph: wgpu::RenderPipeline,
+    halo: wgpu::RenderPipeline,
+    atlas: wgpu::Texture,
+    text_bg: wgpu::BindGroup,
+    glyphs: wgpu::Buffer,
     pub srgb: bool,
     pub samples: u32,
 }
@@ -388,10 +424,17 @@ impl Renderer {
                 usage: wgpu::BufferUsages::INDEX,
             }),
         );
+        let (glyph, halo, atlas, text_bg) = Self::text(device, format, samples, &globals);
+        let glyphs = Self::glyph_buffer(device, 1024);
         Self {
             fill,
             line,
             casing,
+            glyph,
+            halo,
+            atlas,
+            text_bg,
+            glyphs,
             globals,
             paints,
             globals_bg,
@@ -404,6 +447,149 @@ impl Renderer {
             srgb: format.is_srgb(),
             samples,
         }
+    }
+
+    /// The label pipelines (halos, then glyphs), the atlas and their bind group.
+    fn text(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        samples: u32,
+        globals: &wgpu::Buffer,
+    ) -> (
+        wgpu::RenderPipeline,
+        wgpu::RenderPipeline,
+        wgpu::Texture,
+        wgpu::BindGroup,
+    ) {
+        let shader = device.create_shader_module(wgpu::include_wgsl!("text.wgsl"));
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("text"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph atlas"),
+            size: wgpu::Extent3d {
+                width: ATLAS,
+                height: ATLAS,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("glyph atlas"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let view = atlas.create_view(&Default::default());
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("text"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("text"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let attrs = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x4,
+            4 => Unorm8x4, 5 => Unorm8x4, 6 => Float32x2
+        ];
+        let pipeline = |label, vs| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pl),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<GlyphInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &attrs,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_glyph"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        (
+            pipeline("label glyphs", "vs_glyph"),
+            pipeline("label halos", "vs_halo"),
+            atlas,
+            bg,
+        )
+    }
+
+    fn glyph_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("label glyphs"),
+            size: (capacity * std::mem::size_of::<GlyphInstance>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
     }
 
     fn transforms(
@@ -448,6 +634,38 @@ impl Renderer {
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
         let n = frame.paints.len().min(MAX_PAINTS);
         queue.write_buffer(&self.paints, 0, bytemuck::cast_slice(&frame.paints[..n]));
+        for u in &frame.atlas {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: u.x,
+                        y: u.y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &u.sdf.data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(u32::from(u.sdf.w)),
+                    rows_per_image: Some(u32::from(u.sdf.h)),
+                },
+                wgpu::Extent3d {
+                    width: u32::from(u.sdf.w),
+                    height: u32::from(u.sdf.h),
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let glyph_bytes = std::mem::size_of_val(frame.glyphs.as_slice()) as u64;
+        if glyph_bytes > self.glyphs.size() {
+            self.glyphs = Self::glyph_buffer(device, frame.glyphs.len().next_power_of_two());
+        }
+        if glyph_bytes > 0 {
+            queue.write_buffer(&self.glyphs, 0, bytemuck::cast_slice(&frame.glyphs));
+        }
         if frame.tiles.is_empty() {
             return;
         }
@@ -572,6 +790,17 @@ impl Renderer {
                         }
                     });
                 }
+            }
+        }
+        if !frame.glyphs.is_empty() && clip[2] > clip[0] && clip[3] > clip[1] {
+            pass.set_scissor_rect(clip[0], clip[1], clip[2] - clip[0], clip[3] - clip[1]);
+            let n = frame.glyphs.len() as u32;
+            let bytes = u64::from(n) * std::mem::size_of::<GlyphInstance>() as u64;
+            pass.set_bind_group(0, &self.text_bg, &[]);
+            pass.set_vertex_buffer(0, self.glyphs.slice(..bytes));
+            for pl in [&self.halo, &self.glyph] {
+                pass.set_pipeline(pl);
+                pass.draw(0..6, 0..n);
             }
         }
     }

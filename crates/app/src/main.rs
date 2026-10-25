@@ -12,6 +12,7 @@ mod bench;
 mod cache;
 mod camera;
 mod config;
+mod labels;
 mod loader;
 mod memory;
 mod mesh;
@@ -19,6 +20,7 @@ mod packs;
 mod render;
 mod snapshot;
 mod style;
+mod text;
 mod tiles;
 
 use std::path::PathBuf;

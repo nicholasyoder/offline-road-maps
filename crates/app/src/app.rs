@@ -13,6 +13,7 @@ use crate::bench::{Bench, FrameSample, ReportContext};
 use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
 use crate::config::{self, Config, Location, View};
+use crate::labels::{self, Placer, TileLabels};
 use crate::loader::{self, Done, Loader};
 use crate::mesh;
 use crate::packs::{self, Opened};
@@ -52,7 +53,7 @@ pub struct Startup {
 enum TileData {
     /// Not in the pack; drawn from its nearest stored ancestor.
     Absent,
-    Mesh(Arc<GpuMesh>, TileInfo),
+    Mesh(Arc<GpuMesh>, Arc<TileLabels>, TileInfo),
     Error,
 }
 
@@ -79,10 +80,13 @@ struct TileStats {
     recent: VecDeque<[f32; 4]>,
 }
 
+/// A tile as the loader threads prepare it.
+type Prepared = (Arc<GpuMesh>, Arc<TileLabels>, TileInfo);
+
 struct MapState {
     opened: Opened,
     style: Arc<Style>,
-    loader: Loader<(Arc<GpuMesh>, TileInfo)>,
+    loader: Loader<Prepared>,
     cache: Cache<TileData>,
     camera: Camera,
     motion: Motion,
@@ -90,6 +94,7 @@ struct MapState {
     /// Set until the first frame, which gives the viewport size to fit the pack to.
     fit_on_first_frame: bool,
     view: FrameView,
+    placer: Placer,
 }
 
 /// What the last frame showed, for the overlay.
@@ -101,6 +106,12 @@ struct FrameView {
     fallbacks: usize,
     missing: usize,
     detailed: bool,
+    /// Labels placed, of how many candidates, and the time it took.
+    labels: usize,
+    candidates: usize,
+    label_time: Duration,
+    /// Labels are still fading in.
+    fading: bool,
 }
 
 pub struct App {
@@ -216,6 +227,7 @@ impl App {
             stats: TileStats::default(),
             fit_on_first_frame: fit,
             view: FrameView::default(),
+            placer: Placer::default(),
         });
         self.first_full = None;
         if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
@@ -256,6 +268,7 @@ impl App {
             m.style = compile_style(&self.style, &m.opened);
             m.loader = start_loader(&m.opened, &m.style, device, ctx);
             m.cache = Cache::new(CACHE_BUDGET);
+            m.placer = Placer::default();
         }
     }
 
@@ -321,21 +334,26 @@ fn start_loader(
     style: &Arc<Style>,
     device: wgpu::Device,
     ctx: &egui::Context,
-) -> Loader<(Arc<GpuMesh>, TileInfo)> {
+) -> Loader<Prepared> {
     let ctx = ctx.clone();
     let style = style.clone();
     Loader::new(
         opened.reader.clone(),
         loader::default_threads(),
-        move |_, tile| {
+        move |id, tile| {
             let m = mesh::build(&tile, &style);
+            let labels = labels::extract(id, &tile, &style);
             let info = TileInfo {
                 features: tile.layers.iter().map(|(_, l)| l.features.len()).sum(),
                 vertices: tile.layers.iter().map(|(_, l)| l.vertices()).sum(),
                 bytes: tile.bytes,
                 failed: m.failed,
             };
-            (Arc::new(GpuMesh::upload(&device, &m)), info)
+            (
+                Arc::new(GpuMesh::upload(&device, &m)),
+                Arc::new(labels),
+                info,
+            )
         },
         move || ctx.request_repaint(),
     )
@@ -359,11 +377,11 @@ impl MapState {
                 s.recent.pop_front();
             }
             let (data, bytes) = match d.result {
-                Ok(Some((mesh, info))) => {
+                Ok(Some((mesh, labels, info))) => {
                     s.loaded += 1;
                     s.failed += info.failed;
-                    let bytes = mesh.bytes;
-                    (TileData::Mesh(mesh, info), bytes)
+                    let bytes = mesh.bytes + labels.bytes;
+                    (TileData::Mesh(mesh, labels, info), bytes)
                 }
                 Ok(None) => {
                     s.absent += 1;
@@ -508,18 +526,41 @@ impl MapState {
             }
             match (cover, self.cache.get(t)) {
                 (Cover::Empty, _) => draws.push((t, None)),
-                (_, Some(TileData::Mesh(m, _))) => draws.push((t, Some(m.clone()))),
+                (_, Some(TileData::Mesh(m, ..))) => draws.push((t, Some(m.clone()))),
                 _ => {}
             }
         }
         let mut capped = Vec::with_capacity(plan.capped.len());
         for &(t, cap, s) in &plan.capped {
-            if let Some(TileData::Mesh(m, _)) = self.cache.get(s) {
+            if let Some(TileData::Mesh(m, ..)) = self.cache.get(s) {
                 capped.push((t, cap, s, m.clone()));
             }
         }
         let paints = render::paints(&self.style, cam.zoom, ppp, srgb);
-        let frame = render::layout(cam, ppp, paints, draws, capped, &self.style.pass_cap);
+        let mut frame = render::layout(cam, ppp, paints, draws, capped, &self.style.pass_cap);
+        let t0 = Instant::now();
+        let sources: Vec<labels::Source> = plan
+            .labels
+            .iter()
+            .filter_map(|&(tile, square, cap)| match self.cache.peek(tile) {
+                Some(TileData::Mesh(_, l, _)) => Some(labels::Source {
+                    labels: l,
+                    tile,
+                    square,
+                    cap,
+                }),
+                _ => None,
+            })
+            .collect();
+        let placed = self
+            .placer
+            .place(cam, ppp, &self.style, &sources, srgb, Some(t0));
+        frame.glyphs = placed.glyphs;
+        frame.atlas = self.placer.atlas.take_uploads();
+        view.labels = placed.labels;
+        view.candidates = placed.candidates;
+        view.fading = placed.fading;
+        view.label_time = t0.elapsed();
         painter.add(egui_wgpu::Callback::new_paint_callback(
             rect,
             MapCallback(frame),
@@ -559,7 +600,7 @@ impl MapState {
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, stroke), StrokeKind::Inside);
             if matches!(cover, Cover::Exact | Cover::Ancestor | Cover::Empty) && r.width() > 150.0 {
                 let text = match data {
-                    Some(TileData::Mesh(m, i)) => {
+                    Some(TileData::Mesh(m, _, i)) => {
                         let failed = match i.failed {
                             0 => String::new(),
                             n => format!(", {n} failed"),
@@ -643,7 +684,7 @@ impl eframe::App for App {
                 if self.bench.is_none() {
                     m.input(ui, &resp, rect.min, dt);
                     m.motion.step(&mut m.camera, dt);
-                    animate = m.motion.moving() || MapState::keys_held(ui);
+                    animate = m.motion.moving() || MapState::keys_held(ui) || m.view.fading;
                     self.cursor = resp.hover_pos().map(|p| {
                         let w = m.camera.screen_to_world([
                             f64::from(p.x - rect.min.x),
@@ -682,6 +723,7 @@ impl eframe::App for App {
                 cpu,
                 detailed: m.view.detailed,
                 cache_bytes: m.cache.bytes(),
+                labels: m.view.label_time,
                 bytes_read: m.opened.reader.bytes_read(),
             };
             let rc = ReportContext {
@@ -753,6 +795,13 @@ impl App {
             lines.push(format!(
                 "tiles: {} visible, {} drawn ({} fallback, {} missing), {queued} queued, {reading} reading",
                 v.visible, v.drawn, v.fallbacks, v.missing
+            ));
+            lines.push(format!(
+                "labels: {} placed of {} candidates in {:.2} ms, {} glyphs in the atlas",
+                v.labels,
+                v.candidates,
+                v.label_time.as_secs_f64() * 1e3,
+                m.placer.atlas.len()
             ));
             lines.push(format!(
                 "cache: {} tiles, {:.1} / {:.0} MiB",

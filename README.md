@@ -53,4 +53,4 @@ cargo test --workspace
 
 ## License
 
-MIT or Apache-2.0, at your option.
+MIT or Apache-2.0, at your option. The bundled Noto Sans fonts are under the SIL Open Font License 1.1 ([crates/app/data/fonts/OFL.txt](crates/app/data/fonts/OFL.txt)).

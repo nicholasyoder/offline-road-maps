@@ -78,6 +78,8 @@ pub struct FrameSample {
     /// Every visible tile at the view's tile zoom is loaded.
     pub detailed: bool,
     pub cache_bytes: usize,
+    /// Label placement, part of `cpu`.
+    pub labels: Duration,
     pub bytes_read: u64,
 }
 
@@ -116,6 +118,7 @@ pub struct Bench {
     tiles: TileLog,
     intervals: Vec<f64>,
     cpu: Vec<f64>,
+    labels: Vec<f64>,
     startup_ms: Option<f64>,
     cache_peak: usize,
     bytes_read_start: u64,
@@ -142,6 +145,7 @@ impl Bench {
             tiles: TileLog::default(),
             intervals: Vec::new(),
             cpu: Vec::new(),
+            labels: Vec::new(),
             startup_ms: None,
             cache_peak: 0,
             bytes_read_start: 0,
@@ -212,6 +216,7 @@ impl Bench {
         let now = Instant::now();
         self.intervals.push(ms(f.interval));
         self.cpu.push(ms(f.cpu));
+        self.labels.push(ms(f.labels));
         self.cache_peak = self.cache_peak.max(f.cache_bytes);
         if f.detailed && self.startup_ms.is_none() {
             self.startup_ms = Some(ms(self.started.elapsed()));
@@ -303,6 +308,7 @@ impl Bench {
             frames: self.intervals.len(),
             interval_ms: Summary::of(&mut self.intervals),
             cpu_ms: Summary::of(&mut self.cpu),
+            labels_ms: Summary::of(&mut self.labels),
             tiles: TilesReport {
                 loaded: self.tiles.loaded,
                 absent: self.tiles.absent,
@@ -376,6 +382,8 @@ pub struct Report {
     pub interval_ms: Summary,
     /// Time in the app's frame code.
     pub cpu_ms: Summary,
+    /// Label placement, part of `cpu_ms`.
+    pub labels_ms: Summary,
     pub tiles: TilesReport,
     pub bytes_read: u64,
     pub rss_end: Option<u64>,
@@ -421,7 +429,7 @@ impl Report {
     pub fn summary(&self) -> String {
         let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
         let mut s = format!(
-            "{}: {} frames, interval p50 {:.2} / p95 {:.2} / max {:.1} ms, cpu p95 {:.2} ms\n\
+            "{}: {} frames, interval p50 {:.2} / p95 {:.2} / max {:.1} ms, cpu p95 {:.2} ms, labels p95 {:.2} ms\n\
              start-up {} ms; tiles {} loaded + {} absent, {} errors; latency p50 {:.2} / p95 {:.2} ms, read p95 {:.2} ms, decode p95 {:.2} ms, prepare p95 {:.2} ms\n\
              {:.1} MiB read; RSS peak {} MiB; cache peak {:.1} MiB of {:.0}\n",
             self.flight,
@@ -430,6 +438,7 @@ impl Report {
             self.interval_ms.p95,
             self.interval_ms.max,
             self.cpu_ms.p95,
+            self.labels_ms.p95,
             self.startup_ms.map_or("-".into(), |v| format!("{v:.0}")),
             self.tiles.loaded,
             self.tiles.absent,
@@ -492,6 +501,7 @@ mod tests {
             cpu: Duration::from_millis(1),
             detailed,
             cache_bytes: 10,
+            labels: Duration::ZERO,
             bytes_read: 100,
         }
     }
