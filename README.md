@@ -14,7 +14,7 @@ Plans and progress are in [docs/roadmap.md](docs/roadmap.md) and the per-phase p
 cargo run --release -p omp-app -- --pack $OMP_WORK/packs/ohio
 ```
 
-`$OMP_WORK` is `/media/nicholas/Data/maps-testing`; mount it with `udisksctl mount -b /dev/sda1` if it isn't there. Packs in `$OMP_WORK/packs/`: `delaware` (8 MiB, quick to load), `ohio` and `north-america` (6 GiB). Without `--pack` the app opens `maps/` next to the executable, else the pack used last. Ctrl+O opens the pack picker.
+`$OMP_WORK` is the builder's work directory (default `./data`); packs are built into `$OMP_WORK/packs/<region>` (see below). A small region such as Delaware is quick to build and load. Without `--pack` the app opens `maps/` next to the executable, else the pack used last. Ctrl+O opens the pack picker.
 
 Controls: drag to pan, scroll or double-click to zoom, arrow keys to pan, `+`/`-` to zoom, F3 for the debug overlay.
 
