@@ -1,5 +1,6 @@
 #!/bin/sh
-# Renders the reference screenshots (phase1-plan.md 1.5 and 1.6) from the North America pack.
+# Renders the reference screenshots (phase1-plan.md 1.5 and 1.6) from the North America pack,
+# with the built-in style.
 #
 #   docs/screenshots/render.sh [pack dir]
 #

@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use eframe::egui_wgpu::{self, wgpu};
@@ -17,7 +17,7 @@ use crate::loader::{self, Done, Loader};
 use crate::mesh;
 use crate::packs::{self, Opened};
 use crate::render::{self, GpuMesh, MapCallback, Renderer};
-use crate::style::Style;
+use crate::style::{Style, StyleFile};
 use crate::tiles::{self, Cover, Known, Resolved, TileId};
 
 /// Tile cache budget: the tiles' vertex data, which lives on the GPU (phase1-plan.md 1.4).
@@ -43,6 +43,10 @@ pub struct Startup {
     pub started: Instant,
     /// MSAA samples the window was created with.
     pub msaa: u32,
+    /// The style, and the file it comes from when that exists (`--style`, else `style.toml`
+    /// next to the executable).
+    pub style: StyleFile,
+    pub style_path: PathBuf,
 }
 
 enum TileData {
@@ -119,6 +123,12 @@ pub struct App {
     adapter: String,
     device: Option<wgpu::Device>,
     srgb: bool,
+    style: StyleFile,
+    style_path: PathBuf,
+    /// The style file's modification time when last read; debug builds reload it when it
+    /// changes.
+    style_mtime: Option<SystemTime>,
+    style_checked: Instant,
 }
 
 impl App {
@@ -155,6 +165,10 @@ impl App {
             adapter,
             device: rs.map(|rs| rs.device.clone()),
             srgb: rs.is_some_and(|rs| rs.target_format.is_srgb()),
+            style: s.style,
+            style_mtime: mtime(&s.style_path),
+            style_path: s.style_path,
+            style_checked: Instant::now(),
         };
         if let Some(p) = s.chosen {
             app.open(&cc.egui_ctx, &p);
@@ -189,24 +203,8 @@ impl App {
                 .push("No GPU device: the map cannot be drawn.".into());
             return;
         };
-        let style = Arc::new(Style::compile(&opened.schema));
-        let ctx2 = ctx.clone();
-        let st = style.clone();
-        let loader = Loader::new(
-            opened.reader.clone(),
-            loader::default_threads(),
-            move |_, tile| {
-                let m = mesh::build(&tile, &st);
-                let info = TileInfo {
-                    features: tile.layers.iter().map(|(_, l)| l.features.len()).sum(),
-                    vertices: tile.layers.iter().map(|(_, l)| l.vertices()).sum(),
-                    bytes: tile.bytes,
-                    failed: m.failed,
-                };
-                (Arc::new(GpuMesh::upload(&device, &m)), info)
-            },
-            move || ctx2.request_repaint(),
-        );
+        let style = compile_style(&self.style, &opened);
+        let loader = start_loader(&opened, &style, device, ctx);
         self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
         self.map = Some(MapState {
             opened,
@@ -225,6 +223,39 @@ impl App {
             m.camera.size = [f64::from(w[0]), f64::from(w[1])];
             m.fit_on_first_frame = false;
             b.start(&mut m.camera, m.opened.reader.bytes_read());
+        }
+    }
+
+    /// Debug builds: reads the style file again when it has changed, and redraws the map
+    /// with it. Checked once a second.
+    fn reload_style(&mut self, ctx: &egui::Context) {
+        const EVERY: Duration = Duration::from_secs(1);
+        if !cfg!(debug_assertions) || self.bench.is_some() {
+            return;
+        }
+        ctx.request_repaint_after(EVERY);
+        if self.style_checked.elapsed() < EVERY {
+            return;
+        }
+        self.style_checked = Instant::now();
+        let t = mtime(&self.style_path);
+        if t.is_none() || t == self.style_mtime {
+            return;
+        }
+        self.style_mtime = t;
+        match StyleFile::read(&self.style_path) {
+            Ok(f) => self.style = f,
+            Err(e) => {
+                self.notices.push(format!("Style not reloaded: {e}"));
+                return;
+            }
+        }
+        eprintln!("style: reloaded {}", self.style_path.display());
+        if let (Some(m), Some(device)) = (&mut self.map, self.device.clone()) {
+            // The meshes hold style IDs, so every tile is prepared again.
+            m.style = compile_style(&self.style, &m.opened);
+            m.loader = start_loader(&m.opened, &m.style, device, ctx);
+            m.cache = Cache::new(CACHE_BUDGET);
         }
     }
 
@@ -270,6 +301,44 @@ impl App {
             _ => self.save_config(),
         }
     }
+}
+
+fn mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+fn compile_style(file: &StyleFile, opened: &Opened) -> Arc<Style> {
+    let (style, warnings) = Style::compile(file, &opened.schema);
+    for w in warnings {
+        eprintln!("{w}");
+    }
+    Arc::new(style)
+}
+
+/// Loader threads that read, tessellate with `style` and upload the pack's tiles.
+fn start_loader(
+    opened: &Opened,
+    style: &Arc<Style>,
+    device: wgpu::Device,
+    ctx: &egui::Context,
+) -> Loader<(Arc<GpuMesh>, TileInfo)> {
+    let ctx = ctx.clone();
+    let style = style.clone();
+    Loader::new(
+        opened.reader.clone(),
+        loader::default_threads(),
+        move |_, tile| {
+            let m = mesh::build(&tile, &style);
+            let info = TileInfo {
+                features: tile.layers.iter().map(|(_, l)| l.features.len()).sum(),
+                vertices: tile.layers.iter().map(|(_, l)| l.vertices()).sum(),
+                bytes: tile.bytes,
+                failed: m.failed,
+            };
+            (Arc::new(GpuMesh::upload(&device, &m)), info)
+        },
+        move || ctx.request_repaint(),
+    )
 }
 
 impl MapState {
@@ -527,6 +596,7 @@ impl eframe::App for App {
         self.last_frame = Some(t0);
         let dt = interval.as_secs_f64().min(0.1);
         let ctx = ui.ctx().clone();
+        self.reload_style(&ctx);
 
         if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
             self.cfg.debug_overlay = !self.cfg.debug_overlay;

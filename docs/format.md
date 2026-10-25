@@ -2,7 +2,7 @@
 
 *Version 0.3 (draft), 2026-10-24. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom.*
 
-A **pack** holds everything the app needs for one region: map tiles, addresses, and later routing, search and style data. It is built by `omp-builder` and read by `omp-app`, usually from a USB flash drive. This document is the contract between the two.
+A **pack** holds everything the app needs for one region: map tiles, addresses, and later routing and search data. It is built by `omp-builder` and read by `omp-app`, usually from a USB flash drive. This document is the contract between the two.
 
 Status of each part:
 

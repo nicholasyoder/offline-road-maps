@@ -159,6 +159,10 @@ pub fn paints(style: &Style, zoom: f64, pixels_per_point: f32, srgb_target: bool
         .paints
         .iter()
         .map(|p| {
+            // Outside its zoom range: transparent, and lines of no width are not drawn.
+            if !p.shown_at(z) {
+                return GpuPaint::default();
+            }
             let width = p.width.at(z);
             let casing = p.casing_width.at(z);
             GpuPaint {

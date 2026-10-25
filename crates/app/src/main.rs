@@ -1,10 +1,10 @@
 //! Offline Road Maps viewer.
 //!
 //! ```text
-//! omp-app [--pack <dir>]
+//! omp-app [--pack <dir>] [--style <file>]
 //! omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
 //! omp-app --render --pack <dir> --center <lat,lon> --zoom <z> [--size <w>x<h>] [--scale <s>]
-//!         [--msaa <n>] <out.png>
+//!         [--msaa <n>] [--style <file>] <out.png>
 //! ```
 
 mod app;
@@ -27,15 +27,17 @@ use std::time::Instant;
 
 use eframe::egui;
 
-const USAGE: &str = "usage: omp-app [--pack <dir>]
+const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
        omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
        omp-app --render --pack <dir> --center <lat,lon> --zoom <z> [--size <w>x<h>] [--scale <s>]
-               [--msaa <n>] <out.png>
+               [--msaa <n>] [--style <file>] <out.png>
 
   --pack <dir>   open the pack in <dir> (or the first chunk file itself); default:
                  maps/ next to the executable, else the pack used last
   --bench <file> fly the path in <file> and write a JSON report, then exit
   --out <file>   where the bench report goes (default: bench-<flight name>.json)
+  --style <file> the map style; default: style.toml next to the executable, else the
+                 built-in style (debug builds reload it when it changes)
   --render       draw one view offscreen to <out.png>, without a window; --size in
                  pixels (default 1200x800), --scale in pixels per point (default 1),
                  --msaa 1 to turn antialiasing off";
@@ -51,6 +53,7 @@ struct Args {
     size: Option<String>,
     scale: Option<String>,
     msaa: Option<String>,
+    style: Option<PathBuf>,
     /// The PNG for `--render`.
     file: Option<PathBuf>,
 }
@@ -75,6 +78,7 @@ fn parse_args() -> Result<Args, String> {
             Some("--size") => a.size = Some(text(value("--size")?)),
             Some("--scale") => a.scale = Some(text(value("--scale")?)),
             Some("--msaa") => a.msaa = Some(text(value("--msaa")?)),
+            Some("--style") => a.style = Some(value("--style")?),
             Some("-h" | "--help") => return Err(String::new()),
             Some(s) if !s.starts_with('-') && a.file.is_none() => a.file = Some(s.into()),
             _ => return Err(format!("unknown argument {}", arg.to_string_lossy())),
@@ -95,19 +99,38 @@ fn main() -> ExitCode {
             return ExitCode::from(if e.is_empty() { 0 } else { 2 });
         }
     };
-    if args.render {
-        return render(&args);
-    }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.canonicalize().ok())
         .and_then(|p| p.parent().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
+    // --style, else style.toml next to the executable if there is one, else the built-in one.
+    let style_path = args
+        .style
+        .clone()
+        .unwrap_or_else(|| exe_dir.join(style::FILE));
+    let style = match args.style.is_some() || style_path.exists() {
+        true => style::StyleFile::read(&style_path),
+        false => Ok(style::StyleFile::builtin()),
+    };
+    if args.render {
+        return match style {
+            Ok(style) => render(&args, style),
+            Err(e) => {
+                eprintln!("render: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let config = config::Location::find(&exe_dir);
     let (cfg, _) = config.load();
 
     // --pack, else maps/ next to the executable, else the pack used last.
     let mut notices = Vec::new();
+    let style = style.unwrap_or_else(|e| {
+        notices.push(format!("{e}\nUsing the built-in style."));
+        style::StyleFile::builtin()
+    });
     let found = match &args.pack {
         Some(p) => {
             let f = packs::find(p);
@@ -190,6 +213,8 @@ fn main() -> ExitCode {
         bench,
         started,
         msaa,
+        style,
+        style_path,
     };
     let res = eframe::run_native(
         "Offline Road Maps",
@@ -205,7 +230,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn render(args: &Args) -> ExitCode {
+fn render(args: &Args, style: style::StyleFile) -> ExitCode {
     let (Some(pack), Some(center), Some(zoom), Some(file)) =
         (&args.pack, &args.center, &args.zoom, &args.file)
     else {
@@ -221,7 +246,7 @@ fn render(args: &Args) -> ExitCode {
         args.msaa.as_deref(),
         file.clone(),
     );
-    match snap.and_then(|s| s.run()) {
+    match snap.and_then(|s| snapshot::Snapshot { style, ..s }.run()) {
         Ok(msg) => {
             eprintln!("{msg}");
             ExitCode::SUCCESS

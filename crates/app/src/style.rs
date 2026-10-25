@@ -1,11 +1,22 @@
-//! What each layer and class looks like. For now a hard-coded table (phase1-plan.md 1.5);
-//! step 1.6 replaces it with a TOML style file.
+//! What each layer and class looks like: a TOML style file (phase1-plan.md 1.6).
 //!
-//! Rules name layers and classes; [`Style::compile`] resolves them through the pack's
-//! `SCHM`, so a class the pack does not have is skipped and one the style does not know is
-//! not drawn.
+//! The default style (`data/style.toml`) is compiled in; a `style.toml` next to the
+//! executable, or `--style <file>`, replaces it. [`StyleFile`] is the parsed and checked
+//! file, independent of any pack. Its rules name layers and classes, and [`Style::compile`]
+//! resolves them through the pack's `SCHM`, so a class the pack does not have is skipped
+//! with a warning and one the style does not name is not drawn.
+
+use std::path::Path;
 
 use omp_core::schema::Schema;
+use serde::Deserialize;
+
+/// The built-in style.
+pub const DEFAULT: &str = include_str!("../data/style.toml");
+/// The file next to the executable that replaces the built-in style.
+pub const FILE: &str = "style.toml";
+/// The style file version this app reads.
+const VERSION: u32 = 1;
 
 /// Where a feature is drawn. Polygons fill; lines are drawn as screen-width strokes, with a
 /// casing pass under the fill pass where the rule has a casing.
@@ -35,6 +46,18 @@ pub const LINE_PASSES: [Pass; 7] = [
     Pass::Roads,
     Pass::Bridges,
 ];
+/// The passes' names in the style file, in [`Pass`] order.
+const PASS_NAMES: [&str; PASSES] = [
+    "landcover",
+    "water",
+    "waterlines",
+    "boundaries",
+    "tunnels",
+    "rail",
+    "ferries",
+    "roads",
+    "bridges",
+];
 
 impl Pass {
     pub fn is_fill(self) -> bool {
@@ -49,24 +72,30 @@ impl Pass {
             .or_else(|| LINE_PASSES.iter().position(|&p| p == self))
             .unwrap_or(0)
     }
+
+    fn from_name(name: &str) -> Option<Self> {
+        let i = PASS_NAMES.iter().position(|&n| n == name)?;
+        FILL_PASSES
+            .into_iter()
+            .chain(LINE_PASSES)
+            .find(|&p| p as usize == i)
+    }
 }
 
 /// An RGBA colour, sRGB bytes with straight alpha.
 pub type Rgba = [u8; 4];
 
-const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
-    [r, g, b, 255]
-}
-
 /// A value that changes with zoom: linear between the stops, constant outside them.
-#[derive(Clone, Copy, Debug)]
-pub struct Stops(pub &'static [(f32, f32)]);
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stops(pub Vec<(f32, f32)>);
 
 impl Stops {
-    pub const ZERO: Stops = Stops(&[(0.0, 0.0)]);
+    pub fn zero() -> Self {
+        Self(vec![(0.0, 0.0)])
+    }
 
     pub fn at(&self, zoom: f32) -> f32 {
-        let s = self.0;
+        let s = &self.0;
         match s.iter().position(|&(z, _)| z > zoom) {
             None => s.last().map_or(0.0, |p| p.1),
             Some(0) => s[0].1,
@@ -79,183 +108,129 @@ impl Stops {
 }
 
 /// How one style ID is drawn. Widths are in points.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Paint {
     pub color: Rgba,
     pub width: Stops,
-    /// Total width of the casing, which is drawn under the line; zero for none.
+    /// Total width of the casing beyond the line, which is drawn under it; zero for none.
     pub casing_width: Stops,
     pub casing: Rgba,
     /// Dash and gap lengths in points, for the line and for its casing; zero for solid.
     pub dash: [f32; 2],
     pub casing_dash: [f32; 2],
+    /// Drawn from `minzoom` up to, not including, `maxzoom`.
+    pub minzoom: f32,
+    pub maxzoom: f32,
 }
 
 impl Paint {
-    const fn fill(color: Rgba) -> Self {
+    fn fill(color: Rgba) -> Self {
         Self {
             color,
-            width: Stops::ZERO,
-            casing_width: Stops::ZERO,
+            width: Stops::zero(),
+            casing_width: Stops::zero(),
             casing: [0; 4],
             dash: [0.0; 2],
             casing_dash: [0.0; 2],
+            minzoom: 0.0,
+            maxzoom: f32::INFINITY,
         }
     }
 
-    const fn line(color: Rgba, width: Stops) -> Self {
-        Self {
-            width,
-            ..Self::fill(color)
-        }
-    }
-
-    const fn cased(color: Rgba, width: Stops, casing: Rgba, casing_width: Stops) -> Self {
-        Self {
-            casing,
-            casing_width,
-            ..Self::line(color, width)
-        }
-    }
-
-    const fn dashed(self, dash: [f32; 2]) -> Self {
-        Self { dash, ..self }
-    }
-
-    /// A tunnel: the fill faded towards white, the casing dashed.
-    fn tunnel(self) -> Self {
-        let fade = |c: Rgba| {
-            let m = |v: u8| ((u16::from(v) + 255) / 2) as u8;
-            [m(c[0]), m(c[1]), m(c[2]), c[3]]
-        };
-        Self {
-            color: fade(self.color),
-            casing: fade(self.casing),
-            casing_dash: [3.0, 2.0],
-            ..self
-        }
-    }
-
-    /// A bridge: a dark casing, so it stands out over the roads below.
-    fn bridge(self) -> Self {
-        Self {
-            casing: rgb(90, 90, 90),
-            ..self
-        }
+    pub fn shown_at(&self, zoom: f32) -> bool {
+        (self.minzoom..self.maxzoom).contains(&zoom)
     }
 }
 
-/// The land colour each tile is drawn on.
-pub const LAND: Rgba = rgb(242, 239, 233);
+/// Text style for a class's labels, placed by step 1.7.
+#[allow(dead_code)] // Read by label placement (1.7).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Label {
+    /// The prop the text comes from.
+    pub prop: String,
+    pub font: Font,
+    /// Text size in points.
+    pub size: Stops,
+    pub color: Rgba,
+    pub halo: Rgba,
+    /// Halo width in points.
+    pub halo_width: f32,
+    /// Higher is placed first.
+    pub priority: i32,
+    pub placement: Placement,
+    pub minzoom: f32,
+    pub maxzoom: f32,
+}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Font {
+    Regular,
+    Italic,
+    Bold,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Placement {
+    /// At the feature's point, with candidate positions around it.
+    Point,
+    /// Along the line.
+    Line,
+}
+
+/// What is drawn on top of a class's geometry: its label, POI icon and route shields.
+#[allow(dead_code)] // Read by labels (1.7) and shields and icons (1.8).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Symbols {
+    pub label: Option<Label>,
+    /// The POI icon's name.
+    pub icon: Option<String>,
+    /// Route shields from the `routes` prop.
+    pub shields: bool,
+}
+
+/// One rule of a style file, checked and with its names resolved.
+#[derive(Clone, Debug)]
 struct Rule {
-    layer: &'static str,
-    class: &'static str,
+    layer: String,
+    classes: Vec<String>,
+    /// `None`: no geometry is drawn.
+    draw: Option<Draw>,
+    symbols: Symbols,
+}
+
+#[derive(Clone, Debug)]
+struct Draw {
     pass: Pass,
     paint: Paint,
+    /// Roads only: in a tunnel and on a bridge.
+    tunnel: Option<Paint>,
+    bridge: Option<Paint>,
 }
 
-const WATER: Rgba = rgb(166, 202, 232);
+/// A parsed and checked style file.
+#[derive(Clone, Debug)]
+pub struct StyleFile {
+    /// The colour each tile is drawn on.
+    land: Rgba,
+    rules: Vec<Rule>,
+}
 
-/// Road widths, by importance.
-#[rustfmt::skip]
-const W_MOTORWAY: Stops = Stops(&[(4.0, 0.8), (7.0, 1.6), (10.0, 3.0), (13.0, 6.0), (16.0, 14.0), (18.0, 30.0)]);
-#[rustfmt::skip]
-const W_TRUNK: Stops = Stops(&[(5.0, 0.7), (7.0, 1.3), (10.0, 2.6), (13.0, 5.5), (16.0, 13.0), (18.0, 28.0)]);
-#[rustfmt::skip]
-const W_PRIMARY: Stops = Stops(&[(7.0, 0.7), (10.0, 2.0), (13.0, 4.5), (16.0, 12.0), (18.0, 26.0)]);
-#[rustfmt::skip]
-const W_SECONDARY: Stops = Stops(&[(9.0, 0.7), (11.0, 1.6), (13.0, 3.6), (16.0, 10.0), (18.0, 24.0)]);
-#[rustfmt::skip]
-const W_TERTIARY: Stops = Stops(&[(10.0, 0.6), (12.0, 1.4), (14.0, 4.0), (16.0, 9.0), (18.0, 22.0)]);
-#[rustfmt::skip]
-const W_LINK: Stops = Stops(&[(10.0, 0.6), (13.0, 2.0), (16.0, 6.0), (18.0, 14.0)]);
-#[rustfmt::skip]
-const W_MINOR: Stops = Stops(&[(12.0, 0.5), (13.0, 1.2), (14.0, 2.5), (16.0, 7.0), (18.0, 18.0)]);
-#[rustfmt::skip]
-const W_SERVICE: Stops = Stops(&[(13.0, 0.4), (14.0, 1.0), (16.0, 3.5), (18.0, 9.0)]);
-/// Casings appear from about z8 for main roads and add about a point on each side.
-#[rustfmt::skip]
-const C_MAIN: Stops = Stops(&[(7.0, 0.0), (8.0, 1.2), (12.0, 2.0), (16.0, 3.0)]);
-#[rustfmt::skip]
-const C_MINOR: Stops = Stops(&[(12.0, 0.0), (13.0, 1.0), (16.0, 2.0)]);
-
-const MOTORWAY: Paint = Paint::cased(rgb(226, 82, 58), W_MOTORWAY, rgb(150, 40, 28), C_MAIN);
-const TRUNK: Paint = Paint::cased(rgb(240, 146, 74), W_TRUNK, rgb(160, 84, 34), C_MAIN);
-const PRIMARY: Paint = Paint::cased(rgb(250, 210, 96), W_PRIMARY, rgb(170, 130, 40), C_MAIN);
-const SECONDARY: Paint = Paint::cased(rgb(255, 240, 170), W_SECONDARY, rgb(170, 155, 105), C_MAIN);
-const TERTIARY: Paint = Paint::cased(rgb(255, 255, 255), W_TERTIARY, rgb(165, 165, 165), C_MINOR);
-const MINOR: Paint = Paint::cased(rgb(255, 255, 255), W_MINOR, rgb(185, 185, 185), C_MINOR);
-const SERVICE: Paint = Paint::cased(rgb(255, 255, 255), W_SERVICE, rgb(195, 195, 195), C_MINOR);
-const fn link(p: Paint) -> Paint {
-    Paint {
-        width: W_LINK,
-        casing_width: C_MINOR,
-        ..p
+impl StyleFile {
+    pub fn builtin() -> Self {
+        Self::parse(DEFAULT).expect("the built-in style parses")
     }
-}
 
-const fn r(layer: &'static str, class: &'static str, pass: Pass, paint: Paint) -> Rule {
-    Rule {
-        layer,
-        class,
-        pass,
-        paint,
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let f: file::File = toml::from_str(text).map_err(|e| e.to_string())?;
+        file::resolve(f)
     }
-}
 
-/// Road classes, least important first: that is their drawing order within a pass.
-const ROADS: &[(&str, Paint)] = &[
-    ("service_other", SERVICE),
-    ("service_drive_through", SERVICE),
-    ("service_parking_aisle", SERVICE),
-    ("service_driveway", SERVICE),
-    ("service_alley", SERVICE),
-    ("service", SERVICE),
-    ("living_street", MINOR),
-    ("residential", MINOR),
-    ("unclassified", MINOR),
-    ("tertiary_link", link(TERTIARY)),
-    ("secondary_link", link(SECONDARY)),
-    ("primary_link", link(PRIMARY)),
-    ("trunk_link", link(TRUNK)),
-    ("motorway_link", link(MOTORWAY)),
-    ("tertiary", TERTIARY),
-    ("secondary", SECONDARY),
-    ("primary", PRIMARY),
-    ("trunk", TRUNK),
-    ("motorway", MOTORWAY),
-];
-
-/// Everything but roads, in drawing order within each pass.
-#[rustfmt::skip]
-fn rules() -> Vec<Rule> {
-    use Pass::*;
-    let line = Paint::line;
-    vec![
-        r("landcover", "farmland", Landcover, Paint::fill(rgb(238, 240, 214))),
-        r("landcover", "residential", Landcover, Paint::fill(rgb(232, 228, 224))),
-        r("landcover", "commercial", Landcover, Paint::fill(rgb(240, 226, 224))),
-        r("landcover", "retail", Landcover, Paint::fill(rgb(240, 222, 220))),
-        r("landcover", "industrial", Landcover, Paint::fill(rgb(230, 224, 232))),
-        r("landcover", "forest", Landcover, Paint::fill(rgb(208, 228, 192))),
-        r("landcover", "wood", Landcover, Paint::fill(rgb(208, 228, 192))),
-        r("landcover", "protected_area", Landcover, Paint::fill([150, 200, 140, 70])),
-        r("landcover", "park", Landcover, Paint::fill(rgb(196, 230, 178))),
-        r("water", "ocean", Water, Paint::fill(WATER)),
-        r("water", "lake", Water, Paint::fill(WATER)),
-        r("water", "riverbank", Water, Paint::fill(WATER)),
-        r("waterways", "stream", WaterLines, line(WATER, Stops(&[(13.0, 0.6), (16.0, 1.5), (18.0, 3.0)]))),
-        r("waterways", "canal", WaterLines, line(WATER, Stops(&[(10.0, 0.6), (14.0, 2.0), (18.0, 6.0)]))),
-        r("waterways", "river", WaterLines, line(WATER, Stops(&[(8.0, 0.7), (12.0, 1.5), (14.0, 2.5), (18.0, 8.0)]))),
-        r("boundaries", "admin_8", Boundaries, line(rgb(196, 180, 196), Stops(&[(11.0, 0.6), (16.0, 1.2)])).dashed([3.0, 2.0])),
-        r("boundaries", "admin_6", Boundaries, line(rgb(186, 164, 186), Stops(&[(8.0, 0.6), (14.0, 1.4)])).dashed([5.0, 3.0])),
-        r("boundaries", "admin_4", Boundaries, line(rgb(166, 130, 170), Stops(&[(3.0, 0.7), (8.0, 1.4), (14.0, 2.2)])).dashed([8.0, 3.0])),
-        r("boundaries", "admin_2", Boundaries, line(rgb(140, 100, 150), Stops(&[(0.0, 0.8), (6.0, 1.6), (12.0, 2.8)]))),
-        r("rail", "rail_service", Rail, line(rgb(170, 170, 170), Stops(&[(13.0, 0.6), (16.0, 1.2)]))),
-        r("rail", "rail", Rail, line(rgb(150, 150, 150), Stops(&[(9.0, 0.6), (13.0, 1.2), (16.0, 2.0)]))),
-        r("ferries", "ferry", Ferries, line(rgb(90, 130, 200), Stops(&[(7.0, 0.7), (12.0, 1.2), (16.0, 1.8)])).dashed([6.0, 4.0])),
-    ]
+    pub fn read(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+    }
 }
 
 /// How one class of one layer is drawn.
@@ -273,8 +248,11 @@ pub struct ClassStyle {
 
 /// A style resolved against one pack's schema.
 pub struct Style {
-    /// Per layer ID, per class ID.
+    /// Per layer ID, per class ID: how its geometry is drawn.
     pub classes: Vec<Vec<Option<ClassStyle>>>,
+    /// Per layer ID, per class ID: its label, icon and shields.
+    #[allow(dead_code)] // Read by labels (1.7) and shields and icons (1.8).
+    pub symbols: Vec<Vec<Option<Symbols>>>,
     /// Per style ID. Style ID 0 is the land under each tile.
     pub paints: Vec<Paint>,
     /// Prop keys of the roads layer's `bridge` and `tunnel`.
@@ -295,58 +273,82 @@ pub struct RoadProps {
 pub const MAX_PAINTS: usize = 128;
 
 impl Style {
-    pub fn compile(schema: &Schema) -> Self {
-        let mut classes: Vec<Vec<Option<ClassStyle>>> = schema
-            .layers
-            .iter()
-            .map(|l| vec![None; l.classes.len()])
-            .collect();
-        let mut paints = vec![Paint::fill(LAND)];
-        let mut add = |p: Paint| {
-            paints.push(p);
-            (paints.len() - 1) as u16
-        };
-        let mut set = |layer: &str, class: &str, cs: ClassStyle| {
-            if let Some((l, layer)) = schema.layer(layer)
-                && let Some(c) = layer.class(class)
-            {
-                classes[l as usize][c as usize] = Some(cs);
+    /// Resolves `file` against `schema`. Also returns warnings: rules for layers and classes
+    /// the pack does not have, and rules past the paint table's size.
+    pub fn compile(file: &StyleFile, schema: &Schema) -> (Self, Vec<String>) {
+        let mut classes: Vec<Vec<Option<ClassStyle>>> = empty(schema);
+        let mut symbols: Vec<Vec<Option<Symbols>>> = empty(schema);
+        let mut paints = vec![Paint::fill(file.land)];
+        let mut warnings = Vec::new();
+        for (order, rule) in file.rules.iter().enumerate() {
+            let Some((l, layer)) = schema.layer(&rule.layer) else {
+                warnings.push(format!("style: the pack has no layer {}", rule.layer));
+                continue;
+            };
+            let ids: Vec<u16> = rule
+                .classes
+                .iter()
+                .filter_map(|c| {
+                    let id = layer.class(c);
+                    if id.is_none() {
+                        warnings.push(format!("style: the pack has no class {}/{c}", rule.layer));
+                    }
+                    id
+                })
+                .collect();
+            if ids.is_empty() {
+                continue;
             }
-        };
-        for (order, rule) in rules().into_iter().enumerate() {
-            let cs = ClassStyle {
-                pass: rule.pass,
-                order: order as u16,
-                paint: add(rule.paint),
-                tunnel: None,
-                bridge: None,
+            let cs = match &rule.draw {
+                Some(d) => {
+                    let n = 1 + usize::from(d.tunnel.is_some()) + usize::from(d.bridge.is_some());
+                    if paints.len() + n > MAX_PAINTS {
+                        warnings.push(format!(
+                            "style: more than {MAX_PAINTS} paints; {}/{} is not drawn",
+                            rule.layer, rule.classes[0]
+                        ));
+                        None
+                    } else {
+                        let mut add = |p: &Paint| {
+                            paints.push(p.clone());
+                            (paints.len() - 1) as u16
+                        };
+                        Some(ClassStyle {
+                            pass: d.pass,
+                            order: order as u16,
+                            paint: add(&d.paint),
+                            tunnel: d.tunnel.as_ref().map(&mut add),
+                            bridge: d.bridge.as_ref().map(&mut add),
+                        })
+                    }
+                }
+                None => None,
             };
-            set(rule.layer, rule.class, cs);
-        }
-        for (order, &(class, paint)) in ROADS.iter().enumerate() {
-            let cs = ClassStyle {
-                pass: Pass::Roads,
-                order: order as u16,
-                paint: add(paint),
-                tunnel: Some(add(paint.tunnel())),
-                bridge: Some(add(paint.bridge())),
-            };
-            set("roads", class, cs);
+            let sym = (rule.symbols != Symbols::default()).then(|| rule.symbols.clone());
+            for c in ids {
+                let (l, c) = (l as usize, c as usize);
+                if cs.is_some() {
+                    classes[l][c] = cs;
+                }
+                if sym.is_some() {
+                    symbols[l][c] = sym.clone();
+                }
+            }
         }
         let pass_cap = pass_caps(schema, &classes);
-        debug_assert!(paints.len() <= MAX_PAINTS);
-        paints.truncate(MAX_PAINTS);
         let roads = schema.layer("roads").map(|(id, l)| RoadProps {
             layer: id,
             bridge: l.prop("bridge"),
             tunnel: l.prop("tunnel"),
         });
-        Self {
+        let style = Self {
             classes,
+            symbols,
             paints,
             roads,
             pass_cap,
-        }
+        };
+        (style, warnings)
     }
 
     /// The cap zooms below `z` that some pass is drawn from.
@@ -369,6 +371,15 @@ impl Style {
             .get(class as usize)?
             .as_ref()
     }
+}
+
+/// A `None` per class of each layer.
+fn empty<T: Clone>(schema: &Schema) -> Vec<Vec<Option<T>>> {
+    schema
+        .layers
+        .iter()
+        .map(|l| vec![None; l.classes.len()])
+        .collect()
 }
 
 /// A pass is capped when every layer drawn in it has the same `maxzoom`. A pass that mixes
@@ -400,38 +411,397 @@ fn pass_caps(schema: &Schema, classes: &[Vec<Option<ClassStyle>>]) -> [Option<u8
     })
 }
 
+/// The style file as written, and its checks.
+mod file {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct File {
+        version: u32,
+        land: String,
+        #[serde(default)]
+        colors: BTreeMap<String, String>,
+        #[serde(default)]
+        widths: BTreeMap<String, Num>,
+        #[serde(default)]
+        tunnel: Variant,
+        #[serde(default)]
+        bridge: Variant,
+        #[serde(default, rename = "rule")]
+        rules: Vec<RuleFile>,
+    }
+
+    /// A number, zoom stops, or a name from `[widths]`.
+    #[derive(Clone, Deserialize)]
+    #[serde(untagged)]
+    enum Num {
+        One(f32),
+        Stops(Vec<(f32, f32)>),
+        Name(String),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Names {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    #[derive(Clone, Default, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Variant {
+        /// How far the line's and casing's colours move towards white, 0–1.
+        fade: Option<f32>,
+        color: Option<String>,
+        casing: Option<String>,
+        dash: Option<[f32; 2]>,
+        casing_dash: Option<[f32; 2]>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RuleFile {
+        layer: String,
+        class: Names,
+        pass: Option<String>,
+        color: Option<String>,
+        width: Option<Num>,
+        casing: Option<String>,
+        casing_width: Option<Num>,
+        dash: Option<[f32; 2]>,
+        casing_dash: Option<[f32; 2]>,
+        minzoom: Option<f32>,
+        maxzoom: Option<f32>,
+        tunnel: Option<Variant>,
+        bridge: Option<Variant>,
+        label: Option<LabelFile>,
+        icon: Option<String>,
+        #[serde(default)]
+        shields: bool,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LabelFile {
+        prop: Option<String>,
+        font: Option<Font>,
+        size: Option<Num>,
+        color: Option<String>,
+        halo: Option<String>,
+        halo_width: Option<f32>,
+        priority: Option<i32>,
+        placement: Option<Placement>,
+        minzoom: Option<f32>,
+        maxzoom: Option<f32>,
+    }
+
+    struct Lookup<'a> {
+        colors: &'a BTreeMap<String, String>,
+        widths: &'a BTreeMap<String, Num>,
+    }
+
+    impl Lookup<'_> {
+        fn color(&self, s: &str) -> Result<Rgba, String> {
+            let hex = match s.starts_with('#') {
+                true => s,
+                false => self
+                    .colors
+                    .get(s)
+                    .ok_or_else(|| format!("unknown colour {s:?}"))?,
+            };
+            parse_hex(hex).ok_or_else(|| format!("bad colour {s:?}: want #rrggbb or #rrggbbaa"))
+        }
+
+        fn stops(&self, n: &Num) -> Result<Stops, String> {
+            let s = match n {
+                Num::One(v) => vec![(0.0, *v)],
+                Num::Stops(s) => s.clone(),
+                Num::Name(name) => match self.widths.get(name) {
+                    Some(Num::Name(_)) => return Err(format!("width {name:?} names another")),
+                    Some(n) => return self.stops(n),
+                    None => return Err(format!("unknown width {name:?}")),
+                },
+            };
+            if s.is_empty() {
+                return Err("empty list of stops".into());
+            }
+            if s.windows(2).any(|w| w[0].0 >= w[1].0) {
+                return Err("stops must go up in zoom".into());
+            }
+            if s.iter()
+                .any(|&(z, v)| !z.is_finite() || !v.is_finite() || v < 0.0)
+            {
+                return Err("stops must be finite and not negative".into());
+            }
+            Ok(Stops(s))
+        }
+    }
+
+    fn parse_hex(s: &str) -> Option<Rgba> {
+        let h = s.strip_prefix('#').filter(|h| h.is_ascii())?;
+        let byte = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();
+        match h.len() {
+            6 => Some([byte(0)?, byte(2)?, byte(4)?, 255]),
+            8 => Some([byte(0)?, byte(2)?, byte(4)?, byte(6)?]),
+            _ => None,
+        }
+    }
+
+    fn zooms(min: Option<f32>, max: Option<f32>) -> Result<(f32, f32), String> {
+        let (min, max) = (min.unwrap_or(0.0), max.unwrap_or(f32::INFINITY));
+        if min.is_nan() || max.is_nan() || min >= max {
+            return Err("minzoom must be below maxzoom".into());
+        }
+        Ok((min, max))
+    }
+
+    pub fn resolve(f: File) -> Result<StyleFile, String> {
+        if f.version != VERSION {
+            return Err(format!(
+                "style version {} is not supported (this app reads {VERSION})",
+                f.version
+            ));
+        }
+        let n = Lookup {
+            colors: &f.colors,
+            widths: &f.widths,
+        };
+        let land = n.color(&f.land).map_err(|e| format!("land: {e}"))?;
+        let mut rules = Vec::with_capacity(f.rules.len());
+        for (i, r) in f.rules.into_iter().enumerate() {
+            let classes = match &r.class {
+                Names::One(c) => vec![c.clone()],
+                Names::Many(cs) => cs.clone(),
+            };
+            let what = format!(
+                "rule {} ({}/{})",
+                i + 1,
+                r.layer,
+                classes.first().map_or("", String::as_str)
+            );
+            let err = |e: String| format!("{what}: {e}");
+            if classes.is_empty() {
+                return Err(err("no class".into()));
+            }
+            let draw = rule_draw(&r, &f.tunnel, &f.bridge, &n).map_err(err)?;
+            let label = match r.label {
+                Some(l) => Some(label(l, &n).map_err(|e| err(format!("label: {e}")))?),
+                None => None,
+            };
+            let symbols = Symbols {
+                label,
+                icon: r.icon,
+                shields: r.shields,
+            };
+            if draw.is_none() && symbols == Symbols::default() {
+                return Err(err(
+                    "draws nothing: give it a pass, a label or an icon".into()
+                ));
+            }
+            rules.push(Rule {
+                layer: r.layer,
+                classes,
+                draw,
+                symbols,
+            });
+        }
+        Ok(StyleFile { land, rules })
+    }
+
+    fn rule_draw(
+        r: &RuleFile,
+        tunnel: &Variant,
+        bridge: &Variant,
+        n: &Lookup,
+    ) -> Result<Option<Draw>, String> {
+        let Some(pass_name) = &r.pass else {
+            let drawn = r.color.is_some() || r.width.is_some() || r.casing.is_some();
+            return match drawn {
+                true => Err("a colour or width needs a pass".into()),
+                false => Ok(None),
+            };
+        };
+        let pass = Pass::from_name(pass_name).ok_or_else(|| {
+            format!(
+                "unknown pass {pass_name:?}; passes are {}",
+                PASS_NAMES.join(", ")
+            )
+        })?;
+        let color = n.color(r.color.as_deref().ok_or("needs a color")?)?;
+        let (minzoom, maxzoom) = zooms(r.minzoom, r.maxzoom)?;
+        let mut paint = Paint {
+            minzoom,
+            maxzoom,
+            ..Paint::fill(color)
+        };
+        if pass.is_fill() {
+            if r.width.is_some() || r.casing.is_some() || r.dash.is_some() {
+                return Err(format!(
+                    "pass {pass_name} fills: it takes no width, casing or dash"
+                ));
+            }
+        } else {
+            paint.width = n.stops(r.width.as_ref().ok_or("a line needs a width")?)?;
+            if let Some(c) = &r.casing {
+                paint.casing = n.color(c)?;
+                let w = r
+                    .casing_width
+                    .as_ref()
+                    .ok_or("a casing needs a casing_width")?;
+                paint.casing_width = n.stops(w)?;
+            } else if r.casing_width.is_some() {
+                return Err("casing_width needs a casing colour".into());
+            }
+            paint.dash = dash(r.dash)?;
+            paint.casing_dash = dash(r.casing_dash)?;
+        }
+        let variant = |global: &Variant, own: &Option<Variant>| {
+            let own = own.clone().unwrap_or_default();
+            apply(&paint, &merge(global, &own), n)
+        };
+        let (tunnel, bridge) = match pass {
+            Pass::Roads => (
+                Some(variant(tunnel, &r.tunnel)?),
+                Some(variant(bridge, &r.bridge)?),
+            ),
+            _ if r.tunnel.is_some() || r.bridge.is_some() => {
+                return Err("tunnel and bridge apply to the roads pass only".into());
+            }
+            _ => (None, None),
+        };
+        Ok(Some(Draw {
+            pass,
+            paint,
+            tunnel,
+            bridge,
+        }))
+    }
+
+    fn dash(d: Option<[f32; 2]>) -> Result<[f32; 2], String> {
+        match d {
+            None => Ok([0.0; 2]),
+            Some(d) if d.iter().all(|v| v.is_finite() && *v > 0.0) => Ok(d),
+            Some(_) => Err("a dash is [dash, gap], both above zero".into()),
+        }
+    }
+
+    fn merge(global: &Variant, own: &Variant) -> Variant {
+        Variant {
+            fade: own.fade.or(global.fade),
+            color: own.color.clone().or_else(|| global.color.clone()),
+            casing: own.casing.clone().or_else(|| global.casing.clone()),
+            dash: own.dash.or(global.dash),
+            casing_dash: own.casing_dash.or(global.casing_dash),
+        }
+    }
+
+    /// `base` changed by `v`: first its colours faded, then any colours and dashes it sets.
+    fn apply(base: &Paint, v: &Variant, n: &Lookup) -> Result<Paint, String> {
+        let mut p = base.clone();
+        if let Some(f) = v.fade {
+            if !(0.0..=1.0).contains(&f) {
+                return Err("fade must be from 0 to 1".into());
+            }
+            let fade = |c: Rgba| {
+                let m = |v: u8| (f32::from(v) + (255.0 - f32::from(v)) * f).round() as u8;
+                [m(c[0]), m(c[1]), m(c[2]), c[3]]
+            };
+            p.color = fade(p.color);
+            p.casing = fade(p.casing);
+        }
+        if let Some(c) = &v.color {
+            p.color = n.color(c)?;
+        }
+        if let Some(c) = &v.casing {
+            p.casing = n.color(c)?;
+        }
+        if v.dash.is_some() {
+            p.dash = dash(v.dash)?;
+        }
+        if v.casing_dash.is_some() {
+            p.casing_dash = dash(v.casing_dash)?;
+        }
+        Ok(p)
+    }
+
+    fn label(l: LabelFile, n: &Lookup) -> Result<Label, String> {
+        let (minzoom, maxzoom) = zooms(l.minzoom, l.maxzoom)?;
+        Ok(Label {
+            prop: l.prop.unwrap_or_else(|| "name".into()),
+            font: l.font.unwrap_or(Font::Regular),
+            size: n.stops(l.size.as_ref().unwrap_or(&Num::One(12.0)))?,
+            color: n.color(l.color.as_deref().unwrap_or("#333333"))?,
+            halo: n.color(l.halo.as_deref().unwrap_or("#ffffffd9"))?,
+            halo_width: l.halo_width.unwrap_or(1.5),
+            priority: l.priority.unwrap_or(0),
+            placement: l.placement.unwrap_or(Placement::Point),
+            minzoom,
+            maxzoom,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omp_core::whitelist::{DEFAULT, Whitelist};
+    use omp_core::whitelist::{DEFAULT as WHITELIST, Whitelist};
 
-    #[test]
-    fn stops_interpolate_and_clamp() {
-        let s = Stops(&[(10.0, 1.0), (12.0, 3.0)]);
-        assert_eq!(s.at(5.0), 1.0);
-        assert_eq!(s.at(11.0), 2.0);
-        assert_eq!(s.at(20.0), 3.0);
-        assert_eq!(Stops::ZERO.at(3.0), 0.0);
+    fn schema() -> Schema {
+        Schema::from_whitelist(&Whitelist::parse(WHITELIST).unwrap())
     }
 
     #[test]
-    fn every_drawn_class_in_the_whitelist_has_a_style() {
-        let schema = Schema::from_whitelist(&Whitelist::parse(DEFAULT).unwrap());
-        let style = Style::compile(&schema);
+    fn stops_interpolate_and_clamp() {
+        let s = Stops(vec![(10.0, 1.0), (12.0, 3.0)]);
+        assert_eq!(s.at(5.0), 1.0);
+        assert_eq!(s.at(11.0), 2.0);
+        assert_eq!(s.at(20.0), 3.0);
+        assert_eq!(Stops::zero().at(3.0), 0.0);
+    }
+
+    #[test]
+    fn the_default_style_covers_every_class_in_the_whitelist() {
+        let schema = schema();
+        let (style, warnings) = Style::compile(&StyleFile::builtin(), &schema);
+        assert!(warnings.is_empty(), "{warnings:?}");
         for (l, layer) in schema.layers.iter().enumerate() {
-            let drawn = matches!(
+            let geometry = matches!(
                 layer.name.as_str(),
                 "roads" | "ferries" | "rail" | "water" | "waterways" | "landcover" | "boundaries"
             );
+            let labelled = matches!(layer.name.as_str(), "places" | "labels" | "pois");
             for (c, class) in layer.classes.iter().enumerate() {
-                let styled = style.class(l as u8, c as u16).is_some();
                 // Classes kept out of tiles need no style.
-                let wanted = drawn && !matches!(class.name.as_str(), "admin_9" | "admin_10");
-                assert_eq!(styled, wanted, "{}/{}", layer.name, class.name);
+                let in_tiles = !matches!(
+                    class.name.as_str(),
+                    "admin_9" | "admin_10" | "isolated_dwelling"
+                ) && layer.name != "addresses";
+                let name = format!("{}/{}", layer.name, class.name);
+                let styled = style.class(l as u8, c as u16).is_some();
+                assert_eq!(styled, geometry && in_tiles, "{name}");
+                let sym = style.symbols[l][c].as_ref();
+                if labelled && in_tiles {
+                    assert!(sym.is_some(), "{name} has no label or icon");
+                }
+                if layer.name == "pois" {
+                    assert!(sym.unwrap().icon.is_some(), "{name} has no icon");
+                }
             }
         }
         let roads = style.roads.unwrap();
         assert!(roads.bridge.is_some() && roads.tunnel.is_some());
+        let (rl, motorway) = schema
+            .layer("roads")
+            .and_then(|(l, layer)| Some((l, layer.class("motorway")?)))
+            .unwrap();
+        let sym = style.symbols[rl as usize][motorway as usize]
+            .as_ref()
+            .unwrap();
+        assert!(sym.shields);
+        assert_eq!(sym.label.as_ref().unwrap().placement, Placement::Line);
         // The default whitelist caps land cover and water areas at z13, not the waterways.
         assert_eq!(style.pass_cap[Pass::Landcover as usize], Some(13));
         assert_eq!(style.pass_cap[Pass::Water as usize], Some(13));
@@ -439,5 +809,91 @@ mod tests {
         assert_eq!(style.caps_below(14), vec![13]);
         assert!(style.caps_below(13).is_empty());
         assert!(style.paints.len() <= MAX_PAINTS);
+    }
+
+    const SMALL: &str = r##"
+        version = 1
+        land = "#f0f0f0"
+        [colors]
+        red = "#ff000080"
+        [widths]
+        main = [[5, 1], [10, 3.5]]
+        [tunnel]
+        fade = 0.5
+        casing_dash = [3, 2]
+        [bridge]
+        casing = "#000000"
+        [[rule]]
+        layer = "roads"
+        class = ["motorway", "trunk", "no_such_class"]
+        pass = "roads"
+        color = "red"
+        width = "main"
+        casing = "#808080"
+        casing_width = 2
+        minzoom = 4
+        bridge = { casing = "#111111" }
+        label = { placement = "line", priority = 7 }
+        shields = true
+        [[rule]]
+        layer = "no_such_layer"
+        class = "x"
+        icon = "x"
+    "##;
+
+    #[test]
+    fn a_style_file_resolves_names_variants_and_defaults() {
+        let f = StyleFile::parse(SMALL).unwrap();
+        assert_eq!(f.land, [240, 240, 240, 255]);
+        let d = f.rules[0].draw.as_ref().unwrap();
+        assert_eq!(d.pass, Pass::Roads);
+        assert_eq!(d.paint.color, [255, 0, 0, 128]);
+        assert_eq!(d.paint.width.at(7.5), 2.25);
+        assert_eq!(d.paint.casing_width.at(20.0), 2.0);
+        assert!(!d.paint.shown_at(3.9) && d.paint.shown_at(4.0) && d.paint.shown_at(30.0));
+        let t = d.tunnel.as_ref().unwrap();
+        assert_eq!(t.color, [255, 128, 128, 128]);
+        assert_eq!(t.casing, [192, 192, 192, 255]);
+        assert_eq!(t.casing_dash, [3.0, 2.0]);
+        assert_eq!(d.bridge.as_ref().unwrap().casing, [17, 17, 17, 255]);
+        let l = f.rules[0].symbols.label.as_ref().unwrap();
+        assert_eq!(
+            (l.prop.as_str(), l.font, l.priority),
+            ("name", Font::Regular, 7)
+        );
+        assert_eq!(l.size.at(10.0), 12.0);
+
+        let schema = schema();
+        let (style, warnings) = Style::compile(&f, &schema);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        let (rl, layer) = schema.layer("roads").unwrap();
+        let motorway = style.class(rl, layer.class("motorway").unwrap()).unwrap();
+        let trunk = style.class(rl, layer.class("trunk").unwrap()).unwrap();
+        assert_eq!(motorway.paint, trunk.paint);
+        assert!(style.class(rl, layer.class("primary").unwrap()).is_none());
+        // Land, the rule's paint, its tunnel and its bridge.
+        assert_eq!(style.paints.len(), 4);
+    }
+
+    #[test]
+    fn style_file_errors_name_the_rule() {
+        let bad = |from: &str, to: &str| {
+            let text = SMALL.replacen(from, to, 1);
+            assert_ne!(text, SMALL, "{from}");
+            StyleFile::parse(&text).unwrap_err()
+        };
+        assert!(bad("version = 1", "version = 2").contains("version 2"));
+        let e = bad("color = \"red\"", "color = \"blue\"");
+        assert!(
+            e.contains("rule 1 (roads/motorway)") && e.contains("\"blue\""),
+            "{e}"
+        );
+        assert!(bad("pass = \"roads\"", "pass = \"road\"").contains("unknown pass"));
+        assert!(bad("[[5, 1], [10", "[[10, 1], [5").contains("go up"));
+        assert!(bad("#ff000080", "#ff00").contains("bad colour"));
+        assert!(bad("minzoom = 4", "minzoom = 4\nmaxzoom = 3").contains("minzoom"));
+        assert!(bad("shields = true", "shield = true").contains("unknown field"));
+        assert!(bad("icon = \"x\"", "").contains("draws nothing"));
+        assert!(bad("casing = \"#808080\"\n", "").contains("casing colour"));
     }
 }

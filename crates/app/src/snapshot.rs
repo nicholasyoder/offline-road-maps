@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use crate::camera::Camera;
 use crate::render::{self, GpuMesh, Renderer};
-use crate::style::Style;
+use crate::style::{Style, StyleFile};
 use crate::tiles::{self, Known, TileId};
 use crate::{loader, mesh, packs};
 
@@ -23,6 +23,7 @@ pub struct Snapshot {
     pub size: [u32; 2],
     pub pixels_per_point: f32,
     pub msaa: u32,
+    pub style: StyleFile,
     pub out: PathBuf,
 }
 
@@ -63,6 +64,7 @@ impl Snapshot {
             size,
             pixels_per_point: scale.map_or(Ok(1.0), |s| num(s, "scale"))?.clamp(0.25, 8.0) as f32,
             msaa: render::samples(msaa.map(|s| num(s, "msaa")).transpose()?.map(|v| v as u32)),
+            style: StyleFile::builtin(),
             out,
         })
     }
@@ -75,7 +77,10 @@ impl Snapshot {
             .next()
             .ok_or_else(|| format!("no pack (*.omp.000) in {}", self.pack.display()))?;
         let opened = packs::open(&first)?;
-        let style = Style::compile(&opened.schema);
+        let (style, warnings) = Style::compile(&self.style, &opened.schema);
+        for w in warnings {
+            eprintln!("{w}");
+        }
         let ppp = f64::from(self.pixels_per_point);
         let mut cam = Camera::new(opened.bounds);
         cam.size = self.size.map(|v| f64::from(v) / ppp);

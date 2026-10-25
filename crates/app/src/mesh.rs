@@ -161,6 +161,7 @@ pub fn build(tile: &Tile, style: &Style) -> Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::StyleFile;
     use omp_core::schema::Schema;
     use omp_core::tile::{Enc, Geom, Layer, encode_layer};
     use omp_core::whitelist::{DEFAULT, Whitelist};
@@ -201,7 +202,7 @@ mod tests {
     #[test]
     fn builds_fills_and_lines_by_pass() {
         let schema = Schema::from_whitelist(&Whitelist::parse(DEFAULT).unwrap());
-        let style = Style::compile(&schema);
+        let (style, _) = Style::compile(&StyleFile::builtin(), &schema);
         let square =
             |x0: i32, y0: i32, s: i32| vec![[x0, y0], [x0 + s, y0], [x0 + s, y0 + s], [x0, y0 + s]];
         // A lake with an island, and a park.

@@ -1,0 +1,460 @@
+# The default map style (phase1-plan.md 1.6): a road atlas look, after Streets & Trips. Pale
+# land, soft greens, blue water, and a strong road hierarchy so main routes stand out.
+#
+# Compiled into the app. A `style.toml` next to the executable (or `--style <file>`) replaces
+# it; debug builds reload that file when it changes.
+#
+# Layers and classes are named as in the pack's schema (crates/core/data/whitelist.toml). A
+# rule whose layer or class the pack lacks is skipped with a warning; a class no rule names
+# is not drawn.
+#
+# Colours are "#rrggbb" or "#rrggbbaa", or a name from [colors]. Widths are in points: a
+# number, a list of [zoom, width] stops (linear between them, constant outside), or a name
+# from [widths].
+#
+# Each [[rule]] styles one or more classes of one layer:
+#   layer, class      the layer, and a class or a list of classes;
+#   pass              where it is drawn, bottom to top: landcover, water (fills), waterlines,
+#                     boundaries, tunnels, rail, ferries, roads, bridges (lines). Within a
+#                     pass, rules draw in file order. Roads in a tunnel or on a bridge move
+#                     to the tunnels or bridges pass, styled by [tunnel] and [bridge];
+#   color             fill or line colour;
+#   width             line width; casing, casing_width: the casing drawn under the line and
+#                     its total width beyond the line (both sides together);
+#   dash, casing_dash [dash, gap] in points;
+#   minzoom, maxzoom  drawn from minzoom up to, not including, maxzoom;
+#   tunnel, bridge    overrides of [tunnel] and [bridge] for this rule;
+#   label             { prop = "name", font = "regular" | "italic" | "bold", size, color,
+#                     halo, halo_width, priority, placement = "point" | "line", minzoom,
+#                     maxzoom }: higher priority is placed first (step 1.7);
+#   icon              the POI icon's name (step 1.8);
+#   shields           true: route shields from the `routes` prop (step 1.8).
+# A rule without `pass` draws no geometry (labels and icons only).
+
+version = 1
+land = "#f4f1e8"
+
+[colors]
+water = "#a9cbe6"
+water_label = "#4a78a8"
+forest = "#d3e5bf"
+park = "#c3e1ae"
+text = "#333333"
+halo = "#ffffffd9"
+
+[widths]
+motorway = [[4, 0.8], [6, 1.3], [8, 2.0], [10, 3.0], [13, 6.0], [16, 14.0], [18, 30.0]]
+trunk = [[5, 0.7], [7, 1.3], [10, 2.5], [13, 5.5], [16, 13.0], [18, 28.0]]
+primary = [[7, 0.6], [9, 1.0], [10, 1.4], [12, 2.6], [13, 4.0], [16, 12.0], [18, 26.0]]
+secondary = [[9, 0.5], [10, 0.7], [11, 1.1], [12, 2.0], [13, 3.4], [16, 10.0], [18, 24.0]]
+tertiary = [[10, 0.5], [12, 1.2], [14, 4.0], [16, 9.0], [18, 22.0]]
+link = [[10, 0.6], [13, 2.0], [16, 6.0], [18, 14.0]]
+minor = [[12, 0.5], [13, 1.0], [14, 2.5], [16, 7.0], [18, 18.0]]
+service = [[13, 0.4], [14, 1.0], [16, 3.5], [18, 9.0]]
+# Casings add about a point on each side: from z8 for motorways and trunk roads, from z10
+# for primary and secondary roads (earlier, they darken the whole grid), from z13 for the
+# rest.
+casing_motorway = [[7, 0.0], [8, 1.0], [12, 2.0], [15, 3.0], [18, 4.0]]
+casing_main = [[9.5, 0.0], [10.5, 1.0], [13, 2.0], [15, 3.0], [18, 4.0]]
+casing_minor = [[12, 0.0], [13, 1.0], [15, 2.0], [18, 3.0]]
+
+# A road in a tunnel: its colours faded halfway to white, the casing dashed.
+[tunnel]
+fade = 0.5
+casing_dash = [3, 2]
+
+# A road on a bridge: a dark casing, so it stands out over the roads below.
+[bridge]
+casing = "#5a5a5a"
+
+# --- Land cover, bottom first ---
+
+[[rule]]
+layer = "landcover"
+class = "farmland"
+pass = "landcover"
+color = "#eeefd8"
+
+[[rule]]
+layer = "landcover"
+class = "residential"
+pass = "landcover"
+color = "#ebe7e0"
+
+[[rule]]
+layer = "landcover"
+class = ["commercial", "retail"]
+pass = "landcover"
+color = "#f0e4df"
+
+[[rule]]
+layer = "landcover"
+class = "industrial"
+pass = "landcover"
+color = "#e7e1e8"
+
+[[rule]]
+layer = "landcover"
+class = ["forest", "wood"]
+pass = "landcover"
+color = "forest"
+
+# National parks and other protected areas: large, so only a light green wash.
+[[rule]]
+layer = "landcover"
+class = "protected_area"
+pass = "landcover"
+color = "#8cc47c40"
+
+[[rule]]
+layer = "landcover"
+class = "park"
+pass = "landcover"
+color = "park"
+
+# --- Water ---
+
+[[rule]]
+layer = "water"
+class = ["ocean", "lake", "riverbank"]
+pass = "water"
+color = "water"
+
+[[rule]]
+layer = "waterways"
+class = "stream"
+pass = "waterlines"
+color = "water"
+width = [[13, 0.6], [16, 1.5], [18, 3.0]]
+label = { font = "italic", size = 10, color = "water_label", priority = 5, placement = "line", minzoom = 14 }
+
+[[rule]]
+layer = "waterways"
+class = "canal"
+pass = "waterlines"
+color = "water"
+width = [[10, 0.6], [14, 2.0], [18, 6.0]]
+label = { font = "italic", size = 11, color = "water_label", priority = 10, placement = "line", minzoom = 13 }
+
+[[rule]]
+layer = "waterways"
+class = "river"
+pass = "waterlines"
+color = "water"
+width = [[8, 0.7], [12, 1.5], [14, 2.5], [18, 8.0]]
+label = { font = "italic", size = [[10, 11], [16, 13]], color = "water_label", priority = 15, placement = "line", minzoom = 11 }
+
+# --- Boundaries ---
+
+[[rule]]
+layer = "boundaries"
+class = "admin_8"
+pass = "boundaries"
+color = "#c8b6c8"
+width = [[11, 0.6], [16, 1.2]]
+dash = [3, 2]
+
+[[rule]]
+layer = "boundaries"
+class = "admin_6"
+pass = "boundaries"
+color = "#bba4bb"
+width = [[8, 0.6], [14, 1.4]]
+dash = [5, 3]
+
+[[rule]]
+layer = "boundaries"
+class = "admin_4"
+pass = "boundaries"
+color = "#a684aa"
+width = [[3, 0.7], [8, 1.4], [14, 2.2]]
+dash = [8, 3]
+
+[[rule]]
+layer = "boundaries"
+class = "admin_2"
+pass = "boundaries"
+color = "#8c6496"
+width = [[0, 0.8], [6, 1.6], [12, 2.8]]
+
+# --- Rail and ferries ---
+
+[[rule]]
+layer = "rail"
+class = "rail_service"
+pass = "rail"
+color = "#b4b4b4"
+width = [[13, 0.6], [16, 1.2]]
+
+[[rule]]
+layer = "rail"
+class = "rail"
+pass = "rail"
+color = "#9a9a9a"
+width = [[9, 0.5], [12, 0.8], [14, 1.3], [16, 2.0]]
+
+[[rule]]
+layer = "ferries"
+class = "ferry"
+pass = "ferries"
+color = "#5a82c8"
+width = [[7, 0.7], [12, 1.2], [16, 1.8]]
+dash = [6, 4]
+label = { font = "italic", size = 10, color = "#4a6aa8", priority = 5, placement = "line", minzoom = 12 }
+
+# --- Roads, least important first ---
+
+[[rule]]
+layer = "roads"
+class = ["service_other", "service_drive_through", "service_parking_aisle", "service_driveway", "service_alley", "service"]
+pass = "roads"
+color = "#ffffff"
+width = "service"
+casing = "#c3c3c3"
+casing_width = "casing_minor"
+
+[[rule]]
+layer = "roads"
+class = ["living_street", "residential", "unclassified"]
+pass = "roads"
+color = "#ffffff"
+width = "minor"
+casing = "#b9b9b9"
+casing_width = "casing_minor"
+label = { size = [[14, 10], [17, 12]], priority = 20, placement = "line", minzoom = 15 }
+
+[[rule]]
+layer = "roads"
+class = "tertiary_link"
+pass = "roads"
+color = "#ffffff"
+width = "link"
+casing = "#a5a5a5"
+casing_width = "casing_minor"
+
+[[rule]]
+layer = "roads"
+class = "secondary_link"
+pass = "roads"
+color = "#fdf0aa"
+width = "link"
+casing = "#aa9b69"
+casing_width = "casing_minor"
+
+[[rule]]
+layer = "roads"
+class = "primary_link"
+pass = "roads"
+color = "#f9cf5a"
+width = "link"
+casing = "#aa822a"
+casing_width = "casing_minor"
+
+[[rule]]
+layer = "roads"
+class = "trunk_link"
+pass = "roads"
+color = "#ef8f45"
+width = "link"
+casing = "#a05422"
+casing_width = "casing_minor"
+
+[[rule]]
+layer = "roads"
+class = "motorway_link"
+pass = "roads"
+color = "#db4a36"
+width = "link"
+casing = "#93291c"
+casing_width = "casing_minor"
+
+[[rule]]
+layer = "roads"
+class = "tertiary"
+pass = "roads"
+color = "#ffffff"
+width = "tertiary"
+casing = "#a5a5a5"
+casing_width = "casing_minor"
+minzoom = 11
+label = { size = [[13, 10], [17, 12]], priority = 30, placement = "line", minzoom = 14 }
+
+[[rule]]
+layer = "roads"
+class = "secondary"
+pass = "roads"
+color = "#fdf0aa"
+width = "secondary"
+casing = "#aa9b69"
+casing_width = "casing_main"
+label = { size = [[12, 10], [17, 12]], priority = 40, placement = "line", minzoom = 13 }
+shields = true
+
+[[rule]]
+layer = "roads"
+class = "primary"
+pass = "roads"
+color = "#f9cf5a"
+width = "primary"
+casing = "#aa822a"
+casing_width = "casing_main"
+label = { size = [[12, 10], [17, 13]], priority = 50, placement = "line", minzoom = 12 }
+shields = true
+
+[[rule]]
+layer = "roads"
+class = "trunk"
+pass = "roads"
+color = "#ef8f45"
+width = "trunk"
+casing = "#a05422"
+casing_width = "casing_motorway"
+label = { size = [[12, 10], [17, 13]], priority = 60, placement = "line", minzoom = 12 }
+shields = true
+
+[[rule]]
+layer = "roads"
+class = "motorway"
+pass = "roads"
+color = "#db4a36"
+width = "motorway"
+casing = "#93291c"
+casing_width = "casing_motorway"
+label = { size = [[12, 10], [17, 13]], priority = 70, placement = "line", minzoom = 13 }
+shields = true
+
+# --- Places (labels only, step 1.7) ---
+
+[[rule]]
+layer = "places"
+class = "country"
+label = { font = "bold", size = [[1, 11], [5, 16]], color = "#5a3c64", priority = 100, maxzoom = 7 }
+
+[[rule]]
+layer = "places"
+class = "state"
+label = { font = "bold", size = [[3, 10], [7, 13]], color = "#7a5a82", priority = 90, maxzoom = 10 }
+
+[[rule]]
+layer = "places"
+class = ["ocean", "sea"]
+label = { font = "italic", size = [[0, 11], [6, 15]], color = "water_label", priority = 85 }
+
+[[rule]]
+layer = "places"
+class = "bay"
+label = { font = "italic", size = 11, color = "water_label", priority = 25 }
+
+[[rule]]
+layer = "places"
+class = "city"
+label = { font = "bold", size = [[4, 11], [8, 14], [12, 17]], color = "#222222", priority = 80, maxzoom = 15 }
+
+[[rule]]
+layer = "places"
+class = "town"
+label = { size = [[7, 10], [11, 13], [14, 15]], color = "#222222", priority = 70, maxzoom = 16 }
+
+[[rule]]
+layer = "places"
+class = "village"
+label = { size = [[10, 10], [14, 13]], priority = 55 }
+
+[[rule]]
+layer = "places"
+class = "suburb"
+label = { size = [[11, 10], [14, 13]], color = "#555555", priority = 45 }
+
+[[rule]]
+layer = "places"
+class = "hamlet"
+label = { size = [[12, 10], [15, 12]], priority = 35 }
+
+[[rule]]
+layer = "places"
+class = ["neighbourhood", "locality"]
+label = { size = [[13, 10], [16, 12]], color = "#666666", priority = 25 }
+
+# --- Area labels (label points from the builder) ---
+
+[[rule]]
+layer = "labels"
+class = ["lake", "river", "riverbank", "bay"]
+label = { font = "italic", size = [[8, 10], [14, 13]], color = "water_label", priority = 20 }
+
+[[rule]]
+layer = "labels"
+class = "protected_area"
+label = { size = [[6, 10], [12, 12]], color = "#3e6e34", priority = 22 }
+
+[[rule]]
+layer = "labels"
+class = ["park", "forest", "wood"]
+label = { size = [[10, 10], [15, 12]], color = "#3e6e34", priority = 15 }
+
+# --- Points of interest (labels in step 1.7, icons in step 1.8) ---
+
+[[rule]]
+layer = "pois"
+class = "airport"
+icon = "airport"
+label = { size = 11, priority = 60, minzoom = 11 }
+
+[[rule]]
+layer = "pois"
+class = "hospital"
+icon = "hospital"
+label = { size = 10, color = "#a03030", priority = 45, minzoom = 14 }
+
+[[rule]]
+layer = "pois"
+class = "rest_area"
+icon = "rest_area"
+label = { size = 10, priority = 40, minzoom = 13 }
+
+[[rule]]
+layer = "pois"
+class = "fuel"
+icon = "fuel"
+label = { size = 10, priority = 35, minzoom = 15 }
+
+[[rule]]
+layer = "pois"
+class = "charging_station"
+icon = "charging_station"
+label = { size = 10, priority = 30, minzoom = 15 }
+
+[[rule]]
+layer = "pois"
+class = "campground"
+icon = "campground"
+label = { size = 10, color = "#3e6e34", priority = 30, minzoom = 13 }
+
+[[rule]]
+layer = "pois"
+class = "attraction"
+icon = "attraction"
+label = { size = 10, priority = 28, minzoom = 14 }
+
+[[rule]]
+layer = "pois"
+class = "hotel"
+icon = "hotel"
+label = { size = 10, priority = 25, minzoom = 15 }
+
+[[rule]]
+layer = "pois"
+class = "restaurant"
+icon = "restaurant"
+label = { size = 10, priority = 15, minzoom = 16 }
+
+[[rule]]
+layer = "pois"
+class = "fast_food"
+icon = "fast_food"
+label = { size = 10, priority = 15, minzoom = 16 }
+
+[[rule]]
+layer = "pois"
+class = "parking"
+icon = "parking"
