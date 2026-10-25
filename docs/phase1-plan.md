@@ -36,7 +36,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.7 Text and label placement | **Done** 2026-10-25 | Noto Sans subset to Latin (196 KB), shaped with `harfrust`, SDF glyphs from `skrifa` outlines; greedy placement with hysteresis and fade-in, line labels along roads and rivers, POI markers. Placement p95 0.28 ms a frame; North America flight p95 frame 1.05 ms; binary 11.8 MB. |
 | 1.8 Shields and POI icons | **Done** 2026-10-25 | 16 shield designs (`omp_core::routes::shield`) and 11 Maki icons, drawn as distance fields in the glyph atlas. Real shields on 97% of US and 95% of Canadian motorway ways; North America flight p95 frame 1.26 ms; binary 11.9 MB. |
 | 1.9 Viewer UI | **Done** 2026-10-25 (Linux) | Scale bar (miles, km or both, following the pack), zoom buttons, cursor coordinates, credit line; Layers menu with 9 toggles applied at draw time; About this map; Verify pack on a thread, cancellable; error dialogs for a damaged pack or tile; all saved in `config.toml`. North America flight p95 frame 1.39 ms; binary 12.2 MB. Running it on Windows is left to 1.10. |
-| 1.10 Performance, USB and hardware checks | In progress | USB stick ready (16 GB SanDisk Cruzer Blade, USB 2, FAT32); bench now measures idle CPU. Runs on each machine remain. |
+| 1.10 Performance, USB and hardware checks | In progress | USB stick ready (16 GB SanDisk Cruzer Blade, USB 2, FAT32); bench measures idle CPU. Dev machine from the stick, cold: all criteria pass (p95 1.17 ms, start-up 1.46 s, slowest jump 632 ms, RSS 144 MiB, idle 0.10%). Windows PC and laptops remain. |
 
 ## Environment notes
 
@@ -509,7 +509,17 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 > **In progress 2026-10-25.** The stick is a 16 GB SanDisk Cruzer Blade (USB 2 only, so every USB number is the worst case; there is no USB 3 run), formatted FAT32 with the label `OMPTEST`. It holds the North America pack (6.1 GiB in 2 chunks) in `maps/`, both apps, `bench/north-america.toml`, and `run-bench.bat` / `run-bench.sh`, which run the flight cold then warm and write reports and machine details to `results/`.
 > **Idle CPU:** after the last step the bench now leaves the window alone for 10 s without redrawing and records the process's CPU time over it as `idle_cpu_percent` (`memory::cpu_time`: `/proc/self/stat` on Linux, `GetProcessTimes` on Windows). Ohio on the dev machine: 0.00%.
 > **Finding:** Linux mounts FAT32 sticks with `showexec`, so only `.exe`/`.bat`/`.com` files are executable and `omp-app` cannot run straight from the stick. `run-bench.sh` copies it to `/tmp` first. Phase 2's packaging should allow for this (a launcher script run with `sh`, or a note in the README).
-> **Remaining:** runs on the dev machine (cold, from the stick), the Windows PC, the 2012-or-newer laptop and the pre-2012 laptop; the results table; roadmap §6.
+> **Copy and verify:** writing the 6.1 GiB pack to the stick took 23 min (4.7 MB/s). `omp-builder verify` on the stick after a remount: OK, 6,213.6 MiB in 172 s (36 MiB/s read).
+>
+> Reports and machine details in `$OMP_WORK/measure/bench/1.10/` (copied from the stick's `results/`). Cold = stick unmounted and mounted again (Linux) or plugged in fresh (Windows) just before the run.
+>
+> | Machine | Run | Adapter | Frames | Interval p50 / p95 / max | Start-up | Slowest jump to full detail | Tile latency p50 / p95 / max | Read p95 / max | RSS peak | Idle CPU | Binary |
+> |---|---|---|---|---|---|---|---|---|---|---|---|
+> | Dev (Ryzen 7 5700X, Radeon RX 9000 series), USB 2 stick | cold | RADV GFX1200 (Vulkan) | 69,741 | 0.68 / 1.17 / 17.6 ms | 1,461 ms | 632 ms (Manhattan z12, first jump) | 13.6 / 75.4 / 1,005 ms | 14.5 / 987 ms | 144 MiB | 0.10% | 12.2 MB |
+> | Dev, USB 2 stick | warm | same | 69,164 | 0.68 / 1.15 / 17.6 ms | 117 ms | 19 ms (Toronto z10) | 5.7 / 22.6 / 59 ms | 0.10 / 8.8 ms | 146 MiB | 0.10% | 12.2 MB |
+>
+> On the dev machine every criterion passes from the USB 2 stick, cold: p95 frame 1.17 ms (target 16.7), start-up 1.46 s (3 s), slowest jump 632 ms (2 s), RSS 144 MiB (300 MB), idle 0.10%, binary 12.2 MB Linux and 10.8 MB Windows (30 MB). The cold cost is in the first reads: start-up is 1.3 s slower than warm, and the one read near 1 s is the first visit to Manhattan's zooms (their `TIDX` blocks); after that, jumps were detailed within 42 ms. No USB 3 run: the stick is USB 2 only.
+> **Remaining:** the Windows PC, the 2012-or-newer laptop and the pre-2012 laptop; then roadmap §6.
 
 ---
 
