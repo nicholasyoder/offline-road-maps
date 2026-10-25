@@ -110,7 +110,7 @@ Detailed plan: [phase1-plan.md](phase1-plan.md).
 
 - [x] Builder: simplify geometry per zoom level, compute label points, read route relations for highway shields, and write the pack. Done 2026-10-24: [phase 1 steps 1.2 and 1.3](phase1-plan.md#13-label-and-shield-data-in-the-builder).
 - [x] App: pan and zoom; draw polygons, lines and labels with collision avoidance; highway shields and POI icons; a style file; a scale bar, zoom buttons and layer toggles; portable mode. Done 2026-10-25: [phase 1 steps 1.4–1.9](phase1-plan.md#19-viewer-ui); checked on Windows in 1.10.
-- [ ] **Exit criterion:** browse all of North America from a USB stick at a smooth frame rate with less than 300 MB RAM.
+- [x] **Exit criterion:** browse all of North America from a USB stick at a smooth frame rate with less than 300 MB RAM. Accepted 2026-10-25 by the owner, with the HD 4000's Windows GL leak left as a known upstream issue, to revisit if it shows up on a machine the app is really used on.
   Measured 2026-10-25 ([phase 1 step 1.10](phase1-plan.md#110-performance-usb-and-hardware-checks)): from a FAT32 USB 2 stick with a cold cache, the dev machine draws at 1.17 ms p95, starts in 1.46 s, has any jump fully detailed within 0.63 s, and peaks at 144 MiB RSS. Two Windows laptops pass the 30 fps target (Latitude 7490 on DX12 12–14 ms; Latitude E6430 on GL 20 ms). Not met everywhere: the 7490 on Windows peaks at 373 MiB (flat), and the E6430's Windows GL driver leaks about 0.35 MiB per frame presented, outside the app. A pre-2012 laptop gets only a software renderer (~3 fps).
 
 ### Phase 2: Search and addresses

@@ -631,6 +631,10 @@ Settled while planning (2026-10-24):
 16. **Tile frames and capped layers** (1.5c, owner 2026-10-25): tile frames have no magic number and no checksum (F1+F2); F3 (raw small payloads) and F4 (one frame per tile) are dropped. Land cover and water areas stop at z13 by default (`maxzoom` in the whitelist and `SCHM`), and the app draws them from z13 above that; land cover at z12 was rejected, as it drops visible patches.
 17. **Shields and icons are distance fields in the glyph atlas** (1.8), not `lyon` meshes: drawn by the label pipeline, with halos, collision and fade-in for free. The shield table is `omp_core::routes::shield`, shared by the app and the builder's coverage count: 16 designs, with US states drawn as a box unless their marker reads clearly as a circle (NJ, KS, NM, Virginia's secondary routes), a diamond (NC, MI), Pennsylvania's keystone, California's spade or Ohio's outline. This settles the open question of how many state shapes to draw; more can be added to the table.
 18. **Scale bar units** (1.9): miles for a pack of a US state, kilometres for a Canadian province or Mexico, and both bars for a pack that covers several countries (North America), told from the OSM extract's Geofabrik URL in `META`. The user can choose miles, kilometres or both in the menu, which is saved in `config.toml`.
+19. **Windows backends: DX12, then GL** (1.10). Vulkan is left out on Windows: Intel's driver for the UHD 620 crashed while wgpu listed adapters, and DX12 covers the same GPUs. `WGPU_BACKEND` still overrides. Decision 2 stands elsewhere.
+20. **Tile geometry in pooled slabs** (1.10, `pool.rs`): 8 MiB vertex and index slabs with first-fit ranges, instead of a buffer pair per tile, and wgpu's `MemoryHints::MemoryUsage`. A staging belt for uploads was tried and reverted (it made the HD 4000's leak worse).
+21. **The 300 MB limit has some slack** (owner, 2026-10-25): the 7490 on DX12 at 373 MiB, flat, is accepted.
+22. **The HD 4000's Windows GL leak is left as an upstream issue** (owner, 2026-10-25): about 0.35 MiB per frame presented, inside wgpu's WGL present path or the driver, not the app. Revisit if it shows up on a machine the app is really used on.
 
 Open, to settle in their steps: none.
 
@@ -642,3 +646,9 @@ Open, to settle in their steps: none.
 - Several packs at once.
 - Scripts other than Latin.
 - A separate OpenGL (glow) renderer for pre-2012 hardware.
+
+## Carried to later phases
+
+- **Packaging (phase 2 or later):** Linux mounts FAT32 sticks with `showexec`, so `omp-app` cannot run straight from the stick; ship a launcher run with `sh` that copies it out, or say so in the README (1.10). A software renderer (no GPU driver) misses the frame and memory targets; the app could say so in the window, not only in its log (1.10).
+- **Upstream:** the HD 4000 Windows GL leak (decision 22) could be reported to wgpu with the 1.10 numbers.
+- The small **Open** notes under 1.3–1.9 (label thresholds, maritime boundaries, the scale bar at continental zooms, a file dialog, and so on) are polish, not blockers.
