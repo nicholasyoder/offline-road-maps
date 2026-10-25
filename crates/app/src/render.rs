@@ -24,6 +24,7 @@ use wgpu::util::DeviceExt;
 use crate::camera::Camera;
 use crate::layers::Hidden;
 use crate::mesh::{Mesh, Segment, Vertex};
+use crate::pool::{Alloc, Kind, Pool};
 use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, Rgba, Style};
 use crate::text::{ATLAS, Upload};
 use crate::tiles::TileId;
@@ -38,45 +39,26 @@ pub fn samples(requested: Option<u32>) -> u32 {
 }
 const EXTENT: f64 = (1u32 << omp_core::tile::EXTENT_BITS) as f64;
 
-/// A tile's vertex data on the GPU.
+/// A tile's vertex data on the GPU, in ranges of the pool's slabs.
 pub struct GpuMesh {
-    fill: Option<(wgpu::Buffer, wgpu::Buffer)>,
-    segments: Option<wgpu::Buffer>,
+    /// Vertices and indices.
+    fill: Option<(Alloc, Alloc)>,
+    segments: Option<Alloc>,
     fills: [std::ops::Range<u32>; FILL_PASSES.len()],
     lines: [std::ops::Range<u32>; LINE_PASSES.len()],
     pub bytes: usize,
 }
 
 impl GpuMesh {
-    pub fn upload(device: &wgpu::Device, m: &Mesh) -> Self {
-        let buf = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents,
-                usage,
-            })
-        };
+    pub fn upload(pool: &Arc<Pool>, m: &Mesh) -> Self {
         let fill = (!m.indices.is_empty()).then(|| {
             (
-                buf(
-                    "tile vertices",
-                    bytemuck::cast_slice(&m.vertices),
-                    wgpu::BufferUsages::VERTEX,
-                ),
-                buf(
-                    "tile indices",
-                    bytemuck::cast_slice(&m.indices),
-                    wgpu::BufferUsages::INDEX,
-                ),
+                pool.upload(Kind::Vertex, bytemuck::cast_slice(&m.vertices)),
+                pool.upload(Kind::Index, bytemuck::cast_slice(&m.indices)),
             )
         });
-        let segments = (!m.segments.is_empty()).then(|| {
-            buf(
-                "tile segments",
-                bytemuck::cast_slice(&m.segments),
-                wgpu::BufferUsages::VERTEX,
-            )
-        });
+        let segments = (!m.segments.is_empty())
+            .then(|| pool.upload(Kind::Vertex, bytemuck::cast_slice(&m.segments)));
         Self {
             fill,
             segments,
@@ -767,8 +749,8 @@ impl Renderer {
                     let Some((v, ix)) = &m.fill else { return };
                     let r = m.fills[p.slot()].clone();
                     if !r.is_empty() {
-                        pass.set_vertex_buffer(0, v.slice(..));
-                        pass.set_index_buffer(ix.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.set_vertex_buffer(0, v.all());
+                        pass.set_index_buffer(ix.all(), wgpu::IndexFormat::Uint32);
                         pass.draw_indexed(r, 0, 0..1);
                     }
                 });

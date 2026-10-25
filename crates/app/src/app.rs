@@ -19,6 +19,7 @@ use crate::layers::{Hidden, Layers};
 use crate::loader::{self, Done, Loader};
 use crate::mesh;
 use crate::packs::{self, Opened};
+use crate::pool::Pool;
 use crate::render::{self, GpuMesh, MapCallback, Renderer};
 use crate::scale::{self, Units};
 use crate::style::{Style, StyleFile};
@@ -146,6 +147,8 @@ pub struct App {
     cursor: Option<[f64; 2]>,
     adapter: String,
     device: Option<wgpu::Device>,
+    /// Tile geometry on the GPU.
+    pool: Option<Arc<Pool>>,
     srgb: bool,
     style: StyleFile,
     style_path: PathBuf,
@@ -207,6 +210,7 @@ impl App {
             cursor: None,
             adapter,
             device: rs.map(|rs| rs.device.clone()),
+            pool: rs.map(|rs| Pool::new(rs.device.clone(), rs.queue.clone())),
             srgb: rs.is_some_and(|rs| rs.target_format.is_srgb()),
             style: s.style,
             style_mtime: mtime(&s.style_path),
@@ -248,13 +252,13 @@ impl App {
             camera.set_lonlat(v.lon, v.lat, v.zoom);
             fit = !camera.contains_center();
         }
-        let Some(device) = self.device.clone() else {
+        let Some(pool) = self.pool.clone() else {
             self.notices
                 .push("No GPU device: the map cannot be drawn.".into());
             return;
         };
         let style = compile_style(&self.style, &opened);
-        let loader = start_loader(&opened, &style, device, ctx);
+        let loader = start_loader(&opened, &style, pool, ctx);
         self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
         let units = packs::default_units(opened.meta.as_ref().ok());
         self.map = Some(MapState {
@@ -307,10 +311,10 @@ impl App {
             }
         }
         eprintln!("style: reloaded {}", self.style_path.display());
-        if let (Some(m), Some(device)) = (&mut self.map, self.device.clone()) {
+        if let (Some(m), Some(pool)) = (&mut self.map, self.pool.clone()) {
             // The meshes hold style IDs, so every tile is prepared again.
             m.style = compile_style(&self.style, &m.opened);
-            m.loader = start_loader(&m.opened, &m.style, device, ctx);
+            m.loader = start_loader(&m.opened, &m.style, pool, ctx);
             m.cache = Cache::new(CACHE_BUDGET);
             m.placer = Placer::default();
             m.hidden_for = None;
@@ -377,7 +381,7 @@ fn compile_style(file: &StyleFile, opened: &Opened) -> Arc<Style> {
 fn start_loader(
     opened: &Opened,
     style: &Arc<Style>,
-    device: wgpu::Device,
+    pool: Arc<Pool>,
     ctx: &egui::Context,
 ) -> Loader<Prepared> {
     let ctx = ctx.clone();
@@ -394,11 +398,7 @@ fn start_loader(
                 bytes: tile.bytes,
                 failed: m.failed,
             };
-            (
-                Arc::new(GpuMesh::upload(&device, &m)),
-                Arc::new(labels),
-                info,
-            )
+            (Arc::new(GpuMesh::upload(&pool, &m)), Arc::new(labels), info)
         },
         move || ctx.request_repaint(),
     )
@@ -832,6 +832,7 @@ impl eframe::App for App {
                         report.gpu_allocated = Some(r.total_allocated_bytes);
                         report.gpu_reserved = Some(r.total_reserved_bytes);
                     }
+                    report.tile_slabs_peak = self.pool.as_ref().map(|p| p.bytes().1);
                     eprint!("{}", report.summary());
                     let out = b.out().to_path_buf();
                     match serde_json::to_string_pretty(&report)
@@ -850,6 +851,9 @@ impl eframe::App for App {
         }
         if animate {
             ctx.request_repaint();
+        }
+        if let Some(p) = &self.pool {
+            p.end_frame();
         }
         self.maybe_save(&ctx);
     }

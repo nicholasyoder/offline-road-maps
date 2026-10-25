@@ -11,6 +11,7 @@ use std::time::Instant;
 use crate::camera::Camera;
 use crate::labels::{self, Placer, TileLabels};
 use crate::layers::Hidden;
+use crate::pool::Pool;
 use crate::render::{self, GpuMesh, Renderer};
 use crate::style::{Style, StyleFile};
 use crate::tiles::{self, Known, TileId};
@@ -94,6 +95,7 @@ impl Snapshot {
         let visible = tiles::select(z, cam.visible(), opened.bounds).visible;
 
         let (adapter, device, queue) = render::headless_device()?;
+        let pool = Pool::new(device.clone(), queue.clone());
         let failed = AtomicUsize::new(0);
         // `None`: not in the pack. Read in rounds: the visible tiles, then the ancestors of
         // those left out, until each has a stored ancestor or none.
@@ -121,7 +123,7 @@ impl Snapshot {
                                         let m = mesh::build(&t, &style);
                                         failed.fetch_add(m.failed, Ordering::Relaxed);
                                         let l = labels::extract(id, &t, &style);
-                                        (Arc::new(GpuMesh::upload(&device, &m)), Arc::new(l))
+                                        (Arc::new(GpuMesh::upload(&pool, &m)), Arc::new(l))
                                     })
                                 });
                                 out.push((id, r));

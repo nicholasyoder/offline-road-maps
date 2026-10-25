@@ -392,6 +392,7 @@ impl Bench {
             idle_frames: 0,
             gpu_allocated: None,
             gpu_reserved: None,
+            tile_slabs_peak: None,
             cache_budget: ctx.cache_budget,
             cache_peak: self.cache_peak,
             steps,
@@ -467,6 +468,8 @@ pub struct Report {
     /// live allocations, and in the memory blocks they are cut from.
     pub gpu_allocated: Option<u64>,
     pub gpu_reserved: Option<u64>,
+    /// Most bytes in the slabs that hold tile geometry (pool.rs).
+    pub tile_slabs_peak: Option<u64>,
     pub cache_budget: usize,
     pub cache_peak: usize,
     pub steps: Vec<StepReport>,
@@ -512,7 +515,7 @@ impl Report {
         let mut s = format!(
             "{}: {} frames, interval p50 {:.2} / p95 {:.2} / max {:.1} ms, cpu p95 {:.2} ms, labels p95 {:.2} ms\n\
              start-up {} ms; tiles {} loaded + {} absent, {} errors; latency p50 {:.2} / p95 {:.2} ms, read p95 {:.2} ms, decode p95 {:.2} ms, prepare p95 {:.2} ms\n\
-             {:.1} MiB read; RSS peak {} MiB; GPU allocator {} MiB; cache peak {:.1} MiB of {:.0}; idle CPU {}% ({} frames)\n",
+             {:.1} MiB read; RSS peak {} MiB; GPU allocator {} MiB; tile slabs peak {} MiB; cache peak {:.1} MiB of {:.0}; idle CPU {}% ({} frames)\n",
             self.flight,
             self.frames,
             self.interval_ms.p50,
@@ -536,6 +539,8 @@ impl Report {
                 (Some(a), Some(r)) => format!("{:.0} of {:.0}", mib(a), mib(r)),
                 _ => "-".into(),
             },
+            self.tile_slabs_peak
+                .map_or("-".into(), |v| format!("{:.0}", mib(v))),
             mib(self.cache_peak as u64),
             mib(self.cache_budget as u64),
             self.idle_cpu_percent

@@ -19,6 +19,7 @@ mod logger;
 mod memory;
 mod mesh;
 mod packs;
+mod pool;
 mod render;
 mod scale;
 mod shapes;
@@ -180,6 +181,15 @@ fn main() -> ExitCode {
         && let eframe::egui_wgpu::WgpuSetup::CreateNew(s) = &mut options.wgpu_options.wgpu_setup
     {
         s.instance_descriptor.backends = eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::GL;
+    }
+    // Smaller allocator blocks (8–64 MiB rather than 128–256): on integrated GPUs, which
+    // share system memory, Windows counts a whole block in the working set.
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(s) = &mut options.wgpu_options.wgpu_setup {
+        let base = s.device_descriptor.clone();
+        s.device_descriptor = std::sync::Arc::new(move |adapter| eframe::wgpu::DeviceDescriptor {
+            memory_hints: eframe::wgpu::MemoryHints::MemoryUsage,
+            ..base(adapter)
+        });
     }
     let bench = match &args.bench {
         Some(path) => {
