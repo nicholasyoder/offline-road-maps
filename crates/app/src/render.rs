@@ -1,0 +1,671 @@
+//! Draws the map with wgpu: inside egui through a paint callback, or offscreen for
+//! `--render`.
+//!
+//! Tiles are drawn in zoom groups, lowest first (fallback parents under the wanted tiles),
+//! and within a group pass by pass across all its tiles: each tile's land, then all land
+//! cover, all water, every line casing under every line. Each tile is scissored to its own
+//! square, with edges rounded the same way for neighbours, so the 64-unit buffers never
+//! overlap and semi-transparent fills have no seams. A tile's land square hides the parent
+//! drawn under it.
+
+use std::sync::Arc;
+
+use bytemuck::{Pod, Zeroable};
+use eframe::egui_wgpu::{self, wgpu};
+use wgpu::util::DeviceExt;
+
+use crate::camera::Camera;
+use crate::mesh::{Mesh, Segment, Vertex};
+use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, Pass, Rgba, Style};
+use crate::tiles::TileId;
+
+/// MSAA sample count, for the window (eframe's `multisampling`) and `--render`, unless
+/// `config.toml` or `--msaa` turn it off.
+pub const MSAA: u32 = 4;
+
+/// The sample count to use for a requested one: 1 or [`MSAA`].
+pub fn samples(requested: Option<u32>) -> u32 {
+    if requested == Some(1) { 1 } else { MSAA }
+}
+const EXTENT: f64 = (1u32 << omp_core::tile::EXTENT_BITS) as f64;
+
+/// A tile's vertex data on the GPU.
+pub struct GpuMesh {
+    fill: Option<(wgpu::Buffer, wgpu::Buffer)>,
+    segments: Option<wgpu::Buffer>,
+    fills: [std::ops::Range<u32>; FILL_PASSES.len()],
+    lines: [std::ops::Range<u32>; LINE_PASSES.len()],
+    pub bytes: usize,
+}
+
+impl GpuMesh {
+    pub fn upload(device: &wgpu::Device, m: &Mesh) -> Self {
+        let buf = |label, contents: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage,
+            })
+        };
+        let fill = (!m.indices.is_empty()).then(|| {
+            (
+                buf(
+                    "tile vertices",
+                    bytemuck::cast_slice(&m.vertices),
+                    wgpu::BufferUsages::VERTEX,
+                ),
+                buf(
+                    "tile indices",
+                    bytemuck::cast_slice(&m.indices),
+                    wgpu::BufferUsages::INDEX,
+                ),
+            )
+        });
+        let segments = (!m.segments.is_empty()).then(|| {
+            buf(
+                "tile segments",
+                bytemuck::cast_slice(&m.segments),
+                wgpu::BufferUsages::VERTEX,
+            )
+        });
+        Self {
+            fill,
+            segments,
+            fills: m.fills.clone(),
+            lines: m.lines.clone(),
+            bytes: m.bytes(),
+        }
+    }
+}
+
+/// One tile in a frame.
+pub struct TileDraw {
+    /// `None`: an empty tile, drawn as bare land.
+    pub mesh: Option<Arc<GpuMesh>>,
+    pub id: TileId,
+    /// Top-left corner in viewport pixels, and pixels per tile unit.
+    pub origin: [f32; 2],
+    pub scale: f32,
+    /// The tile's square in viewport pixels, `[x0, y0, x1, y1]`, rounded.
+    pub scissor: [i32; 4],
+}
+
+/// Everything one frame draws. Tiles are sorted by zoom.
+pub struct Frame {
+    /// Viewport size in pixels.
+    pub size: [f32; 2],
+    pub paints: Vec<GpuPaint>,
+    pub tiles: Vec<TileDraw>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct GpuPaint {
+    color: [f32; 4],
+    casing: [f32; 4],
+    width: [f32; 2],
+    dash: [f32; 2],
+    casing_dash: [f32; 2],
+    _pad: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Globals {
+    size: [f32; 2],
+    _pad: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct TileTransform {
+    origin: [f32; 2],
+    scale: f32,
+    _pad: f32,
+}
+
+/// The style's paints at a zoom, in pixels.
+pub fn paints(style: &Style, zoom: f64, pixels_per_point: f32, srgb_target: bool) -> Vec<GpuPaint> {
+    let z = zoom as f32;
+    let ppp = pixels_per_point;
+    let color = |c: Rgba| {
+        let f = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            match srgb_target {
+                true if v <= 0.04045 => v / 12.92,
+                true => ((v + 0.055) / 1.055).powf(2.4),
+                false => v,
+            }
+        };
+        [f(c[0]), f(c[1]), f(c[2]), f32::from(c[3]) / 255.0]
+    };
+    style
+        .paints
+        .iter()
+        .map(|p| {
+            let width = p.width.at(z);
+            let casing = p.casing_width.at(z);
+            GpuPaint {
+                color: color(p.color),
+                casing: color(p.casing),
+                width: [
+                    width * ppp,
+                    if casing > 0.0 {
+                        (width + casing) * ppp
+                    } else {
+                        0.0
+                    },
+                ],
+                dash: p.dash.map(|d| d * ppp),
+                casing_dash: p.casing_dash.map(|d| d * ppp),
+                _pad: [0.0; 2],
+            }
+        })
+        .collect()
+}
+
+/// Places `tiles` (sorted by zoom) for `cam`, in pixels.
+pub fn layout(
+    cam: &Camera,
+    pixels_per_point: f32,
+    paints: Vec<GpuPaint>,
+    tiles: impl IntoIterator<Item = (TileId, Option<Arc<GpuMesh>>)>,
+) -> Frame {
+    let ppp = f64::from(pixels_per_point);
+    let px = |w: [f64; 2]| {
+        let p = cam.world_to_screen(w);
+        [p[0] * ppp, p[1] * ppp]
+    };
+    let tiles = tiles
+        .into_iter()
+        .map(|(id, mesh)| {
+            let [x0, y0, x1, y1] = id.world_rect();
+            let a = px([x0, y0]);
+            let b = px([x1, y1]);
+            TileDraw {
+                mesh,
+                id,
+                origin: [a[0] as f32, a[1] as f32],
+                scale: ((b[0] - a[0]) / EXTENT) as f32,
+                scissor: [a[0], a[1], b[0], b[1]].map(|v| v.round().clamp(-1e9, 1e9) as i32),
+            }
+        })
+        .collect();
+    Frame {
+        size: [
+            (cam.size[0] * ppp).round() as f32,
+            (cam.size[1] * ppp).round() as f32,
+        ],
+        paints,
+        tiles,
+    }
+}
+
+/// Pipelines and per-frame buffers; one per render target format.
+pub struct Renderer {
+    fill: wgpu::RenderPipeline,
+    line: wgpu::RenderPipeline,
+    casing: wgpu::RenderPipeline,
+    globals: wgpu::Buffer,
+    paints: wgpu::Buffer,
+    globals_bg: wgpu::BindGroup,
+    tile_layout: wgpu::BindGroupLayout,
+    transforms: wgpu::Buffer,
+    transforms_bg: wgpu::BindGroup,
+    /// Bytes between tile transforms: the device's dynamic offset alignment.
+    stride: u64,
+    capacity: usize,
+    /// The land square every tile is drawn on, style ID 0.
+    square: (wgpu::Buffer, wgpu::Buffer),
+    pub srgb: bool,
+    pub samples: u32,
+}
+
+impl Renderer {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> Self {
+        let shader = device.create_shader_module(wgpu::include_wgsl!("map.wgsl"));
+        let uniform = |binding, size: u64, dynamic| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: dynamic,
+                min_binding_size: wgpu::BufferSize::new(size),
+            },
+            count: None,
+        };
+        let paints_size = (MAX_PAINTS * std::mem::size_of::<GpuPaint>()) as u64;
+        let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("map globals"),
+            entries: &[uniform(0, 16, false), uniform(1, paints_size, false)],
+        });
+        let tile_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("map tile"),
+            entries: &[uniform(0, 16, true)],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("map"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&tile_layout)],
+            immediate_size: 0,
+        });
+        let fill_attrs = wgpu::vertex_attr_array![0 => Sint16x2, 1 => Uint16x2];
+        let line_attrs =
+            wgpu::vertex_attr_array![0 => Sint16x2, 1 => Sint16x2, 2 => Uint16x2, 3 => Float32];
+        let pipeline = |label, vs, buffer: wgpu::VertexBufferLayout<'_>, fs| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(buffer)],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let fill_buf = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &fill_attrs,
+        };
+        let line_buf = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Segment>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &line_attrs,
+        };
+        let fill = pipeline("map fill", "vs_fill", fill_buf, "fs_fill");
+        let line = pipeline("map line", "vs_line", line_buf.clone(), "fs_line");
+        let casing = pipeline("map casing", "vs_casing", line_buf, "fs_line");
+
+        let globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("map globals"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let paints = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("map paints"),
+            size: paints_size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("map globals"),
+            layout: &globals_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: paints.as_entire_binding(),
+                },
+            ],
+        });
+        let stride = u64::from(device.limits().min_uniform_buffer_offset_alignment).max(16);
+        let (transforms, transforms_bg) = Self::transforms(device, &tile_layout, stride, 64);
+        // Out into the buffer, so its antialiased edge falls outside the scissor rectangle.
+        let (a, b) = (-64, EXTENT as i16 + 64);
+        let square_v = [[a, a], [b, a], [b, b], [a, b]].map(|pos| Vertex { pos, style: [0; 2] });
+        let square = (
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("tile square"),
+                contents: bytemuck::cast_slice(&square_v),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("tile square indices"),
+                contents: bytemuck::cast_slice(&[0u32, 1, 2, 0, 2, 3]),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+        );
+        Self {
+            fill,
+            line,
+            casing,
+            globals,
+            paints,
+            globals_bg,
+            tile_layout,
+            transforms,
+            transforms_bg,
+            stride,
+            capacity: 64,
+            square,
+            srgb: format.is_srgb(),
+            samples,
+        }
+    }
+
+    fn transforms(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        stride: u64,
+        capacity: usize,
+    ) -> (wgpu::Buffer, wgpu::BindGroup) {
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("map tile transforms"),
+            size: stride * capacity as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("map tile transforms"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buf,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(16),
+                }),
+            }],
+        });
+        (buf, bg)
+    }
+
+    /// Uploads the frame's uniforms.
+    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
+        if frame.tiles.len() > self.capacity {
+            self.capacity = frame.tiles.len().next_power_of_two();
+            (self.transforms, self.transforms_bg) =
+                Self::transforms(device, &self.tile_layout, self.stride, self.capacity);
+        }
+        let globals = Globals {
+            size: frame.size,
+            _pad: [0.0; 2],
+        };
+        queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
+        let n = frame.paints.len().min(MAX_PAINTS);
+        queue.write_buffer(&self.paints, 0, bytemuck::cast_slice(&frame.paints[..n]));
+        if frame.tiles.is_empty() {
+            return;
+        }
+        let mut data = vec![0u8; self.stride as usize * frame.tiles.len()];
+        for (i, t) in frame.tiles.iter().enumerate() {
+            let tr = TileTransform {
+                origin: t.origin,
+                scale: t.scale,
+                _pad: 0.0,
+            };
+            let at = i * self.stride as usize;
+            data[at..at + 16].copy_from_slice(bytemuck::bytes_of(&tr));
+        }
+        queue.write_buffer(&self.transforms, 0, &data);
+    }
+
+    /// Draws the frame. `offset` is where the viewport's top-left is in the render target, and
+    /// `clip` (`[x0, y0, x1, y1]`, target pixels) what may be drawn on.
+    pub fn paint(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        frame: &Frame,
+        offset: [i32; 2],
+        clip: [u32; 4],
+    ) {
+        pass.set_bind_group(0, &self.globals_bg, &[]);
+        let scissor = |pass: &mut wgpu::RenderPass<'_>, t: &TileDraw| {
+            let [x0, y0, x1, y1] = t.scissor;
+            let x0 = (x0 + offset[0]).max(clip[0] as i32);
+            let y0 = (y0 + offset[1]).max(clip[1] as i32);
+            let x1 = (x1 + offset[0]).min(clip[2] as i32);
+            let y1 = (y1 + offset[1]).min(clip[3] as i32);
+            if x1 <= x0 || y1 <= y0 {
+                return false;
+            }
+            pass.set_scissor_rect(x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+            true
+        };
+        let mut start = 0;
+        while start < frame.tiles.len() {
+            let z = frame.tiles[start].id.z;
+            let end = frame.tiles[start..]
+                .iter()
+                .position(|t| t.id.z != z)
+                .map_or(frame.tiles.len(), |n| start + n);
+            let group = start..end;
+            start = end;
+            let each =
+                |pass: &mut wgpu::RenderPass<'_>,
+                 f: &mut dyn FnMut(&mut wgpu::RenderPass<'_>, &TileDraw)| {
+                    for i in group.clone() {
+                        let t = &frame.tiles[i];
+                        if scissor(pass, t) {
+                            pass.set_bind_group(
+                                1,
+                                &self.transforms_bg,
+                                &[(i as u64 * self.stride) as u32],
+                            );
+                            f(pass, t);
+                        }
+                    }
+                };
+            pass.set_pipeline(&self.fill);
+            each(pass, &mut |pass, _| {
+                pass.set_vertex_buffer(0, self.square.0.slice(..));
+                pass.set_index_buffer(self.square.1.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..6, 0, 0..1);
+            });
+            for p in FILL_PASSES {
+                each(pass, &mut |pass, t| {
+                    let Some(m) = &t.mesh else { return };
+                    let Some((v, ix)) = &m.fill else { return };
+                    let r = m.fills[p.slot()].clone();
+                    if !r.is_empty() {
+                        pass.set_vertex_buffer(0, v.slice(..));
+                        pass.set_index_buffer(ix.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(r, 0, 0..1);
+                    }
+                });
+            }
+            for p in LINE_PASSES {
+                let cased = matches!(p, Pass::Tunnels | Pass::Roads | Pass::Bridges);
+                let pipelines: &[&wgpu::RenderPipeline] = if cased {
+                    &[&self.casing, &self.line]
+                } else {
+                    &[&self.line]
+                };
+                for pl in pipelines {
+                    pass.set_pipeline(pl);
+                    each(pass, &mut |pass, t| {
+                        let Some(m) = &t.mesh else { return };
+                        let Some(s) = &m.segments else { return };
+                        let r = m.lines[p.slot()].clone();
+                        if !r.is_empty() {
+                            // An offset slice rather than a first instance, which GLES lacks.
+                            let size = std::mem::size_of::<Segment>() as u64;
+                            pass.set_vertex_buffer(
+                                0,
+                                s.slice(u64::from(r.start) * size..u64::from(r.end) * size),
+                            );
+                            pass.draw(0..6, 0..r.len() as u32);
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The map as an egui paint callback. The [`Renderer`] lives in egui's callback resources.
+pub struct MapCallback(pub Frame);
+
+impl egui_wgpu::CallbackTrait for MapCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen: &egui_wgpu::ScreenDescriptor,
+        _encoder: &mut wgpu::CommandEncoder,
+        resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        if let Some(r) = resources.get_mut::<Renderer>() {
+            r.prepare(device, queue, &self.0);
+        }
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        info: eframe::egui::PaintCallbackInfo,
+        pass: &mut wgpu::RenderPass<'static>,
+        resources: &egui_wgpu::CallbackResources,
+    ) {
+        let Some(r) = resources.get::<Renderer>() else {
+            return;
+        };
+        let vp = info.viewport_in_pixels();
+        let clip = info.clip_rect_in_pixels();
+        let clip = [
+            clip.left_px.max(0) as u32,
+            clip.top_px.max(0) as u32,
+            (clip.left_px + clip.width_px).max(0) as u32,
+            (clip.top_px + clip.height_px).max(0) as u32,
+        ];
+        r.paint(pass, &self.0, [vp.left_px, vp.top_px], clip);
+    }
+}
+
+/// A device without a window, for `--render`.
+pub fn headless_device() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), String> {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        ..Default::default()
+    }))
+    .map_err(|e| format!("no GPU adapter: {e}"))?;
+    let limits = if adapter.get_info().backend == wgpu::Backend::Gl {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    } else {
+        wgpu::Limits::default()
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("omp headless"),
+        required_limits: wgpu::Limits {
+            max_texture_dimension_2d: 8192,
+            ..limits
+        },
+        ..Default::default()
+    }))
+    .map_err(|e| format!("no GPU device: {e}"))?;
+    Ok((adapter, device, queue))
+}
+
+/// The format `--render` draws in: not sRGB, like egui's usual target, so colours match.
+pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Draws `frame` offscreen on `background` and returns the RGBA pixels, row by row.
+pub fn draw_offscreen(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut Renderer,
+    frame: &Frame,
+    background: Rgba,
+) -> Result<Vec<u8>, String> {
+    let [w, h] = frame.size.map(|v| v as u32);
+    let texture = |samples, usage| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: samples,
+            dimension: wgpu::TextureDimension::D2,
+            format: OFFSCREEN_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
+            view_formats: &[],
+        })
+    };
+    let resolved = texture(1, wgpu::TextureUsages::COPY_SRC);
+    let msaa =
+        (renderer.samples > 1).then(|| texture(renderer.samples, wgpu::TextureUsages::empty()));
+    let resolved_view = resolved.create_view(&Default::default());
+    let msaa_view = msaa.as_ref().map(|t| t.create_view(&Default::default()));
+    renderer.prepare(device, queue, frame);
+    let mut enc = device.create_command_encoder(&Default::default());
+    {
+        let c = |v: u8| f64::from(v) / 255.0;
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("offscreen map"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: msaa_view.as_ref().unwrap_or(&resolved_view),
+                depth_slice: None,
+                resolve_target: msaa_view.as_ref().map(|_| &resolved_view),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: c(background[0]),
+                        g: c(background[1]),
+                        b: c(background[2]),
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        renderer.paint(&mut pass, frame, [0, 0], [0, 0, w, h]);
+    }
+    let row =
+        (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let out = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("offscreen readback"),
+        size: u64::from(row * h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    enc.copy_texture_to_buffer(
+        resolved.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &out,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([enc.finish()]);
+    let slice = out.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| format!("GPU: {e}"))?;
+    let data = slice
+        .get_mapped_range()
+        .map_err(|e| format!("reading back the image: {e}"))?;
+    let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h as usize {
+        let at = y * row as usize;
+        pixels.extend_from_slice(&data[at..at + w as usize * 4]);
+    }
+    Ok(pixels)
+}

@@ -1,4 +1,5 @@
-//! Worker threads that read and decode tiles off the UI thread.
+//! Worker threads that read, decode and prepare tiles (tessellate and upload them) off the
+//! UI thread.
 //!
 //! The UI hands over the tiles it still needs every frame, in priority order, and that list
 //! replaces the queue: newest requests come first and tiles the view has moved away from are
@@ -16,11 +17,13 @@ use omp_core::tiles::{Tile, TileReader, TileTiming};
 use crate::tiles::TileId;
 
 /// A finished request.
-pub struct Done {
+pub struct Done<T> {
     pub id: TileId,
     /// `Ok(None)`: the pack has no such tile, which means it is empty.
-    pub result: io::Result<Option<Tile>>,
+    pub result: io::Result<Option<T>>,
     pub timing: TileTiming,
+    /// Turning the decoded tile into `T`.
+    pub prepare: Duration,
     /// From the first request to the result being ready.
     pub latency: Duration,
 }
@@ -37,19 +40,26 @@ struct Shared {
     ready: Condvar,
 }
 
-pub struct Loader {
+pub struct Loader<T> {
     shared: Arc<Shared>,
-    rx: Receiver<Done>,
+    rx: Receiver<Done<T>>,
     threads: Vec<JoinHandle<()>>,
     /// When each queued tile was first asked for, so latency counts the time spent queued.
     asked: HashMap<TileId, Instant>,
 }
 
-impl Loader {
-    /// Starts `threads` workers. `wake` is called after each finished tile, to repaint.
+/// A worker count that leaves the UI thread a core.
+pub fn default_threads() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1).clamp(2, 6))
+}
+
+impl<T: Send + 'static> Loader<T> {
+    /// Starts `threads` workers, which turn each decoded tile into a `T` with `prepare`.
+    /// `wake` is called after each finished tile, to repaint.
     pub fn new(
         reader: Arc<TileReader>,
         threads: usize,
+        prepare: impl Fn(TileId, Tile) -> T + Send + Sync + 'static,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         let shared = Arc::new(Shared {
@@ -58,13 +68,19 @@ impl Loader {
         });
         let (tx, rx) = channel();
         let wake = Arc::new(wake);
+        let prepare = Arc::new(prepare);
         let threads = (0..threads.max(1))
             .map(|i| {
-                let (shared, reader, tx, wake) =
-                    (shared.clone(), reader.clone(), tx.clone(), wake.clone());
+                let (shared, reader, tx, wake, prepare) = (
+                    shared.clone(),
+                    reader.clone(),
+                    tx.clone(),
+                    wake.clone(),
+                    prepare.clone(),
+                );
                 std::thread::Builder::new()
                     .name(format!("tile-loader-{i}"))
-                    .spawn(move || work(&shared, &reader, &tx, &*wake))
+                    .spawn(move || work(&shared, &reader, &*prepare, &tx, &*wake))
                     .expect("spawn tile loader")
             })
             .collect();
@@ -74,11 +90,6 @@ impl Loader {
             threads,
             asked: HashMap::new(),
         }
-    }
-
-    /// A worker count that leaves the UI thread a core.
-    pub fn default_threads() -> usize {
-        std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1).clamp(2, 6))
     }
 
     /// Replaces the queue with `wanted`, highest priority first. Tiles being read finish anyway.
@@ -104,7 +115,7 @@ impl Loader {
     }
 
     /// Results that have arrived since the last call.
-    pub fn poll(&mut self) -> impl Iterator<Item = Done> + '_ {
+    pub fn poll(&mut self) -> impl Iterator<Item = Done<T>> + '_ {
         self.rx.try_iter()
     }
 
@@ -115,7 +126,7 @@ impl Loader {
     }
 }
 
-impl Drop for Loader {
+impl<T> Drop for Loader<T> {
     fn drop(&mut self) {
         self.shared.queue.lock().unwrap().quit = true;
         self.shared.ready.notify_all();
@@ -125,7 +136,13 @@ impl Drop for Loader {
     }
 }
 
-fn work(shared: &Shared, reader: &TileReader, tx: &Sender<Done>, wake: &dyn Fn()) {
+fn work<T>(
+    shared: &Shared,
+    reader: &TileReader,
+    prepare: &dyn Fn(TileId, Tile) -> T,
+    tx: &Sender<Done<T>>,
+    wake: &dyn Fn(),
+) {
     loop {
         let (id, asked) = {
             let mut q = shared.queue.lock().unwrap();
@@ -144,10 +161,13 @@ fn work(shared: &Shared, reader: &TileReader, tx: &Sender<Done>, wake: &dyn Fn()
             Ok((t, timing)) => (Ok(t), timing),
             Err(e) => (Err(e), TileTiming::default()),
         };
+        let t0 = Instant::now();
+        let result = result.map(|t| t.map(|t| prepare(id, t)));
         let done = Done {
             id,
             result,
             timing,
+            prepare: t0.elapsed(),
             latency: asked.elapsed(),
         };
         // Sent before leaving `in_flight`, so the UI never asks for a tile it is about to get.

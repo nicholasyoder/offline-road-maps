@@ -3,6 +3,8 @@
 //! ```text
 //! omp-app [--pack <dir>]
 //! omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
+//! omp-app --render --pack <dir> --center <lat,lon> --zoom <z> [--size <w>x<h>] [--scale <s>]
+//!         [--msaa <n>] <out.png>
 //! ```
 
 mod app;
@@ -12,7 +14,11 @@ mod camera;
 mod config;
 mod loader;
 mod memory;
+mod mesh;
 mod packs;
+mod render;
+mod snapshot;
+mod style;
 mod tiles;
 
 use std::path::PathBuf;
@@ -23,17 +29,30 @@ use eframe::egui;
 
 const USAGE: &str = "usage: omp-app [--pack <dir>]
        omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
+       omp-app --render --pack <dir> --center <lat,lon> --zoom <z> [--size <w>x<h>] [--scale <s>]
+               [--msaa <n>] <out.png>
 
   --pack <dir>   open the pack in <dir> (or the first chunk file itself); default:
                  maps/ next to the executable, else the pack used last
   --bench <file> fly the path in <file> and write a JSON report, then exit
-  --out <file>   where the bench report goes (default: bench-<flight name>.json)";
+  --out <file>   where the bench report goes (default: bench-<flight name>.json)
+  --render       draw one view offscreen to <out.png>, without a window; --size in
+                 pixels (default 1200x800), --scale in pixels per point (default 1),
+                 --msaa 1 to turn antialiasing off";
 
 #[derive(Default)]
 struct Args {
     pack: Option<PathBuf>,
     bench: Option<PathBuf>,
     out: Option<PathBuf>,
+    render: bool,
+    center: Option<String>,
+    zoom: Option<String>,
+    size: Option<String>,
+    scale: Option<String>,
+    msaa: Option<String>,
+    /// The PNG for `--render`.
+    file: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -45,11 +64,19 @@ fn parse_args() -> Result<Args, String> {
                 .map(PathBuf::from)
                 .ok_or_else(|| format!("{name} needs a value"))
         };
+        let text = |p: PathBuf| p.to_string_lossy().into_owned();
         match arg.to_str() {
             Some("--pack") => a.pack = Some(value("--pack")?),
             Some("--bench") => a.bench = Some(value("--bench")?),
             Some("--out") => a.out = Some(value("--out")?),
+            Some("--render") => a.render = true,
+            Some("--center") => a.center = Some(text(value("--center")?)),
+            Some("--zoom") => a.zoom = Some(text(value("--zoom")?)),
+            Some("--size") => a.size = Some(text(value("--size")?)),
+            Some("--scale") => a.scale = Some(text(value("--scale")?)),
+            Some("--msaa") => a.msaa = Some(text(value("--msaa")?)),
             Some("-h" | "--help") => return Err(String::new()),
+            Some(s) if !s.starts_with('-') && a.file.is_none() => a.file = Some(s.into()),
             _ => return Err(format!("unknown argument {}", arg.to_string_lossy())),
         }
     }
@@ -68,6 +95,9 @@ fn main() -> ExitCode {
             return ExitCode::from(if e.is_empty() { 0 } else { 2 });
         }
     };
+    if args.render {
+        return render(&args);
+    }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.canonicalize().ok())
@@ -103,8 +133,10 @@ fn main() -> ExitCode {
             .cloned(),
     };
 
+    let msaa = render::samples(cfg.msaa);
     let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        multisampling: msaa as u16,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_title("Offline Road Maps"),
@@ -157,6 +189,7 @@ fn main() -> ExitCode {
         notices,
         bench,
         started,
+        msaa,
     };
     let res = eframe::run_native(
         "Offline Road Maps",
@@ -167,6 +200,34 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn render(args: &Args) -> ExitCode {
+    let (Some(pack), Some(center), Some(zoom), Some(file)) =
+        (&args.pack, &args.center, &args.zoom, &args.file)
+    else {
+        eprintln!("--render needs --pack, --center, --zoom and an output file\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let snap = snapshot::Snapshot::parse(
+        pack.clone(),
+        center,
+        zoom,
+        args.size.as_deref(),
+        args.scale.as_deref(),
+        args.msaa.as_deref(),
+        file.clone(),
+    );
+    match snap.and_then(|s| s.run()) {
+        Ok(msg) => {
+            eprintln!("{msg}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("render: {e}");
             ExitCode::FAILURE
         }
     }

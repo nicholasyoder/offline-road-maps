@@ -29,7 +29,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.2 `omp-builder build`: write a tile pack | **Done** 2026-10-24 | Delaware, Ohio and North America packs; North America is 8.1 GiB in 3 chunks, built in 24 min at 43 GiB peak. |
 | 1.3 Label and shield data in the builder | **Done** 2026-10-24 | Whitelist v2: state and water labels, a `labels` layer of polylabel points, `routes` for shields, merged lines, one tile per point. North America tiles −297 MiB (−3.6%); pack 8,001 MiB in 2 chunks. |
 | 1.4 App skeleton: pack, camera, tile loading, bench | **Done** 2026-10-24 | Tile outlines, loader pool, 96 MiB cache, F3 overlay, `--bench`. North America flight: 0.45 ms p95 frame (outlines only), RSS peak 212 MiB, worst cold jump 132 ms on SATA SSD. |
-| 1.5 Geometry renderer | Not started | |
+| 1.5 Geometry renderer | **Done** 2026-10-24 | wgpu fills (lyon) and screen-width lines with casings, per-tile scissor, MSAA 4×, `--render`. Ohio flight 0.69 ms p95 frame; North America RSS peak 162 MiB. Ocean pieces were being dropped by the builder: fixed, North America pack now 9,200 MiB. |
 | 1.6 Style file and default style | Not started | |
 | 1.7 Text and label placement | Not started | |
 | 1.8 Shields and POI icons | Not started | |
@@ -215,6 +215,26 @@ Draw polygons and lines with wgpu, inside egui. Roadmap §5 chose `wgpu` + `lyon
 
 **Done when:** Ohio, Quebec and North America render all geometry layers at every zoom with no gaps or seams at tile edges, overzoom works to z18, `--render` produces PNGs, and the bench shows the dev machine at 60 fps p95 on the Ohio pack.
 
+> **Done 2026-10-24** (the commit that adds `crates/app/src/render.rs`).
+> **Code** (`crates/app/src/`): `style` (the temporary hard-coded style: rules by layer and class name, resolved through the pack's `SCHM`; widths as zoom stops in points; passes land cover, water, water lines, boundaries, tunnels, rail, ferries, roads, bridges), `mesh` (runs on the loader threads: polygons tessellated per feature with `lyon`, even-odd; lines become one instance per segment with its distance along the line, for dashes; everything in `i16` tile units, sorted by pass and class so each pass is one range per tile), `render` and `map.wgsl` (fill, line and casing pipelines; a per-tile transform at a dynamic uniform offset; a 128-entry paint table recomputed each frame for the fractional zoom; `--render`'s offscreen target) and `snapshot` (`--render`). The loader is now generic: its workers decode, tessellate and upload each tile, so the UI thread only draws. The cache holds the GPU buffers and counts their bytes against the 96 MiB budget; the decoded tile is dropped (1.7 will extract its label data on the loader thread).
+> **Drawing:** an `egui_wgpu` paint callback draws into egui's pass, so egui draws on top (the F3 overlay now also draws tile outlines). Tiles are drawn by zoom, lowest first (fallback parents), then pass by pass across the tiles of that zoom, casings under fills. Each tile is scissored to its square, with edges rounded the same way for neighbours, and starts with a land square that reaches into the buffer (stopping it at the tile edge left a faint antialiased seam). That square hides the parent drawn underneath. Lines are quads widened in the vertex shader, with round ends from the distance to the segment in the fragment shader and a 1-pixel antialiased edge; lines under a pixel are drawn one pixel wide and opaque, since fading them darkened every vertex where segment ends overlap. Roads, tunnels and bridges have casings; tunnels are faded with a dashed casing, bridges get a dark casing in a pass above the roads. Dashes restart at tile edges.
+> **Antialiasing:** MSAA 4× (eframe `multisampling`). `msaa = 1` in `config.toml` (or `--msaa 1` for `--render`) turns it off, for GPUs that cannot do it.
+> **Backends:** egui-wgpu already enables Vulkan, DX12, Metal and GL (`PRIMARY | GL`), so nothing was added. On the dev machine the window draws correctly with `WGPU_BACKEND=gl` and MSAA (checked with a temporary screenshot). Headless `--render` on GL reads back a black image with MSAA, so `--render` uses 1 sample on GL.
+> **Headless render:** `omp-app --render --pack <dir> --center <lat,lon> --zoom <z> [--size <w>x<h>] [--scale <s>] [--msaa <n>] out.png`, 0.1–0.3 s per image. `docs/screenshots/render.sh` renders 11 spots from the North America pack (continent, Arctic, Rockies, rural Ohio, Chicago, the Bay Area, Mexico City, Montreal, the Ontario lakes, Manhattan at z14 and z17); they are in `docs/screenshots/`, with the temporary colours.
+> **Ocean fix (builder):** the first renders showed open ocean missing at every zoom. The `water-polygons-split` shapefile winds its rings the opposite way from the shapefile convention that `measure/water.rs` assumed, so every ocean piece came out with its outer ring counter-clockwise; pieces with islands survived (the islands looked like outer rings), and pieces without were dropped as all holes. Pieces are now oriented by their largest ring. **Phase 0's and 1.2–1.3's water sizes were measured with the bug**, so they undercount the ocean. Rebuilt: Delaware (8.1 MiB, Delaware Bay now filled), Quebec (751.0 MiB, was 742.5) and North America: **9,200 MiB in 3 chunks** (4,095 + 4,095 + 1,010), was 8,001 in 2. Water tiles 4,711 MiB (was 3,675), `TIDX` 275 MiB (was 112), 64.0M tiles (was 23.7M): almost all of the new tiles are open ocean at z13–z14. Build 27.2 min at 43.6 GiB peak. `verify` passes on both. See the open question under Decisions.
+> **Tile zoom:** `floor(zoom + 0.5)` stays (open decision settled). A tile drawn at up to 1.41× its size still shows its simplification well under a pixel, and the frame times leave plenty of room for the extra tiles of rounding up.
+> **Results** (release build, dev machine, Radeon GFX1200 via Vulkan; reports in `$OMP_WORK/measure/bench/*-1.5*.json`):
+>
+> | Flight | Frames | Interval p50 / p95 / max | Start-up | Tile latency p50 / p95 / max | Read p95 / max | Decode p95 | Tessellate + upload p50 / p95 | RSS peak |
+> |---|---:|---:|---:|---:|---:|---:|---:|---:|
+> | Ohio, warm | 47,142 | 0.60 / 0.69 / 19.0 ms | 130 ms | 4.4 / 20.3 / 47 ms | 1.2 / 1.9 ms | 0.83 ms | 1.4 / 11.1 ms | 115 MiB |
+> | North America, warm | 84,035 | 0.60 / 0.69 / 17.8 ms | 96 ms | 6.2 / 24.6 / 60 ms | 1.5 / 9.3 ms | 0.91 ms | 1.5 / 9.5 ms | 160 MiB |
+> | North America, cold (disk remounted) | 84,324 | 0.60 / 0.68 / 18.1 ms | 112 ms | 6.6 / 32.2 / 62 ms | 1.5 / 35 ms | 0.89 ms | 1.4 / 9.4 ms | 162 MiB |
+>
+> The frame target (16.7 ms p95) is met with a wide margin: drawing a full view costs about 0.2 ms more than 1.4's outlines. Tile latency is now mostly tessellation, which runs on the loader threads, so frames never wait for it; jumps were fully detailed within 28 ms warm or cold (Toronto z10). The cold numbers are better than 1.4's (worst read 35 ms, was 450 ms); the cause is not known, and 1.10 measures cold reads properly on USB. RSS fell by about 50 MiB because the cache no longer keeps decoded tiles; on this discrete GPU the vertex buffers are in video memory, which RSS does not count. On an integrated GPU they may count, which 1.10 measures. The cache still fills its 96 MiB on North America. The release binary is 11.3 MB stripped (was 11.0).
+> **Seams:** none seen in the screenshots or at tile edges checked pixel by pixel (Delaware z9, a row across a tile edge). Overzoom to z18 works (Columbus z18, Manhattan z17).
+> **Open:** the full-ocean tiles (Decisions); old hardware and Windows (1.10); `--render` on GL without MSAA; dashes restart at tile edges; translucent fills are fine, but a translucent line would still darken where segments overlap (no line uses one).
+
 ## 1.6 Style file and default style
 
 - **Format:** TOML, like the whitelist. Rules per layer and class: draw order, fill and stroke colors, line width and casing width as functions of zoom (stops with linear interpolation), dashes, minimum and maximum zoom, and label rules (font, size, color, halo, priority, the prop to use, placement: point, line or area label point) plus the icon or shield for POIs and routes.
@@ -307,9 +327,11 @@ Settled while planning (2026-10-24):
 10. **Viewer extras in phase 1:** scale bar, zoom buttons, cursor coordinates and layer toggles (owner, 2026-10-24). No night style yet.
 11. **`routes` replaces `ref`** on roads (1.3): it carries the same refs, sorted, with their networks.
 12. **`name` only** in tiles, no `name:en`/`name:fr` (1.3).
+13. **Tile zoom for a fractional zoom:** `floor(zoom + 0.5)`, overzooming z14 up to z18 (1.4, kept in 1.5).
+14. **MSAA 4×** in the window and in `--render`, with `msaa = 1` in `config.toml` to turn it off (1.5).
 
 Open, to settle in their steps:
-- Tile zoom choice for a fractional zoom (1.4 starts with `floor(zoom + 0.5)`; tune in 1.5). Overzoom goes to z18, four levels past z14 (1.4).
+- **Full-ocean tiles** (found in 1.5): storing the open ocean costs North America about 1.2 GiB (40M tiles that are one ocean square each, at z13–z14). One option is to let a missing tile mean "draw the nearest stored ancestor" (the app already does this for overzoom) and have the builder leave out a tile that is only a full-tile ocean polygon when its parent is too. That is a format change; not done yet.
 - The state-by-state shield table: how many distinct shapes are worth drawing (1.8).
 - The default units rule for the scale bar in a pack that covers both countries (1.9).
 

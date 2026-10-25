@@ -1,23 +1,29 @@
-//! The window: the map view (tile outlines for now), input, the debug overlay (F3) and the
-//! pack picker (Ctrl+O).
+//! The window: the map view, input, the debug overlay (F3, with tile outlines) and the pack
+//! picker (Ctrl+O).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
-use omp_core::tiles::Tile;
+use eframe::egui_wgpu::{self, wgpu};
 
 use crate::bench::{Bench, FrameSample, ReportContext};
 use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
 use crate::config::{self, Config, Location, View};
-use crate::loader::{Done, Loader};
+use crate::loader::{self, Done, Loader};
+use crate::mesh;
 use crate::packs::{self, Opened};
+use crate::render::{self, GpuMesh, MapCallback, Renderer};
+use crate::style::Style;
 use crate::tiles::{self, Cover, TileId};
 
-/// CPU-side tile cache budget (phase1-plan.md 1.4); GPU buffers come on top in 1.5.
+/// Tile cache budget: the tiles' vertex data, which lives on the GPU (phase1-plan.md 1.4).
 const CACHE_BUDGET: usize = 96 << 20;
+/// Shown where no tile is drawn: outside the pack, and tiles not loaded yet.
+pub const NO_MAP: Color32 = Color32::from_rgb(222, 222, 216);
 /// Keyboard pan speed, points per second.
 const KEY_PAN: f64 = 700.0;
 /// How often a changed view is written to `config.toml`.
@@ -35,13 +41,25 @@ pub struct Startup {
     pub notices: Vec<String>,
     pub bench: Option<Bench>,
     pub started: Instant,
+    /// MSAA samples the window was created with.
+    pub msaa: u32,
 }
 
 enum TileData {
     Empty,
-    /// Kept decoded, so the cache budget and RSS are real; 1.5 adds the tessellated form.
-    Tile(Tile),
+    Mesh(Arc<GpuMesh>, TileInfo),
     Error,
+}
+
+/// About a loaded tile, for the overlay.
+#[derive(Clone, Copy)]
+struct TileInfo {
+    features: usize,
+    vertices: usize,
+    /// Compressed bytes read.
+    bytes: u64,
+    /// Polygons that could not be tessellated.
+    failed: usize,
 }
 
 #[derive(Default)]
@@ -49,14 +67,17 @@ struct TileStats {
     loaded: usize,
     empty: usize,
     errors: usize,
+    /// Polygons that could not be tessellated.
+    failed: usize,
     last_error: Option<String>,
-    /// Recent (latency, read, decode) in ms.
-    recent: VecDeque<[f32; 3]>,
+    /// Recent (latency, read, decode, prepare) in ms.
+    recent: VecDeque<[f32; 4]>,
 }
 
 struct MapState {
     opened: Opened,
-    loader: Loader,
+    style: Arc<Style>,
+    loader: Loader<(Arc<GpuMesh>, TileInfo)>,
     cache: Cache<TileData>,
     camera: Camera,
     motion: Motion,
@@ -95,6 +116,8 @@ pub struct App {
     last_save: Instant,
     cursor: Option<[f64; 2]>,
     adapter: String,
+    device: Option<wgpu::Device>,
+    srgb: bool,
 }
 
 impl App {
@@ -103,13 +126,15 @@ impl App {
         let mut notices = s.notices;
         notices.extend(s.config.fallback.clone());
         notices.extend(err);
-        let adapter = cc
-            .wgpu_render_state
-            .as_ref()
-            .map_or_else(String::new, |rs| {
-                let i = rs.adapter.get_info();
-                format!("{} ({:?})", i.name, i.backend)
-            });
+        let rs = cc.wgpu_render_state.as_ref();
+        let adapter = rs.map_or_else(String::new, |rs| {
+            let i = rs.adapter.get_info();
+            format!("{} ({:?})", i.name, i.backend)
+        });
+        if let Some(rs) = rs {
+            let r = Renderer::new(&rs.device, rs.target_format, s.msaa);
+            rs.renderer.write().callback_resources.insert(r);
+        }
         let mut app = Self {
             exe_dir: s.exe_dir,
             cfg_loc: s.config,
@@ -127,6 +152,8 @@ impl App {
             last_save: Instant::now(),
             cursor: None,
             adapter,
+            device: rs.map(|rs| rs.device.clone()),
+            srgb: rs.is_some_and(|rs| rs.target_format.is_srgb()),
         };
         if let Some(p) = s.chosen {
             app.open(&cc.egui_ctx, &p);
@@ -156,15 +183,33 @@ impl App {
             camera.set_lonlat(v.lon, v.lat, v.zoom);
             fit = !camera.contains_center();
         }
+        let Some(device) = self.device.clone() else {
+            self.notices
+                .push("No GPU device: the map cannot be drawn.".into());
+            return;
+        };
+        let style = Arc::new(Style::compile(&opened.schema));
         let ctx2 = ctx.clone();
+        let st = style.clone();
         let loader = Loader::new(
             opened.reader.clone(),
-            Loader::default_threads(),
+            loader::default_threads(),
+            move |_, tile| {
+                let m = mesh::build(&tile, &st);
+                let info = TileInfo {
+                    features: tile.layers.iter().map(|(_, l)| l.features.len()).sum(),
+                    vertices: tile.layers.iter().map(|(_, l)| l.vertices()).sum(),
+                    bytes: tile.bytes,
+                    failed: m.failed,
+                };
+                (Arc::new(GpuMesh::upload(&device, &m)), info)
+            },
             move || ctx2.request_repaint(),
         );
         self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
         self.map = Some(MapState {
             opened,
+            style,
             loader,
             cache: Cache::new(CACHE_BUDGET),
             camera,
@@ -228,7 +273,7 @@ impl App {
 
 impl MapState {
     fn take_results(&mut self, bench: &mut Option<Bench>) {
-        let done: Vec<Done> = self.loader.poll().collect();
+        let done: Vec<Done<_>> = self.loader.poll().collect();
         for d in done {
             if let Some(b) = bench {
                 b.tile(&d);
@@ -238,15 +283,17 @@ impl MapState {
                 d.latency.as_secs_f32() * 1e3,
                 d.timing.read.as_secs_f32() * 1e3,
                 d.timing.decode.as_secs_f32() * 1e3,
+                d.prepare.as_secs_f32() * 1e3,
             ]);
             if s.recent.len() > RECENT_TILES {
                 s.recent.pop_front();
             }
             let (data, bytes) = match d.result {
-                Ok(Some(t)) => {
+                Ok(Some((mesh, info))) => {
                     s.loaded += 1;
-                    let bytes = std::mem::size_of::<Tile>() + t.heap_bytes();
-                    (TileData::Tile(t), bytes)
+                    s.failed += info.failed;
+                    let bytes = mesh.bytes;
+                    (TileData::Mesh(mesh, info), bytes)
                 }
                 Ok(None) => {
                     s.empty += 1;
@@ -333,8 +380,9 @@ impl MapState {
         })
     }
 
-    /// Picks, requests and draws the tiles for the current camera.
-    fn draw(&mut self, painter: &egui::Painter, origin: Pos2) {
+    /// Picks, requests and draws the tiles for the current camera; with `outlines`, also the
+    /// tile outlines and their numbers.
+    fn draw(&mut self, painter: &egui::Painter, rect: Rect, ppp: f32, srgb: bool, outlines: bool) {
         let cam = &self.camera;
         self.cache.next_frame();
         let z = tiles::tile_zoom(cam.zoom);
@@ -352,7 +400,40 @@ impl MapState {
         for &t in sel.margin.iter().chain(plan.iter().map(|(t, _)| t)) {
             self.cache.get(t);
         }
+        let mut view = FrameView {
+            tile_zoom: z,
+            visible: sel.visible.len(),
+            drawn: plan.len(),
+            detailed: sel.visible.iter().all(|&t| self.cache.contains(t)),
+            ..Default::default()
+        };
+        let mut draws = Vec::with_capacity(plan.len());
+        for &(t, cover) in &plan {
+            match cover {
+                Cover::Missing => view.missing += 1,
+                Cover::Parent | Cover::Child => view.fallbacks += 1,
+                Cover::Exact => {}
+            }
+            match self.cache.get(t) {
+                Some(TileData::Mesh(m, _)) => draws.push((t, Some(m.clone()))),
+                Some(TileData::Empty) => draws.push((t, None)),
+                _ => {}
+            }
+        }
+        let paints = render::paints(&self.style, cam.zoom, ppp, srgb);
+        let frame = render::layout(cam, ppp, paints, draws);
+        painter.add(egui_wgpu::Callback::new_paint_callback(
+            rect,
+            MapCallback(frame),
+        ));
+        self.view = view;
+        if outlines {
+            self.outlines(painter, rect.min, &plan);
+        }
+    }
 
+    fn outlines(&mut self, painter: &egui::Painter, origin: Pos2, plan: &[(TileId, Cover)]) {
+        let cam = &self.camera;
         let to_screen = |w: [f64; 2]| {
             let p = cam.world_to_screen(w);
             Pos2::new(origin.x + p[0] as f32, origin.y + p[1] as f32)
@@ -365,52 +446,31 @@ impl MapState {
             Stroke::new(2.0, Color32::from_rgb(90, 140, 200)),
             StrokeKind::Middle,
         );
-        let mut view = FrameView {
-            tile_zoom: z,
-            visible: sel.visible.len(),
-            drawn: plan.len(),
-            detailed: sel.visible.iter().all(|&t| self.cache.contains(t)),
-            ..Default::default()
-        };
-        for &(t, cover) in &plan {
+        for &(t, cover) in plan {
             let r = world_rect(t.world_rect()).shrink(1.0);
             let data = self.cache.get(t);
-            let (stroke, fill) = match (cover, data) {
-                (Cover::Missing, _) => (
-                    Color32::from_gray(150),
-                    Color32::from_rgba_unmultiplied(160, 160, 160, 40),
-                ),
-                (_, Some(TileData::Error)) => (
-                    Color32::from_rgb(200, 40, 40),
-                    Color32::from_rgba_unmultiplied(200, 40, 40, 40),
-                ),
-                (Cover::Parent, _) => (Color32::from_rgb(220, 140, 30), Color32::TRANSPARENT),
-                (Cover::Child, _) => (Color32::from_rgb(60, 160, 80), Color32::TRANSPARENT),
-                (Cover::Exact, Some(TileData::Empty)) => {
-                    (Color32::from_gray(200), Color32::TRANSPARENT)
-                }
-                (Cover::Exact, _) => (
-                    Color32::from_rgb(70, 90, 120),
-                    Color32::from_rgba_unmultiplied(70, 110, 170, 18),
-                ),
+            let stroke = match (cover, data) {
+                (Cover::Missing, _) => Color32::from_gray(150),
+                (_, Some(TileData::Error)) => Color32::from_rgb(200, 40, 40),
+                (Cover::Parent, _) => Color32::from_rgb(220, 140, 30),
+                (Cover::Child, _) => Color32::from_rgb(60, 160, 80),
+                (Cover::Exact, Some(TileData::Empty)) => Color32::from_gray(200),
+                (Cover::Exact, _) => Color32::from_rgb(70, 90, 120),
             };
-            match cover {
-                Cover::Missing => view.missing += 1,
-                Cover::Parent | Cover::Child => view.fallbacks += 1,
-                Cover::Exact => {}
-            }
-            painter.rect_filled(r, 0.0, fill);
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, stroke), StrokeKind::Inside);
             if cover == Cover::Exact && r.width() > 150.0 {
                 let text = match data {
-                    Some(TileData::Tile(tile)) => {
-                        let features: usize =
-                            tile.layers.iter().map(|(_, l)| l.features.len()).sum();
-                        let vertices: usize = tile.layers.iter().map(|(_, l)| l.vertices()).sum();
+                    Some(TileData::Mesh(m, i)) => {
+                        let failed = match i.failed {
+                            0 => String::new(),
+                            n => format!(", {n} failed"),
+                        };
                         format!(
-                            "{t}\n{features} features, {vertices} vertices\n{:.1} KiB read, {:.0} KiB decoded",
-                            tile.bytes as f64 / 1024.0,
-                            tile.heap_bytes() as f64 / 1024.0
+                            "{t}\n{} features, {} vertices{failed}\n{:.1} KiB read, {:.0} KiB mesh",
+                            i.features,
+                            i.vertices,
+                            i.bytes as f64 / 1024.0,
+                            m.bytes as f64 / 1024.0
                         )
                     }
                     Some(TileData::Empty) => format!("{t}\nempty"),
@@ -422,11 +482,10 @@ impl MapState {
                     Align2::LEFT_TOP,
                     text,
                     FontId::monospace(11.0),
-                    Color32::from_gray(70),
+                    Color32::from_gray(40),
                 );
             }
         }
-        self.view = view;
     }
 }
 
@@ -449,7 +508,7 @@ impl eframe::App for App {
         let mut map_rect = Rect::NOTHING;
         let mut animate = false;
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(Color32::from_rgb(244, 242, 236)))
+            .frame(egui::Frame::NONE.fill(NO_MAP))
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 map_rect = rect;
@@ -492,7 +551,8 @@ impl eframe::App for App {
                         crate::camera::world_to_lonlat(w)
                     });
                 }
-                m.draw(&painter, rect.min);
+                let outlines = self.cfg.debug_overlay;
+                m.draw(&painter, rect, ctx.pixels_per_point(), self.srgb, outlines);
                 if m.view.detailed && self.first_full.is_none() {
                     self.first_full = Some(self.started.elapsed());
                 }
@@ -603,14 +663,16 @@ impl App {
             let k = s.recent.len().max(1) as f32;
             let avg = |i: usize| s.recent.iter().map(|r| r[i]).sum::<f32>() / k;
             lines.push(format!(
-                "loaded {} + {} empty, {} errors   last {}: latency {:.2} ms, read {:.2} ms, decode {:.2} ms",
+                "loaded {} + {} empty, {} errors, {} polygons failed   last {}: latency {:.2} ms, read {:.2} ms, decode {:.2} ms, tessellate {:.2} ms",
                 s.loaded,
                 s.empty,
                 s.errors,
+                s.failed,
                 s.recent.len(),
                 avg(0),
                 avg(1),
-                avg(2)
+                avg(2),
+                avg(3)
             ));
             lines.push(format!(
                 "read from pack: {:.1} MiB",

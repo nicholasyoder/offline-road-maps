@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use super::geom::{self, BBox, Geometry, P, Rect};
+use super::geom::{self, BBox, Geometry, P, Rect, ring_area};
 use super::osm::Feature;
 use super::poly::Poly;
 
@@ -82,12 +82,11 @@ pub fn read(
                 .map(|k| geom::project(f64_at(pts_at + 16 * k + 8), f64_at(pts_at + 16 * k)))
                 .collect();
             ring.pop(); // shapefile rings repeat the first point
-            // Shapefile outer rings are clockwise with y up; ours are clockwise with y down.
-            ring.reverse();
             if ring.len() >= 3 {
                 rings.push(ring);
             }
         }
+        orient_rings(&mut rings);
         if clip.is_some_and(|c| !rings.iter().any(|r| c.meets(r))) {
             outside += 1;
             continue;
@@ -104,4 +103,43 @@ pub fn read(
         }
     }
     Ok((features, scanned, outside))
+}
+
+/// Orients one ocean piece as ours are: the outer ring clockwise on screen (y down) and the
+/// holes counter-clockwise. The outer ring is the largest. The shapefile's own winding is not
+/// relied on: `water-polygons-split` pieces come wound the other way from the shapefile
+/// convention, and a piece whose only ring looked like a hole was dropped as all holes.
+fn orient_rings(rings: &mut [Vec<P>]) {
+    let largest = rings
+        .iter()
+        .map(|r| ring_area(r))
+        .max_by(|a, b| a.abs().total_cmp(&b.abs()));
+    if largest.is_some_and(|a| a < 0.0) {
+        for r in rings.iter_mut() {
+            r.reverse();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pieces_are_oriented_by_their_largest_ring() {
+        // Counter-clockwise on screen, with a clockwise island: the shapefiles' winding.
+        let outer: Vec<P> = vec![[0, 0], [0, 100], [100, 100], [100, 0]];
+        let island: Vec<P> = vec![[40, 40], [60, 40], [60, 60], [40, 60]];
+        assert!(ring_area(&outer) < 0.0 && ring_area(&island) > 0.0);
+        let mut rings = vec![outer.clone(), island];
+        orient_rings(&mut rings);
+        assert!(ring_area(&rings[0]) > 0.0 && ring_area(&rings[1]) < 0.0);
+        // Already right: left alone. A lone square becomes an outer ring.
+        let before = rings.clone();
+        orient_rings(&mut rings);
+        assert_eq!(rings, before);
+        let mut lone = vec![outer];
+        orient_rings(&mut lone);
+        assert!(ring_area(&lone[0]) > 0.0);
+    }
 }

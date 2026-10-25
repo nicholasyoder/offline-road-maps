@@ -97,6 +97,7 @@ struct TileLog {
     latency: Vec<f64>,
     read: Vec<f64>,
     decode: Vec<f64>,
+    prepare: Vec<f64>,
     loaded: usize,
     empty: usize,
     errors: usize,
@@ -179,7 +180,7 @@ impl Bench {
         }
     }
 
-    pub fn tile(&mut self, d: &Done) {
+    pub fn tile<T>(&mut self, d: &Done<T>) {
         if let Some(log) = self.logs.get_mut(self.step) {
             log.tiles += 1;
         }
@@ -192,6 +193,9 @@ impl Bench {
         t.latency.push(ms(d.latency));
         t.read.push(ms(d.timing.read));
         t.decode.push(ms(d.timing.decode));
+        if matches!(d.result, Ok(Some(_))) {
+            t.prepare.push(ms(d.prepare));
+        }
     }
 
     /// Records a frame and moves the camera for the next one. Returns the report once the
@@ -306,6 +310,7 @@ impl Bench {
                 latency_ms: Summary::of(&mut self.tiles.latency),
                 read_ms: Summary::of(&mut self.tiles.read),
                 decode_ms: Summary::of(&mut self.tiles.decode),
+                prepare_ms: Summary::of(&mut self.tiles.prepare),
             },
             bytes_read: bytes_read - self.bytes_read_start,
             rss_end: mem.map(|m| m.rss),
@@ -390,6 +395,8 @@ pub struct TilesReport {
     /// Index lookup and record read.
     pub read_ms: Summary,
     pub decode_ms: Summary,
+    /// Tessellation and upload to the GPU, for tiles that have data.
+    pub prepare_ms: Summary,
 }
 
 #[derive(Debug, Serialize)]
@@ -415,7 +422,7 @@ impl Report {
         let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
         let mut s = format!(
             "{}: {} frames, interval p50 {:.2} / p95 {:.2} / max {:.1} ms, cpu p95 {:.2} ms\n\
-             start-up {} ms; tiles {} loaded + {} empty, {} errors; latency p50 {:.2} / p95 {:.2} ms, read p95 {:.2} ms\n\
+             start-up {} ms; tiles {} loaded + {} empty, {} errors; latency p50 {:.2} / p95 {:.2} ms, read p95 {:.2} ms, decode p95 {:.2} ms, prepare p95 {:.2} ms\n\
              {:.1} MiB read; RSS peak {} MiB; cache peak {:.1} MiB of {:.0}\n",
             self.flight,
             self.frames,
@@ -430,6 +437,8 @@ impl Report {
             self.tiles.latency_ms.p50,
             self.tiles.latency_ms.p95,
             self.tiles.read_ms.p95,
+            self.tiles.decode_ms.p95,
+            self.tiles.prepare_ms.p95,
             mib(self.bytes_read),
             self.rss_peak
                 .map_or("-".into(), |v| format!("{:.0}", mib(v))),

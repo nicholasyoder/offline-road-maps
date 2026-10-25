@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use omp_core::pack::Pack;
+use omp_core::schema::{self, Schema};
 use omp_core::tiles::TileReader;
 
 use crate::camera::lonlat_to_world;
@@ -55,6 +56,8 @@ pub struct Opened {
     pub reader: Arc<TileReader>,
     /// The header's bounding box in world coordinates, `[x0, y0, x1, y1]`.
     pub bounds: [f64; 4],
+    /// Layer, class and prop names, which the style is resolved against.
+    pub schema: Schema,
 }
 
 pub fn open(first_chunk: &Path) -> Result<Opened, String> {
@@ -63,6 +66,11 @@ pub fn open(first_chunk: &Path) -> Result<Opened, String> {
     let [w, s, e, n] = pack.info.bbox.map(|v| f64::from(v) * 1e-7);
     let [x0, y0] = lonlat_to_world(w, n);
     let [x1, y1] = lonlat_to_world(e, s);
+    let section = pack
+        .section(schema::ID)
+        .copied()
+        .ok_or_else(|| format!("{}: the pack has no SCHM section", first_chunk.display()))?;
+    let schema = Schema::decode(&pack.read_section(&section).map_err(err)?).map_err(err)?;
     let reader = TileReader::open(pack).map_err(err)?;
     let bounds = if x1 > x0 && y1 > y0 {
         [x0, y0, x1, y1]
@@ -73,6 +81,7 @@ pub fn open(first_chunk: &Path) -> Result<Opened, String> {
         first_chunk: first_chunk.to_path_buf(),
         reader: Arc::new(reader),
         bounds,
+        schema,
     })
 }
 

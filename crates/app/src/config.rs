@@ -21,6 +21,8 @@ pub struct Config {
     pub view: Option<View>,
     /// The debug overlay (F3).
     pub debug_overlay: bool,
+    /// Antialiasing samples: 4 by default; 1 turns MSAA off, for GPUs that cannot do it.
+    pub msaa: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -161,6 +163,7 @@ mod tests {
                 zoom: 9.25,
             }),
             debug_overlay: true,
+            msaa: Some(1),
         };
         assert_eq!(cfg.pack.as_deref(), Some(Path::new("maps/ohio")));
         loc.save(&cfg).unwrap();

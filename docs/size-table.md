@@ -53,6 +53,20 @@ The regional columns grow by their driveway share too (Ohio the most: driveways 
 
 The labels and shields cost 25 MiB; merging saves about 326 MiB (measured with a second North America build without it). So the North America total is **about 11,750 MiB (11.5 GiB, 12.3 GB)** with driveways, down from about 12,049. The pack itself (tiles and index, no addresses, search or routing yet) is 8,001 MiB.
 
+### After phase 1 step 1.5: the ocean
+
+[Step 1.5](phase1-plan.md#15-geometry-renderer)'s first renders showed that most open ocean was missing. The ocean reader (`measure/water.rs`, used by `measure` and `build`) assumed the shapefile's ring winding, which `water-polygons-split` does not follow, and dropped every ocean piece without islands. **Every water size above undercounts the ocean** for that reason. Rebuilt with the fix (North America, MiB):
+
+| | 1.3 pack | 1.5 pack | Change |
+|---|---:|---:|---:|
+| Water tiles | 3,674.5 | 4,710.7 | +1,036.2 |
+| All tiles | 7,886.7 | 8,922.9 | +1,036.2 |
+| Tile index (`TIDX`) | 112 | 275 | +163 |
+| Tiles stored | 23.7M | 64.0M | +40.3M |
+| Pack | 8,001 | 9,200 | +1,199 |
+
+Almost all of it is open ocean inside the region's `.poly`: tiles at z13–z14 that hold nothing but one ocean square. Quebec's pack grew from 742.5 to 751.0 MiB; Ohio has no ocean. The North America total becomes **about 12,950 MiB (12.6 GiB, 13.6 GB)**. Leaving out full-ocean tiles whose parent is also full ocean (the app would draw the parent) would win most of it back; it is an open question in the [phase 1 plan](phase1-plan.md#decisions).
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.
