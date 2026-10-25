@@ -171,6 +171,11 @@ impl App {
         notices.extend(err);
         // The map is light, so its controls and dialogs are too, whatever the system theme.
         cc.egui_ctx.set_theme(egui::Theme::Light);
+        // Smaller window titles (egui's 18 points look heavy on small dialogs).
+        cc.egui_ctx.all_styles_mut(|s| {
+            s.text_styles
+                .insert(egui::TextStyle::Heading, FontId::proportional(15.0));
+        });
         let rs = cc.wgpu_render_state.as_ref();
         let adapter = rs.map_or_else(String::new, |rs| {
             let i = rs.adapter.get_info();
@@ -1103,15 +1108,23 @@ impl App {
             .show(ctx, |ui| {
                 panel.show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    let button = |ui: &mut egui::Ui, text: &str, tip: &str| {
-                        let b = egui::Button::new(egui::RichText::new(text).size(20.0))
-                            .min_size(Vec2::splat(32.0));
-                        ui.add(b).on_hover_text(tip).clicked()
+                    // The signs are drawn, not typed: a font's + and − sit off centre.
+                    let button = |ui: &mut egui::Ui, plus: bool, tip: &str| {
+                        let b = egui::Button::new("").min_size(Vec2::splat(32.0));
+                        let r = ui.add(b).on_hover_text(tip);
+                        let (c, h) = (r.rect.center(), 6.5);
+                        let stroke = Stroke::new(2.0, ui.style().interact(&r).fg_stroke.color);
+                        let p = ui.painter();
+                        p.line_segment([c - Vec2::new(h, 0.0), c + Vec2::new(h, 0.0)], stroke);
+                        if plus {
+                            p.line_segment([c - Vec2::new(0.0, h), c + Vec2::new(0.0, h)], stroke);
+                        }
+                        r.clicked()
                     };
-                    if button(ui, "+", "Zoom in  (+)") {
+                    if button(ui, true, "Zoom in  (+)") {
                         m.motion.zoom(1.0, center);
                     }
-                    if button(ui, "\u{2212}", "Zoom out  (\u{2212})") {
+                    if button(ui, false, "Zoom out  (\u{2212})") {
                         m.motion.zoom(-1.0, center);
                     }
                 });
@@ -1153,7 +1166,7 @@ impl App {
                 };
                 let pack = m.opened.reader.pack();
                 let info = &pack.info;
-                ui.heading(&info.name);
+                ui.label(egui::RichText::new(&info.name).heading().size(18.0));
                 egui::Grid::new("about-grid")
                     .num_columns(2)
                     .spacing([16.0, 4.0])
