@@ -36,7 +36,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.7 Text and label placement | **Done** 2026-10-25 | Noto Sans subset to Latin (196 KB), shaped with `harfrust`, SDF glyphs from `skrifa` outlines; greedy placement with hysteresis and fade-in, line labels along roads and rivers, POI markers. Placement p95 0.28 ms a frame; North America flight p95 frame 1.05 ms; binary 11.8 MB. |
 | 1.8 Shields and POI icons | **Done** 2026-10-25 | 16 shield designs (`omp_core::routes::shield`) and 11 Maki icons, drawn as distance fields in the glyph atlas. Real shields on 97% of US and 95% of Canadian motorway ways; North America flight p95 frame 1.26 ms; binary 11.9 MB. |
 | 1.9 Viewer UI | **Done** 2026-10-25 (Linux) | Scale bar (miles, km or both, following the pack), zoom buttons, cursor coordinates, credit line; Layers menu with 9 toggles applied at draw time; About this map; Verify pack on a thread, cancellable; error dialogs for a damaged pack or tile; all saved in `config.toml`. North America flight p95 frame 1.39 ms; binary 12.2 MB. Running it on Windows is left to 1.10. |
-| 1.10 Performance, USB and hardware checks | In progress | Dev machine from the USB 2 stick, cold: all criteria pass. Latitude 7490 on Linux (UHD 620): p95 12.3 ms, RSS 145 MiB, but one silent failed start; on Windows 11 it never opened. E6430 (Windows 10, no GPU driver) and the pre-2012 laptop ran on software renderers at 3–8 fps. Reruns with diagnostics remain. |
+| 1.10 Performance, USB and hardware checks | In progress | Frame targets pass on every machine with a GPU (dev 1.17 ms cold from USB 2; 7490 12–18 ms; E6430 20.3 ms on GL). Windows 11's Intel Vulkan driver crashed: Windows now uses DX12 and GL only. Windows RSS misses criterion 3 (7490 629 MiB DX12, E6430 1.5 GB GL; Linux 145 MiB): memory diagnostics added, fix pending. |
 
 ## Environment notes
 
@@ -537,7 +537,25 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 >
 > **Diagnostics added** for the reruns: bench mode prints a first line and the chosen adapter; `logger.rs` prints eframe, winit and wgpu log records to stderr (`OMP_LOG`, default warn); both scripts record each run's exit code, set `RUST_BACKTRACE=1`, and when no report comes out retry with each backend (`WGPU_BACKEND` dx12 / vulkan / gl on Windows, vulkan / gl on Linux) at `OMP_LOG=info`. `run-bench.bat` also records the Smart App Control state.
 > **Bench ignores the debug overlay:** a normal run on one of the laptops left `debug_overlay = true` in the stick's `config.toml` (portable mode), and the bench drew tile outlines and the F3 overlay when it was set. It now ignores it, as it already ignored the layer toggles. Earlier rows may include it; the reruns will not.
-> **Remaining:** rerun on the 7490 (Windows 11 and Linux) with the diagnostics, and on the E6430 with its graphics driver; then roadmap §6.
+>
+> **Reruns (2026-10-25), with the diagnostics:**
+>
+> | Machine | Run | Adapter | Frames | Interval p50 / p95 / max | Start-up | Slowest jump | Tile latency p50 / p95 / max | Read p95 / max | RSS peak / end | Idle CPU (frames) |
+> |---|---|---|---|---|---|---|---|---|---|---|
+> | Latitude 7490, Windows 11, 1.25 px/pt | default, cold | — | crashed at once, exit code `0xC0000005` (access violation), before the adapter line | | | | | | | |
+> | 7490, Windows 11 | `WGPU_BACKEND=vulkan` | — | the same crash | | | | | | | |
+> | 7490, Windows 11 | `dx12` (first run that read the pack: cold) | UHD 620 (DX12) | 5,436 | 9.5 / 14.9 / 138 ms | 3,107 ms | 175 ms (continent z3) | 33.0 / 110 / 362 ms | 14.0 / 38 ms | **629 / 628 MiB** | 0.00% (0) |
+> | 7490, Windows 11 | `gl` (warm) | UHD 620 (GL) | 4,123 | 11.9 / 18.3 / 152 ms | 646 ms | 180 ms (continent z3) | 48.8 / 126 / 250 ms | 1.3 / 11 ms | **375 / 330 MiB** | 0.00% (0) |
+> | 7490, Debian 13, 1.67 px/pt | cold | UHD 620 (Vulkan) | 6,239 | 8.0 / 12.3 / 98 ms | 508 ms | 97 ms (continent z3) | 27.8 / 78 / 154 ms | 13.0 / 49 ms | 145 / 145 MiB | 0.10% (0) |
+> | 7490, Debian 13 | warm | same | 6,203 | 8.1 / 12.4 / 61 ms | 205 ms | 60 ms (continent z3) | 18.4 / 55 / 111 ms | 0.45 / 6.2 ms | 146 / 146 MiB | 0.00% (0) |
+> | E6430, Windows 10, Intel driver 10.18.10.4425 | cold | HD 4000 (GL) | 3,918 | 12.6 / 20.3 / 490 ms | 3,115 ms | 413 ms (continent z3) | 50.9 / 163 / 273 ms | 6.0 / 28 ms | **1,523 / 1,523 MiB** | 0.00% (0) |
+> | E6430 | warm | same | 3,918 | 12.5 / 20.4 / 98 ms | 300 ms | 137 ms (continent z3) | 43.4 / 151 / 247 ms | 0.20 / 3.3 ms | **1,501 / 1,501 MiB** | 0.00% (0) |
+>
+> - **Frames:** with their GPUs, both laptops pass the 33 ms laptop target (E6430 p95 20.3 ms on GL; 7490 12–18 ms on every backend). The 7490's silent cold failure on Linux did not come back. Idle CPU is 0% with no frames on all of them.
+> - **Windows 11 crash:** Intel's Vulkan driver (31.0.101.2127) crashes while wgpu lists adapters, so listing Vulkan at all is enough to crash. Smart App Control is off. **Fix:** on Windows the app now asks wgpu for DX12 and GL only (`WGPU_BACKEND` still overrides). Not yet checked on the 7490.
+> - **Memory on Windows misses criterion 3:** 629 MiB on DX12 and 375 MiB on GL on the 7490, 1.5 GB on GL on the E6430, against 145 MiB for the same 7490 on Linux. The tile cache caps the app's GPU data at 96 MiB, so the rest is the driver's or the allocator's; on these integrated GPUs Windows counts it in the working set. The E6430 ends where it peaks, which looks like memory the driver keeps rather than a working set that shrinks. The renderer makes small vertex and index buffers for every tile (`create_buffer_init`), the likely cost on both backends.
+> - **Memory diagnostics added:** RSS at the end of each step (to tell steady growth from a plateau), and wgpu's allocator report at the end (`gpu_allocated` / `gpu_reserved`; DX12 and Vulkan). On the dev machine (Ohio, Vulkan): 108 MiB allocated in 192 MiB of blocks.
+> **Remaining:** rerun on both Windows machines for the crash fix and the memory diagnostics; then reduce Windows memory (likely fix: tile geometry suballocated from a few large pooled buffers instead of a buffer pair per tile); then roadmap §6.
 
 ---
 

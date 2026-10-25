@@ -823,7 +823,15 @@ impl eframe::App for App {
             match b.poll() {
                 Poll::Flying => animate = true,
                 Poll::Idle(wait) => ctx.request_repaint_after(wait),
-                Poll::Done(report) => {
+                Poll::Done(mut report) => {
+                    if let Some(r) = self
+                        .device
+                        .as_ref()
+                        .and_then(|d| d.generate_allocator_report())
+                    {
+                        report.gpu_allocated = Some(r.total_allocated_bytes);
+                        report.gpu_reserved = Some(r.total_reserved_bytes);
+                    }
                     eprint!("{}", report.summary());
                     let out = b.out().to_path_buf();
                     match serde_json::to_string_pretty(&report)

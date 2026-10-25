@@ -99,6 +99,7 @@ struct StepLog {
     timed_out: bool,
     tiles: usize,
     bytes_read_start: u64,
+    rss_end: Option<u64>,
 }
 
 #[derive(Default)]
@@ -286,6 +287,7 @@ impl Bench {
         if t < step.hold {
             return None;
         }
+        log.rss_end = crate::memory::usage().map(|m| m.rss);
         if self.step + 1 < self.flight.steps.len() {
             self.begin_step(self.step + 1, cam, now, f.bytes_read);
             return None;
@@ -358,6 +360,7 @@ impl Bench {
                 timed_out: l.timed_out,
                 tiles: l.tiles,
                 bytes_read: ends[i].saturating_sub(l.bytes_read_start),
+                rss_end: l.rss_end,
             })
             .collect::<Vec<_>>();
         Report {
@@ -387,6 +390,8 @@ impl Bench {
             rss_peak: mem.map(|m| m.peak),
             idle_cpu_percent: None,
             idle_frames: 0,
+            gpu_allocated: None,
+            gpu_reserved: None,
             cache_budget: ctx.cache_budget,
             cache_peak: self.cache_peak,
             steps,
@@ -458,6 +463,10 @@ pub struct Report {
     pub idle_cpu_percent: Option<f64>,
     /// Frames drawn while idle CPU was measured; nothing asks for one, so 0 is expected.
     pub idle_frames: usize,
+    /// From wgpu's allocator at the end, where the backend has one (DX12, Vulkan): bytes in
+    /// live allocations, and in the memory blocks they are cut from.
+    pub gpu_allocated: Option<u64>,
+    pub gpu_reserved: Option<u64>,
     pub cache_budget: usize,
     pub cache_peak: usize,
     pub steps: Vec<StepReport>,
@@ -492,6 +501,8 @@ pub struct StepReport {
     pub timed_out: bool,
     pub tiles: usize,
     pub bytes_read: u64,
+    /// RSS when the step ended.
+    pub rss_end: Option<u64>,
 }
 
 impl Report {
@@ -501,7 +512,7 @@ impl Report {
         let mut s = format!(
             "{}: {} frames, interval p50 {:.2} / p95 {:.2} / max {:.1} ms, cpu p95 {:.2} ms, labels p95 {:.2} ms\n\
              start-up {} ms; tiles {} loaded + {} absent, {} errors; latency p50 {:.2} / p95 {:.2} ms, read p95 {:.2} ms, decode p95 {:.2} ms, prepare p95 {:.2} ms\n\
-             {:.1} MiB read; RSS peak {} MiB; cache peak {:.1} MiB of {:.0}; idle CPU {}% ({} frames)\n",
+             {:.1} MiB read; RSS peak {} MiB; GPU allocator {} MiB; cache peak {:.1} MiB of {:.0}; idle CPU {}% ({} frames)\n",
             self.flight,
             self.frames,
             self.interval_ms.p50,
@@ -521,6 +532,10 @@ impl Report {
             mib(self.bytes_read),
             self.rss_peak
                 .map_or("-".into(), |v| format!("{:.0}", mib(v))),
+            match (self.gpu_allocated, self.gpu_reserved) {
+                (Some(a), Some(r)) => format!("{:.0} of {:.0}", mib(a), mib(r)),
+                _ => "-".into(),
+            },
             mib(self.cache_peak as u64),
             mib(self.cache_budget as u64),
             self.idle_cpu_percent
@@ -533,8 +548,11 @@ impl Report {
                 (None, true) => ", timed out".into(),
                 _ => String::new(),
             };
+            let rss = st
+                .rss_end
+                .map_or(String::new(), |v| format!(", RSS {:.0} MiB", mib(v)));
             s += &format!(
-                "  {:<28} {:>5} frames, p95 {:>6.2} ms, {:>4} tiles{detail}\n",
+                "  {:<28} {:>5} frames, p95 {:>6.2} ms, {:>4} tiles{detail}{rss}\n",
                 st.label, st.frames, st.interval_ms.p95, st.tiles
             );
         }

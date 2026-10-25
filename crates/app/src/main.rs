@@ -173,6 +173,14 @@ fn main() -> ExitCode {
             .with_title("Offline Road Maps"),
         ..Default::default()
     };
+    // Windows: DX12, else GL. Intel's Vulkan driver for UHD 620 crashed while wgpu listed
+    // adapters (phase1-plan.md, 1.10), and DX12 covers the same GPUs. WGPU_BACKEND overrides.
+    #[cfg(windows)]
+    if eframe::wgpu::Backends::from_env().is_none()
+        && let eframe::egui_wgpu::WgpuSetup::CreateNew(s) = &mut options.wgpu_options.wgpu_setup
+    {
+        s.instance_descriptor.backends = eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::GL;
+    }
     let bench = match &args.bench {
         Some(path) => {
             let flight = match bench::Flight::load(path) {
