@@ -31,7 +31,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.4 App skeleton: pack, camera, tile loading, bench | **Done** 2026-10-24 | Tile outlines, loader pool, 96 MiB cache, F3 overlay, `--bench`. North America flight: 0.45 ms p95 frame (outlines only), RSS peak 212 MiB, worst cold jump 132 ms on SATA SSD. |
 | 1.5 Geometry renderer | **Done** 2026-10-24 | wgpu fills (lyon) and screen-width lines with casings, per-tile scissor, MSAA 4×, `--render`. Ohio flight 0.69 ms p95 frame; North America RSS peak 162 MiB. Ocean pieces were being dropped by the builder: fixed, North America pack now 9,200 MiB. |
 | 1.5b Leave out full-ocean tiles | **Done** 2026-10-24 | Format 0.2: a missing tile is drawn from its nearest stored ancestor. Tiles that one polygon covers are left out (40.1M ocean, 5.6M protected area). North America 8,026 MiB (was 9,200), 17.9M tiles (was 64.0M); renders unchanged. |
-| 1.5c Tile size experiments: frame overhead, per-layer max zoom | Not started | After 1.5b. Two measured experiments; keep what pays. |
+| 1.5c Tile size experiments: frame overhead, per-layer max zoom | In progress | Both measured on Quebec and North America (`size-experiments`, `--render --cap`). North America: F1+F2 −253 MiB, no decode cost; F3 and F4 not worth it; caps −743 MiB (land cover to z13) to −1,654 MiB (land cover and water areas to z13). **Waiting for the owner's decision**; then format, builder, app, rebuild. |
 | 1.6 Style file and default style | Not started | |
 | 1.7 Text and label placement | Not started | |
 | 1.8 Shields and POI icons | Not started | |
@@ -317,6 +317,37 @@ Store a polygon layer only up to some zoom *M*, and draw it from the tile at *M*
 - **Quality check:** render `docs/screenshots/render.sh`'s spots at z14, z15 and z17 with each variant next to the 1.5b pack, and add a few spots for the cases above (a lakeshore road in Ontario, a river bridge, a coastal town). The owner judges the screenshots.
 
 **Done when:** both experiments are measured on Quebec and North America and the results are written under this step; the owner has decided what to keep; any kept variant is in format.md, the builder and the app; the packs are rebuilt and verified; the bench and screenshots are rerun; and the size table and roadmap §4 have the new numbers.
+
+> **Measured 2026-10-24; waiting for the owner's decision** (the commit that adds `build/experiment.rs`).
+> **Tools:** `omp-builder size-experiments <pack>` reads a pack and works out every variant without rebuilding: F1 and F2 change only the frame wrapper, so their sizes are exact; F3 uses each frame's content size; F4 and the water cap decompress and recompress (level 19, with dictionaries). It rebuilds `TIDX` for each variant, the baseline too, so the index sizes compare exactly, and times the decode of every 64th tile (single thread, best of 3). `omp-app --render --cap landcover=13,water-areas=13` previews a capped pack: above the cap a tile's own features of that layer (or only its polygons, with `-areas`) are replaced by its ancestor's at the cap zoom, scaled into the tile. Results in `$OMP_WORK/measure/1.5c/`.
+> **Frames by stored size** (North America, 33.1M): 28% are 16–23 bytes, 43% under 40, 80% under 256.
+>
+> | Variant | Quebec MiB saved | North America: tiles + `TIDX` MiB | saved |
+> |---|---:|---:|---:|
+> | baseline (1.5b) | 0 (742.0) | 7,928.7 + 95.0 = 8,023.7 | 0 |
+> | F1 magicless | 5.7 | 7,897.2 | 126.5 |
+> | F2 no checksum | 5.7 | 7,897.2 | 126.5 |
+> | **F1+F2** | **11.5** | **7,770.6** | **253.1** |
+> | F1+F2, one checksum per tile | 8.1 | 7,839.0 | 184.7 |
+> | F1+F2+F3, raw ≤ 16 B | 11.4 | 7,771.0 | 252.7 |
+> | F1+F2+F3, raw ≤ 32 B | 11.4 | 7,787.8 | 235.9 |
+> | F1+F2+F3, raw ≤ 64 B | 10.6 | 7,987.4 | 36.3 |
+> | F1+F2+F3, raw when smaller than the frame | 11.9 | 7,756.3 | 267.4 |
+> | F4 one frame per tile | 6.4 | 7,943.0 | 80.6 |
+> | F4+F1+F2 | 13.1 | 7,806.1 | 217.5 |
+> | B land cover to z13 | 46.3 | 7,280.3 | 743.3 |
+> | B land cover to z12 | 81.0 | 6,787.6 | 1,236.1 |
+> | B water areas to z13 | 147.6 | 7,124.8 | 898.9 |
+> | **B land cover and water areas to z13** | **194.0** | **6,369.4** | **1,654.3** |
+>
+> **A, frame overhead.** F1+F2 saves exactly 8 bytes per frame: 253 MiB on North America (3.2%), 11.5 MiB on Quebec (1.5%). Decode per tile is no slower (North America p50 / p95 / p99: 0.8 / 8.1 / 24.7 µs baseline, 0.7 / 7.8 / 23.4 µs F1+F2). It needs zstd's experimental API (`zstd` feature `experimental`, `FrameFormat::Magicless`), and corruption is then caught by the section checksums (`verify`) and the payload decoder. That decoder still needs the fuzz test of F2 before F2 is kept. A checksum per tile gives back 68 of the 253 MiB. **F3** does not pay: zstd with a dictionary compresses even 10-byte payloads below their raw size, so raw storage only helps where it is chosen frame by frame ("when smaller", 14 MiB more than F1+F2), and the flag bit makes `TIDX` 3.8 MiB larger. **F4** saves less than F1+F2 on North America (F4+F1+F2 saves 36 MiB less) and costs the per-layer dictionaries; its z14 dictionary trained to only 7 KiB, so z14 may be underrated, but it is a comparison only. *Proposal: keep F1+F2 (format 0.3), drop F3 and F4.*
+> **B, per-layer max zoom.** Every class of land cover and every water area class starts at z10 or lower, so no class disappears under any cap; streams (z13) are lines and stay. The water layer did not need splitting: the cap keeps its lines at z14 and drops only its polygons, which the format could express as a `maxzoom` per layer *and geometry* in `SCHM`, or by moving water lines to their own layer. With both z13 caps, 5.3M of 17.9M tiles hold nothing else and are left out.
+> - **Quality.** The water and land cover tolerances are 8 units at z13 and 16 at z14, the same distance on the ground, so a z13 cap does not move edges further than they already are: the shapes differ because Douglas–Peucker keeps other vertices in the other tile. What z13 drops that z14 keeps are rings under 256 grid units (about 2×2 z13 pixels, 14 m across at 45° N) and lines under 8 units. At z12 the tolerance is 1.5 times coarser and rings under about 27 m across are dropped.
+> - **Screenshots** with `--cap` against the 1.5b pack at 15 spots (the 1.5 reference spots and a lakeshore road in Muskoka, Port Carling, the Roebling bridge in Cincinnati, the Thousand Islands, Bar Harbor, the Woods Hole ferry, Gloucester), at z14, z15 and z17: with both z13 caps at most 1.5% of the pixels change (10,240 of 700,000, Woods Hole z17), and they are edge shifts of 1–16 px along shores and land cover outlines (`$OMP_WORK/measure/1.5c/caps-diff.txt`). Land cover to z12 changes up to 3.4% and visibly drops small patches (Mexico City z15). Eight comparisons are in [`docs/screenshots/1.5c/`](screenshots/1.5c/): baseline, both z13 caps and land cover to z12, with changed pixels in red.
+> - **App cost** if kept: a view above the cap also needs the tile at the cap zoom (one z13 tile covers 4 z14 tiles, so 1–2 more reads per view), and the ancestor's capped layers are drawn scissored to each tile, as for 1.5b's left-out tiles.
+> - *Proposal: cap land cover and water areas at z13 (−1,654 MiB, tiles and `TIDX` 6,369 MiB); not land cover at z12, which loses features.*
+> **Combined** (not measured together): F1+F2 on the z13-capped pack would save about 8 bytes × 20.3M frames, 155 MiB more, so about 6,210 MiB in all, from 8,024.
+> **Left for after the decision:** format.md (0.3), builder, app (`--cap` is only a preview and goes when the real one lands), the F2 fuzz test, rebuilds, `verify`, bench, `render.sh`, the size table and roadmap §4.
 
 ## 1.6 Style file and default style
 

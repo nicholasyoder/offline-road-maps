@@ -4,13 +4,14 @@
 //! omp-app [--pack <dir>]
 //! omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
 //! omp-app --render --pack <dir> --center <lat,lon> --zoom <z> [--size <w>x<h>] [--scale <s>]
-//!         [--msaa <n>] <out.png>
+//!         [--msaa <n>] [--cap <layer>=<z>,…] <out.png>
 //! ```
 
 mod app;
 mod bench;
 mod cache;
 mod camera;
+mod cap;
 mod config;
 mod loader;
 mod memory;
@@ -30,7 +31,7 @@ use eframe::egui;
 const USAGE: &str = "usage: omp-app [--pack <dir>]
        omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
        omp-app --render --pack <dir> --center <lat,lon> --zoom <z> [--size <w>x<h>] [--scale <s>]
-               [--msaa <n>] <out.png>
+               [--msaa <n>] [--cap <layer>=<z>,…] <out.png>
 
   --pack <dir>   open the pack in <dir> (or the first chunk file itself); default:
                  maps/ next to the executable, else the pack used last
@@ -38,7 +39,9 @@ const USAGE: &str = "usage: omp-app [--pack <dir>]
   --out <file>   where the bench report goes (default: bench-<flight name>.json)
   --render       draw one view offscreen to <out.png>, without a window; --size in
                  pixels (default 1200x800), --scale in pixels per point (default 1),
-                 --msaa 1 to turn antialiasing off";
+                 --msaa 1 to turn antialiasing off; --cap draws a layer (or with
+                 -areas, its polygons) from its ancestor above zoom z, to preview a
+                 capped pack (step 1.5c)";
 
 #[derive(Default)]
 struct Args {
@@ -51,6 +54,7 @@ struct Args {
     size: Option<String>,
     scale: Option<String>,
     msaa: Option<String>,
+    cap: Option<String>,
     /// The PNG for `--render`.
     file: Option<PathBuf>,
 }
@@ -75,6 +79,7 @@ fn parse_args() -> Result<Args, String> {
             Some("--size") => a.size = Some(text(value("--size")?)),
             Some("--scale") => a.scale = Some(text(value("--scale")?)),
             Some("--msaa") => a.msaa = Some(text(value("--msaa")?)),
+            Some("--cap") => a.cap = Some(text(value("--cap")?)),
             Some("-h" | "--help") => return Err(String::new()),
             Some(s) if !s.starts_with('-') && a.file.is_none() => a.file = Some(s.into()),
             _ => return Err(format!("unknown argument {}", arg.to_string_lossy())),
@@ -220,7 +225,11 @@ fn render(args: &Args) -> ExitCode {
         args.scale.as_deref(),
         args.msaa.as_deref(),
         file.clone(),
-    );
+    )
+    .map(|s| snapshot::Snapshot {
+        cap: args.cap.clone(),
+        ..s
+    });
     match snap.and_then(|s| s.run()) {
         Ok(msg) => {
             eprintln!("{msg}");
