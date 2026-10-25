@@ -762,8 +762,8 @@ impl eframe::App for App {
                         crate::camera::world_to_lonlat(w)
                     });
                 }
-                let outlines = self.cfg.debug_overlay;
-                // The bench draws every layer, whatever the config says.
+                // The bench draws every layer and no overlay, whatever the config says.
+                let outlines = self.cfg.debug_overlay && self.bench.is_none();
                 let layers = match self.bench {
                     Some(_) => Layers::default(),
                     None => self.cfg.layers,
@@ -781,7 +781,7 @@ impl eframe::App for App {
                 }
             });
 
-        if self.cfg.debug_overlay {
+        if self.cfg.debug_overlay && self.bench.is_none() {
             self.overlay(&ctx, map_rect);
         }
         self.controls(&ctx, map_rect);

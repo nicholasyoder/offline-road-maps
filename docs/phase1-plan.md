@@ -536,6 +536,7 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 > - **Software rendering misses criterion 3** (RSS over 300 MB) as well as criterion 1, because the renderer's buffers count as process memory. The app now prints egui-wgpu's warning when it gets a software rasterizer; phase 2 could tell the user in the window too.
 >
 > **Diagnostics added** for the reruns: bench mode prints a first line and the chosen adapter; `logger.rs` prints eframe, winit and wgpu log records to stderr (`OMP_LOG`, default warn); both scripts record each run's exit code, set `RUST_BACKTRACE=1`, and when no report comes out retry with each backend (`WGPU_BACKEND` dx12 / vulkan / gl on Windows, vulkan / gl on Linux) at `OMP_LOG=info`. `run-bench.bat` also records the Smart App Control state.
+> **Bench ignores the debug overlay:** a normal run on one of the laptops left `debug_overlay = true` in the stick's `config.toml` (portable mode), and the bench drew tile outlines and the F3 overlay when it was set. It now ignores it, as it already ignored the layer toggles. Earlier rows may include it; the reruns will not.
 > **Remaining:** rerun on the 7490 (Windows 11 and Linux) with the diagnostics, and on the E6430 with its graphics driver; then roadmap §6.
 
 ---
