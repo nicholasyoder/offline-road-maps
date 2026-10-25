@@ -79,14 +79,15 @@ struct Design {
     /// A band across the top, and its bottom as a share of the height.
     band: Option<(Rgba, f32)>,
     text: Rgba,
-    /// The middle of the text, as a share of the height from the top.
+    /// The middle of the text, as shares of the width and of the height from the top.
+    text_x: f32,
     text_y: f32,
     /// The number's size, as a share of the shield's em.
     text_size: f32,
     /// Text too wide for `min_width` is set smaller, down to this share of `text_size`.
     shrink: f32,
-    /// Wider than `min_width`, the outline grows in height too, keeping its shape (Ohio's
-    /// outline looks wrong stretched).
+    /// Wider than `min_width`, the outline grows in height too, keeping its shape: true for
+    /// every design but those that look right stretched (boxes and ovals).
     keep_aspect: bool,
 }
 
@@ -107,17 +108,27 @@ const PLAIN: Design = Design {
     body: WHITE,
     band: None,
     text: BLACK,
+    text_x: 0.5,
     text_y: 0.5,
     text_size: 1.0,
     shrink: 1.0,
     keep_aspect: false,
 };
 
+/// Shields that keep their shape: a long number is set up to a fifth smaller, then the
+/// whole shield grows.
+const SHAPED: Design = Design {
+    shrink: 0.8,
+    keep_aspect: true,
+    ..PLAIN
+};
+
 impl Design {
     /// The height for a width, in ems.
     fn height(&self, w: f32) -> f32 {
         match self.keep_aspect {
-            true => self.height * (w / self.min_width).max(1.0),
+            // From the narrowest width a plate can have, in whole eighths.
+            true => self.height * (w / ((self.min_width * 8.0).ceil() / 8.0)).max(1.0),
             false => self.height,
         }
     }
@@ -136,7 +147,7 @@ fn design(s: Shield) -> Design {
             band: Some((RED, 0.24)),
             text: WHITE,
             text_y: 0.53,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::InterstateBusiness => Design {
             outline: interstate,
@@ -147,7 +158,7 @@ fn design(s: Shield) -> Design {
             body: GREEN,
             text: WHITE,
             text_y: 0.5,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::UsRoute => Design {
             outline: us_route,
@@ -155,7 +166,7 @@ fn design(s: Shield) -> Design {
             min_width: 1.5,
             pad: 0.3,
             text_y: 0.44,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::Circle => Design {
             outline: ellipse,
@@ -174,7 +185,7 @@ fn design(s: Shield) -> Design {
             pad: 0.1,
             text_size: 0.8,
             shrink: 0.75,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::Keystone => Design {
             outline: keystone,
@@ -182,7 +193,7 @@ fn design(s: Shield) -> Design {
             min_width: 1.6,
             pad: 0.35,
             text_y: 0.48,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::Spade => Design {
             outline: spade,
@@ -193,7 +204,7 @@ fn design(s: Shield) -> Design {
             body: GREEN,
             text: WHITE,
             text_y: 0.4,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::Ohio => Design {
             outline: ohio,
@@ -201,10 +212,11 @@ fn design(s: Shield) -> Design {
             min_width: 1.5,
             stretch: 1.1,
             pad: 0.25,
-            text_y: 0.47,
+            // Off centre, towards the wide south-west.
+            text_x: 0.43,
+            text_y: 0.5,
             shrink: 0.75,
-            keep_aspect: true,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::County => Design {
             outline: pentagon,
@@ -215,7 +227,7 @@ fn design(s: Shield) -> Design {
             body: [22, 84, 168, 255],
             text: [255, 214, 51, 255],
             text_y: 0.4,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::TransCanada => Design {
             outline: heater,
@@ -226,7 +238,7 @@ fn design(s: Shield) -> Design {
             body: GREEN,
             text: WHITE,
             text_y: 0.42,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::Ontario => Design {
             outline: crowned,
@@ -234,7 +246,7 @@ fn design(s: Shield) -> Design {
             min_width: 1.55,
             pad: 0.28,
             text_y: 0.54,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::QuebecAutoroute => Design {
             outline: heater,
@@ -246,7 +258,7 @@ fn design(s: Shield) -> Design {
             band: Some((RED, 0.22)),
             text: WHITE,
             text_y: 0.5,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::QuebecRoute => Design {
             outline: arched,
@@ -262,7 +274,7 @@ fn design(s: Shield) -> Design {
             min_width: 1.5,
             pad: 0.28,
             text_y: 0.43,
-            ..PLAIN
+            ..SHAPED
         },
         Shield::Generic => Design {
             height: 1.35,
@@ -308,10 +320,11 @@ impl Plate {
         })
     }
 
-    /// The text's colour, and where its middle is from the top, in ems.
-    pub fn text_at(&self) -> (Rgba, f32) {
+    /// The text's colour, and where its middle is from the top-left corner, in ems.
+    pub fn text_at(&self) -> (Rgba, [f32; 2]) {
         let d = design(self.shield);
-        (d.text, d.text_y * self.size()[1])
+        let [w, h] = self.size();
+        (d.text, [d.text_x * w, d.text_y * h])
     }
 
     /// Heap and inline bytes, for the tile cache.
@@ -368,7 +381,7 @@ fn fits(d: &Design, w: f32, tw: f32, scale: f32) -> bool {
     (d.outline)(&mut pen, w, h);
     pen.close();
     let th = 2.0 * text::MID_CAP * scale;
-    let (x0, x1) = ((w - tw) / 2.0, (w + tw) / 2.0);
+    let (x0, x1) = (d.text_x * w - tw / 2.0, d.text_x * w + tw / 2.0);
     let (y0, y1) = (d.text_y * h - th / 2.0, d.text_y * h + th / 2.0);
     let (xm, ym) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
     [
@@ -887,11 +900,11 @@ mod tests {
             for number in ["5", "75", "275"] {
                 let p = plate(s, number).unwrap();
                 let [w, _] = p.size();
-                let (_, mid) = p.text_at();
+                let (_, [cx, cy]) = p.text_at();
                 let (tw, th) = (p.text.width * p.text_scale, cap * p.text_scale);
                 let body = sdf(p.layers().nth(1).unwrap().0).unwrap();
-                let (x0, x1) = ((w - tw) / 2.0 - margin, (w + tw) / 2.0 + margin);
-                let (y0, y1) = (mid - th / 2.0 - margin, mid + th / 2.0 + margin);
+                let (x0, x1) = (cx - tw / 2.0 - margin, cx + tw / 2.0 + margin);
+                let (y0, y1) = (cy - th / 2.0 - margin, cy + th / 2.0 + margin);
                 for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
                     if value(&body, x, y) <= INSIDE {
                         bad.push(format!("{s:?} {number}: ({x:.2}, {y:.2}) in {w:.2} wide"));
@@ -953,7 +966,13 @@ mod tests {
         let one = plate(Shield::Interstate, "5").unwrap();
         let three = plate(Shield::Interstate, "275").unwrap();
         assert_eq!(one.size(), [1.75, 1.7]);
-        assert!(three.size()[0] > one.size()[0] + 0.5);
+        // Three digits: smaller, in a larger shield of the same shape.
+        let ([w1, h1], [w3, h3]) = (one.size(), three.size());
+        assert!(
+            w3 > w1 && h3 > h1 && (w3 / h3 - w1 / h1).abs() < 0.05,
+            "{w3}×{h3}"
+        );
+        assert!(three.text_scale < one.text_scale);
         // Border, body and the red band, in their colours.
         let layers: Vec<_> = three.layers().collect();
         assert_eq!(

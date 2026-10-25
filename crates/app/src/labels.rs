@@ -847,10 +847,10 @@ fn shield_layout(
                 },
             });
         }
-        let (color, mid) = p.text_at();
+        let (color, [cx, cy]) = p.text_at();
         let ts = p.text_scale * size;
-        let x = (left + (pw - p.text.width * ts) / 2.0).round();
-        let baseline = top + mid * size + MID_CAP * ts;
+        let x = (left + cx * size - p.text.width * ts / 2.0).round();
+        let baseline = top + cy * size + MID_CAP * ts;
         for g in &p.text.glyphs {
             pens.push(Pen {
                 at: [x + g.x * ts, baseline + g.y * ts],
