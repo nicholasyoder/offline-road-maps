@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use eframe::egui_wgpu::{self, wgpu};
 
-use crate::bench::{Bench, FrameSample, ReportContext};
+use crate::bench::{Bench, FrameSample, Poll, ReportContext};
 use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
 use crate::config::{self, Config, Location, View};
@@ -815,18 +815,24 @@ impl eframe::App for App {
                 cache_budget: m.cache.budget,
             };
             if let Some(report) = b.end_frame(sample, &mut m.camera, &rc) {
-                eprint!("{}", report.summary());
-                let out = b.out().to_path_buf();
-                match serde_json::to_string_pretty(&report)
-                    .map_err(std::io::Error::other)
-                    .and_then(|j| std::fs::write(&out, j + "\n"))
-                {
-                    Ok(()) => eprintln!("report written to {}", out.display()),
-                    Err(e) => eprintln!("could not write {}: {e}", out.display()),
-                }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                b.start_idle(report);
             }
-            animate = true;
+            match b.poll() {
+                Poll::Flying => animate = true,
+                Poll::Idle(wait) => ctx.request_repaint_after(wait),
+                Poll::Done(report) => {
+                    eprint!("{}", report.summary());
+                    let out = b.out().to_path_buf();
+                    match serde_json::to_string_pretty(&report)
+                        .map_err(std::io::Error::other)
+                        .and_then(|j| std::fs::write(&out, j + "\n"))
+                    {
+                        Ok(()) => eprintln!("report written to {}", out.display()),
+                        Err(e) => eprintln!("could not write {}: {e}", out.display()),
+                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
         } else if self.bench.is_some() {
             eprintln!("bench: no pack is open");
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

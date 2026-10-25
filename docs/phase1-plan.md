@@ -36,7 +36,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.7 Text and label placement | **Done** 2026-10-25 | Noto Sans subset to Latin (196 KB), shaped with `harfrust`, SDF glyphs from `skrifa` outlines; greedy placement with hysteresis and fade-in, line labels along roads and rivers, POI markers. Placement p95 0.28 ms a frame; North America flight p95 frame 1.05 ms; binary 11.8 MB. |
 | 1.8 Shields and POI icons | **Done** 2026-10-25 | 16 shield designs (`omp_core::routes::shield`) and 11 Maki icons, drawn as distance fields in the glyph atlas. Real shields on 97% of US and 95% of Canadian motorway ways; North America flight p95 frame 1.26 ms; binary 11.9 MB. |
 | 1.9 Viewer UI | **Done** 2026-10-25 (Linux) | Scale bar (miles, km or both, following the pack), zoom buttons, cursor coordinates, credit line; Layers menu with 9 toggles applied at draw time; About this map; Verify pack on a thread, cancellable; error dialogs for a damaged pack or tile; all saved in `config.toml`. North America flight p95 frame 1.39 ms; binary 12.2 MB. Running it on Windows is left to 1.10. |
-| 1.10 Performance, USB and hardware checks | Not started | Needs the USB stick, the Windows PC and both laptops. |
+| 1.10 Performance, USB and hardware checks | In progress | USB stick ready (16 GB SanDisk Cruzer Blade, USB 2, FAT32); bench now measures idle CPU. Runs on each machine remain. |
 
 ## Environment notes
 
@@ -505,6 +505,11 @@ The exit criteria are checked here. Small checks can happen earlier, for example
 - If a number misses: the levers are the read pattern (prefetch neighbours, bigger reads; V5 tile groups are the format-level lever measured in phase 0), the cache budget, the tessellation and vertex format, label placement cost, and MSAA.
 
 **Done when:** every exit criterion has a measured number, on every machine above, written here and in roadmap §6.
+
+> **In progress 2026-10-25.** The stick is a 16 GB SanDisk Cruzer Blade (USB 2 only, so every USB number is the worst case; there is no USB 3 run), formatted FAT32 with the label `OMPTEST`. It holds the North America pack (6.1 GiB in 2 chunks) in `maps/`, both apps, `bench/north-america.toml`, and `run-bench.bat` / `run-bench.sh`, which run the flight cold then warm and write reports and machine details to `results/`.
+> **Idle CPU:** after the last step the bench now leaves the window alone for 10 s without redrawing and records the process's CPU time over it as `idle_cpu_percent` (`memory::cpu_time`: `/proc/self/stat` on Linux, `GetProcessTimes` on Windows). Ohio on the dev machine: 0.00%.
+> **Finding:** Linux mounts FAT32 sticks with `showexec`, so only `.exe`/`.bat`/`.com` files are executable and `omp-app` cannot run straight from the stick. `run-bench.sh` copies it to `/tmp` first. Phase 2's packaging should allow for this (a launcher script run with `sh`, or a note in the README).
+> **Remaining:** runs on the dev machine (cold, from the stick), the Windows PC, the 2012-or-newer laptop and the pre-2012 laptop; the results table; roadmap §6.
 
 ---
 
