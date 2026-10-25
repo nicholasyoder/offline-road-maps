@@ -11,6 +11,8 @@ use std::path::Path;
 use omp_core::schema::Schema;
 use serde::Deserialize;
 
+use crate::shapes::Icon;
+
 /// The built-in style.
 pub const DEFAULT: &str = include_str!("../data/style.toml");
 /// The file next to the executable that replaces the built-in style.
@@ -185,11 +187,30 @@ pub enum Placement {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Symbols {
     pub label: Option<Label>,
-    /// The POI icon's name.
-    pub icon: Option<String>,
+    /// The POI icon, drawn with the label (shapes.rs).
+    pub icon: Option<IconStyle>,
     /// Route shields from the `routes` prop.
-    #[allow(dead_code)] // Read by shields (1.8).
-    pub shields: bool,
+    pub shields: Option<Shields>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IconStyle {
+    pub icon: Icon,
+    /// The disc's colour.
+    pub color: Rgba,
+}
+
+/// Route shields along a road (labels.rs, shapes.rs).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shields {
+    /// The `routes` prop's key in the layer, set by [`Style::compile`].
+    pub key: Option<u8>,
+    /// The size of the shields' numbers, in points.
+    pub size: Stops,
+    /// Placed with labels, higher first.
+    pub priority: i32,
+    pub minzoom: f32,
+    pub maxzoom: f32,
 }
 
 /// One rule of a style file, checked and with its names resolved.
@@ -348,6 +369,16 @@ impl Style {
                     sym.label = None;
                 }
             }
+            if let Some(sh) = &mut sym.shields {
+                sh.key = layer.prop("routes");
+                if sh.key.is_none() {
+                    warnings.push(format!(
+                        "style: the pack has no prop {}.routes; {}/{} gets no shields",
+                        rule.layer, rule.layer, rule.classes[0]
+                    ));
+                    sym.shields = None;
+                }
+            }
             let sym = (sym != Symbols::default()).then_some(sym);
             for c in ids {
                 let (l, c) = (l as usize, c as usize);
@@ -404,11 +435,6 @@ impl Style {
             .get(layer as usize)?
             .get(class as usize)?
             .as_ref()
-    }
-
-    /// The label rule of a class, if it has one.
-    pub fn label(&self, layer: u8, class: u16) -> Option<&Label> {
-        self.symbols(layer, class)?.label.as_ref()
     }
 
     pub fn class(&self, layer: u8, class: u16) -> Option<&ClassStyle> {
@@ -525,8 +551,17 @@ mod file {
         bridge: Option<Variant>,
         label: Option<LabelFile>,
         icon: Option<String>,
-        #[serde(default)]
-        shields: bool,
+        icon_color: Option<String>,
+        shields: Option<ShieldsFile>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ShieldsFile {
+        size: Option<Num>,
+        priority: Option<i32>,
+        minzoom: Option<f32>,
+        maxzoom: Option<f32>,
     }
 
     #[derive(Deserialize)]
@@ -637,10 +672,30 @@ mod file {
                 Some(l) => Some(label(l, &n).map_err(|e| err(format!("label: {e}")))?),
                 None => None,
             };
+            let icon = match (&r.icon, &r.icon_color) {
+                (Some(name), color) => Some(IconStyle {
+                    icon: Icon::named(name).ok_or_else(|| {
+                        let names: Vec<&str> = Icon::names().collect();
+                        err(format!(
+                            "unknown icon {name:?}; icons are {}",
+                            names.join(", ")
+                        ))
+                    })?,
+                    color: n
+                        .color(color.as_deref().unwrap_or("#6b6b6b"))
+                        .map_err(err)?,
+                }),
+                (None, Some(_)) => return Err(err("icon_color needs an icon".into())),
+                (None, None) => None,
+            };
+            let shields = match r.shields {
+                Some(sh) => Some(shields(sh, &n).map_err(|e| err(format!("shields: {e}")))?),
+                None => None,
+            };
             let symbols = Symbols {
                 label,
-                icon: r.icon,
-                shields: r.shields,
+                icon,
+                shields,
             };
             if draw.is_none() && symbols == Symbols::default() {
                 return Err(err(
@@ -773,6 +828,17 @@ mod file {
         Ok(p)
     }
 
+    fn shields(s: ShieldsFile, n: &Lookup) -> Result<Shields, String> {
+        let (minzoom, maxzoom) = zooms(s.minzoom, s.maxzoom)?;
+        Ok(Shields {
+            key: None,
+            size: n.stops(s.size.as_ref().unwrap_or(&Num::One(10.0)))?,
+            priority: s.priority.unwrap_or(0),
+            minzoom,
+            maxzoom,
+        })
+    }
+
     fn label(l: LabelFile, n: &Lookup) -> Result<Label, String> {
         let (minzoom, maxzoom) = zooms(l.minzoom, l.maxzoom)?;
         Ok(Label {
@@ -851,7 +917,10 @@ mod tests {
         let sym = style.symbols[rl as usize][motorway as usize]
             .as_ref()
             .unwrap();
-        assert!(sym.shields);
+        assert_eq!(
+            sym.shields.as_ref().unwrap().key,
+            layer_prop(&schema, "roads", "routes")
+        );
         assert_eq!(sym.label.as_ref().unwrap().placement, Placement::Line);
         assert_eq!(
             sym.label.as_ref().unwrap().key,
@@ -889,11 +958,12 @@ mod tests {
         minzoom = 4
         bridge = { casing = "#111111" }
         label = { placement = "line", priority = 7 }
-        shields = true
+        shields = { minzoom = 6, priority = 9 }
         [[rule]]
         layer = "no_such_layer"
         class = "x"
-        icon = "x"
+        icon = "fuel"
+        icon_color = "red"
     "##;
 
     #[test]
@@ -917,6 +987,11 @@ mod tests {
             ("name", Font::Regular, 7)
         );
         assert_eq!(l.size.at(10.0), 12.0);
+        let sh = f.rules[0].symbols.shields.as_ref().unwrap();
+        assert_eq!((sh.minzoom, sh.priority, sh.size.at(9.0)), (6.0, 9, 10.0));
+        let icon = f.rules[1].symbols.icon.unwrap();
+        assert_eq!(icon.icon, Icon::named("fuel").unwrap());
+        assert_eq!(icon.color, [255, 0, 0, 128]);
 
         let schema = schema();
         let (style, warnings) = Style::compile(&f, &schema);
@@ -947,8 +1022,11 @@ mod tests {
         assert!(bad("[[5, 1], [10", "[[10, 1], [5").contains("go up"));
         assert!(bad("#ff000080", "#ff00").contains("bad colour"));
         assert!(bad("minzoom = 4", "minzoom = 4\nmaxzoom = 3").contains("minzoom"));
-        assert!(bad("shields = true", "shield = true").contains("unknown field"));
-        assert!(bad("icon = \"x\"", "").contains("draws nothing"));
+        assert!(bad("shields = {", "shield = {").contains("unknown field"));
+        assert!(bad("minzoom = 6,", "min = 6,").contains("unknown field"));
+        assert!(bad("icon = \"fuel\"\n", "").contains("icon_color needs an icon"));
+        assert!(bad("icon = \"fuel\"", "icon = \"gas\"").contains("unknown icon \"gas\""));
+        assert!(bad("icon = \"fuel\"\n        icon_color = \"red\"", "").contains("draws nothing"));
         assert!(bad("casing = \"#808080\"\n", "").contains("casing colour"));
     }
 }

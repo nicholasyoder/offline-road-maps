@@ -106,8 +106,9 @@ struct FrameView {
     fallbacks: usize,
     missing: usize,
     detailed: bool,
-    /// Labels placed, of how many candidates, and the time it took.
+    /// Labels placed (shields among them), of how many candidates, and the time it took.
     labels: usize,
+    shields: usize,
     candidates: usize,
     label_time: Duration,
     /// Labels are still fading in.
@@ -558,6 +559,7 @@ impl MapState {
         frame.glyphs = placed.glyphs;
         frame.atlas = self.placer.atlas.take_uploads();
         view.labels = placed.labels;
+        view.shields = placed.shields;
         view.candidates = placed.candidates;
         view.fading = placed.fading;
         view.label_time = t0.elapsed();
@@ -797,11 +799,13 @@ impl App {
                 v.visible, v.drawn, v.fallbacks, v.missing
             ));
             lines.push(format!(
-                "labels: {} placed of {} candidates in {:.2} ms, {} glyphs in the atlas",
+                "labels: {} placed ({} shields) of {} candidates in {:.2} ms, {} sprites in the atlas ({:.0}% full)",
                 v.labels,
+                v.shields,
                 v.candidates,
                 v.label_time.as_secs_f64() * 1e3,
-                m.placer.atlas.len()
+                m.placer.atlas.len(),
+                m.placer.atlas.fill() * 100.0
             ));
             lines.push(format!(
                 "cache: {} tiles, {:.1} / {:.0} MiB",

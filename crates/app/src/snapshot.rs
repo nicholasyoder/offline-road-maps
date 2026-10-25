@@ -199,20 +199,22 @@ impl Snapshot {
             None,
         );
         let label_ms = t1.elapsed().as_secs_f64() * 1e3;
-        let n_labels = placed.labels;
+        let (n_labels, n_shields) = (placed.labels, placed.shields);
         frame.glyphs = placed.glyphs;
         frame.atlas = placer.atlas.take_uploads();
+        let atlas_fill = placer.atlas.fill();
         let no_map = crate::app::NO_MAP.to_array();
         let pixels = render::draw_offscreen(&device, &queue, &mut renderer, &frame, no_map)?;
         write_png(&self.out, self.size, &pixels)
             .map_err(|e| format!("{}: {e}", self.out.display()))?;
         let info = adapter.get_info();
         let mut msg = format!(
-            "{}: z{:.2} (tiles z{z}), {tiles} tiles, {:.1} MiB mesh, loaded in {:.0} ms, {n_labels} labels in {label_ms:.1} ms, {:.0} ms in all ({} {:?}, MSAA {samples})",
+            "{}: z{:.2} (tiles z{z}), {tiles} tiles, {:.1} MiB mesh, loaded in {:.0} ms, {n_labels} labels ({n_shields} shields) in {label_ms:.1} ms, atlas {:.0}% full, {:.0} ms in all ({} {:?}, MSAA {samples})",
             self.out.display(),
             cam.zoom,
             mesh_bytes as f64 / (1024.0 * 1024.0),
             loaded_in.as_secs_f64() * 1e3,
+            atlas_fill * 100.0,
             t0.elapsed().as_secs_f64() * 1e3,
             info.name,
             info.backend,

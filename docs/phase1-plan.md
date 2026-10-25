@@ -34,7 +34,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.5c Tile size experiments: frame overhead, per-layer max zoom | **Done** 2026-10-25 | Kept (owner): F1+F2 (magicless frames, no checksum) and land cover and water areas capped at z13, as format 0.3 with a `waterways` layer. North America **6,214 MiB** (was 8,026), 12.6M tiles; renders at z13 and below unchanged; bench unchanged. |
 | 1.6 Style file and default style | **Done** 2026-10-25 | `data/style.toml` compiled in, `style.toml` next to the executable or `--style` overrides it, debug builds reload it. Road atlas look tuned at the 11 reference spots; label, icon and shield rules are in the style for 1.7–1.8. |
 | 1.7 Text and label placement | **Done** 2026-10-25 | Noto Sans subset to Latin (196 KB), shaped with `harfrust`, SDF glyphs from `skrifa` outlines; greedy placement with hysteresis and fade-in, line labels along roads and rivers, POI markers. Placement p95 0.28 ms a frame; North America flight p95 frame 1.05 ms; binary 11.8 MB. |
-| 1.8 Shields and POI icons | Not started | |
+| 1.8 Shields and POI icons | **Done** 2026-10-25 | 16 shield designs (`omp_core::routes::shield`) and 11 Maki icons, drawn as distance fields in the glyph atlas. Real shields on 97% of US and 95% of Canadian motorway ways; North America flight p95 frame 1.26 ms; binary 11.9 MB. |
 | 1.9 Viewer UI | Not started | |
 | 1.10 Performance, USB and hardware checks | Not started | Needs the USB stick, the Windows PC and both laptops. |
 
@@ -445,6 +445,29 @@ The roadmap's main renderer risk (§7). Latin script only, which covers English,
 
 **Done when:** Ohio, Ontario and Quebec show the right shields on Interstate, US, state, Trans-Canada and provincial routes, POIs show icons, and each per-country count from 1.3 shows what share of highways gets a real shield.
 
+> **Done 2026-10-25** (the commit that adds `crates/app/src/shapes.rs`).
+> **Drawn as distance fields, not `lyon` meshes** (decision 17): each shield is two or three layers (its outline in the border colour, the same outline moved 0.09 em in for the body, and for some designs a band across the top, clipped from that outline), and each icon two (a disc and the pictogram). They are rasterised once from vector outlines into the glyph atlas and drawn by the label pipeline, so they are antialiased, get a white halo, and share the labels' collision, hysteresis and fade-in, with no second pipeline. Shields are made at 16 atlas pixels per em, about 1.6 times their size on screen (glyphs and icons at 32): in a dense 1920×1080 view (Newark z11, 192 shields) the 1024² atlas is 35% full, against 57% at 32. Sprites carry their own resolution, so this needs no shader change.
+> **Shield table** (`omp_core::routes::shield`, shared with the builder): `US:I` Interstate (blue and red), `US:I:*` business routes (green Interstate), `US:US*` US route, US states as a box, circle (NJ, KS, NM, `US:VA:Secondary`), diamond (NC, MI), keystone (PA), spade (CA) or Ohio's outline (OH, from the state border); `US:<st>:<county code>`, `…:CR`, `CR` and Ontario's regional and county networks the blue county pentagon; `CA:transcanada` green; `CA:ON`/`CA:ON:primary` the crowned King's Highway shield; `CA:QC:A` blue and red autoroute; other `CA:QC` an arched route marker; other provinces a box; `MX:MX`/`MX:MEX` Mexico's federal shield; Mexican states a box; anything else, and refs without a network, a generic grey-bordered box. A width follows the number's in eighths of an em, so a design is made in a few widths only (Noto's digits are tabular). Numbers over 3.2 em get no shield.
+> **Placement** (`labels.rs`): a road's `routes` become up to three shields side by side, most important first, with generic ones left out next to real ones. They are placed upright, centred on anchors along the road, between the name label's anchors, at least 250 points apart for the same routes, and ranked within their priority by the first route's network priority. Roads are cut into short pieces at every bridge and tunnel, so a piece too short for any anchor now gets one in its middle; this also applies to road and river names (1.7 had left many motorway pieces bare).
+> **Icons:** Maki 8.2.0 (CC0, `crates/app/data/icons/`, 11 SVGs; `rest_area` uses `picnic-site`), parsed by a small SVG path reader (M L H V C S Q T Z). The icon replaces 1.7's bullet: a disc 1.6 ems of the label across, in the style's colour, with a white pictogram; the name goes beside it as before.
+> **Style:** `icon_color` next to `icon` (the icon name is checked against the bundled set), and `shields = { size, priority, minzoom, maxzoom }` instead of `shields = true`. Shields: motorways from z5 (priority 76), trunk from z7 (66), primary from z9 (58), secondary from z11 (45). The F3 overlay and `--render` show shields placed and how full the atlas is.
+> **Coverage** (`$OMP_WORK/measure/build/north-america-1.8.log`; the builder now prints a `shield` column: ways whose first route has a design other than generic, out of all ways of the class):
+>
+> | North America | motorway | trunk | primary | secondary | tertiary | all |
+> |---|---:|---:|---:|---:|---:|---:|
+> | US | 96.9% | 96.1% | 69.3% | 30.2% | 14.2% | 44.8% |
+> | Canada | 94.6% | 94.2% | 77.6% | 43.0% | 2.0% | 37.4% |
+> | Elsewhere (Mexico, …) | 52.3% | 69.5% | 45.1% | 7.3% | 0.9% | 16.1% |
+>
+> So nearly every way that has a route gets a real shield: the gap to 100% is ways with no route at all (1.3's "neither" column), not missing designs. Ohio 56.6% of counted ways (52.6% in a relation, 7.9% `ref` only), Ontario 45.3%, Quebec 35.6%.
+> **Checks:** unit tests for the network table, every icon parsing and drawing, shields fitting their numbers with their layers in place, the SVG reader, shields placed upright along a road side by side and 250 points apart, and a POI's icon and name. Screenshots `columbus-z10` (Interstate, US, Ohio and county shields), `toronto-z10.5` (King's Highways, regional roads) and `montreal-z10.5` (autoroutes, routes) were added to `docs/screenshots/`, and the rest re-rendered. Also looked at Sudbury, Ottawa, Harrisburg, Raleigh, Sacramento, Newark and Mexico City.
+> **Bench** (`$OMP_WORK/measure/bench/north-america-1.8.json`, warm): p95 frame 1.26 ms (1.7: 1.05), label placement p95 0.50 ms (0.28), tile prepare p50 1.8 ms (unchanged), RSS peak 144 MiB (134). The release binary is 11.9 MB stripped (was 11.8).
+> **Open:**
+> - The designs are simplified and should be judged by the owner: Quebec's route marker and Mexico's shield are approximations, most states are a plain box, Ohio's outline is coarse, the Trans-Canada shield has no maple leaf.
+> - The Trans-Canada shows rarely: most of it is not in a `CA:transcanada` relation in OSM (Highway 17 at Sudbury is only `CA:ON:primary`), so it gets the Ontario crown.
+> - Letter refs on generic shields (`HNR`, `NJTP`, `PERIF`) are kept when a road has nothing else; Mexico City's ejes show as numbered boxes.
+> - Motorway shields (76) outrank town names (70); fine in the screenshots, but worth watching at z7–z9.
+
 ## 1.9 Viewer UI
 
 Kept small: the map is the app. Owner's choices: scale bar and zoom buttons, and layer toggles.
@@ -504,9 +527,9 @@ Settled while planning (2026-10-24):
 14. **MSAA 4×** in the window and in `--render`, with `msaa = 1` in `config.toml` to turn it off (1.5).
 15. **Left-out tiles** (1.5b, owner 2026-10-24): every missing tile is drawn from its nearest stored ancestor, with no flag. Slivers cannot occur while every tolerance is under half the buffer, which the builder asserts. Tiles that one polygon covers are left out, ocean or not, when the parent shows that polygon.
 16. **Tile frames and capped layers** (1.5c, owner 2026-10-25): tile frames have no magic number and no checksum (F1+F2); F3 (raw small payloads) and F4 (one frame per tile) are dropped. Land cover and water areas stop at z13 by default (`maxzoom` in the whitelist and `SCHM`), and the app draws them from z13 above that; land cover at z12 was rejected, as it drops visible patches.
+17. **Shields and icons are distance fields in the glyph atlas** (1.8), not `lyon` meshes: drawn by the label pipeline, with halos, collision and fade-in for free. The shield table is `omp_core::routes::shield`, shared by the app and the builder's coverage count: 16 designs, with US states drawn as a box unless their marker reads clearly as a circle (NJ, KS, NM, Virginia's secondary routes), a diamond (NC, MI), Pennsylvania's keystone, California's spade or Ohio's outline. This settles the open question of how many state shapes to draw; more can be added to the table.
 
 Open, to settle in their steps:
-- The state-by-state shield table: how many distinct shapes are worth drawing (1.8).
 - The default units rule for the scale bar in a pack that covers both countries (1.9).
 
 ## Out of scope for phase 1

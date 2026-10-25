@@ -1,5 +1,5 @@
 #!/bin/sh
-# Renders the reference screenshots (phase1-plan.md 1.5 and 1.6) from the North America pack,
+# Renders the reference screenshots (phase1-plan.md 1.5 to 1.8) from the North America pack,
 # with the built-in style.
 #
 #   docs/screenshots/render.sh [pack dir]
@@ -25,3 +25,7 @@ shot montreal-z12 45.51,-73.6 12
 shot ontario-lakes-z12 45.05,-79.3 12
 shot manhattan-z14 40.758,-73.985 14
 shot manhattan-z17 40.7505,-73.9934 17
+# Route shields: Ohio, Ontario and Quebec (1.8).
+shot columbus-z10 39.96,-83.0 10
+shot toronto-z10.5 43.72,-79.45 10.5
+shot montreal-z10.5 45.52,-73.65 10.5

@@ -27,8 +27,11 @@
 #   label             { prop = "name", font = "regular" | "italic" | "bold", size, color,
 #                     halo, halo_width, priority, placement = "point" | "line", minzoom,
 #                     maxzoom }: higher priority is placed first (step 1.7);
-#   icon              the POI icon's name (step 1.8);
-#   shields           true: route shields from the `routes` prop (step 1.8).
+#   icon, icon_color  the POI icon drawn with the label, on a disc of that colour: airport,
+#                     hospital, rest_area, fuel, charging_station, campground, attraction,
+#                     hotel, restaurant, fast_food or parking (step 1.8);
+#   shields           { size, priority, minzoom, maxzoom }: route shields from the `routes`
+#                     prop, along the line; size is their numbers' (step 1.8).
 # A rule without `pass` draws no geometry (labels and icons only).
 
 version = 1
@@ -288,7 +291,7 @@ width = "secondary"
 casing = "#aa9b69"
 casing_width = "casing_main"
 label = { size = [[12, 10], [17, 12]], priority = 40, placement = "line", minzoom = 13 }
-shields = true
+shields = { size = [[11, 9.5], [16, 11]], priority = 45, minzoom = 11 }
 
 [[rule]]
 layer = "roads"
@@ -299,7 +302,7 @@ width = "primary"
 casing = "#aa822a"
 casing_width = "casing_main"
 label = { size = [[12, 10], [17, 13]], priority = 50, placement = "line", minzoom = 12 }
-shields = true
+shields = { size = [[9, 9.5], [16, 11]], priority = 58, minzoom = 9 }
 
 [[rule]]
 layer = "roads"
@@ -310,7 +313,7 @@ width = "trunk"
 casing = "#a05422"
 casing_width = "casing_motorway"
 label = { size = [[12, 10], [17, 13]], priority = 60, placement = "line", minzoom = 12 }
-shields = true
+shields = { size = [[7, 9.5], [12, 10.5], [16, 12]], priority = 66, minzoom = 7 }
 
 [[rule]]
 layer = "roads"
@@ -321,7 +324,7 @@ width = "motorway"
 casing = "#93291c"
 casing_width = "casing_motorway"
 label = { size = [[12, 10], [17, 13]], priority = 70, placement = "line", minzoom = 13 }
-shields = true
+shields = { size = [[5, 9.5], [12, 10.5], [16, 12]], priority = 76, minzoom = 5 }
 
 # --- Places (labels only, step 1.7) ---
 
@@ -392,69 +395,80 @@ layer = "labels"
 class = ["park", "forest", "wood"]
 label = { size = [[10, 10], [15, 12]], color = "#3e6e34", priority = 15 }
 
-# --- Points of interest (labels in step 1.7, icons in step 1.8) ---
+# --- Points of interest: an icon and the name beside it ---
 
 [[rule]]
 layer = "pois"
 class = "airport"
 icon = "airport"
+icon_color = "#4f6488"
 label = { size = 11, priority = 60, minzoom = 11 }
 
 [[rule]]
 layer = "pois"
 class = "hospital"
 icon = "hospital"
+icon_color = "#c23b31"
 label = { size = 10, color = "#a03030", priority = 45, minzoom = 14 }
 
 [[rule]]
 layer = "pois"
 class = "rest_area"
 icon = "rest_area"
+icon_color = "#4a7f3b"
 label = { size = 10, priority = 40, minzoom = 13 }
 
 [[rule]]
 layer = "pois"
 class = "fuel"
 icon = "fuel"
+icon_color = "#2f6db5"
 label = { size = 10, priority = 35, minzoom = 15 }
 
 [[rule]]
 layer = "pois"
 class = "charging_station"
 icon = "charging_station"
+icon_color = "#16867f"
 label = { size = 10, priority = 30, minzoom = 15 }
 
 [[rule]]
 layer = "pois"
 class = "campground"
 icon = "campground"
+icon_color = "#4a7f3b"
 label = { size = 10, color = "#3e6e34", priority = 30, minzoom = 13 }
 
 [[rule]]
 layer = "pois"
 class = "attraction"
 icon = "attraction"
+icon_color = "#8a4ea3"
 label = { size = 10, priority = 28, minzoom = 14 }
 
 [[rule]]
 layer = "pois"
 class = "hotel"
 icon = "hotel"
+icon_color = "#7d5a9c"
 label = { size = 10, priority = 25, minzoom = 15 }
 
 [[rule]]
 layer = "pois"
 class = "restaurant"
 icon = "restaurant"
+icon_color = "#d07a26"
 label = { size = 10, priority = 15, minzoom = 16 }
 
 [[rule]]
 layer = "pois"
 class = "fast_food"
 icon = "fast_food"
+icon_color = "#d07a26"
 label = { size = 10, priority = 15, minzoom = 16 }
 
 [[rule]]
 layer = "pois"
 class = "parking"
 icon = "parking"
+icon_color = "#3d6fb6"

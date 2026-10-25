@@ -18,6 +18,7 @@ mod memory;
 mod mesh;
 mod packs;
 mod render;
+mod shapes;
 mod snapshot;
 mod style;
 mod text;

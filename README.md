@@ -53,4 +53,4 @@ cargo test --workspace
 
 ## License
 
-MIT or Apache-2.0, at your option. The bundled Noto Sans fonts are under the SIL Open Font License 1.1 ([crates/app/data/fonts/OFL.txt](crates/app/data/fonts/OFL.txt)).
+MIT or Apache-2.0, at your option. The bundled Noto Sans fonts are under the SIL Open Font License 1.1 ([crates/app/data/fonts/OFL.txt](crates/app/data/fonts/OFL.txt)). The POI icons are from [Maki](https://github.com/mapbox/maki), under CC0 1.0 ([crates/app/data/icons/LICENSE.txt](crates/app/data/icons/LICENSE.txt)).

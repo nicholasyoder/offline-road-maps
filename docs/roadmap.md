@@ -86,7 +86,7 @@ Addresses are stored grouped by street rather than as standalone points. Each st
 | Area | Decision | Notes |
 |---|---|---|
 | Language | **Rust**, as a Cargo workspace with `core`, `builder` and `app` crates. | `core` holds the format reader and writer and the shared algorithms, so the builder and the app can never disagree about the format. |
-| Rendering | A custom 2D vector renderer: `wgpu` with `lyon` to turn shapes into triangles, plus an atlas of signed distance field glyphs. Text is shaped with `harfrust` and drawn from `skrifa` outlines, the crates egui already uses, in bundled Noto Sans subset to Latin (phase 1 step 1.7). | Fallback if this stalls: convert to standard map tiles (MVT) and use MapLibre Native. Scripts other than Latin need more font coverage, not a new text stack. |
+| Rendering | A custom 2D vector renderer: `wgpu` with `lyon` to turn shapes into triangles, plus an atlas of signed distance field glyphs, which also holds the route shields and POI icons (phase 1 step 1.8). Text is shaped with `harfrust` and drawn from `skrifa` outlines, the crates egui already uses, in bundled Noto Sans subset to Latin (phase 1 step 1.7). | Fallback if this stalls: convert to standard map tiles (MVT) and use MapLibre Native. Scripts other than Latin need more font coverage, not a new text stack. |
 | UI | egui/eframe. | It is tiny and lets the map be drawn inside the UI. Could move to Slint later for polish. |
 | Container | One region pack is a header plus memory-mappable sections: tiles, routing, search, addresses and metadata. It is split into **chunks under 4 GB** for FAT32. Specified in [format.md](format.md). | Tiles are ordered along a Hilbert curve, which keeps nearby tiles together on disk so reads stay fast on slow USB drives. The OS page cache does the caching. |
 | Routing | **Contraction hierarchies, car profile only**, built in the builder. | Covers one-ways, turn restrictions, speed by road class and `maxspeed`, and avoiding tolls, ferries and highways (these flags are built into the graph). User-drawn "avoid this area" may later need Multi-Level Dijkstra or customizable routing instead. |
@@ -146,4 +146,5 @@ Detailed plan: [phase1-plan.md](phase1-plan.md).
 ## 8. Licensing
 - The app code is dual-licensed `MIT OR Apache-2.0`. CoMaps is Apache-2.0, so its ideas and code can be borrowed.
 - The app bundles Noto Sans, under the SIL Open Font License 1.1 (`crates/app/data/fonts/OFL.txt`).
+- The POI icons are from Maki, under CC0 1.0 (`crates/app/data/icons/LICENSE.txt`).
 - Each pack embeds an attribution file listing ODbL and every address source used.

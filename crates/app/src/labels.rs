@@ -1,5 +1,7 @@
 //! Map labels (phase1-plan.md 1.7): what each tile has to label, taken out of the decoded
-//! tile on a loader thread, and where the labels go on screen, placed every frame.
+//! tile on a loader thread, and where the labels go on screen, placed every frame. Route
+//! shields (1.8) are labels too: placed upright along their road, side by side for a road on
+//! several routes. POI labels have their icon on the point and their name beside it.
 //!
 //! Placement is greedy. Candidates are sorted by the style's priority, then by size within a
 //! priority (population, capital, area), and each is placed if none of its boxes overlaps a
@@ -18,13 +20,15 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
-use omp_core::tile::{EXTENT_BITS, GeomType, Layer, MAX_ZOOM, int_value};
+use omp_core::routes::{self, Shield};
+use omp_core::tile::{EXTENT_BITS, Feature, GeomType, Layer, MAX_ZOOM, int_value};
 use omp_core::tiles::Tile;
 
 use crate::camera::Camera;
 use crate::render::{GlyphInstance, gpu_color};
-use crate::style::{Font, Label, Placement, RankProps, Style};
-use crate::text::{self, ATLAS, Atlas, LINE_HEIGHT, MID_CAP, SDF_EM, Text};
+use crate::shapes::{self, ICON_LAYERS, Plate, SHIELD_FONT};
+use crate::style::{Font, IconStyle, Label, Placement, RankProps, Rgba, Style};
+use crate::text::{self, ATLAS, Atlas, LINE_HEIGHT, MID_CAP, Sprite, Text};
 use crate::tiles::TileId;
 
 const EXTENT: f32 = (1u32 << EXTENT_BITS) as f32;
@@ -52,25 +56,42 @@ const PAD: f32 = 2.0;
 /// A label within this many points of where a label with its text was shown in the last
 /// frame is the same label.
 const SAME: f64 = 3.0;
-/// The POI marker until icons come (1.8), drawn as text.
-const MARKER: &str = "\u{2022}";
-/// The marker's size relative to the label's.
-const MARKER_SIZE: f32 = 1.6;
+/// A POI icon's diameter, in ems of its label.
+const ICON: f32 = 1.6;
+/// The white halo around icons and shields, in ems of their size.
+const HALO: f32 = 0.08;
+const HALO_COLOR: Rgba = [255, 255, 255, 200];
+const NO_HALO: Rgba = [0; 4];
+/// A road shows at most this many shields side by side, the most important routes first.
+const MAX_PLATES: usize = 3;
+/// The gap between shields side by side, in ems.
+const PLATE_GAP: f32 = 0.15;
+/// Shields of the same routes are at least this far apart, in points.
+const SHIELD_REPEAT: f32 = 250.0;
 
 /// Where a label goes, in tile units.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Geom {
     Point([i16; 2]),
-    Line(Box<[[i16; 2]]>),
+    /// Shared by a road's name and its shields.
+    Line(Arc<[[i16; 2]]>),
+}
+
+/// What a label shows.
+#[derive(Clone, Debug)]
+pub enum Content {
+    Text(Arc<Text>),
+    /// Route shields, side by side, the most important first.
+    Shields(Arc<[Plate]>),
 }
 
 #[derive(Debug)]
 pub struct TileLabel {
     pub layer: u8,
     pub class: u16,
-    pub text: Arc<Text>,
-    /// The layer and the text, hashed: a label is matched to the last frame's by it, and
-    /// line labels with the same key are kept apart.
+    pub content: Content,
+    /// The layer and the text (or the `routes` value), hashed: a label is matched to the last
+    /// frame's by it, and line labels with the same key are kept apart.
     pub key: u64,
     /// Order among labels of the same priority, higher first, 0–16.
     pub rank: f32,
@@ -86,8 +107,9 @@ pub struct TileLabels {
 }
 
 /// Takes the labels out of decoded tile `id`: the features whose class has a label rule
-/// shown at a zoom the tile is drawn at, and a name the fonts can draw, shaped. Also makes
-/// the glyphs' distance fields, so the UI thread does not have to.
+/// shown at a zoom the tile is drawn at, and a name the fonts can draw, shaped; and the
+/// shields of roads on routes. Also makes the glyphs' and shields' distance fields, so the UI
+/// thread does not have to.
 pub fn extract(id: TileId, tile: &Tile, style: &Style) -> TileLabels {
     // A tile stands in for its parent from 1.5 zooms below its own (tiles.rs, `Cover::Child`)
     // and is drawn up to half a zoom above it, or overzoomed. As a fallback for tiles still
@@ -97,82 +119,162 @@ pub fn extract(id: TileId, tile: &Tile, style: &Style) -> TileLabels {
         MAX_ZOOM => f32::INFINITY,
         z => f32::from(z) + 0.5,
     };
-    let fonts = text::fonts();
+    let shown = |minzoom: f32, maxzoom: f32| minzoom < hi && maxzoom > lo;
     let mut out = TileLabels::default();
     // Shaped texts, by font and placement, so a road's pieces share one.
     let mut shaped: HashMap<(Font, Placement), HashMap<String, Arc<Text>>> = HashMap::new();
+    // Shields and their rank by `routes` value; `None` where no route gets one.
+    let mut plated: HashMap<String, Option<RankedPlates>> = HashMap::new();
+    let mut what: Vec<(Content, u64, f32)> = Vec::new();
     for (layer_id, layer) in &tile.layers {
         let rank_props = style.rank_props.get(*layer_id as usize).copied();
         for f in &layer.features {
-            let Some(rule) = style.label(*layer_id, f.class) else {
+            let Some(sym) = style.symbols(*layer_id, f.class) else {
                 continue;
             };
-            if rule.minzoom >= hi || rule.maxzoom <= lo {
-                continue;
+            what.clear();
+            if let Some(rule) = &sym.label
+                && shown(rule.minzoom, rule.maxzoom)
+                && let Some((text, key, bytes)) = name(*layer_id, layer, f, rule, &mut shaped)
+            {
+                out.bytes += bytes;
+                let rank = rank_props.map_or(0.0, |r| rank(layer, f, r));
+                what.push((Content::Text(text), key, rank));
             }
-            match (rule.placement, f.kind) {
-                (Placement::Point, GeomType::Point) | (Placement::Line, GeomType::Lines) => {}
-                _ => continue,
-            }
-            let Some(name) = rule.key.and_then(|k| layer.prop(f, k)) else {
-                continue;
-            };
-            let name = name.trim();
-            if name.is_empty() {
-                continue;
-            }
-            let texts = shaped.entry((rule.font, rule.placement)).or_default();
-            let text = match texts.get(name) {
-                Some(t) => t.clone(),
-                None => {
-                    if !fonts.covers(rule.font, name) {
-                        continue;
+            if let Some(sh) = &sym.shields
+                && shown(sh.minzoom, sh.maxzoom)
+                && f.kind == GeomType::Lines
+                && let Some(value) = sh.key.and_then(|k| layer.prop(f, k))
+            {
+                let entry = match plated.get(&*value) {
+                    Some(e) => e.clone(),
+                    None => {
+                        let e = plates(&value);
+                        if let Some((p, _)) = &e {
+                            out.bytes += p.iter().map(Plate::bytes).sum::<usize>();
+                        }
+                        plated.insert(value.to_string(), e.clone());
+                        e
                     }
-                    let t = match rule.placement {
-                        Placement::Point => fonts.shape_wrapped(rule.font, name, WRAP),
-                        Placement::Line => fonts.shape(rule.font, name),
-                    };
-                    for g in &t.glyphs {
-                        text::glyph_sdf(rule.font, g.id);
-                    }
-                    out.bytes += t.bytes();
-                    let t = Arc::new(t);
-                    texts.insert(name.to_string(), t.clone());
-                    t
+                };
+                if let Some((p, rank)) = entry {
+                    let mut h = std::hash::DefaultHasher::new();
+                    (layer_id, "routes", &*value).hash(&mut h);
+                    what.push((Content::Shields(p), h.finish(), rank));
                 }
-            };
-            let mut h = std::hash::DefaultHasher::new();
-            (layer_id, name).hash(&mut h);
-            let key = h.finish();
-            let rank = rank_props.map_or(0.0, |r| rank(layer, f, r));
+            }
+            if what.is_empty() {
+                continue;
+            }
             let p16 = |p: [i32; 2]| p.map(|v| v.clamp(i16::MIN.into(), i16::MAX.into()) as i16);
-            let mut push = |geom| {
-                out.labels.push(TileLabel {
-                    layer: *layer_id,
-                    class: f.class,
-                    text: text.clone(),
-                    key,
-                    rank,
-                    geom,
-                })
-            };
-            match f.kind {
-                GeomType::Point => {
-                    if let Some(p) = layer.parts(f).next().and_then(|p| p.first()) {
-                        push(Geom::Point(p16(*p)));
-                    }
-                }
-                _ => {
-                    for line in layer.parts(f).filter(|l| l.len() >= 2) {
+            let geoms: Vec<Geom> = match f.kind {
+                GeomType::Point => layer
+                    .parts(f)
+                    .next()
+                    .and_then(|p| p.first())
+                    .map(|p| Geom::Point(p16(*p)))
+                    .into_iter()
+                    .collect(),
+                _ => layer
+                    .parts(f)
+                    .filter(|l| l.len() >= 2)
+                    .map(|line| {
                         out.bytes += line.len() * 4;
-                        push(Geom::Line(line.iter().map(|&p| p16(p)).collect()));
-                    }
+                        Geom::Line(line.iter().map(|&p| p16(p)).collect())
+                    })
+                    .collect(),
+            };
+            for (content, key, rank) in what.drain(..) {
+                for geom in &geoms {
+                    out.labels.push(TileLabel {
+                        layer: *layer_id,
+                        class: f.class,
+                        content: content.clone(),
+                        key,
+                        rank,
+                        geom: geom.clone(),
+                    });
                 }
             }
         }
     }
     out.bytes += out.labels.len() * std::mem::size_of::<TileLabel>();
     out
+}
+
+/// The shaped name of feature `f` for its label rule, its key, and the bytes newly shaped;
+/// `None` if it has no name the fonts can draw, or the rule's placement does not fit its
+/// geometry.
+fn name(
+    layer_id: u8,
+    layer: &Layer,
+    f: &Feature,
+    rule: &Label,
+    shaped: &mut HashMap<(Font, Placement), HashMap<String, Arc<Text>>>,
+) -> Option<(Arc<Text>, u64, usize)> {
+    match (rule.placement, f.kind) {
+        (Placement::Point, GeomType::Point) | (Placement::Line, GeomType::Lines) => {}
+        _ => return None,
+    }
+    let name = rule.key.and_then(|k| layer.prop(f, k))?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let texts = shaped.entry((rule.font, rule.placement)).or_default();
+    let (text, bytes) = match texts.get(name) {
+        Some(t) => (t.clone(), 0),
+        None => {
+            let fonts = text::fonts();
+            if !fonts.covers(rule.font, name) {
+                return None;
+            }
+            let t = match rule.placement {
+                Placement::Point => fonts.shape_wrapped(rule.font, name, WRAP),
+                Placement::Line => fonts.shape(rule.font, name),
+            };
+            for g in &t.glyphs {
+                text::glyph_sdf(rule.font, g.id);
+            }
+            let bytes = t.bytes();
+            let t = Arc::new(t);
+            texts.insert(name.to_string(), t.clone());
+            (t, bytes)
+        }
+    };
+    let mut h = std::hash::DefaultHasher::new();
+    (layer_id, name).hash(&mut h);
+    Some((text, h.finish(), bytes))
+}
+
+/// Shields side by side, and their rank among labels of the same priority.
+type RankedPlates = (Arc<[Plate]>, f32);
+
+/// The shields of a `routes` value, at most [`MAX_PLATES`], and their rank: higher for a
+/// more important first route. Generic shields are left out next to real ones.
+fn plates(value: &str) -> Option<RankedPlates> {
+    let mut out: Vec<Plate> = Vec::new();
+    let mut first = None;
+    let real = routes::parse(value).any(|r| routes::shield(r.network) != Shield::Generic);
+    for r in routes::parse(value) {
+        if out.len() == MAX_PLATES {
+            break;
+        }
+        let shield = routes::shield(r.network);
+        if real && shield == Shield::Generic {
+            continue;
+        }
+        let Some(p) = shapes::plate(shield, r.reference.trim()) else {
+            continue;
+        };
+        if out.iter().any(|o| o.shield == p.shield && o.text == p.text) {
+            continue;
+        }
+        first.get_or_insert(r.network);
+        out.push(p);
+    }
+    let rank = 4.0 * f32::from(4 - routes::priority(first?).min(4));
+    Some((out.into(), rank))
 }
 
 /// Population (log₁₀), capital and area (`area` is log₂ of square pixels at z14).
@@ -209,7 +311,9 @@ pub struct Source<'a> {
 #[derive(Debug, Default)]
 pub struct Placed {
     pub glyphs: Vec<GlyphInstance>,
+    /// Labels placed, shields among them.
     pub labels: usize,
+    pub shields: usize,
     pub candidates: usize,
     /// Some labels are still fading in: draw another frame.
     pub fading: bool,
@@ -232,19 +336,34 @@ struct Candidate {
     line: Option<(u32, u32, f32)>,
     /// Text size in pixels.
     size: f32,
+    priority: i32,
     order: f32,
     /// Opacity in the last frame, if it was shown.
     shown: Option<f32>,
 }
 
-/// A glyph laid out on screen: its pen position and direction.
+/// A glyph or shape laid out on screen: its pen position (a shape's top-left corner) and
+/// direction, and its size in pixels per em.
 #[derive(Clone, Copy)]
 struct Pen {
     at: [f32; 2],
     dir: [f32; 2],
-    id: u16,
-    font: Font,
+    sprite: Sprite,
     size: f32,
+    ink: Ink,
+}
+
+/// A pen's colours.
+#[derive(Clone, Copy)]
+enum Ink {
+    /// The label rule's.
+    Label,
+    Fixed {
+        color: Rgba,
+        halo: Rgba,
+        /// In pixels.
+        halo_width: f32,
+    },
 }
 
 /// Places labels frame after frame, remembering what it showed.
@@ -257,6 +376,7 @@ pub struct Placer {
     // Buffers kept between frames.
     points: Vec<[f32; 2]>,
     dists: Vec<f32>,
+    anchors: Vec<f32>,
     candidates: Vec<Candidate>,
     pens: Vec<Pen>,
     boxes: Vec<[f32; 4]>,
@@ -319,13 +439,28 @@ impl Placer {
                 {
                     continue;
                 }
-                let Some(rule) = style.label(l.layer, l.class) else {
+                let Some(sym) = style.symbols(l.layer, l.class) else {
                     continue;
                 };
-                if !(rule.minzoom..rule.maxzoom).contains(&zoom) {
+                // Size and zooms, the room a line label needs either side of its anchor, in
+                // ems, and where its first anchor is, in spacings.
+                let (priority, size, zooms, half, phase) = match &l.content {
+                    Content::Text(t) => {
+                        let Some(r) = &sym.label else { continue };
+                        let z = (r.minzoom, r.maxzoom);
+                        (r.priority, r.size.at(zoom), z, t.width / 2.0 + 1.0, 0.5)
+                    }
+                    Content::Shields(p) => {
+                        let Some(sh) = &sym.shields else { continue };
+                        let z = (sh.minzoom, sh.maxzoom);
+                        let half = plates_size(p)[0] / 2.0 + 0.5;
+                        (sh.priority, sh.size.at(zoom), z, half, 0.0)
+                    }
+                };
+                if !(zooms.0..zooms.1).contains(&zoom) {
                     continue;
                 }
-                let size = rule.size.at(zoom) * ppp;
+                let size = size * ppp;
                 let mut push = |at: [f32; 2], world: [f64; 2], line| {
                     self.candidates.push(Candidate {
                         source: si as u32,
@@ -334,6 +469,7 @@ impl Placer {
                         world,
                         line,
                         size,
+                        priority,
                         order: 0.0,
                         shown: None,
                     })
@@ -362,22 +498,26 @@ impl Placer {
                             self.dists.push(d);
                         }
                         let end = self.points.len();
-                        let room = l.text.width * size / 2.0 + size;
+                        let room = half * size;
                         if d < 2.0 * room {
                             self.points.truncate(start);
                             self.dists.truncate(start);
                             continue;
                         }
-                        let mut k = 0.5;
-                        loop {
-                            let a = k * spacing;
-                            k += 1.0;
-                            if a > d - room {
-                                break;
+                        // Names and shields take turns along the line. A piece too short for
+                        // any (roads are cut at every bridge) has one in its middle.
+                        self.anchors.clear();
+                        let mut a = phase * spacing;
+                        while a <= d - room {
+                            if a >= room {
+                                self.anchors.push(a);
                             }
-                            if a < room {
-                                continue;
-                            }
+                            a += spacing;
+                        }
+                        if self.anchors.is_empty() {
+                            self.anchors.push(d / 2.0);
+                        }
+                        for &a in &self.anchors {
                             let at = point_at(&self.points[start..end], &self.dists[start..end], a);
                             let w = to_world([
                                 (at[0] - origin[0]) / unit_px,
@@ -397,7 +537,6 @@ impl Placer {
         let same = SAME * ppp64 / world_px;
         for c in &mut self.candidates {
             let l = &sources[c.source as usize].labels.labels[c.label as usize];
-            let rule = style.label(l.layer, l.class).expect("checked above");
             c.shown = self.shown.get(&l.key).and_then(|v| {
                 v.iter()
                     .find(|s| {
@@ -406,7 +545,7 @@ impl Placer {
                     .map(|s| s.opacity)
             });
             let keep = if c.shown.is_some() { KEEP } else { 0.0 };
-            c.order = (rule.priority as f32 + keep) * 16.0 + l.rank;
+            c.order = (c.priority as f32 + keep) * 16.0 + l.rank;
         }
         let key = |c: &Candidate| sources[c.source as usize].labels.labels[c.label as usize].key;
         self.candidates.sort_by(|a, b| {
@@ -423,26 +562,27 @@ impl Placer {
             ..Default::default()
         };
         let mut shown: HashMap<u64, Vec<Shown>> = HashMap::with_capacity(self.shown.len());
-        // Where line labels with each key were placed, for REPEAT.
+        // Where line labels and shields with each key were placed, for REPEAT.
         let mut lines: HashMap<u64, Vec<[f32; 2]>> = HashMap::new();
-        let repeat = REPEAT * ppp;
         let pad = PAD * ppp;
         for c in &self.candidates {
             let l = &sources[c.source as usize].labels.labels[c.label as usize];
-            let rule = style.label(l.layer, l.class).expect("checked above");
+            let sym = style.symbols(l.layer, l.class).expect("checked above");
             self.pens.clear();
             self.boxes.clear();
-            let placed = match c.line {
-                Some((start, end, d)) => {
-                    let near = lines
-                        .get(&l.key)
-                        .is_some_and(|v| v.iter().any(|&p| dist(p, c.at) < repeat));
-                    !near
+            let near = |repeat: f32| {
+                lines
+                    .get(&l.key)
+                    .is_some_and(|v| v.iter().any(|&p| dist(p, c.at) < repeat * ppp))
+            };
+            let placed = match (&l.content, c.line) {
+                (Content::Text(text), Some((start, end, d))) => {
+                    !near(REPEAT)
                         && line_layout(
                             &self.points[start as usize..end as usize],
                             &self.dists[start as usize..end as usize],
                             d,
-                            &l.text,
+                            text,
                             c.size,
                             pad,
                             &mut self.pens,
@@ -450,20 +590,21 @@ impl Placer {
                         )
                         && !self.boxes.iter().any(|b| self.grid.hits(b))
                 }
-                None => {
-                    let icon = style
-                        .symbols(l.layer, l.class)
-                        .is_some_and(|s| s.icon.is_some());
-                    point_layout(
-                        c.at,
-                        &l.text,
-                        c.size,
-                        icon,
-                        pad,
-                        &self.grid,
-                        &mut self.pens,
-                        &mut self.boxes,
-                    )
+                (Content::Text(text), None) => point_layout(
+                    c.at,
+                    text,
+                    c.size,
+                    sym.icon,
+                    pad,
+                    &self.grid,
+                    &mut self.pens,
+                    &mut self.boxes,
+                ),
+                (Content::Shields(plates), _) => {
+                    !near(SHIELD_REPEAT) && {
+                        shield_layout(c.at, plates, c.size, pad, &mut self.pens, &mut self.boxes);
+                        !self.boxes.iter().any(|b| self.grid.hits(b))
+                    }
                 }
             };
             if !placed {
@@ -475,12 +616,11 @@ impl Placer {
                 None => 0.0,
             };
             let start = out.glyphs.len();
-            let halo = rule.halo_width * ppp;
+            let label = sym.label.as_ref().map(|r| (r, r.halo_width * ppp));
             if !emit(
                 &mut self.atlas,
                 &self.pens,
-                rule,
-                halo,
+                label,
                 opacity,
                 srgb,
                 &mut out.glyphs,
@@ -493,6 +633,9 @@ impl Placer {
             }
             if c.line.is_some() {
                 lines.entry(l.key).or_default().push(c.at);
+            }
+            if matches!(l.content, Content::Shields(_)) {
+                out.shields += 1;
             }
             shown.entry(l.key).or_default().push(Shown {
                 at: c.world,
@@ -564,9 +707,9 @@ fn line_layout(
                 c[1] - dir[1] * adv + n[1] * MID_CAP * size,
             ],
             dir,
-            id: g.id,
-            font: text.font,
+            sprite: Sprite::Glyph(text.font, g.id),
             size,
+            ink: Ink::Label,
         });
         let r = adv.max(0.55 * size) + pad;
         boxes.push([c[0] - r, c[1] - r, c[0] + r, c[1] + r]);
@@ -580,14 +723,14 @@ fn turn(a: f32, b: f32) -> f32 {
     d.min(std::f32::consts::TAU - d)
 }
 
-/// Lays out a point label at `at`: centred on it, or with a POI marker on it and the text at
+/// Lays out a point label at `at`: centred on it, or with a POI icon on it and the text at
 /// the first free position beside it. False where nothing fits.
 #[allow(clippy::too_many_arguments)]
 fn point_layout(
     at: [f32; 2],
     text: &Text,
     size: f32,
-    marker: bool,
+    icon: Option<IconStyle>,
     pad: f32,
     grid: &Grid,
     pens: &mut Vec<Pen>,
@@ -598,8 +741,8 @@ fn point_layout(
         f32::from(text.lines) * LINE_HEIGHT * size,
     );
     let mut spots = [[0.0f32; 2]; 4];
-    let spots: &[[f32; 2]] = if marker {
-        let r = 0.3 * MARKER_SIZE * size;
+    let spots: &[[f32; 2]] = if icon.is_some() {
+        let r = ICON * size / 2.0;
         let (x, y) = (at[0], at[1]);
         let m = [x - r - pad, y - r - pad, x + r + pad, y + r + pad];
         if grid.hits(&m) {
@@ -618,7 +761,7 @@ fn point_layout(
         spots[0] = [at[0] - w / 2.0, at[1] - h / 2.0];
         &spots[..1]
     };
-    // Against other labels only: the text's padding may overlap its own marker's.
+    // Against other labels only: the text's padding may overlap its own icon's.
     let Some(&[left, top]) = spots
         .iter()
         .find(|s| !grid.hits(&[s[0] - pad, s[1] - pad, s[0] + w + pad, s[1] + h + pad]))
@@ -628,17 +771,25 @@ fn point_layout(
     // Whole pixels, so horizontal text is as sharp as it can be.
     let (left, top) = (left.round(), top.round());
     boxes.push([left - pad, top - pad, left + w + pad, top + h + pad]);
-    if marker {
-        let fonts = text::fonts();
-        let m = fonts.shape(Font::Regular, MARKER);
-        let ms = MARKER_SIZE * size;
-        if let Some(g) = m.glyphs.first() {
+    if let Some(icon) = icon {
+        // The icon's em is its diameter.
+        let d = ICON * size;
+        let corner = [(at[0] - d / 2.0).round(), (at[1] - d / 2.0).round()];
+        for layer in 0..ICON_LAYERS {
+            let (color, halo) = match layer {
+                0 => (icon.color, HALO_COLOR),
+                _ => ([255; 4], NO_HALO),
+            };
             pens.push(Pen {
-                at: [at[0] - g.advance * ms / 2.0, at[1] + MID_CAP * ms],
+                at: corner,
                 dir: [1.0, 0.0],
-                id: g.id,
-                font: Font::Regular,
-                size: ms,
+                sprite: Sprite::Shape(icon.icon.key(layer)),
+                size: d,
+                ink: Ink::Fixed {
+                    color,
+                    halo,
+                    halo_width: HALO * d,
+                },
             });
         }
     }
@@ -649,21 +800,79 @@ fn point_layout(
                 top + (g.y + LINE_HEIGHT / 2.0 + MID_CAP) * size,
             ],
             dir: [1.0, 0.0],
-            id: g.id,
-            font: text.font,
+            sprite: Sprite::Glyph(text.font, g.id),
             size,
+            ink: Ink::Label,
         });
     }
     true
 }
 
-/// Adds the glyph quads of `pens`, with a halo `halo` pixels wide. False if the atlas is
-/// full this frame.
+/// The width and height of shields side by side, in ems.
+fn plates_size(plates: &[Plate]) -> [f32; 2] {
+    let gaps = PLATE_GAP * plates.len().saturating_sub(1) as f32;
+    plates.iter().fold([gaps, 0.0], |[w, h], p| {
+        let [pw, ph] = p.size();
+        [w + pw, h.max(ph)]
+    })
+}
+
+/// Lays out shields side by side, centred on `at`, with their numbers on them.
+fn shield_layout(
+    at: [f32; 2],
+    plates: &[Plate],
+    size: f32,
+    pad: f32,
+    pens: &mut Vec<Pen>,
+    boxes: &mut Vec<[f32; 4]>,
+) {
+    let [w, h] = plates_size(plates).map(|v| v * size);
+    let (x0, y0) = (at[0] - w / 2.0, at[1] - h / 2.0);
+    boxes.push([x0 - pad, y0 - pad, x0 + w + pad, y0 + h + pad]);
+    let mut left = x0.round();
+    for p in plates {
+        let [pw, ph] = p.size().map(|v| v * size);
+        let top = (at[1] - ph / 2.0).round();
+        for (key, color) in p.layers() {
+            let halo = if key.layer == 0 { HALO_COLOR } else { NO_HALO };
+            pens.push(Pen {
+                at: [left, top],
+                dir: [1.0, 0.0],
+                sprite: Sprite::Shape(key),
+                size,
+                ink: Ink::Fixed {
+                    color,
+                    halo,
+                    halo_width: HALO * size,
+                },
+            });
+        }
+        let (color, mid) = p.text_at();
+        let x = (left + (pw - p.text.width * size) / 2.0).round();
+        let baseline = top + mid * size + MID_CAP * size;
+        for g in &p.text.glyphs {
+            pens.push(Pen {
+                at: [x + g.x * size, baseline + g.y * size],
+                dir: [1.0, 0.0],
+                sprite: Sprite::Glyph(SHIELD_FONT, g.id),
+                size,
+                ink: Ink::Fixed {
+                    color,
+                    halo: NO_HALO,
+                    halo_width: 0.0,
+                },
+            });
+        }
+        left += pw + PLATE_GAP * size;
+    }
+}
+
+/// Adds the quads of `pens`. Pens in [`Ink::Label`] take the label rule's colours and a halo
+/// that many pixels wide. False if the atlas is full this frame.
 fn emit(
     atlas: &mut Atlas,
     pens: &[Pen],
-    rule: &Label,
-    halo: f32,
+    label: Option<(&Label, f32)>,
     opacity: f32,
     srgb: bool,
     out: &mut Vec<GlyphInstance>,
@@ -672,15 +881,23 @@ fn emit(
         let [r, g, b, a] = gpu_color(c, srgb);
         [r, g, b, a * opacity].map(|v| (v * 255.0).round() as u8)
     };
-    let (fill, halo_color) = (color(rule.color), color(rule.halo));
+    let label = label.map(|(rule, halo)| (color(rule.color), color(rule.halo), halo));
     let atlas_px = 1.0 / ATLAS as f32;
     for p in pens {
-        let slot = match atlas.glyph(p.font, p.id) {
+        let slot = match atlas.get(p.sprite) {
             None => return false,
             Some(None) => continue,
             Some(Some(s)) => s,
         };
-        let k = p.size / SDF_EM;
+        let (fill, halo_color, halo) = match p.ink {
+            Ink::Label => label.expect("label pens have a label rule"),
+            Ink::Fixed {
+                color: c,
+                halo,
+                halo_width,
+            } => (color(c), color(halo), halo_width),
+        };
+        let k = p.size / slot.em;
         let (u, n) = (p.dir, [-p.dir[1], p.dir[0]]);
         let (hw, hh) = (f32::from(slot.w) * k / 2.0, f32::from(slot.h) * k / 2.0);
         let (ox, oy) = (slot.left * k + hw, slot.top * k + hh);
@@ -808,7 +1025,7 @@ mod tests {
         TileLabel {
             layer: l,
             class: sl.class(class).unwrap(),
-            text: Arc::new(text::fonts().shape(font, name)),
+            content: Content::Text(Arc::new(text::fonts().shape(font, name))),
             key: h.finish(),
             rank,
             geom,
@@ -939,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn a_poi_has_a_marker_and_its_name_beside_it() {
+    fn a_poi_has_its_icon_and_its_name_beside_it() {
         let (style, schema) = style();
         let mut cam = camera();
         cam.zoom = 14.0;
@@ -970,9 +1187,13 @@ mod tests {
             .chars()
             .filter(|c| *c != ' ')
             .count();
-        // The town's glyphs come first (higher priority), then the marker and the name.
-        let poi = &placed.glyphs[placed.glyphs.len() - n - 1..];
-        let (marker, name) = (poi[0], &poi[1..]);
+        // The town's glyphs come first (higher priority), then the icon's disc and pictogram,
+        // and the name.
+        let poi = &placed.glyphs[placed.glyphs.len() - n - 2..];
+        let (marker, name) = (poi[0], &poi[2..]);
+        // The pictogram is on the disc.
+        assert!(dist(poi[1].center, marker.center) < 2.0);
+        assert!(marker.half[0] > 6.0, "a 16-point disc: {:?}", marker.half);
         assert!(
             name.iter().all(|g| g.center[0] < marker.center[0]),
             "the name is left of the marker"
@@ -981,6 +1202,50 @@ mod tests {
             name.iter()
                 .all(|g| (g.center[1] - marker.center[1]).abs() < 10.0)
         );
+    }
+
+    #[test]
+    fn shields_go_along_their_road_side_by_side() {
+        let (style, schema) = style();
+        // The generic one is left out next to real ones; at most three.
+        let (p, rank) = plates("US:I=75;US:US=23;HNR=HNR").unwrap();
+        assert_eq!(
+            p.iter().map(|p| p.shield).collect::<Vec<_>>(),
+            [Shield::Interstate, Shield::UsRoute]
+        );
+        assert_eq!(rank, 16.0);
+        assert_eq!(plates("A=1;B=2;C=3;D=4").unwrap().0.len(), MAX_PLATES);
+        assert!(plates("=Main Street Business Loop").is_none());
+
+        let (l, sl) = schema.layer("roads").unwrap();
+        let mut labels = TileLabels::default();
+        labels.labels.push(TileLabel {
+            layer: l,
+            class: sl.class("motorway").unwrap(),
+            content: Content::Shields(p),
+            key: 1,
+            rank,
+            geom: Geom::Line(vec![[200, 2000], [3800, 2000]].into()),
+        });
+        let placed = place(&mut Placer::default(), &camera(), &style, &labels, TILE);
+        // 3600 units at z10 are 900 points: a few shields, kept SHIELD_REPEAT apart.
+        assert!(placed.shields >= 2 && placed.shields == placed.labels);
+        // Each: the Interstate's three layers and number, then the US route's two and its.
+        let each = 3 + 2 + 2 + 2;
+        assert_eq!(placed.glyphs.len(), each * placed.shields);
+        let g = &placed.glyphs;
+        assert!(g.iter().all(|g| g.axis == [1.0, 0.0]), "upright");
+        assert!(g[5].center[0] > g[0].center[0] + 10.0, "side by side");
+        assert!((g[5].center[1] - g[0].center[1]).abs() < 1.0);
+        let xs: Vec<f32> = g.iter().step_by(each).map(|g| g.center[0]).collect();
+        for (i, a) in xs.iter().enumerate() {
+            for b in &xs[i + 1..] {
+                assert!((a - b).abs() >= SHIELD_REPEAT, "{xs:?}");
+            }
+        }
+        // On the road.
+        let y = g[0].center[1];
+        assert!(g.iter().all(|g| (g.center[1] - y).abs() < 12.0));
     }
 
     #[test]

@@ -89,6 +89,82 @@ fn is_federal(parts: &[&str]) -> bool {
     }
 }
 
+/// The shield a route is drawn with (phase1-plan.md 1.8). The app draws each design; the
+/// builder counts the ways whose first route gets anything but [`Shield::Generic`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Shield {
+    Interstate,
+    /// Interstate business loops and spurs: a green Interstate shield.
+    InterstateBusiness,
+    UsRoute,
+    /// US state and Canadian provincial shapes, for networks without a design of their own.
+    Circle,
+    Box,
+    Diamond,
+    /// Pennsylvania.
+    Keystone,
+    /// California.
+    Spade,
+    /// Ohio's state outline.
+    Ohio,
+    /// US county roads (and Ontario's): the blue pentagon.
+    County,
+    TransCanada,
+    /// Ontario's crowned King's Highway shield.
+    Ontario,
+    QuebecAutoroute,
+    QuebecRoute,
+    /// Mexico's federal highways.
+    Mexico,
+    /// Any other network, and refs without one.
+    Generic,
+}
+
+/// The shield for a route of `network`.
+pub fn shield(network: &str) -> Shield {
+    let parts: Vec<&str> = network.split(':').collect();
+    match parts[..] {
+        ["US", "I"] => Shield::Interstate,
+        ["US", "I", ..] => Shield::InterstateBusiness,
+        ["US", "US", ..] => Shield::UsRoute,
+        ["US", "VA", "Secondary"] => Shield::Circle,
+        ["US", s, sub, ..] if US_STATES.contains(&s) && is_county(sub) => Shield::County,
+        ["US", s, ..] if US_STATES.contains(&s) => state_shield(s),
+        ["CR"] => Shield::County,
+        ["CA", "transcanada", ..] => Shield::TransCanada,
+        ["CA", "ON"] | ["CA", "ON", "primary"] => Shield::Ontario,
+        ["CA", "ON", "secondary" | "tertiary", ..] => Shield::Box,
+        ["CA", "ON", _, ..] => Shield::County,
+        ["CA", "QC", "A"] => Shield::QuebecAutoroute,
+        ["CA", "QC", ..] => Shield::QuebecRoute,
+        ["CA", p, ..] if PROVINCES.contains(&p) => Shield::Box,
+        ["MX", _] if is_federal(&parts) => Shield::Mexico,
+        ["MX", _, ..] => Shield::Box,
+        _ => Shield::Generic,
+    }
+}
+
+/// A US state's sub-network that is a county's: `CR`, a county code (`US:OH:FRA`), or one
+/// that says so.
+fn is_county(sub: &str) -> bool {
+    sub == "CR"
+        || (sub.len() == 3 && sub.chars().all(|c| c.is_ascii_uppercase()))
+        || sub.contains("County")
+}
+
+/// The shape of a state's own routes. Most states sign their routes with an outline or an
+/// emblem on a square, drawn as a box; those listed have a shape that reads differently.
+fn state_shield(state: &str) -> Shield {
+    match state {
+        "NJ" | "KS" | "NM" => Shield::Circle,
+        "NC" | "MI" => Shield::Diamond,
+        "PA" => Shield::Keystone,
+        "CA" => Shield::Spade,
+        "OH" => Shield::Ohio,
+        _ => Shield::Box,
+    }
+}
+
 #[rustfmt::skip]
 const US_STATES: &[&str] = &[
     "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID", "IL", "IN",
@@ -178,6 +254,44 @@ mod tests {
         assert_eq!(priority("MX:MX"), 1);
         assert_eq!(priority("MX:SON"), 2);
         assert_eq!(priority("DE:BAB"), 4);
+    }
+
+    #[test]
+    fn networks_get_shields() {
+        use Shield::*;
+        let cases = [
+            ("US:I", Interstate),
+            ("US:I:Business:Loop", InterstateBusiness),
+            ("US:US", UsRoute),
+            ("US:US:Historic", UsRoute),
+            ("US:OH", Ohio),
+            ("US:OH:FRA", County),
+            ("US:FL:CR", County),
+            ("US:TX:FM", Box),
+            ("US:VA:Secondary", Circle),
+            ("US:VA", Box),
+            ("US:NJ", Circle),
+            ("US:NC", Diamond),
+            ("US:PA", Keystone),
+            ("US:CA", Spade),
+            ("CR", County),
+            ("CA:transcanada", TransCanada),
+            ("CA:ON:primary", Ontario),
+            ("CA:ON:secondary", Box),
+            ("CA:ON:Renfrew", County),
+            ("CA:QC:A", QuebecAutoroute),
+            ("CA:QC:R", QuebecRoute),
+            ("CA:BC", Box),
+            ("MX:MX", Mexico),
+            ("MX:MEX", Mexico),
+            ("MX:SON", Box),
+            ("DE:BAB", Generic),
+            ("", Generic),
+            ("SR", Generic),
+        ];
+        for (network, want) in cases {
+            assert_eq!(shield(network), want, "{network}");
+        }
     }
 
     #[test]

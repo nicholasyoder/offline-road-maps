@@ -109,8 +109,9 @@ pub struct RouteStats {
     /// `type=route` + `route=road` relations with a `network` and a `ref`.
     pub relations: u64,
     /// Region → road class (motorway, trunk, primary, secondary, tertiary) → ways in a route
-    /// relation, with only a `ref`, and with neither.
-    pub coverage: BTreeMap<String, BTreeMap<String, [u64; 3]>>,
+    /// relation, with only a `ref`, and with neither; then of all those, the ways whose first
+    /// route has a shield of its own (not [`Shield::Generic`](omp_core::routes::Shield)).
+    pub coverage: BTreeMap<String, BTreeMap<String, [u64; 4]>>,
     /// Network → road ways on its routes (a way on two routes of one network counts twice).
     pub networks: BTreeMap<String, u64>,
 }
@@ -122,6 +123,9 @@ enum RouteSource {
     Ref = 1,
     None = 2,
 }
+
+/// The index in [`RouteStats::coverage`] of the ways with a real shield.
+const REAL_SHIELD: usize = 3;
 
 /// Smallest area a label point is made for, in square pixels at its first zoom.
 const LABEL_MIN_PX2: f64 = 1024.0;
@@ -301,8 +305,9 @@ struct WayRec {
     member: bool,
     road: Option<(u16, i8, Option<f64>, bool)>,
     /// For road ways: where `routes` came from, the class if it is counted in the coverage,
-    /// and the way's route relations (indices into [`Rels::routes`]).
-    route: Option<(RouteSource, Option<u16>, Vec<u32>)>,
+    /// the way's route relations (indices into [`Rels::routes`]), and whether its first route
+    /// has a real shield.
+    route: Option<(RouteSource, Option<u16>, Vec<u32>, bool)>,
 }
 
 /// What the relation pass found, for the way passes.
@@ -346,7 +351,7 @@ struct Block {
     boundary_ways: Vec<(i64, u16)>,
     /// Road route relations: `(network, ref, member ways)`.
     route_rels: Vec<(Box<str>, Box<str>, Vec<i64>)>,
-    /// `(region, road class, source)` → ways, for [`RouteStats::coverage`].
+    /// `(region, road class, source or REAL_SHIELD)` → ways, for [`RouteStats::coverage`].
     route_coverage: HashMap<(String, u16, usize), u64>,
     /// Route index → ways, for [`RouteStats::networks`].
     route_ways: HashMap<u32, u64>,
@@ -991,8 +996,11 @@ fn ways_block(ctx: &Ctx, block: &PrimitiveBlock, out: &mut Block, rels: &Rels) {
                         .push((k, omp_core::routes::format(&mut list).into()));
                     o.props.sort_unstable_by_key(|(k, _)| *k);
                 }
+                let real = list.first().is_some_and(|(n, _)| {
+                    omp_core::routes::shield(n) != omp_core::routes::Shield::Generic
+                });
                 let counted = ctx.shield_class[o.class as usize].then_some(o.class);
-                route = Some((src, counted, ids));
+                route = Some((src, counted, ids, real));
             }
             for k in ROAD_TAGS {
                 if get(k).is_some() {
@@ -1108,12 +1116,17 @@ fn resolve_way(
             None => out.missing_refs += 1,
         }
     }
-    if let Some((src, counted, ids)) = &rec.route
+    if let Some((src, counted, ids, real)) = &rec.route
         && ctx.band.k == 0
     {
         if let Some(class) = *counted {
-            let key = (ctx.region(&coords).to_owned(), class, *src as usize);
+            let region = ctx.region(&coords);
+            let key = (region.to_owned(), class, *src as usize);
             *out.route_coverage.entry(key).or_default() += 1;
+            if *real {
+                let key = (region.to_owned(), class, REAL_SHIELD);
+                *out.route_coverage.entry(key).or_default() += 1;
+            }
         }
         for &id in ids {
             *out.route_ways.entry(id).or_default() += 1;

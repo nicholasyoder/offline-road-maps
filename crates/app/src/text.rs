@@ -9,7 +9,8 @@
 //! Each glyph's distance field is made once from its outline, at [`SDF_EM`] atlas pixels per
 //! em, and scaled on the GPU; the halo is a second, wider edge of the same field. Loader
 //! threads make the fields of the glyphs their tiles need ([`glyph_sdf`]); the UI thread packs
-//! them into the [`Atlas`] when a label first uses them.
+//! them into the [`Atlas`] when a label first uses them. Shields and icons (shapes.rs) are
+//! distance fields in the same atlas.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -18,6 +19,7 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{GlyphId, MetadataProvider};
 
+use crate::shapes::{self, ShapeKey};
 use crate::style::Font;
 
 /// Subset to Latin by `data/fonts/subset.sh`, in [`Font`] order.
@@ -199,7 +201,7 @@ impl Fonts {
     }
 }
 
-/// A glyph's distance field.
+/// A glyph's (or shape's) distance field.
 #[derive(Debug)]
 pub struct GlyphSdf {
     pub w: u16,
@@ -207,7 +209,16 @@ pub struct GlyphSdf {
     /// The bitmap's top-left corner from the pen position, in atlas pixels, y down.
     pub left: f32,
     pub top: f32,
+    /// Atlas pixels per em: [`SDF_EM`] for glyphs, less for shields.
+    pub em: f32,
     pub data: Vec<u8>,
+}
+
+/// What the atlas holds: glyphs, and the layers of shields and icons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Sprite {
+    Glyph(Font, u16),
+    Shape(ShapeKey),
 }
 
 type GlyphKey = (Font, u16);
@@ -225,17 +236,41 @@ pub fn glyph_sdf(font: Font, id: u16) -> Option<Arc<GlyphSdf>> {
     cache.lock().unwrap().entry((font, id)).or_insert(g).clone()
 }
 
-/// Flattens an outline into line segments, in atlas pixels with y down.
-struct Flatten {
-    k: f32,
-    segs: Vec<[[f32; 2]; 2]>,
+/// A line segment of an outline, in atlas pixels with y down.
+pub type Segment = [[f32; 2]; 2];
+
+/// Flattens outlines into line segments, in atlas pixels with y down: a point `(x, y)` goes
+/// to `offset + scale · (x, y)`.
+pub struct Flatten {
+    scale: [f32; 2],
+    offset: [f32; 2],
+    pub segs: Vec<Segment>,
     start: [f32; 2],
     at: [f32; 2],
 }
 
 impl Flatten {
+    pub fn new(scale: [f32; 2], offset: [f32; 2]) -> Self {
+        Self {
+            scale,
+            offset,
+            segs: Vec::new(),
+            start: [0.0; 2],
+            at: [0.0; 2],
+        }
+    }
+
+    /// Changes the transform for the outlines drawn next.
+    pub fn set_transform(&mut self, scale: [f32; 2], offset: [f32; 2]) {
+        self.scale = scale;
+        self.offset = offset;
+    }
+
     fn p(&self, x: f32, y: f32) -> [f32; 2] {
-        [x * self.k, -y * self.k]
+        [
+            self.offset[0] + x * self.scale[0],
+            self.offset[1] + y * self.scale[1],
+        ]
     }
 
     fn to(&mut self, p: [f32; 2]) {
@@ -305,12 +340,8 @@ fn make_sdf(face: &Face, id: u16) -> Option<GlyphSdf> {
         .font
         .outline_glyphs()
         .get(GlyphId::new(u32::from(id)))?;
-    let mut pen = Flatten {
-        k: SDF_EM / face.upem,
-        segs: Vec::new(),
-        start: [0.0; 2],
-        at: [0.0; 2],
-    };
+    let k = SDF_EM / face.upem;
+    let mut pen = Flatten::new([k, -k], [0.0; 2]);
     outline
         .draw(
             DrawSettings::unhinted(Size::unscaled(), LocationRef::default()),
@@ -318,7 +349,18 @@ fn make_sdf(face: &Face, id: u16) -> Option<GlyphSdf> {
         )
         .ok()?;
     pen.close();
-    let segs = pen.segs;
+    distance_field(&pen.segs, SDF_EM, 0.0, None)
+}
+
+/// The distance field of the outline `segs` (nonzero winding) drawn at `em` atlas pixels per
+/// em, with its edge moved `inset` atlas pixels inwards, and only the part above `y < clip`
+/// if a clip is given. `None` for an empty outline.
+pub fn distance_field(
+    segs: &[Segment],
+    em: f32,
+    inset: f32,
+    clip: Option<f32>,
+) -> Option<GlyphSdf> {
     if segs.is_empty() {
         return None;
     }
@@ -328,6 +370,9 @@ fn make_sdf(face: &Face, id: u16) -> Option<GlyphSdf> {
             lo[k] = lo[k].min(p[k]);
             hi[k] = hi[k].max(p[k]);
         }
+    }
+    if let Some(c) = clip {
+        hi[1] = hi[1].min(c);
     }
     let x0 = (lo[0] - PAD).floor();
     let y0 = (lo[1] - PAD).floor();
@@ -339,7 +384,7 @@ fn make_sdf(face: &Face, id: u16) -> Option<GlyphSdf> {
         let py = y0 + j as f32 + 0.5;
         // Nonzero winding along the row: where each edge crosses it, and which way.
         crossings.clear();
-        for &[a, b] in &segs {
+        for &[a, b] in segs {
             if (a[1] <= py) != (b[1] <= py) {
                 let t = (py - a[1]) / (b[1] - a[1]);
                 crossings.push((a[0] + t * (b[0] - a[0]), if b[1] > a[1] { 1 } else { -1 }));
@@ -354,14 +399,18 @@ fn make_sdf(face: &Face, id: u16) -> Option<GlyphSdf> {
                 next += 1;
             }
             let mut d2 = f32::MAX;
-            for &[a, b] in &segs {
+            for &[a, b] in segs {
                 let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
                 let (qx, qy) = (px - a[0], py - a[1]);
                 let t = ((qx * ex + qy * ey) / (ex * ex + ey * ey)).clamp(0.0, 1.0);
                 let (dx, dy) = (qx - t * ex, qy - t * ey);
                 d2 = d2.min(dx * dx + dy * dy);
             }
-            let d = if winding != 0 { -d2.sqrt() } else { d2.sqrt() };
+            let mut d = if winding != 0 { -d2.sqrt() } else { d2.sqrt() };
+            d += inset;
+            if let Some(c) = clip {
+                d = d.max(py - c);
+            }
             let v = (SDF_EDGE - d / SDF_RANGE).clamp(0.0, 1.0);
             data[j * w + i] = (v * 255.0).round() as u8;
         }
@@ -371,6 +420,7 @@ fn make_sdf(face: &Face, id: u16) -> Option<GlyphSdf> {
         h: h as u16,
         left: x0,
         top: y0,
+        em,
         data,
     })
 }
@@ -388,6 +438,7 @@ pub struct Slot {
     /// As in [`GlyphSdf`].
     pub left: f32,
     pub top: f32,
+    pub em: f32,
 }
 
 /// Glyph bitmaps to copy into the atlas texture.
@@ -402,7 +453,7 @@ pub struct Upload {
 pub struct Atlas {
     /// Width and height in pixels.
     size: u32,
-    slots: HashMap<GlyphKey, Option<Slot>>,
+    slots: HashMap<Sprite, Option<Slot>>,
     /// Shelves: top, height, and the x where the next glyph goes.
     shelves: Vec<[u32; 3]>,
     full: bool,
@@ -442,17 +493,32 @@ impl Atlas {
         self.slots.len()
     }
 
-    /// The glyph's slot, packing it on first use. `Some(None)`: a glyph without ink. `None`:
-    /// the atlas is full until the next frame.
+    /// The share of the atlas's height its shelves take.
+    pub fn fill(&self) -> f32 {
+        let top = self.shelves.last().map_or(0, |s| s[0] + s[1]);
+        top as f32 / self.size as f32
+    }
+
+    #[cfg(test)]
     pub fn glyph(&mut self, font: Font, id: u16) -> Option<Option<Slot>> {
-        if let Some(s) = self.slots.get(&(font, id)) {
+        self.get(Sprite::Glyph(font, id))
+    }
+
+    /// The sprite's slot, packing it on first use. `Some(None)`: a sprite without ink. `None`:
+    /// the atlas is full until the next frame.
+    pub fn get(&mut self, sprite: Sprite) -> Option<Option<Slot>> {
+        if let Some(s) = self.slots.get(&sprite) {
             return Some(*s);
         }
-        let slot = match glyph_sdf(font, id) {
+        let sdf = match sprite {
+            Sprite::Glyph(font, id) => glyph_sdf(font, id),
+            Sprite::Shape(key) => shapes::sdf(key),
+        };
+        let slot = match sdf {
             None => None,
             Some(sdf) => Some(self.pack(sdf)?),
         };
-        self.slots.insert((font, id), slot);
+        self.slots.insert(sprite, slot);
         Some(slot)
     }
 
@@ -483,6 +549,7 @@ impl Atlas {
             h: sdf.h,
             left: sdf.left,
             top: sdf.top,
+            em: sdf.em,
         };
         s[2] += w;
         self.uploads.push(Upload {

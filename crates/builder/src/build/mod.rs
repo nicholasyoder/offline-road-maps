@@ -559,26 +559,28 @@ fn load_regions(dir: &Path) -> Result<Vec<(String, Poly)>> {
 /// Route relation coverage per country and class and per region, and the commonest networks.
 fn print_routes(r: &osm::RouteStats) {
     use std::collections::BTreeMap;
-    let line = |name: &str, c: [u64; 3]| {
-        let all: u64 = c.iter().sum();
+    // The last count is the ways with a real shield, out of all.
+    let line = |name: &str, c: [u64; 4]| {
+        let all: u64 = c[..3].iter().sum();
         let pct = |n: u64| 100.0 * n as f64 / all.max(1) as f64;
         eprintln!(
-            "    {name:<20} {all:>9} {:>8.1}% {:>8.1}% {:>8.1}%",
+            "    {name:<20} {all:>9} {:>8.1}% {:>8.1}% {:>8.1}% {:>8.1}%",
             pct(c[0]),
             pct(c[1]),
-            pct(c[2])
+            pct(c[2]),
+            pct(c[3])
         );
     };
-    let add = |t: &mut [u64; 3], c: &[u64; 3]| {
-        for i in 0..3 {
+    let add = |t: &mut [u64; 4], c: &[u64; 4]| {
+        for i in 0..4 {
             t[i] += c[i];
         }
     };
     eprintln!("  routes: {} road route relations", r.relations);
-    eprintln!("    ways                      all  relation  ref only   neither");
+    eprintln!("    ways                      all  relation  ref only   neither    shield");
     // Country → class → counts; the class order is the whitelist's, roughly by importance.
     let order = ["motorway", "trunk", "primary", "secondary", "tertiary"];
-    let mut countries: BTreeMap<&str, BTreeMap<usize, [u64; 3]>> = BTreeMap::new();
+    let mut countries: BTreeMap<&str, BTreeMap<usize, [u64; 4]>> = BTreeMap::new();
     for (region, classes) in &r.coverage {
         let country = region.split('-').next().unwrap_or(region);
         for (class, c) in classes {
@@ -590,7 +592,7 @@ fn print_routes(r: &osm::RouteStats) {
         }
     }
     for (country, classes) in &countries {
-        let mut total = [0; 3];
+        let mut total = [0; 4];
         for (i, c) in classes {
             add(&mut total, c);
             line(
@@ -602,7 +604,7 @@ fn print_routes(r: &osm::RouteStats) {
     }
     if r.coverage.len() > countries.len() {
         for (region, classes) in &r.coverage {
-            let mut total = [0; 3];
+            let mut total = [0; 4];
             for c in classes.values() {
                 add(&mut total, c);
             }
