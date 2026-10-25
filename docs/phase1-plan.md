@@ -31,7 +31,7 @@ The roadmap's exit criterion is "browse all of North America from a USB stick at
 | 1.4 App skeleton: pack, camera, tile loading, bench | **Done** 2026-10-24 | Tile outlines, loader pool, 96 MiB cache, F3 overlay, `--bench`. North America flight: 0.45 ms p95 frame (outlines only), RSS peak 212 MiB, worst cold jump 132 ms on SATA SSD. |
 | 1.5 Geometry renderer | **Done** 2026-10-24 | wgpu fills (lyon) and screen-width lines with casings, per-tile scissor, MSAA 4×, `--render`. Ohio flight 0.69 ms p95 frame; North America RSS peak 162 MiB. Ocean pieces were being dropped by the builder: fixed, North America pack now 9,200 MiB. |
 | 1.5b Leave out full-ocean tiles | **Done** 2026-10-24 | Format 0.2: a missing tile is drawn from its nearest stored ancestor. Tiles that one polygon covers are left out (40.1M ocean, 5.6M protected area). North America 8,026 MiB (was 9,200), 17.9M tiles (was 64.0M); renders unchanged. |
-| 1.5c Tile size experiments: frame overhead, per-layer max zoom | In progress | Both measured on Quebec and North America (`size-experiments`, `--render --cap`). North America: F1+F2 −253 MiB, no decode cost; F3 and F4 not worth it; caps −743 MiB (land cover to z13) to −1,654 MiB (land cover and water areas to z13). **Waiting for the owner's decision**; then format, builder, app, rebuild. |
+| 1.5c Tile size experiments: frame overhead, per-layer max zoom | **Done** 2026-10-25 | Kept (owner): F1+F2 (magicless frames, no checksum) and land cover and water areas capped at z13, as format 0.3 with a `waterways` layer. North America **6,214 MiB** (was 8,026), 12.6M tiles; renders at z13 and below unchanged; bench unchanged. |
 | 1.6 Style file and default style | Not started | |
 | 1.7 Text and label placement | Not started | |
 | 1.8 Shields and POI icons | Not started | |
@@ -318,7 +318,7 @@ Store a polygon layer only up to some zoom *M*, and draw it from the tile at *M*
 
 **Done when:** both experiments are measured on Quebec and North America and the results are written under this step; the owner has decided what to keep; any kept variant is in format.md, the builder and the app; the packs are rebuilt and verified; the bench and screenshots are rerun; and the size table and roadmap §4 have the new numbers.
 
-> **Measured 2026-10-24; waiting for the owner's decision** (the commit that adds `build/experiment.rs`).
+> **Measured 2026-10-24** (commit 07db5b8, which adds `build/experiment.rs`).
 > **Tools:** `omp-builder size-experiments <pack>` reads a pack and works out every variant without rebuilding: F1 and F2 change only the frame wrapper, so their sizes are exact; F3 uses each frame's content size; F4 and the water cap decompress and recompress (level 19, with dictionaries). It rebuilds `TIDX` for each variant, the baseline too, so the index sizes compare exactly, and times the decode of every 64th tile (single thread, best of 3). `omp-app --render --cap landcover=13,water-areas=13` previews a capped pack: above the cap a tile's own features of that layer (or only its polygons, with `-areas`) are replaced by its ancestor's at the cap zoom, scaled into the tile. Results in `$OMP_WORK/measure/1.5c/`.
 > **Frames by stored size** (North America, 33.1M): 28% are 16–23 bytes, 43% under 40, 80% under 256.
 >
@@ -348,6 +348,33 @@ Store a polygon layer only up to some zoom *M*, and draw it from the tile at *M*
 > - *Proposal: cap land cover and water areas at z13 (−1,654 MiB, tiles and `TIDX` 6,369 MiB); not land cover at z12, which loses features.*
 > **Combined** (not measured together): F1+F2 on the z13-capped pack would save about 8 bytes × 20.3M frames, 155 MiB more, so about 6,210 MiB in all, from 8,024.
 > **Left for after the decision:** format.md (0.3), builder, app (`--cap` is only a preview and goes when the real one lands), the F2 fuzz test, rebuilds, `verify`, bench, `render.sh`, the size table and roadmap §4.
+>
+> **Done 2026-10-25** (the commit that adds `maxzoom` to `SCHM`). The owner kept **F1+F2** and **land cover and water areas to z13**, as the default: the cap is a per-layer `maxzoom` in the whitelist, so a build can choose another. Format **0.3** ([format.md](format.md#capped-layers-maxzoom)).
+> - **Frames:** tile frames are zstd's magicless format without a checksum (`zframe::tile_compressor`, `tile_dctx`); the reader parses the content size from the frame header itself, since zstd's own call wants the magic number. The `zstd` crate's `experimental` feature is now on in `omp-core`. Fuzz test `damaged_payloads_never_panic`: 20,000 truncated or garbled payloads, none panics, over 1,000 are refused. JSON sections keep ordinary frames.
+> - **Whitelist v3:** rivers, canals and streams move from `water` to a new **`waterways`** layer (lines, to z14), so `water` holds only areas and the cap is per layer. A way that is also `natural=water` stays only a lake, as before, through a new class condition `unless = { natural = "water" }` (without it, the first build drew some canal outlines in Mexico City as lines). `water` and `landcover` have `maxzoom = 13`; `SCHM` carries it; the whitelist refuses a `maxzoom` above 14 or below a class's `minzoom`.
+> - **Builder:** the cutter stops a layer at its `maxzoom` (`walk` drops its pieces, `emit` skips them). A tile left with nothing is not stored.
+> - **App:** `Style` works out per pass the zoom it is capped at (`pass_cap`; a pass mixing capped and uncapped layers would be drawn uncapped, with a warning). `tiles::plan` adds, for each drawn tile above a cap, its source: the tile at the cap zoom, or that tile's nearest stored ancestor (`Plan::capped`), which is also needed before the view counts as detailed. `render` draws a capped pass from the source's mesh with the source's transform and the tile's scissor, so a source is tessellated once for all its children. The `--cap` preview and `size-experiments` are removed (they are in 07db5b8).
+> - **Packs** (`$OMP_WORK/measure/build/*-1.5c.log`; the 1.5b packs are kept in `$OMP_WORK/packs/1.5b/`):
+>
+> | Pack | Size (1.5b) | Tiles stored (1.5b) |
+> |---|---:|---:|
+> | Delaware | 7.0 MiB (8.1) | 3,093 (3,254) |
+> | Ohio | 97.2 MiB (116.1) | 46,264 (47,003) |
+> | Quebec | 540.8 MiB (743.5) | 807,955 (878,657) |
+> | North America | **6,213.6 MiB** (8,026), 2 chunks | **12,595,287** (17,917,363) |
+>
+> North America: tiles 6,146 MiB (7,929), of which water 1,695, waterways 1,158, land cover 1,255 (water with its lines was 3,828, land cover 2,010), roads 1,837 (1,863, the frame savings only); `TIDX` 65.7 MiB (95.0); 21.9M frames (33.1M). The experiment's estimate was 6,210 MiB and 12,595,287 tiles. Build 24.3 min at 43.1 GiB peak. `verify` passes on all four.
+> - **Renders:** `render.sh` against the 1.5b screenshots: the 9 views at z12 and below are pixel-identical; Manhattan z14 and z17 differ in 1,661 and 450 pixels (land cover and water edges from z13) and are recommitted. The 45 views of the 1.5c comparison (15 spots at z14, z15, z17) match the `--cap` previews the owner judged: 39 identical, the rest within 52 pixels of antialiasing at tile edges.
+> - **Bench** (as in 1.5b; `$OMP_WORK/measure/bench/*-1.5c*.json`):
+>
+> | Flight | Frames | Interval p50 / p95 / max | Start-up | Tile latency p50 / p95 / max | Read p95 / max | Decode p95 | Tiles loaded + absent | Read | RSS peak |
+> |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+> | Ohio, warm | 46,779 | 0.61 / 0.70 / 29.5 ms | 234 ms | 3.2 / 18.6 / 40 ms | 0.06 / 0.4 ms | 0.79 ms | 529 + 49 | 12.1 MiB | 113 MiB |
+> | North America, warm | 83,682 | 0.60 / 0.69 / 18.0 ms | 121 ms | 4.6 / 22.8 / 63 ms | 0.11 / 0.9 ms | 1.06 ms | 1,192 + 55 | 34.5 MiB | 125 MiB |
+> | North America, cold (disk remounted) | 83,669 | 0.60 / 0.69 / 18.5 ms | 135 ms | 6.0 / 24.3 / 66 ms | 1.5 / 3.8 ms | 0.94 ms | 1,190 + 57 | 34.4 MiB | 124 MiB |
+>
+> The same as 1.5b within noise; every jump was fully detailed within 38 ms. The flight reads 34 MiB instead of 37. A first warm North America run had the one-off start-up pause seen in 1.5b (199 ms); the rerun did not.
+> - **Open:** label data from a capped layer's source must be clipped to each tile's square, as for left-out tiles (1.7). The capped sources are not preloaded for the margin ring, so a pan into a new z13 square at z14+ shows its land cover one read late (not seen in the bench).
 
 ## 1.6 Style file and default style
 
@@ -445,9 +472,9 @@ Settled while planning (2026-10-24):
 13. **Tile zoom for a fractional zoom:** `floor(zoom + 0.5)`, overzooming z14 up to z18 (1.4, kept in 1.5).
 14. **MSAA 4×** in the window and in `--render`, with `msaa = 1` in `config.toml` to turn it off (1.5).
 15. **Left-out tiles** (1.5b, owner 2026-10-24): every missing tile is drawn from its nearest stored ancestor, with no flag. Slivers cannot occur while every tolerance is under half the buffer, which the builder asserts. Tiles that one polygon covers are left out, ocean or not, when the parent shows that polygon.
+16. **Tile frames and capped layers** (1.5c, owner 2026-10-25): tile frames have no magic number and no checksum (F1+F2); F3 (raw small payloads) and F4 (one frame per tile) are dropped. Land cover and water areas stop at z13 by default (`maxzoom` in the whitelist and `SCHM`), and the app draws them from z13 above that; land cover at z12 was rejected, as it drops visible patches.
 
 Open, to settle in their steps:
-- **Frame overhead and per-layer max zoom** (design review, 2026-10-24): measured in [step 1.5c](#15c-tile-size-experiments-frame-overhead-and-per-layer-max-zoom); the owner decides what to keep from the numbers and screenshots.
 - The state-by-state shield table: how many distinct shapes are worth drawing (1.8).
 - The default units rule for the scale bar in a pack that covers both countries (1.9).
 

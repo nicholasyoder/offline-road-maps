@@ -395,7 +395,8 @@ impl MapState {
                 TileData::Mesh(..) | TileData::Error => Known::Loaded,
             })
         };
-        let plan = tiles::plan(&sel.visible, known);
+        let caps = self.style.caps_below(z);
+        let plan = tiles::plan(&sel.visible, &caps, known);
         // The margin's next unread tiles, past the absent ones, so short pans find them ready.
         let margin: Vec<TileId> = sel
             .margin
@@ -442,8 +443,14 @@ impl MapState {
                 _ => {}
             }
         }
+        let mut capped = Vec::with_capacity(plan.capped.len());
+        for &(t, cap, s) in &plan.capped {
+            if let Some(TileData::Mesh(m, _)) = self.cache.get(s) {
+                capped.push((t, cap, s, m.clone()));
+            }
+        }
         let paints = render::paints(&self.style, cam.zoom, ppp, srgb);
-        let frame = render::layout(cam, ppp, paints, draws);
+        let frame = render::layout(cam, ppp, paints, draws, capped, &self.style.pass_cap);
         painter.add(egui_wgpu::Callback::new_paint_callback(
             rect,
             MapCallback(frame),

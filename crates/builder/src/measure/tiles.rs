@@ -158,6 +158,8 @@ struct Ctx<'a> {
     wl: &'a Whitelist,
     /// `[layer][class]`, `u8::MAX` for classes not in tiles.
     minzoom: Vec<Vec<u8>>,
+    /// Per layer, the last zoom it is put in (its `maxzoom`, else z14).
+    maxzoom: Vec<u8>,
     /// The water layer's external ocean class, whose pieces are dissolved in each tile.
     ocean: Option<(u8, u16)>,
     /// Also measure V0, V1 and MVT; without it only V2 is encoded (for `build`).
@@ -296,6 +298,11 @@ pub fn cut_pyramid(
             .collect(),
         store: Mutex::new(store),
         minzoom,
+        maxzoom: wl
+            .layers
+            .iter()
+            .map(|l| l.maxzoom.unwrap_or(MAX_ZOOM))
+            .collect(),
         measure,
     };
     let minzoom = |f: &Feature| feature_minzoom(&ctx.minzoom, f);
@@ -387,6 +394,7 @@ fn walk(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag], last: u8) {
         let rect = tile_rect(z + 1, cx, cy);
         let kids: Vec<Frag> = frags
             .iter()
+            .filter(|f| ctx.maxzoom[f.f.layer as usize] > z)
             .filter_map(|f| cut(f.f, &f.geom, f.bbox, &rect))
             .collect();
         walk(ctx, z + 1, cx, cy, &kids, last);
@@ -396,7 +404,7 @@ fn walk(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag], last: u8) {
 fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
     let mut by_layer: Vec<Vec<&Frag>> = vec![Vec::new(); ctx.wl.layers.len()];
     for f in frags {
-        if feature_minzoom(&ctx.minzoom, f.f) <= z {
+        if feature_minzoom(&ctx.minzoom, f.f) <= z && z <= ctx.maxzoom[f.f.layer as usize] {
             by_layer[f.f.layer as usize].push(f);
         }
     }

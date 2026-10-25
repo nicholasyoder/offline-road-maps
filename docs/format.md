@@ -1,6 +1,6 @@
 # Pack format
 
-*Version 0.2 (draft), 2026-10-24. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out.*
+*Version 0.3 (draft), 2026-10-24. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom.*
 
 A **pack** holds everything the app needs for one region: map tiles, addresses, and later routing, search and style data. It is built by `omp-builder` and read by `omp-app`, usually from a USB flash drive. This document is the contract between the two.
 
@@ -107,12 +107,12 @@ Each section ID appears at most once. Sections do not overlap. The table itself 
 Every section has an XXH3-64 checksum in the section table. The app does **not** check them on load: hashing 11 GiB from a USB 2 drive would take minutes. Instead:
 - The header, the chunk headers and the section table are checked on every open. They are small.
 - A **"Verify pack"** command hashes every section and reports any that fail. The app suggests running it after copying a pack, and when a decode fails.
-- Each zstd frame inside a section also carries zstd's own content checksum (enabled at write time), so a corrupt tile fails to decode instead of drawing garbage.
+- The JSON sections' zstd frames also carry zstd's own content checksum. **Tile frames do not** (0.3): at 8 bytes a frame with the magic number, they cost 253 MiB on North America. A damaged tile usually fails in zstd or in the payload decoder, which return an error and never panic (a fuzz test in `omp-core::tile` checks this); when it decodes anyway, it draws wrong until "Verify pack" finds it.
 
 ## `META`: metadata and attribution (contiguous)
 
 A UTF-8 JSON object, zstd-compressed (one frame). Fields:
-- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.2"`).
+- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.3"`).
 - `sources`: the `fetch` manifest. For each input: `name`, `url`, `date` (of download, RFC 3339), `sha256`, `license`, and optionally `license_url` and `attribution`. Every OpenAddresses source is listed, including those whose license is `unspecified` (decision 13).
 - `attribution`: the text the app shows on its "About this map" screen, built from `sources` (e.g. "© OpenStreetMap contributors, ODbL", the Statistics Canada NAR licence, each OpenAddresses source's attribution).
 - `settings`: the build options that shaped the data (whitelist version, simplification tolerances, address dedup and attach distances).
@@ -123,7 +123,7 @@ JSON keeps this section easy to extend: readers ignore fields they do not know. 
 
 The ID tables that the tile and address sections refer to, so the app does not depend on a compiled-in whitelist. A zstd-compressed JSON object:
 - `whitelist_version`.
-- `layers`: in layer-ID order. For each layer: `name`, `geometry` (`point`, `line` or `area`), `props` (in prop-key order) and `classes` (in class-ID order; each has `name` and `minzoom`).
+- `layers`: in layer-ID order. For each layer: `name`, `geometry` (`point`, `line` or `area`), `props` (in prop-key order), `maxzoom` (0.3; left out when the layer goes up to z14, see [capped layers](#capped-layers-maxzoom)) and `classes` (in class-ID order; each has `name` and `minzoom`).
 
 The style (Phase 1) refers to layers and classes by name. The app resolves names to IDs through this section when it opens the pack.
 
@@ -137,11 +137,19 @@ Tiles cover zooms 0–14. The app overzooms z14 tiles for higher zooms. Each til
 
 The builder leaves out a tile (z1–z14) when all it would hold is **one polygon covering the whole tile and its buffer**, open ocean or the inside of a large park, protected area, lake or forest, and that polygon **already shows at the parent's zoom** (its `minzoom` is lower than the tile's). Anything else in the tile, even only in its buffer (a ferry route, a boundary, an island, a second land cover), keeps it.
 
-This is safe because a tile holds everything its ancestors hold in its square: features are only filtered by `minzoom` and thinned (minimum line length and ring area), and both drop more at lower zooms. A left-out tile's one polygon is in its parent too, by the `minzoom` condition, and is far too large to be thinned there. So the parent shows the same thing in the tile's square, and level by level so does the nearest stored ancestor. Where a tile is empty, its ancestors have nothing there either. (Without the `minzoom` condition, a protected area that starts at z6 and covers a whole z6 tile would be left to a z5 ancestor that does not have it, as an early build did in Greenland.)
+This is safe because a tile holds everything its ancestors hold in its square, apart from [capped layers](#capped-layers-maxzoom), which its ancestor at the cap provides either way: features are only filtered by `minzoom` and thinned (minimum line length and ring area), and both drop more at lower zooms. A left-out tile's one polygon is in its parent too, by the `minzoom` condition, and is far too large to be thinned there. So the parent shows the same thing in the tile's square, and level by level so does the nearest stored ancestor. Where a tile is empty, its ancestors have nothing there either. (Without the `minzoom` condition, a protected area that starts at z6 and covers a whole z6 tile would be left to a z5 ancestor that does not have it, as an early build did in Greenland.)
 
 The ocean comes from `water-polygons-split`, whose pieces are cut along whole-degree lines and overlap there (by about 0.0013° on the 75° W line off Delaware, some 110 m), so open ocean on such a line is two to four pieces. When a tile's ocean pieces are rectangles that together cover the tile and its buffer, the builder stores them as one square, so such a tile is left out too.
 
 **Simplification cannot leave slivers.** An ancestor's edges are simplified, so they are up to its tolerance away from the real ones, and could in principle reach into a left-out square. They cannot: a left-out child is covered out to its 64-unit buffer, which is 32 units in its parent's grid, so the polygon's real edge (a coastline, a park boundary) is at least 32 parent units from the child's square. Every simplification tolerance stays under 32 units at every zoom (the largest is 16, water and land cover at z14), so the parent's simplified edge stays outside the square. The same holds level by level up to the stored ancestor. The builder asserts the tolerance bound, so a whitelist change cannot break it unnoticed.
+
+### Capped layers (`maxzoom`)
+
+A layer may stop at a **`maxzoom`** below 14 (0.3; `SCHM`, from the whitelist). Tiles above it do not hold the layer, and the app draws it there from the tile at `maxzoom` that contains the tile, scaled up and clipped to the tile's square, while the other layers come from the tile itself. If that tile is left out, its nearest stored ancestor stands in, as for any left-out tile. A tile that holds nothing but capped layers is not stored, so it is drawn from its ancestor like any other.
+
+The default whitelist caps **`landcover` and `water`** (the areas: ocean, lakes, riverbanks) **at z13**; rivers, canals and streams are in their own `waterways` layer and go to z14, since roads cross them on bridges. This costs no edge precision: their z14 tolerance (16 units) is the same distance on the ground as z13's (8 units). What z13 drops that z14 kept is rings under 256 grid units (about 2×2 z13 pixels, some 14 m across at 45° N) and lines under 8 units. It saves 1.65 GiB on North America (phase 1 step 1.5c).
+
+A `maxzoom` must not be below any of the layer's classes' `minzoom`. The tiles at `maxzoom` are simplified as before, so the argument that left-out tiles leave no slivers still holds.
 
 ### Layer payload (encoding V2)
 
@@ -165,7 +173,7 @@ polygon    = nrings:varint  (npoints:varint (dx:zvarint dy:zvarint)*)*
 - All deltas are from one **cursor** that starts at `(0, 0)` and carries across points, parts, rings and features. Each decoded point moves the cursor.
 - **Polygons:** rings are implicitly closed (the last point is not repeated). Outer rings are clockwise on screen (positive shoelace area with y down) and holes counter-clockwise, as in MVT. A ring belongs to the nearest preceding outer ring. A polygon has at least one outer ring.
 - Features are already simplified for their zoom (Douglas–Peucker, with tolerances from the whitelist, see [phase0-plan.md](phase0-plan.md#water-simplification-follow-up-2026-10-24)) and filtered by `minzoom`. The app draws what it gets.
-- **Merged lines** (phase 1 decision 5): in the layers the whitelist marks (roads, ferries, rail, and the water layer's lines), pieces of one class with identical props that meet end to end are joined before simplification, wherever exactly two piece ends meet. All of a tile's pieces with the same class and props then form **one feature**, whose parts are the joined chains. So a feature is not an OSM way: one road feature may be several separate stretches of the same street. Oneway roads and waterways keep their direction (pieces are joined end to start only).
+- **Merged lines** (phase 1 decision 5): in the layers the whitelist marks (roads, ferries, rail and waterways), pieces of one class with identical props that meet end to end are joined before simplification, wherever exactly two piece ends meet. All of a tile's pieces with the same class and props then form **one feature**, whose parts are the joined chains. So a feature is not an OSM way: one road feature may be several separate stretches of the same street. Oneway roads and waterways keep their direction (pieces are joined end to start only).
 
 ### Labels and shields
 
@@ -205,11 +213,11 @@ Entries are sorted by (layer, band). A (layer, band) without an entry has no dic
 
 ### `TDAT`: tile data (spanning)
 
-The compressed layer payloads, one **record per tile**, with the tile's layers back to back in layer-ID order. Each layer payload is one zstd frame (level 19, content size and content checksum on, no dictionary ID in the frame), compressed with its (layer, band) dictionary. The reader needs the content size to size its buffer, and refuses frames over 256 MiB. Tiles are stored by zoom, then in Hilbert order within the zoom, the same order as the index. Spatially close tiles are therefore close on disk, so one viewport is usually one or two reads.
+The compressed layer payloads, one **record per tile**, with the tile's layers back to back in layer-ID order. Each layer payload is one zstd frame (level 19), compressed with its (layer, band) dictionary, in zstd's **magicless** format (`ZSTD_f_zstd1_magicless`: no 4-byte magic number; `TIDX` already says where each frame starts) with **no content checksum** and no dictionary ID (0.3). The frame header keeps the content size, which the reader needs to size its buffer; it refuses frames over 256 MiB. The reader parses the size from the frame header descriptor itself, since zstd's `ZSTD_getFrameContentSize` expects the magic number. Tiles are stored by zoom, then in Hilbert order within the zoom, the same order as the index. Spatially close tiles are therefore close on disk, so one viewport is usually one or two reads.
 
 ### `TIDX`: tile index (contiguous)
 
-Sparse and Hilbert-ordered (decision 7). For North America it is about 95 MiB over all zooms (1.2% of tile bytes, with left-out tiles; 275 MiB before them); dense offset arrays over each zoom's bounding box would be 3.2 GiB, because most cells are empty (95% of Quebec's z14 bounding box).
+Sparse and Hilbert-ordered (decision 7). For North America it is about 66 MiB over all zooms (1.1% of tile bytes, with left-out tiles and capped layers; 275 MiB before them); dense offset arrays over each zoom's bounding box would be 3.2 GiB, because most cells are empty (95% of Quebec's z14 bounding box).
 
 ```
 TIDX       = zoom_dir[15]  block*

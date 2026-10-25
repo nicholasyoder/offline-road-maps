@@ -83,6 +83,24 @@ Almost all of it is open ocean inside the region's `.poly`: tiles at z13–z14 t
 
 Left out: 40.1M ocean tiles, 5.6M protected-area tiles, 0.24M lake tiles and 0.16M wood or forest tiles. With the ocean alone the pack was 8,162 MiB, so the land polygons save another 137 MiB. Quebec's pack went from 751.0 to 743.5 MiB, Ohio's from 116.4 to 116.1 (lakes only), Delaware's stayed at 8.1. The North America total becomes **about 11,780 MiB (11.5 GiB, 12.3 GB)**, 0.53× CoMaps.
 
+### After phase 1 step 1.5c: lighter frames, capped layers
+
+[Step 1.5c](phase1-plan.md#15c-tile-size-experiments-frame-overhead-and-per-layer-max-zoom) drops the magic number and checksum from every tile frame (8 bytes each) and stores land cover and water areas only up to z13; the app draws them from z13 at z14 and above ([format.md](format.md#capped-layers-maxzoom)). Rivers, canals and streams move to their own `waterways` layer, which stays to z14. North America, MiB:
+
+| | 1.5b pack | 1.5c pack | Change |
+|---|---:|---:|---:|
+| Water tiles (areas; lines until 1.5b) | 3,828.4 | 1,695.1 | −2,133.3 |
+| Waterway tiles (rivers, canals, streams) | – | 1,158.0 | +1,158.0 |
+| Land cover tiles | 2,010.2 | 1,254.7 | −755.5 |
+| Road tiles | 1,863.4 | 1,837.2 | −26.2 |
+| All tiles | 7,928.7 | 6,145.8 | −1,782.9 |
+| Tile index (`TIDX`) | 95.0 | 65.7 | −29.3 |
+| Tiles stored | 17.9M | 12.6M | −5.3M |
+| zstd frames | 33.1M | 21.9M | −11.2M |
+| Pack | 8,026 | 6,214 | −1,812 |
+
+Of the 1,812 MiB, the caps account for about 1,650 and the frame wrappers for about 170. Quebec's pack went from 743.5 to 540.8 MiB, Ohio's from 116.1 to 97.2, Delaware's from 8.1 to 7.0. The North America total becomes **about 9,970 MiB (9.7 GiB, 10.5 GB)**, 0.45× CoMaps.
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

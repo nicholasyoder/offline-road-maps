@@ -42,10 +42,10 @@ impl FrameCompressor {
     pub fn new(dicts: &Dictionaries, level: i32) -> io::Result<Self> {
         let mut with_dict = HashMap::new();
         for (&k, d) in dicts.0.iter().filter(|(_, d)| !d.is_empty()) {
-            with_dict.insert(k, zframe::compressor(level, d)?);
+            with_dict.insert(k, zframe::tile_compressor(level, d)?);
         }
         Ok(Self {
-            plain: zframe::compressor(level, &[])?,
+            plain: zframe::tile_compressor(level, &[])?,
             with_dict,
         })
     }
@@ -339,7 +339,10 @@ impl TileReader {
         self.bytes_read.fetch_add(len, Ordering::Relaxed);
         let t1 = Instant::now();
         timing.read = t1 - t0;
-        let mut dctx = self.dctx.lock().unwrap().pop().unwrap_or_else(DCtx::create);
+        let mut dctx = match self.dctx.lock().unwrap().pop() {
+            Some(d) => d,
+            None => zframe::tile_dctx()?,
+        };
         let mut layers = Vec::with_capacity(loc.layers.len());
         let mut at = 0;
         let res = (|| {
@@ -347,7 +350,7 @@ impl TileReader {
                 let frame = &bytes[at..at + n as usize];
                 at += n as usize;
                 let dict = self.dicts.get(&(id, zoom_band(z)));
-                let raw = zframe::decompress(&mut dctx, frame, dict)?;
+                let raw = zframe::decompress_tile(&mut dctx, frame, dict)?;
                 layers.push((id, Layer::decode(raw)?));
             }
             Ok::<_, io::Error>(())

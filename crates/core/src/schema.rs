@@ -23,6 +23,10 @@ pub struct Layer {
     pub geometry: GeometryKind,
     /// In prop-key order.
     pub props: Vec<String>,
+    /// The last zoom whose tiles hold this layer; above it, draw it from the tile at this
+    /// zoom (format 0.3). None: every zoom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maxzoom: Option<u8>,
     /// In class-ID order.
     pub classes: Vec<Class>,
 }
@@ -45,6 +49,7 @@ impl Schema {
                     name: l.name.clone(),
                     geometry: l.geometry,
                     props: l.props.clone(),
+                    maxzoom: l.maxzoom,
                     classes: l
                         .classes
                         .iter()

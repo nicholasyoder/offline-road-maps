@@ -108,8 +108,11 @@ pub fn inspect(args: InspectArgs) -> Result<()> {
     if let Some(s) = &schema {
         println!("\nSCHM     whitelist v{}", s.whitelist_version);
         for (id, l) in s.layers.iter().enumerate() {
+            let cap = l
+                .maxzoom
+                .map_or_else(String::new, |m| format!(", maxzoom {m}"));
             println!(
-                "  {id:>2} {:<12} {:?}, {} classes, props: {}",
+                "  {id:>2} {:<12} {:?}, {} classes{cap}, props: {}",
                 l.name,
                 l.geometry,
                 l.classes.len(),

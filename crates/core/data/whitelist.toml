@@ -8,6 +8,7 @@
 # order and the first match wins:
 #   tags    every key must be present with one of the listed values ("*" = any value);
 #   absent  keys that must not be present;
+#   unless  tags that rule the class out (same form as `tags`);
 #   minzoom first zoom the class appears in tiles;
 #   tile    false = counted in the report but not put in tiles (searched or routed only);
 #   geometry overrides the layer default;
@@ -16,6 +17,8 @@
 # zoom, in tile grid units (4096 per tile; 8 per pixel on a 512 px tile). Zooms not listed
 # use 4, or 1 at z14. At z14 a ring that would collapse is simplified again at a smaller
 # tolerance, so no feature disappears there.
+# A layer may set `maxzoom`: the last zoom whose tiles hold it. Above it the app draws the
+# layer from the tile at that zoom, scaled up. It must not be below any class's minzoom.
 # A layer may set `merge_lines = "reversible"` or `"directed"`: before encoding a tile, line
 # pieces with the same class and props that meet end to end become one feature with fewer,
 # longer parts. "directed" never reverses a piece; "reversible" may, unless it has a `oneway`
@@ -31,7 +34,7 @@
 # relations a way belongs to, else its `ref`; see omp-core's `routes` module) and `area`
 # (labels: log2 of the area in square pixels at z14, rounded down).
 
-version = 2
+version = 3
 
 [[layer]]
 name = "roads"
@@ -89,19 +92,33 @@ name = "water"
 geometry = "area"
 from = ["way", "relation"]
 props = ["name"]
-# Simplified harder than other layers: at most about 6.5 m off at z14, every lake and
-# stream kept. Cuts North America water by 21% (phase 0.5 experiment).
+# Simplified harder than other layers: at most about 6.5 m off at z14, every lake kept.
+# Cuts North America water by 21% (phase 0.5 experiment).
 tolerance = { z12 = 6.0, z13 = 8.0, z14 = 16.0 }
-# Rivers, canals and streams; the areas are left alone.
-merge_lines = "directed"
+# z14 is drawn from z13: 16 units at z14 are the same distance as 8 at z13, so only rings
+# under about 14 m across are lost (phase 1 step 1.5c).
+maxzoom = 13
 classes = [
   # Ocean polygons come from osmdata.openstreetmap.de, not from OSM tags.
   { name = "ocean", external = true, minzoom = 0 },
   { name = "lake", tags = { natural = "water" }, minzoom = 4 },
   { name = "riverbank", tags = { waterway = "riverbank" }, minzoom = 8 },
-  { name = "river", tags = { waterway = "river" }, minzoom = 8, geometry = "line" },
-  { name = "canal", tags = { waterway = "canal" }, minzoom = 10, geometry = "line" },
-  { name = "stream", tags = { waterway = "stream" }, minzoom = 13, geometry = "line" },
+]
+
+[[layer]]
+name = "waterways"
+geometry = "line"
+from = ["way", "relation"]
+props = ["name"]
+# Simplified like water: every stream kept.
+tolerance = { z12 = 6.0, z13 = 8.0, z14 = 16.0 }
+merge_lines = "directed"
+# A way that is also `natural=water` is a lake in the water layer (its first match there,
+# as when these classes were part of it), not also a line.
+classes = [
+  { name = "river", tags = { waterway = "river" }, unless = { natural = "water" }, minzoom = 8 },
+  { name = "canal", tags = { waterway = "canal" }, unless = { natural = "water" }, minzoom = 10 },
+  { name = "stream", tags = { waterway = "stream" }, unless = { natural = "water" }, minzoom = 13 },
 ]
 
 [[layer]]
@@ -112,6 +129,8 @@ props = ["name"]
 # Simplified like water: every wood, park and protected area kept. Cuts land cover by
 # 18–20% in Quebec and Ontario (phase 0.6 experiment).
 tolerance = { z12 = 6.0, z13 = 8.0, z14 = 16.0 }
+# Drawn from z13 at z14, like water.
+maxzoom = 13
 classes = [
   { name = "forest", tags = { landuse = "forest" }, minzoom = 7 },
   { name = "wood", tags = { natural = "wood" }, minzoom = 7 },

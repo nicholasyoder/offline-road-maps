@@ -738,6 +738,74 @@ mod tests {
         assert!(empty.features.is_empty());
     }
 
+    /// Tile frames have no checksum (format 0.3), so a damaged payload must fail in the
+    /// decoder, or decode to something the accessors can walk, and never panic.
+    #[test]
+    fn damaged_payloads_never_panic() {
+        let props: Vec<(u8, Box<str>)> = vec![(0, "Main St".into()), (1, "42".into())];
+        let ring: Vec<Point> = (0..40).map(|i| [i * 97 % 4096, i * 31 % 4096]).collect();
+        let good = encode_layer(&[
+            Enc {
+                class: 3,
+                props: &props,
+                geom: Geom::Lines(vec![ring.clone(), ring[..5].to_vec()]),
+            },
+            Enc {
+                class: 1,
+                props: &props[..1],
+                geom: Geom::Polygon(vec![ring.clone(), ring[10..20].to_vec()]),
+            },
+            Enc {
+                class: 0,
+                props: &[],
+                geom: Geom::Point([5, 6]),
+            },
+        ]);
+        // xorshift, so the cases are the same on every run.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rand = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let walk = |l: &Layer| {
+            let mut n = l.vertices();
+            for f in &l.features {
+                n += l.parts(f).map(<[Point]>::len).sum::<usize>();
+                for &(k, _) in l.props(f) {
+                    n += l.prop(f, k).map_or(0, |v| v.len());
+                }
+                let _ = l.geom(f);
+            }
+            n
+        };
+        let mut errors = 0;
+        for case in 0..20_000 {
+            let mut b = good.clone();
+            match case % 3 {
+                0 => b.truncate(rand() as usize % b.len()),
+                1 => {
+                    for _ in 0..1 + rand() % 4 {
+                        let i = rand() as usize % b.len();
+                        b[i] ^= 1 << (rand() % 8);
+                    }
+                }
+                _ => {
+                    let i = rand() as usize % b.len();
+                    b[i] = rand() as u8;
+                }
+            }
+            match Layer::decode(b) {
+                Ok(l) => {
+                    walk(&l);
+                }
+                Err(_) => errors += 1,
+            }
+        }
+        assert!(errors > 1000, "only {errors} damaged payloads were refused");
+    }
+
     #[test]
     fn layer_rejects_garbage() {
         let mut b = encode_layer(&[Enc {

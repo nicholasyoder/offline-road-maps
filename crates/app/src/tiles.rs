@@ -153,8 +153,12 @@ const MAX_PARENT_LEVELS: u8 = 8;
 pub struct Plan {
     /// Sorted by zoom, so ancestors come first and are drawn underneath.
     pub draws: Vec<(TileId, Cover)>,
-    /// Tiles still to read before the view is fully detailed: wanted tiles, or the next
-    /// ancestor up from a left-out one. In `visible` order.
+    /// For drawn tiles above a cap zoom: `(tile, cap, source)`, where `source` is the stored
+    /// tile at or above the cap zoom whose capped layers are drawn in `tile`'s square, once
+    /// it is loaded (format 0.3, layer `maxzoom`).
+    pub capped: Vec<(TileId, u8, TileId)>,
+    /// Tiles still to read before the view is fully detailed: wanted tiles, the next
+    /// ancestor up from a left-out one, or a capped layer's source. In `visible` order.
     pub need: Vec<TileId>,
 }
 
@@ -165,8 +169,10 @@ impl Plan {
     }
 }
 
-/// What to draw for the `visible` tiles, given what the cache knows (`known`).
-pub fn plan(visible: &[TileId], known: impl Fn(TileId) -> Option<Known>) -> Plan {
+/// What to draw for the `visible` tiles, given what the cache knows (`known`). `caps` are
+/// the zooms that capped layers are stored up to; a drawn tile above one also needs its
+/// ancestor at that zoom (or that ancestor's nearest stored ancestor).
+pub fn plan(visible: &[TileId], caps: &[u8], known: impl Fn(TileId) -> Option<Known>) -> Plan {
     let mut out = Plan::default();
     let mut drawn = HashSet::new();
     let loaded = |t: TileId| known(t) == Some(Known::Loaded);
@@ -217,6 +223,19 @@ pub fn plan(visible: &[TileId], known: impl Fn(TileId) -> Option<Known>) -> Plan
         }
     }
     out.draws.sort_by_key(|(t, _)| t.z);
+    for &(t, cover) in &out.draws {
+        if matches!(cover, Cover::Missing | Cover::Empty) {
+            continue;
+        }
+        for &m in caps.iter().filter(|&&m| t.z > m) {
+            let d = t.z - m;
+            match resolve(TileId::new(m, t.x >> d, t.y >> d), &known) {
+                Resolved::Stored(s) => out.capped.push((t, m, s)),
+                Resolved::Unknown(u) if !out.need.contains(&u) => out.need.push(u),
+                _ => {}
+            }
+        }
+    }
     out
 }
 
@@ -268,7 +287,7 @@ mod tests {
         .into_iter()
         .chain(TileId::new(5, 12, 10).children())
         .collect();
-        let p = plan(&want, |t| loaded.contains(&t).then_some(Known::Loaded));
+        let p = plan(&want, &[], |t| loaded.contains(&t).then_some(Known::Loaded));
         assert_eq!(p.draws[0], (TileId::new(3, 2, 2), Cover::Parent));
         assert!(p.draws.contains(&(TileId::new(5, 10, 10), Cover::Exact)));
         assert_eq!(
@@ -276,7 +295,7 @@ mod tests {
             4
         );
         assert_eq!(p.need, want[1..]);
-        let none = plan(&want[..1], |_| None);
+        let none = plan(&want[..1], &[], |_| None);
         assert_eq!(none.draws, vec![(want[0], Cover::Missing)]);
     }
 
@@ -291,19 +310,44 @@ mod tests {
             (t12, Known::Loaded),
         ]);
         // 13/50/50 not read yet: it is needed next, and 12/25/25 stands in meanwhile.
-        let p = plan(&want, |t| known.get(&t).copied());
+        let p = plan(&want, &[], |t| known.get(&t).copied());
         assert_eq!(p.need, vec![t13]);
         assert_eq!(p.draws[0], (t12, Cover::Parent));
         known.insert(t13, Known::Absent);
-        let p = plan(&want, |t| known.get(&t).copied());
+        let p = plan(&want, &[], |t| known.get(&t).copied());
         assert!(p.detailed());
         assert_eq!(
             p.draws,
             vec![(t12, Cover::Ancestor), (want[1], Cover::Exact)]
         );
         // Nothing stored all the way up: bare land.
-        let p = plan(&want[..1], |_| Some(Known::Absent));
+        let p = plan(&want[..1], &[], |_| Some(Known::Absent));
         assert_eq!(p.draws, vec![(t14, Cover::Empty)]);
         assert!(p.detailed());
+    }
+
+    #[test]
+    fn capped_layers_come_from_the_tile_at_the_cap() {
+        // Layers capped at z12. 14/100/100 is loaded; its z12 ancestor 12/25/25 is not read.
+        let (t14, t13, t12) = (
+            TileId::new(14, 100, 100),
+            TileId::new(13, 50, 50),
+            TileId::new(12, 25, 25),
+        );
+        let mut known = std::collections::HashMap::from([(t14, Known::Loaded)]);
+        let p = plan(&[t14], &[12], |t| known.get(&t).copied());
+        assert_eq!(p.draws, vec![(t14, Cover::Exact)]);
+        assert!(p.capped.is_empty());
+        assert_eq!(p.need, vec![t12]);
+        // Left out: its own stored ancestor stands in.
+        known.insert(t12, Known::Absent);
+        known.insert(TileId::new(11, 12, 12), Known::Loaded);
+        let p = plan(&[t14], &[12], |t| known.get(&t).copied());
+        assert!(p.detailed());
+        assert_eq!(p.capped, vec![(t14, 12, TileId::new(11, 12, 12))]);
+        // A tile at or below the cap draws its own.
+        known.insert(t13, Known::Loaded);
+        let p = plan(&[t13], &[13], |t| known.get(&t).copied());
+        assert!(p.capped.is_empty() && p.detailed());
     }
 }

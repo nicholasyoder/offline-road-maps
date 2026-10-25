@@ -12,7 +12,7 @@ use crate::camera::Camera;
 use crate::render::{self, GpuMesh, Renderer};
 use crate::style::Style;
 use crate::tiles::{self, Known, TileId};
-use crate::{cap, loader, mesh, packs};
+use crate::{loader, mesh, packs};
 
 pub struct Snapshot {
     pub pack: PathBuf,
@@ -23,8 +23,6 @@ pub struct Snapshot {
     pub size: [u32; 2],
     pub pixels_per_point: f32,
     pub msaa: u32,
-    /// `--cap`: layers drawn from their ancestor above a zoom, as in experiment 1.5c B.
-    pub cap: Option<String>,
     pub out: PathBuf,
 }
 
@@ -65,7 +63,6 @@ impl Snapshot {
             size,
             pixels_per_point: scale.map_or(Ok(1.0), |s| num(s, "scale"))?.clamp(0.25, 8.0) as f32,
             msaa: render::samples(msaa.map(|s| num(s, "msaa")).transpose()?.map(|v| v as u32)),
-            cap: None,
             out,
         })
     }
@@ -79,10 +76,6 @@ impl Snapshot {
             .ok_or_else(|| format!("no pack (*.omp.000) in {}", self.pack.display()))?;
         let opened = packs::open(&first)?;
         let style = Style::compile(&opened.schema);
-        let caps = match &self.cap {
-            Some(spec) => cap::parse(spec, &opened.schema)?,
-            None => Vec::new(),
-        };
         let ppp = f64::from(self.pixels_per_point);
         let mut cam = Camera::new(opened.bounds);
         cam.size = self.size.map(|v| f64::from(v) / ppp);
@@ -102,7 +95,8 @@ impl Snapshot {
                 None => Known::Absent,
             })
         };
-        let mut plan = tiles::plan(&visible, |t| state(&known, t));
+        let caps = style.caps_below(z);
+        let mut plan = tiles::plan(&visible, &caps, |t| state(&known, t));
         while !plan.need.is_empty() {
             let wanted = &plan.need;
             let next = AtomicUsize::new(0);
@@ -112,11 +106,7 @@ impl Snapshot {
                         s.spawn(|| {
                             let mut out = Vec::new();
                             while let Some(&id) = wanted.get(next.fetch_add(1, Ordering::Relaxed)) {
-                                let r = opened.reader.tile(id.z, id.x, id.y).and_then(|t| {
-                                    t.map(|t| cap::apply(&opened.reader, id, t, &caps))
-                                        .transpose()
-                                });
-                                let r = r.map(|t| {
+                                let r = opened.reader.tile(id.z, id.x, id.y).map(|t| {
                                     t.map(|t| {
                                         let m = mesh::build(&t, &style);
                                         failed.fetch_add(m.failed, Ordering::Relaxed);
@@ -142,7 +132,7 @@ impl Snapshot {
                     }
                 }
             });
-            plan = tiles::plan(&visible, |t| state(&known, t));
+            plan = tiles::plan(&visible, &caps, |t| state(&known, t));
         }
         let loaded: Vec<(TileId, Option<Arc<GpuMesh>>)> = plan
             .draws
@@ -163,7 +153,18 @@ impl Snapshot {
         let samples = if gl { 1 } else { self.msaa };
         let mut renderer = Renderer::new(&device, render::OFFSCREEN_FORMAT, samples);
         let paints = render::paints(&style, cam.zoom, self.pixels_per_point, renderer.srgb);
-        let frame = render::layout(&cam, self.pixels_per_point, paints, loaded);
+        let capped = plan.capped.iter().filter_map(|&(t, cap, s)| {
+            let m = known.get(&s).cloned().flatten()?;
+            Some((t, cap, s, m))
+        });
+        let frame = render::layout(
+            &cam,
+            self.pixels_per_point,
+            paints,
+            loaded,
+            capped,
+            &style.pass_cap,
+        );
         let no_map = crate::app::NO_MAP.to_array();
         let pixels = render::draw_offscreen(&device, &queue, &mut renderer, &frame, no_map)?;
         write_png(&self.out, self.size, &pixels)

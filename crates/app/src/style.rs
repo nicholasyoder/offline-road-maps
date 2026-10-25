@@ -23,6 +23,9 @@ pub enum Pass {
 }
 
 pub const FILL_PASSES: [Pass; 2] = [Pass::Landcover, Pass::Water];
+/// Every pass, in [`Pass`] order.
+pub const PASSES: usize = 9;
+const _: () = assert!(Pass::Bridges as usize + 1 == PASSES);
 pub const LINE_PASSES: [Pass; 7] = [
     Pass::WaterLines,
     Pass::Boundaries,
@@ -242,9 +245,9 @@ fn rules() -> Vec<Rule> {
         r("water", "ocean", Water, Paint::fill(WATER)),
         r("water", "lake", Water, Paint::fill(WATER)),
         r("water", "riverbank", Water, Paint::fill(WATER)),
-        r("water", "stream", WaterLines, line(WATER, Stops(&[(13.0, 0.6), (16.0, 1.5), (18.0, 3.0)]))),
-        r("water", "canal", WaterLines, line(WATER, Stops(&[(10.0, 0.6), (14.0, 2.0), (18.0, 6.0)]))),
-        r("water", "river", WaterLines, line(WATER, Stops(&[(8.0, 0.7), (12.0, 1.5), (14.0, 2.5), (18.0, 8.0)]))),
+        r("waterways", "stream", WaterLines, line(WATER, Stops(&[(13.0, 0.6), (16.0, 1.5), (18.0, 3.0)]))),
+        r("waterways", "canal", WaterLines, line(WATER, Stops(&[(10.0, 0.6), (14.0, 2.0), (18.0, 6.0)]))),
+        r("waterways", "river", WaterLines, line(WATER, Stops(&[(8.0, 0.7), (12.0, 1.5), (14.0, 2.5), (18.0, 8.0)]))),
         r("boundaries", "admin_8", Boundaries, line(rgb(196, 180, 196), Stops(&[(11.0, 0.6), (16.0, 1.2)])).dashed([3.0, 2.0])),
         r("boundaries", "admin_6", Boundaries, line(rgb(186, 164, 186), Stops(&[(8.0, 0.6), (14.0, 1.4)])).dashed([5.0, 3.0])),
         r("boundaries", "admin_4", Boundaries, line(rgb(166, 130, 170), Stops(&[(3.0, 0.7), (8.0, 1.4), (14.0, 2.2)])).dashed([8.0, 3.0])),
@@ -276,6 +279,9 @@ pub struct Style {
     pub paints: Vec<Paint>,
     /// Prop keys of the roads layer's `bridge` and `tunnel`.
     pub roads: Option<RoadProps>,
+    /// Per pass (`Pass as usize`), the zoom above which it is drawn from the tile at that
+    /// zoom: the `maxzoom` of the layers drawn in it (format 0.3).
+    pub pass_cap: [Option<u8>; PASSES],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -327,6 +333,7 @@ impl Style {
             };
             set("roads", class, cs);
         }
+        let pass_cap = pass_caps(schema, &classes);
         debug_assert!(paints.len() <= MAX_PAINTS);
         paints.truncate(MAX_PAINTS);
         let roads = schema.layer("roads").map(|(id, l)| RoadProps {
@@ -338,7 +345,22 @@ impl Style {
             classes,
             paints,
             roads,
+            pass_cap,
         }
+    }
+
+    /// The cap zooms below `z` that some pass is drawn from.
+    pub fn caps_below(&self, z: u8) -> Vec<u8> {
+        let mut v: Vec<u8> = self
+            .pass_cap
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&m| m < z)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 
     pub fn class(&self, layer: u8, class: u16) -> Option<&ClassStyle> {
@@ -347,6 +369,35 @@ impl Style {
             .get(class as usize)?
             .as_ref()
     }
+}
+
+/// A pass is capped when every layer drawn in it has the same `maxzoom`. A pass that mixes
+/// capped and uncapped layers (no style does yet) is drawn from each tile's own data, so the
+/// capped layers are missing above their cap; it is reported once.
+fn pass_caps(schema: &Schema, classes: &[Vec<Option<ClassStyle>>]) -> [Option<u8>; PASSES] {
+    let mut layers: [Vec<u8>; PASSES] = Default::default();
+    for (l, cs) in classes.iter().enumerate() {
+        for c in cs.iter().flatten() {
+            let ls = &mut layers[c.pass as usize];
+            if !ls.contains(&(l as u8)) {
+                ls.push(l as u8);
+            }
+        }
+    }
+    layers.map(|ls| {
+        let caps: Vec<Option<u8>> = ls
+            .iter()
+            .map(|&l| schema.layers[l as usize].maxzoom)
+            .collect();
+        match caps.first() {
+            Some(&first) if caps.iter().all(|&c| c == first) => first,
+            Some(_) => {
+                eprintln!("style: a pass mixes layers with different maxzoom; drawing it uncapped");
+                None
+            }
+            None => None,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -370,7 +421,7 @@ mod tests {
         for (l, layer) in schema.layers.iter().enumerate() {
             let drawn = matches!(
                 layer.name.as_str(),
-                "roads" | "ferries" | "rail" | "water" | "landcover" | "boundaries"
+                "roads" | "ferries" | "rail" | "water" | "waterways" | "landcover" | "boundaries"
             );
             for (c, class) in layer.classes.iter().enumerate() {
                 let styled = style.class(l as u8, c as u16).is_some();
@@ -381,6 +432,12 @@ mod tests {
         }
         let roads = style.roads.unwrap();
         assert!(roads.bridge.is_some() && roads.tunnel.is_some());
+        // The default whitelist caps land cover and water areas at z13, not the waterways.
+        assert_eq!(style.pass_cap[Pass::Landcover as usize], Some(13));
+        assert_eq!(style.pass_cap[Pass::Water as usize], Some(13));
+        assert_eq!(style.pass_cap[Pass::WaterLines as usize], None);
+        assert_eq!(style.caps_below(14), vec![13]);
+        assert!(style.caps_below(13).is_empty());
         assert!(style.paints.len() <= MAX_PAINTS);
     }
 }

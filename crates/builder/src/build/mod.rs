@@ -6,7 +6,6 @@
 //! every band appends its V2 payloads to one temp store. Dictionaries are trained once from
 //! all of it, then tiles are compressed and written in zoom, then Hilbert order.
 
-pub mod experiment;
 pub mod inspect;
 
 use std::fs::File;

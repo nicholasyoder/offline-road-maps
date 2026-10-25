@@ -32,8 +32,6 @@ enum Command {
     Inspect(build::inspect::InspectArgs),
     /// Check every section's checksum.
     Verify(build::inspect::VerifyArgs),
-    /// Phase 1 step 1.5c: a pack's size with other frame layouts and with layers capped.
-    SizeExperiments(build::experiment::ExperimentArgs),
     /// Phase 0 spike: tile a PBF through the whitelist and report sizes per layer, zoom and encoding.
     Measure(measure::MeasureArgs),
     /// Phase 0 spike: merge address sources onto OSM streets and measure coverage and size.
@@ -61,7 +59,6 @@ fn main() -> anyhow::Result<()> {
         Command::Build(args) => build::run(args, &dir)?,
         Command::Inspect(args) => build::inspect::inspect(args)?,
         Command::Verify(args) => build::inspect::verify(args)?,
-        Command::SizeExperiments(args) => build::experiment::run(args)?,
         Command::Measure(args) => measure::run(args, &dir)?,
         Command::AddrSpike(args) => addr::run(args, &dir)?,
         Command::Report(args) => report::run(args)?,

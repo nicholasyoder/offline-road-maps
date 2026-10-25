@@ -7,7 +7,12 @@
 //! square, with edges rounded the same way for neighbours, so the 64-unit buffers never
 //! overlap and semi-transparent fills have no seams. A tile's land square hides the parent
 //! drawn under it.
+//!
+//! A pass whose layers are capped below a tile's zoom (format 0.3, layer `maxzoom`) is drawn
+//! in that tile from its source, the stored tile at the cap zoom, with the source's transform
+//! and the tile's scissor.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
@@ -16,7 +21,7 @@ use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
 use crate::mesh::{Mesh, Segment, Vertex};
-use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, Pass, Rgba, Style};
+use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, Rgba, Style};
 use crate::tiles::TileId;
 
 /// MSAA sample count, for the window (eframe's `multisampling`) and `--render`, unless
@@ -88,6 +93,16 @@ pub struct TileDraw {
     pub scale: f32,
     /// The tile's square in viewport pixels, `[x0, y0, x1, y1]`, rounded.
     pub scissor: [i32; 4],
+    /// Per pass (`Pass as usize`): drawn from this entry of [`Frame::sources`] instead of
+    /// `mesh`, for capped layers.
+    pub from: [Option<u32>; PASSES],
+}
+
+/// A tile whose capped passes are drawn in other tiles' squares.
+pub struct SourceDraw {
+    pub mesh: Arc<GpuMesh>,
+    pub origin: [f32; 2],
+    pub scale: f32,
 }
 
 /// Everything one frame draws. Tiles are sorted by zoom.
@@ -96,6 +111,7 @@ pub struct Frame {
     pub size: [f32; 2],
     pub paints: Vec<GpuPaint>,
     pub tiles: Vec<TileDraw>,
+    pub sources: Vec<SourceDraw>,
 }
 
 #[repr(C)]
@@ -164,30 +180,59 @@ pub fn paints(style: &Style, zoom: f64, pixels_per_point: f32, srgb_target: bool
         .collect()
 }
 
-/// Places `tiles` (sorted by zoom) for `cam`, in pixels.
+/// Places `tiles` (sorted by zoom) for `cam`, in pixels. `capped` gives each tile's source
+/// per cap zoom, `(tile, cap, source, its mesh)`, and `pass_cap` which passes are capped
+/// where (the style's).
 pub fn layout(
     cam: &Camera,
     pixels_per_point: f32,
     paints: Vec<GpuPaint>,
     tiles: impl IntoIterator<Item = (TileId, Option<Arc<GpuMesh>>)>,
+    capped: impl IntoIterator<Item = (TileId, u8, TileId, Arc<GpuMesh>)>,
+    pass_cap: &[Option<u8>; PASSES],
 ) -> Frame {
     let ppp = f64::from(pixels_per_point);
     let px = |w: [f64; 2]| {
         let p = cam.world_to_screen(w);
         [p[0] * ppp, p[1] * ppp]
     };
+    let place = |id: TileId| {
+        let [x0, y0, x1, y1] = id.world_rect();
+        let a = px([x0, y0]);
+        let b = px([x1, y1]);
+        let scale = ((b[0] - a[0]) / EXTENT) as f32;
+        ([a[0] as f32, a[1] as f32], scale, [a[0], a[1], b[0], b[1]])
+    };
+    let mut sources = Vec::new();
+    let mut source_ids: HashMap<TileId, u32> = HashMap::new();
+    let mut from: HashMap<(TileId, u8), u32> = HashMap::new();
+    for (t, cap, s, mesh) in capped {
+        let k = *source_ids.entry(s).or_insert_with(|| {
+            let (origin, scale, _) = place(s);
+            sources.push(SourceDraw {
+                mesh,
+                origin,
+                scale,
+            });
+            (sources.len() - 1) as u32
+        });
+        from.insert((t, cap), k);
+    }
     let tiles = tiles
         .into_iter()
         .map(|(id, mesh)| {
-            let [x0, y0, x1, y1] = id.world_rect();
-            let a = px([x0, y0]);
-            let b = px([x1, y1]);
+            let (origin, scale, r) = place(id);
+            let pass_from = pass_cap.map(|cap| {
+                cap.filter(|&m| id.z > m)
+                    .and_then(|m| from.get(&(id, m)).copied())
+            });
             TileDraw {
                 mesh,
                 id,
-                origin: [a[0] as f32, a[1] as f32],
-                scale: ((b[0] - a[0]) / EXTENT) as f32,
-                scissor: [a[0], a[1], b[0], b[1]].map(|v| v.round().clamp(-1e9, 1e9) as i32),
+                origin,
+                scale,
+                scissor: r.map(|v| v.round().clamp(-1e9, 1e9) as i32),
+                from: pass_from,
             }
         })
         .collect();
@@ -198,6 +243,7 @@ pub fn layout(
         ],
         paints,
         tiles,
+        sources,
     }
 }
 
@@ -385,8 +431,9 @@ impl Renderer {
 
     /// Uploads the frame's uniforms.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
-        if frame.tiles.len() > self.capacity {
-            self.capacity = frame.tiles.len().next_power_of_two();
+        let n_transforms = frame.tiles.len() + frame.sources.len();
+        if n_transforms > self.capacity {
+            self.capacity = n_transforms.next_power_of_two();
             (self.transforms, self.transforms_bg) =
                 Self::transforms(device, &self.tile_layout, self.stride, self.capacity);
         }
@@ -400,11 +447,14 @@ impl Renderer {
         if frame.tiles.is_empty() {
             return;
         }
-        let mut data = vec![0u8; self.stride as usize * frame.tiles.len()];
-        for (i, t) in frame.tiles.iter().enumerate() {
+        // The tiles' transforms, then the sources'.
+        let mut data = vec![0u8; self.stride as usize * n_transforms];
+        let placed = frame.tiles.iter().map(|t| (t.origin, t.scale));
+        let placed = placed.chain(frame.sources.iter().map(|s| (s.origin, s.scale)));
+        for (i, (origin, scale)) in placed.enumerate() {
             let tr = TileTransform {
-                origin: t.origin,
-                scale: t.scale,
+                origin,
+                scale,
                 _pad: 0.0,
             };
             let at = i * self.stride as usize;
@@ -444,30 +494,45 @@ impl Renderer {
                 .map_or(frame.tiles.len(), |n| start + n);
             let group = start..end;
             start = end;
+            let stride = self.stride;
+            let bind = |pass: &mut wgpu::RenderPass<'_>, slot: usize| {
+                pass.set_bind_group(1, &self.transforms_bg, &[(slot as u64 * stride) as u32]);
+            };
             let each =
                 |pass: &mut wgpu::RenderPass<'_>,
-                 f: &mut dyn FnMut(&mut wgpu::RenderPass<'_>, &TileDraw)| {
+                 f: &mut dyn FnMut(&mut wgpu::RenderPass<'_>, usize, &TileDraw)| {
                     for i in group.clone() {
                         let t = &frame.tiles[i];
                         if scissor(pass, t) {
-                            pass.set_bind_group(
-                                1,
-                                &self.transforms_bg,
-                                &[(i as u64 * self.stride) as u32],
-                            );
-                            f(pass, t);
+                            f(pass, i, t);
                         }
                     }
                 };
+            // The mesh pass `p` of tile `i` is drawn from, bound to its transform.
+            let mesh_for = |pass: &mut wgpu::RenderPass<'_>, i: usize, t: &TileDraw, p: Pass| {
+                let (mesh, slot) = match t.from[p as usize] {
+                    Some(k) => (
+                        Some(&frame.sources[k as usize].mesh),
+                        frame.tiles.len() + k as usize,
+                    ),
+                    None => (t.mesh.as_ref(), i),
+                };
+                let mesh = mesh?;
+                bind(pass, slot);
+                Some(mesh.clone())
+            };
             pass.set_pipeline(&self.fill);
-            each(pass, &mut |pass, _| {
+            each(pass, &mut |pass, i, _| {
+                bind(pass, i);
                 pass.set_vertex_buffer(0, self.square.0.slice(..));
                 pass.set_index_buffer(self.square.1.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..6, 0, 0..1);
             });
             for p in FILL_PASSES {
-                each(pass, &mut |pass, t| {
-                    let Some(m) = &t.mesh else { return };
+                each(pass, &mut |pass, i, t| {
+                    let Some(m) = mesh_for(pass, i, t, p) else {
+                        return;
+                    };
                     let Some((v, ix)) = &m.fill else { return };
                     let r = m.fills[p.slot()].clone();
                     if !r.is_empty() {
@@ -486,8 +551,10 @@ impl Renderer {
                 };
                 for pl in pipelines {
                     pass.set_pipeline(pl);
-                    each(pass, &mut |pass, t| {
-                        let Some(m) = &t.mesh else { return };
+                    each(pass, &mut |pass, i, t| {
+                        let Some(m) = mesh_for(pass, i, t, p) else {
+                            return;
+                        };
                         let Some(s) = &m.segments else { return };
                         let r = m.lines[p.slot()].clone();
                         if !r.is_empty() {

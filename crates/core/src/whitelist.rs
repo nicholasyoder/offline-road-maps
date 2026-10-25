@@ -29,6 +29,10 @@ pub struct Layer {
     /// Join line pieces of the same class and props end to end before encoding (decision 5).
     #[serde(default)]
     pub merge_lines: Option<MergeLines>,
+    /// The last zoom whose tiles hold this layer; above it the app draws the layer from the
+    /// tile at this zoom, scaled up (format 0.3). None: every zoom up to z14.
+    #[serde(default)]
+    pub maxzoom: Option<u8>,
     pub classes: Vec<Class>,
 }
 
@@ -50,6 +54,9 @@ pub struct Class {
     pub tags: BTreeMap<String, Values>,
     #[serde(default)]
     pub absent: Vec<String>,
+    /// Tags that rule the class out when present with one of the listed values.
+    #[serde(default)]
+    pub unless: BTreeMap<String, Values>,
     pub minzoom: u8,
     #[serde(default = "yes")]
     pub tile: bool,
@@ -107,6 +114,15 @@ impl Whitelist {
                     )));
                 }
             }
+            if let Some(m) = l.maxzoom {
+                let first = l.classes.iter().filter(|c| c.tile).map(|c| c.minzoom).max();
+                if m > 14 || first.is_some_and(|f| f > m) {
+                    return Err(serde::de::Error::custom(format!(
+                        "layer {}: maxzoom {m} must be at most 14 and not below any class's minzoom",
+                        l.name
+                    )));
+                }
+            }
         }
         Ok(wl)
     }
@@ -155,6 +171,10 @@ impl Class {
                 .iter()
                 .all(|(k, vals)| get(k).is_some_and(|v| vals.matches(v)))
             && self.absent.iter().all(|k| get(k).is_none())
+            && !self
+                .unless
+                .iter()
+                .any(|(k, vals)| get(k).is_some_and(|v| vals.matches(v)))
     }
 }
 
@@ -175,6 +195,13 @@ mod tests {
         assert_eq!(wl.layers[0].tolerance(12), None);
         assert!(Whitelist::parse(&layer("{ z15 = 1.0 }")).is_err());
         assert!(Whitelist::parse(&layer("{ z14 = -1.0 }")).is_err());
+        let capped = |m: u8| layer("{}").replace("classes", &format!("maxzoom = {m}\nclasses"));
+        assert_eq!(
+            Whitelist::parse(&capped(13)).unwrap().layers[0].maxzoom,
+            Some(13)
+        );
+        assert!(Whitelist::parse(&capped(5)).is_err());
+        assert!(Whitelist::parse(&capped(15)).is_err());
         assert_eq!(
             Whitelist::parse(DEFAULT).unwrap().layers[0].tolerance(14),
             None
@@ -200,7 +227,17 @@ mod tests {
 
         let water = &wl.layers[wl.layer_index("water").unwrap()];
         assert_eq!(water.classify(&[("natural", "water")]), Some(1));
-        assert_eq!(water.geometry_of(3), GeometryKind::Line);
+        assert_eq!(water.geometry_of(1), GeometryKind::Area);
+        assert_eq!(water.maxzoom, Some(13));
+        let ways = &wl.layers[wl.layer_index("waterways").unwrap()];
+        assert_eq!(ways.classify(&[("waterway", "river")]), Some(0));
+        // A river area tagged as water is a lake in `water`, not also a line.
+        assert_eq!(
+            ways.classify(&[("waterway", "canal"), ("natural", "water")]),
+            None
+        );
+        assert_eq!(ways.geometry_of(0), GeometryKind::Line);
+        assert_eq!(ways.maxzoom, None);
         // The external ocean class never matches OSM tags.
         assert_eq!(water.classify(&[]), None);
         assert!(wl.keys().contains(&"addr:housenumber"));
