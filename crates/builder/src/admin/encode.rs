@@ -10,7 +10,7 @@ use crate::measure::geom::BBox;
 pub const SADM: [u8; 4] = *b"SADM";
 pub const SAPL: [u8; 4] = *b"SAPL";
 const LEVEL: i32 = 19;
-/// Uncompressed bytes per `SAPL` block, about.
+/// Uncompressed bytes per `SAPL` block, about. `SAPL` has the street sections' layout.
 const BLOCK: usize = 64 << 10;
 /// `SAPL` coordinates are in units of 2^6 world units (about 0.6 m at the equator).
 pub const SAPL_SHIFT: u32 = 6;
@@ -112,27 +112,9 @@ pub fn sections(admin: &Admin) -> Result<(Vec<u8>, Vec<u8>, Sizes)> {
     if !cur.is_empty() {
         blocks.push((first, cur));
     }
-    let frames: Vec<(u32, Vec<u8>)> = {
-        use rayon::prelude::*;
-        blocks
-            .into_par_iter()
-            .map(|(f, b)| Ok((f, zstd::bulk::compress(&b, LEVEL)?)))
-            .collect::<Result<_>>()?
-    };
-    let mut sapl = Vec::new();
-    sapl.extend_from_slice(&(frames.len() as u32).to_le_bytes());
-    let mut offset = 4 + 12 * frames.len();
-    for (f, b) in &frames {
-        sapl.extend_from_slice(&f.to_le_bytes());
-        sapl.extend_from_slice(&(offset as u32).to_le_bytes());
-        sapl.extend_from_slice(&(b.len() as u32).to_le_bytes());
-        offset += b.len();
-    }
-    for (_, b) in &frames {
-        sapl.extend_from_slice(b);
-    }
+    let (sapl, nblocks) = crate::street::encode::blocked(admin.areas.len(), blocks)?;
     sizes.sapl = sapl.len() as u64;
-    sizes.sapl_blocks = frames.len() as u64;
+    sizes.sapl_blocks = nblocks;
     Ok((sadm, sapl, sizes))
 }
 
@@ -239,28 +221,33 @@ mod tests {
         assert_eq!(decoded[2].8, [("name:fr".into(), "Columbus (fr)".into())]);
         assert_eq!(admin.chain(decoded[2].6), [0, 2], "the label lies inside");
 
-        // One block holding all three polygons, each a closed square.
-        let n = u32::from_le_bytes(sapl[0..4].try_into().unwrap()) as usize;
-        assert_eq!(n, 1);
-        let first = u32::from_le_bytes(sapl[4..8].try_into().unwrap());
-        let offset = u32::from_le_bytes(sapl[8..12].try_into().unwrap()) as usize;
-        let len = u32::from_le_bytes(sapl[12..16].try_into().unwrap()) as usize;
-        assert_eq!((first, offset, offset + len), (0, 16, sapl.len()));
-        let raw = zstd::stream::decode_all(&sapl[offset..]).unwrap();
-        let mut r = Reader::new(&raw);
-        for a in &admin.areas {
-            assert_eq!(r.count().unwrap(), 1);
-            assert_eq!(r.count().unwrap(), 4);
-            let mut cur = [0i32; 2];
-            for p in &a.rings[0] {
-                cur[0] += r.zvarint().unwrap();
-                cur[1] += r.zvarint().unwrap();
-                assert_eq!(
-                    cur,
-                    [(p[0] >> SAPL_SHIFT) as i32, (p[1] >> SAPL_SHIFT) as i32]
-                );
-            }
+        // The app's reader: the table, the polygons and the chains agree.
+        let dir = tempfile::tempdir().unwrap();
+        let pack = crate::build::test_pack(dir.path(), &[(SADM, &sadm), (SAPL, &sapl)]);
+        let core = omp_core::admin::Admin::open(pack).unwrap().unwrap();
+        assert_eq!(core.areas().len(), 3);
+        assert_eq!(core.areas()[0].abbr, "OH");
+        assert_eq!(core.areas()[2].parent, Some(0));
+        assert!(core.areas()[2].town);
+        for (i, a) in admin.areas.iter().enumerate() {
+            let rings = core.polygon(i as u32).unwrap();
+            let want: Vec<P> = a.rings[0]
+                .iter()
+                .map(|p| {
+                    [
+                        p[0] >> SAPL_SHIFT << SAPL_SHIFT,
+                        p[1] >> SAPL_SHIFT << SAPL_SHIFT,
+                    ]
+                })
+                .collect();
+            assert_eq!(rings, [want]);
         }
-        assert!(r.at_end());
+        for p in [
+            project(40.0, -83.0),
+            project(39.35, -84.45),
+            project(45.0, -83.0),
+        ] {
+            assert_eq!(core.chain(p).unwrap(), admin.chain(p));
+        }
     }
 }

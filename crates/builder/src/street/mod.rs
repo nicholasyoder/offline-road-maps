@@ -10,6 +10,7 @@
 //! cross an admin 8 boundary and every [`PIECE_MAX_M`], and streets are made of pieces.
 
 pub mod encode;
+pub mod grid;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
@@ -969,6 +970,8 @@ struct Report {
     read_s: f64,
     stats: Stats,
     sizes: Vec<encode::Sizes>,
+    /// `SGRD` at zooms 13–15, without unattached addresses.
+    grid: Vec<grid::Sizes>,
 }
 
 /// `omp-builder streets`: the street table of a PBF without addresses (streets split at
@@ -993,6 +996,12 @@ pub fn run(args: StreetsArgs) -> Result<()> {
         print_sizes(&s);
         sizes.push(s);
     }
+    let mut grids = Vec::new();
+    for z in [grid::ZOOM_MEASURED, &[omp_core::grid::ZOOM]].concat() {
+        let (_, s) = grid::section(&table, &[], z, grid::BLOCK)?;
+        grid::print_sizes(&s);
+        grids.push(s);
+    }
     let report = Report {
         kind: "streets",
         input: args.input.display().to_string(),
@@ -1001,6 +1010,7 @@ pub fn run(args: StreetsArgs) -> Result<()> {
         read_s,
         stats: table.stats,
         sizes,
+        grid: grids,
     };
     if let Some(path) = &args.json {
         if let Some(dir) = path.parent() {

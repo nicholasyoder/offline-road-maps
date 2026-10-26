@@ -1,6 +1,7 @@
 use super::*;
 use crate::admin::read::{AdminData, Area, ReadStats};
 use crate::measure::geom::project;
+use crate::street::grid;
 
 fn area(id: i64, level: u8, name: &str, sw: (f64, f64), ne: (f64, f64)) -> Area {
     let (sw, ne) = (project(sw.0, sw.1), project(ne.0, ne.1));
@@ -212,4 +213,47 @@ fn sections_round_trip() {
         // The app measures offsets the same way.
         assert_eq!(Along::of(parts).cum, s.along.cum);
     }
+
+    // The app's reader decodes the same streets, offsets and grid.
+    let mut loose = vec![t.streets[0].parts[0][0]];
+    loose.push(project(45.0, -75.0));
+    let (sgrd, gsizes) = grid::section(&t, &loose, omp_core::grid::ZOOM, 64).unwrap();
+    assert!(gsizes.blocks > 1 && gsizes.loose_cells == 2);
+    let dir = tempfile::tempdir().unwrap();
+    let pack = crate::build::test_pack(
+        dir.path(),
+        &[
+            (encode::SSTR, &sstr),
+            (encode::SGEO, &sgeo),
+            (grid::SGRD, &sgrd),
+        ],
+    );
+    let core = omp_core::street::Streets::open(pack.clone())
+        .unwrap()
+        .unwrap();
+    let cells = omp_core::grid::Grid::open(pack).unwrap().unwrap();
+    assert_eq!(cells.count() as u64, gsizes.cells);
+    assert_eq!(core.count() as usize, t.streets.len());
+    for (i, s) in t.streets.iter().enumerate() {
+        let r = core.street(i as u32).unwrap();
+        assert_eq!(
+            (&r.name, &r.town, r.class, r.admin),
+            (&s.name, &s.town, s.class, s.admin)
+        );
+        assert_eq!((&r.alt_names, &r.refs), (&s.alt_names, &s.refs));
+        let g = core.geometry(i as u32).unwrap();
+        assert_eq!(g.parts, s.parts);
+        assert_eq!(g.cum, s.along.cum);
+        for m in [0.0, 7.5, s.along.length_m() / 2.0, s.along.length_m()] {
+            assert_eq!(g.point_at(m), point_at(&s.parts, &s.along, m));
+        }
+        for part in &s.parts {
+            for p in part {
+                let (x, y) = omp_core::grid::cell_xy(*p);
+                assert!(cells.cell(x, y).unwrap().streets.contains(&(i as u32)));
+            }
+        }
+    }
+    let (x, y) = omp_core::grid::cell_xy(loose[1]);
+    assert!(cells.cell(x, y).unwrap().loose);
 }

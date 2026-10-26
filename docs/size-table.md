@@ -182,6 +182,20 @@ The address sections in 16 KiB blocks (`ASTR`, `ASUF`, `AUNI`, `ALSE`, `ARNG`, `
 
 The North America total moves from about 10,284 to **about 10,341 MiB** (addresses +27, search +29, streets +1); the pack as built (tiles, admin, streets, search, addresses; no routing yet) is 7,202.6 MiB in 2 chunks. `build --addresses all` on North America took 51.0 min at 49.5 GiB peak, under the 56 GB cap (step 2.3: 34.2 min, 47.2 GiB).
 
+### Phase 2 step 2.5: spatial grid
+
+`SGRD`, per z14 cell the streets with a segment in it and whether it has unattached addresses, in 16 KiB blocks (`$OMP_WORK/measure/grid25/`). Ohio and Quebec from `build --addresses`; North America from `omp-builder streets`, without addresses (no unattached-only cells, streets not split by postal town). z13 and z15 measured only.
+
+| | Ohio | Quebec | North America |
+|---|---:|---:|---:|
+| Cells (z14) | 31,943 | 62,339 | 2,057,513 |
+| — with unattached addresses | 18,746 | 27,195 | — |
+| Cell-street pairs | 378,707 | 248,281 | 15.47M |
+| Streets per cell, p99 / max | 102 / 379 | 56 / 198 | 100 / 1,008 |
+| `SGRD` z13 / **z14** / z15 (MiB) | 0.08 / **0.18** / 0.38 | 0.08 / **0.16** / 0.31 | 3.81 / **7.82** / 15.42 |
+
+The North America total moves from about 10,341 to **about 10,349 MiB** (the grid, +8; a little more with unattached-only cells once rebuilt with addresses).
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

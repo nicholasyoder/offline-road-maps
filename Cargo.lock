@@ -2314,6 +2314,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "toml",
  "ureq",
  "xxhash-rust",
@@ -2325,6 +2326,7 @@ dependencies = [
 name = "omp-core"
 version = "0.1.0"
 dependencies = [
+ "fst",
  "serde",
  "serde_json",
  "tempfile",

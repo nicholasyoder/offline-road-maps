@@ -962,6 +962,55 @@ mod tests {
 
             assert_eq!(decode_ranges(&s.arng).unwrap(), ranges);
             assert_eq!(decode_codes(&s.apcd).unwrap(), ["45201", "K7L 3N6"]);
+
+            // The app's reader agrees, street by street and cell by cell.
+            let dir = tempfile::tempdir().unwrap();
+            let list = s.list();
+            let refs: Vec<([u8; 4], &[u8])> = list.iter().map(|(id, b)| (*id, &b[..])).collect();
+            let pack = crate::build::test_pack(dir.path(), &refs);
+            let core = omp_core::addr::Addresses::open(pack).unwrap().unwrap();
+            assert_eq!(core.counts(), [36, 303, 3, 2]);
+            let mut streets: Vec<u32> = got.iter().map(|a| a.street).collect();
+            streets.dedup();
+            let mut all = Vec::new();
+            for st in streets {
+                all.extend(core.run(st).unwrap());
+            }
+            assert_eq!(all.len(), got.len());
+            for (c, g) in all.iter().zip(&got) {
+                assert_eq!(
+                    (c.street, c.number, &c.suffix, c.offset),
+                    (g.street, g.num, &g.suffix, g.off)
+                );
+                assert_eq!(
+                    (c.left, c.osm, c.approx, &c.units),
+                    (g.left, g.osm, g.approx, &g.units)
+                );
+                assert_eq!(c.postcode, g.code.checked_sub(1));
+            }
+            assert!(core.run(5).unwrap().is_empty());
+            for want in &ranges {
+                assert!(core.ranges(want.street).unwrap().iter().any(|r| (
+                    r.start, r.end, r.from, r.to, r.parity, r.left
+                ) == (
+                    want.start,
+                    want.end,
+                    want.from,
+                    want.to,
+                    want.parity,
+                    want.left
+                )));
+            }
+            let mut cells: Vec<u32> = loose.iter().map(|l| l.cell).collect();
+            cells.dedup();
+            let n: usize = cells.iter().map(|&c| core.loose_in(c).unwrap().len()).sum();
+            assert_eq!(n, loose.len());
+            let ku = core.loose_in(loose[0].cell).unwrap();
+            assert!(
+                ku.iter()
+                    .any(|l| l.number == 9 && l.units == ["Unit 1"] && l.postcode == Some(1))
+            );
+            assert_eq!(core.postcode(1).unwrap(), "K7L 3N6");
         }
     }
 }

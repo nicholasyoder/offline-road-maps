@@ -1,6 +1,6 @@
 # Pack format
 
-*Version 0.3 (draft), 2026-10-24. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom.*
+*Version 0.4 (draft), 2026-10-26. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom. 0.4 (phase 2 step 2.5): the search, address, admin and street sections are specified, with their readers in `omp-core`; `SGRD` (the spatial grid) is new, and `SAPL` takes the block layout the other sections share.*
 
 A **pack** holds everything the app needs for one region: map tiles, addresses, and later routing and search data. It is built by `omp-builder` and read by `omp-app`, usually from a USB flash drive. This document is the contract between the two.
 
@@ -11,11 +11,11 @@ Status of each part:
 | Container: header, section table, chunking, checksums | **Specified.** Reader and writer in `omp-core::pack`, with round-trip tests. |
 | Metadata and attribution (`META`), schema (`SCHM`) | **Specified.** In `omp-core::meta` and `omp-core::schema`. |
 | Tiles (`TIDX`, `TDIC`, `TDAT`) | **Specified** (encoding V4 from phase 0). Codec in `omp-core::tile`, reader and writer in `omp-core::tiles`, with round-trip tests. |
-| Addresses (`ASTR`, `ASUF`, `AUNI`, `ALSE`, `ARNG`, `APCD`) | *Provisional* (encoding A3 from phase 0, blocked for random access in phase 2 step 2.4). Written by `build`; finalized with the search sections in step 2.5. |
+| Addresses (`ASTR`, `ASUF`, `AUNI`, `ALSE`, `ARNG`, `APCD`) | **Specified** (0.4; encoding A3 from phase 0, blocked for random access in phase 2 step 2.4). Reader in `omp-core::addr`. |
 | Routing (`RCH*`) | *Provisional*, finalized in Phase 3. |
-| Admin areas (`SADM`, `SAPL`) | *Provisional* (phase 2 step 2.1). Written by `build`; finalized with the search sections in step 2.5. |
-| Streets (`SSTR`, `SGEO`) | *Provisional* (phase 2 step 2.2). Written by `build`; finalized with the search sections in step 2.5. |
-| Search (`SENT`, `STWN`, `SFST`, `SPST`) | *Provisional* (phase 2 step 2.3). Written by `build`; finalized with the readers in step 2.5. |
+| Admin areas (`SADM`, `SAPL`) | **Specified** (0.4, phase 2 step 2.1). Reader in `omp-core::admin`. |
+| Streets (`SSTR`, `SGEO`) and the spatial grid (`SGRD`) | **Specified** (0.4, phase 2 steps 2.2 and 2.5). Readers in `omp-core::street` and `omp-core::grid`. |
+| Search (`SENT`, `STWN`, `SFST`, `SPST`) | **Specified** (0.4, phase 2 step 2.3). Reader in `omp-core::search`, whose `Search` opens all of the above together. Round-trip tests against a test writer in `omp-core` (`search_tests.rs`) and against the builder's encoders. |
 | Label data in tiles (`labels` layer, `routes` prop) | **Specified** (phase 1 step 1.3, whitelist v2). |
 | Style (`STYL`) | **Not used:** the style lives in the app (phase 1 decision 8). |
 
@@ -55,7 +55,7 @@ The tile data of a continent is several GiB, so it must be spanning. Every other
 |---:|---|---|
 | 0 | `[u8; 8]` | Magic `89 4F 4D 50 0D 0A 1A 0A` (`\x89OMP\r\n\x1a\n`). Like PNG's, it catches text-mode and 7-bit transfers. |
 | 8 | `u16` | Major version (currently 0) |
-| 10 | `u16` | Minor version (currently 1) |
+| 10 | `u16` | Minor version (currently 4) |
 | 12 | `u32` | Header length used, in bytes (fields plus strings; the rest of the page is zero) |
 | 16 | `[u8; 16]` | Pack ID: random, chosen at build time. Each chunk header repeats it. |
 | 32 | `u64` | Chunk capacity |
@@ -102,7 +102,7 @@ Each section ID appears at most once. Sections do not overlap. The table itself 
 
 - **Major** version: the reader opens a pack only if the major version equals its own. Any change that an old reader would misread bumps it: a changed field, encoding or meaning.
 - **Minor** version: additions only. New sections, and new fields in space that older versions wrote as zero (the header's tail, reserved flag bits). A reader ignores section IDs it does not know, and accepts any minor version. It may show "built by a newer builder".
-- Version 0.x is the development series. Until 1.0, the app and builder are released together and the major version stays 0. Breaking changes bump the minor version, and the reader requires an exact minor match.
+- Version 0.x is the development series. Until 1.0, the app and builder are released together and the major version stays 0. Breaking changes bump the minor version, and the reader requires a minor version it knows: 0.4, and 0.3, since 0.4 only changed sections the 0.3 reader never read (`SAPL`) and added others. A 0.3 pack opens with its tiles; the search readers need 0.4, so the app hides search for older packs.
 
 ## Checksums
 
@@ -114,7 +114,7 @@ Every section has an XXH3-64 checksum in the section table. The app does **not**
 ## `META`: metadata and attribution (contiguous)
 
 A UTF-8 JSON object, zstd-compressed (one frame). Fields:
-- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.3"`).
+- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.4"`).
 - `sources`: the `fetch` manifest. For each input: `name`, `url`, `date` (of download, RFC 3339), `sha256`, `license`, and optionally `license_url` and `attribution`. Every OpenAddresses source is listed, including those whose license is `unspecified` (decision 13).
 - `attribution`: the text the app shows on its "About this map" screen, built from `sources` (e.g. "© OpenStreetMap contributors, ODbL", the Statistics Canada NAR licence, each OpenAddresses source's attribution).
 - `settings`: the build options that shaped the data (whitelist version, simplification tolerances, address dedup and attach distances).
@@ -236,9 +236,9 @@ block      = (key_delta:varint  layer_mask:u16  layer_len:varint*)*        ; `ti
 
 ## Addresses
 
-Addresses are stored per **street**, as in roadmap §4 and decision 9 (A3). A street is a record of the [street table](#streets--provisional), which search, addresses and "what's here" share, and addresses refer to it by **street ID**. An address's **offset** runs along the street's stored geometry, as defined under [`SGEO`](#sgeo-street-geometry-contiguous), in steps of **5 m**. Addresses that match no street within 200 m are stored on their own with their position and street name (`ALSE`).
+Addresses are stored per **street**, as in roadmap §4 and decision 9 (A3). A street is a record of the [street table](#streets), which search, addresses and "what's here" share, and addresses refer to it by **street ID**. An address's **offset** runs along the street's stored geometry, as defined under [`SGEO`](#sgeo-street-geometry-contiguous), in steps of **5 m**. Addresses that match no street within 200 m are stored on their own with their position and street name (`ALSE`).
 
-`build --addresses` writes six sections (phase 2 step 2.4). Each is a run of zstd blocks (level 19) behind an index, in the same layout as the [street sections](#streets--provisional):
+`build --addresses` writes six sections (phase 2 step 2.4); `omp-core::addr` reads them, and `omp-core::search::Search` places them along their streets and finds the addresses near a point through [`SGRD`](#sgrd-spatial-grid-contiguous). Each is a run of zstd blocks (level 19) behind an index, in the same layout as the [street sections](#streets):
 
 ```
 section = count:u32  nblocks:u32  (first:u32  offset:u32  length:u32)*  block*
@@ -319,7 +319,7 @@ Phase 3 builds its own contraction hierarchy. The size table reserves about 3.2 
 - `RGEO`: road geometry for drawing the route and turn-by-turn, possibly shared with the z14 roads tiles.
 - Turn restrictions, and the mapping from tiles to the graph for snapping.
 
-## Admin areas — *provisional*
+## Admin areas
 
 Admin areas from OSM `boundary=administrative` relations, levels 2–10, for the "where" of search results and "what's here" (phase 2 step 2.1). Areas are ordered by admin level, then along a Morton curve of their label point; an area's **admin ID** is its position. North America has 54,937 areas: 1.7 MiB of `SADM` and 12.5 MiB of `SAPL`.
 
@@ -343,17 +343,19 @@ area  = level:u8  parent:varint  flags:varint  name:str  abbr:str  population:va
 
 ### `SAPL`: admin polygons (contiguous)
 
-Polygons simplified to 50 m, in zstd blocks of consecutive areas (about 64 KiB uncompressed each):
+Polygons simplified to 50 m, in zstd blocks of consecutive areas (about 64 KiB uncompressed each), in the layout of the [street sections](#streets) (0.4; 0.3 had no `count`):
 
 ```
-SAPL  = nblocks:u32  (first_area:u32  offset:u32  length:u32)*  block*
-block = zstd(polygon*)                                    ; one per area, first_area onwards
+SAPL    = count:u32  nblocks:u32  (first_area:u32  offset:u32  length:u32)*  block*
+block   = polygon*                                        ; one per area, first_area onwards
 polygon = nrings:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
 ```
 
-`offset` is from the start of `SAPL`. Points are in units of 2⁶ world units, as deltas from a cursor that starts at (0, 0) for each polygon and runs on across its rings. Rings are not closed (the last point is not repeated); a point is inside if it is inside an odd number of rings.
+`count` is the number of areas, as in `SADM`. Points are in units of 2⁶ world units, as deltas from a cursor that starts at (0, 0) for each polygon and runs on across its rings. Rings are not closed (the last point is not repeated); a point is inside if it is inside an odd number of rings.
 
-## Streets — *provisional*
+**Reading.** `omp-core::admin` holds `SADM` in RAM (North America: 54,937 areas) and reads `SAPL` a block at a time. An area's **chain** at a point is found deepest first: every area whose bounding box holds the point, from level 10 down, is tested against its polygon, one per level; states and countries (levels 2–4) are taken from the deepest area's `parent` links when it has them, so their large polygons are rarely decoded.
+
+## Streets
 
 One record per street (phase 2 step 2.2): connected named OSM ways whose `name` has the same normalized key, split where the postal town of their addresses changes, where they cross a city boundary (admin level 8) without addresses, and at about 20 km. A **street ID** is the street's position in the table; streets are ordered along a Morton curve of their middle points. North America has 10.0M streets (see the [size table](size-table.md#phase-2-step-22-streets)).
 
@@ -391,15 +393,32 @@ street = nparts:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
 - **Offsets.** A segment's length in metres is its length in world units (of the stored points) times the metres per world unit at the street's first stored point, `40,075,016.686 / 2³² × cos(latitude)`. Part 0 starts at offset 0 and each point's offset is the previous one's plus the segment length. Part k + 1 starts at `5 × (⌈e / 5⌉ + 1)`, where `e` is the offset of part k's last point. Because each part starts on a fresh 5 m step, an address offset rounded to 5 m (`ASTR`, `ARNG`) belongs to one part only.
 - **Decoding an offset:** take the last part whose first offset is at most the offset, and the point at that offset along it, clamped to its ends.
 
-## Search — *provisional*
+### `SGRD`: spatial grid (contiguous)
 
-The search index (phase 2 step 2.3), finalized with the readers in step 2.5. Four sections: the entries (`SENT`), the towns shown with them (`STWN`), an `fst` from token to postings (`SFST`) and the postings (`SPST`). The app holds `SFST`, `STWN` and the block indexes in RAM and reads entries and postings with positioned reads (phase 2 decision 1). Sizes are in the [size table](size-table.md#phase-2-step-23-search).
+For each **z14 cell** (`(x >> 18, y >> 18)` of world coordinates, about 1.9 km at 40° N) that holds part of a street or an unattached address, the streets with a segment in it and whether it has `ALSE` points, so "what's here" and snapping (phase 3) read only the streets near a point. Cells are in **Hilbert order** (`omp_core::tile::hilbert` at z14, as `TIDX`), in zstd blocks of about 16 KiB uncompressed, in the layout of the street sections:
+
+```
+SGRD  = count:u32  nblocks:u32  (first_key:u32  offset:u32  length:u32)*  block*
+block = cell*
+cell  = key_delta:varint  (nstreets << 1 | loose):varint  [first:zvarint  street_delta:varint*]
+```
+
+- `count` is the number of cells; `first_key` the Hilbert key of the block's first cell. `key_delta` is from the previous cell in the block, or from `first_key` for the first (so 0).
+- `nstreets` street IDs follow, ascending: the first as a delta from the previous cell's first street (from 0 at the start of each block), the others as deltas from the one before. A cell with only unattached addresses has `nstreets` 0 and no IDs.
+- A street is listed in every cell that one of its stored segments passes through (and the cell of a one-point part). `loose` is 1 when `ALSE` has points in the cell; their block is the last whose `first` is at most the cell's Morton code.
+- **Lookup** of the streets within *r* metres of a point: the cells that the square of side 2*r* around it touches, one block each, then each street's distance from its `SGEO` geometry. Cells with no streets and no points are not stored.
+
+Admin areas are not in the grid: their bounding boxes in `SADM` find the candidates, and `SAPL` decides. z14 was chosen over z13 and z15 by size and by the streets read per lookup (phase 2 step 2.5). North America has about 2.1M cells, 7.8 MiB ([size table](size-table.md#phase-2-step-25-spatial-grid)).
+
+## Search
+
+The search index (phase 2 step 2.3). Four sections: the entries (`SENT`), the towns shown with them (`STWN`), an `fst` from token to postings (`SFST`) and the postings (`SPST`). The app holds `SFST`, `STWN` and the block indexes in RAM and reads entries and postings with positioned reads (phase 2 decision 1). Sizes are in the [size table](size-table.md#phase-2-step-23-search).
 
 **Tokens.** A name's tokens are `omp_core::normalize::search_tokens`: case and accents folded, abbreviations expanded ("St" → "street" or "saint" by position, "Mt" → "mount", "N" → "north"), French directions in English, ordinals as numbers ("21st" → "21"), route designators shortened ("State Route 161" and "OH 161" → "sr 161"), possessives joined ("Tim's" → "tims") and French elisions split ("l'Église" → "l eglise"). Each entry is posted under the tokens of its name and of each alternative name. A postcode has one token, its display form folded without the space ("K7L 3N6" → `k7l3n6`). The query side uses the same functions.
 
 ### `SENT`: entries (contiguous)
 
-zstd blocks (level 19) of consecutive entries, about 16 KiB uncompressed each, in the same layout as the [street sections](#streets--provisional):
+zstd blocks (level 19) of consecutive entries, about 16 KiB uncompressed each, in the same layout as the [street sections](#streets):
 
 ```
 section = count:u32  nblocks:u32  (first_entry:u32  offset:u32  length:u32)*  block*

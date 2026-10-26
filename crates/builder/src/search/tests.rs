@@ -97,6 +97,37 @@ fn sections_round_trip() {
             assert_eq!((&got, t), (ids, *total), "{token}");
         }
         assert_eq!(lookup(&s.sfst, &s.spst, "nowhere").unwrap(), None);
+
+        // The app's reader agrees.
+        let dir = tempfile::tempdir().unwrap();
+        let pack = crate::build::test_pack(
+            dir.path(),
+            &[
+                (encode::SENT, &s.sent),
+                (encode::STWN, &s.stwn),
+                (encode::SFST, &s.sfst),
+                (encode::SPST, &s.spst),
+            ],
+        );
+        let core = omp_core::search::Index::open(pack).unwrap().unwrap();
+        assert_eq!(core.count() as usize, got.len());
+        assert_eq!(core.towns(), ix.towns);
+        for (i, d) in got.iter().enumerate() {
+            let e = core.entry(i as u32).unwrap();
+            assert_eq!(e.kind as u8, d.kind as u8);
+            assert_eq!(
+                (e.class, e.importance, &e.name, e.p),
+                (d.class, d.importance, &d.name, d.p)
+            );
+            assert_eq!(
+                (e.admin, e.town, e.reference, &e.alts),
+                (d.admin, d.town.checked_sub(1), d.reference, &d.alts)
+            );
+        }
+        for (token, ids, total) in &ix.postings {
+            let p = core.postings(token).unwrap().unwrap();
+            assert_eq!((&p.ids, p.total), (ids, *total), "{token}");
+        }
     }
 }
 

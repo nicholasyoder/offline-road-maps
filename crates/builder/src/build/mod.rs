@@ -15,11 +15,14 @@
 //! and at the length cap. The addresses are placed on it and written as `ASTR`, `ASUF`,
 //! `AUNI`, `ALSE`, `ARNG` and `APCD` ([`addr::store`]).
 //!
+//! The spatial grid (`SGRD`) lists the streets and unattached addresses in each z14 cell.
+//!
 //! Search (`SENT`, `STWN`, `SFST`, `SPST`) takes its streets from the table before it is
 //! dropped, its places, POIs and labels from the bands, and its postcodes and the streets
 //! known only from their addresses from the merge.
 
 pub mod inspect;
+mod readers;
 
 use std::fs::File;
 use std::ops::Range;
@@ -49,7 +52,7 @@ use crate::measure::poly::Poly;
 use crate::measure::tiles::{self, Band, Entry, Store};
 use crate::measure::water;
 use crate::search::{self, encode as search_encode};
-use crate::street::{self, encode as street_encode};
+use crate::street::{self, encode as street_encode, grid};
 
 /// Tiles compressed in parallel before they are written in order.
 const BATCH_TILES: usize = 16_384;
@@ -119,6 +122,11 @@ pub struct BuildArgs {
     /// Uncompressed KiB per `SENT` block; the first is written, the others only measured.
     #[arg(long, hide = true, value_delimiter = ',', default_value = "16")]
     search_block_kib: Vec<usize>,
+
+    /// Zooms of the spatial grid (`SGRD`); the first is written and must be 14, the others
+    /// only measured.
+    #[arg(long, hide = true, value_delimiter = ',', default_value = "14")]
+    grid_zoom: Vec<u8>,
 
     /// Directory for the temporary tile store [default: <work dir>/tmp].
     #[arg(long)]
@@ -249,6 +257,12 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     ensure!(
         (1..=64).contains(&args.bands),
         "--bands must be between 1 and 64"
+    );
+    ensure!(
+        args.grid_zoom.first() == Some(&omp_core::grid::ZOOM)
+            && args.grid_zoom.iter().all(|&z| (1..=16).contains(&z)),
+        "--grid-zoom must start with {} and stay within 1–16",
+        omp_core::grid::ZOOM
     );
     let wl_text = match &args.whitelist {
         Some(p) => std::fs::read_to_string(p).with_context(|| format!("read {}", p.display()))?,
@@ -424,11 +438,22 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         None => street::Table::build(&ways, &admin, &[], &[]),
     });
     drop(ways);
-    let street_sections = {
+    let (street_sections, sgrd) = {
         let table = table.as_ref().unwrap();
         street::print_stats(&table.stats);
         search.add_streets(table, &admin);
-        street_encode::sections(table, street_encode::BLOCK)?
+        let loose: Vec<_> = merged
+            .as_ref()
+            .map(|m| m.unattached.iter().map(|u| u.p).collect())
+            .unwrap_or_default();
+        let mut sgrd = None;
+        for &z in &args.grid_zoom {
+            let (bytes, sizes) = grid::section(table, &loose, z, grid::BLOCK)?;
+            grid::print_sizes(&sizes);
+            sgrd.get_or_insert(bytes);
+        }
+        let sgrd = sgrd.unwrap();
+        (street_encode::sections(table, street_encode::BLOCK)?, sgrd)
     };
     log_stage("streets", &mut t);
     let address_block = args
@@ -503,6 +528,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     settings.insert("admin_tolerance_m".into(), admin::PACK_TOLERANCE_M.into());
     settings.insert("street_tolerance_m".into(), street::SIMPLIFY_M.into());
     settings.insert("street_max_m".into(), street::STREET_MAX_M.into());
+    settings.insert("grid_zoom".into(), omp_core::grid::ZOOM.into());
     settings.insert("search_stop_min".into(), search::STOP_MIN.into());
     settings.insert("search_block_kib".into(), (block_kib >> 10).into());
     settings.insert("postcodes".into(), postcodes.len().into());
@@ -607,7 +633,8 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let (sstr, sgeo, street_sizes) = street_sections;
     sections.push(w.section(street_encode::SSTR, &sstr)?);
     sections.push(w.section(street_encode::SGEO, &sgeo)?);
-    drop((sstr, sgeo));
+    sections.push(w.section(grid::SGRD, &sgrd)?);
+    drop((sstr, sgeo, sgrd));
     let search_encode::Sections {
         sent,
         stwn,
@@ -1034,6 +1061,25 @@ pub fn first_chunk(path: &Path) -> Result<PathBuf> {
             path.display()
         ),
     }
+}
+
+/// A one-chunk pack of `sections` in `dir`, opened, for tests of the app's readers against
+/// the builder's encoders.
+#[cfg(test)]
+pub fn test_pack(dir: &Path, sections: &[([u8; 4], &[u8])]) -> std::sync::Arc<pack::Pack> {
+    let mut w = Writer::create(dir, "t", DEFAULT_CHUNK_CAPACITY).unwrap();
+    for (id, b) in sections {
+        w.section(*id, b).unwrap();
+    }
+    let info = Info {
+        pack_id: [1; 16],
+        bbox: [0; 4],
+        build_time: 0,
+        name: "Test".into(),
+        snapshot: String::new(),
+    };
+    let paths = w.finish(&info).unwrap();
+    std::sync::Arc::new(pack::Pack::open(&paths[0]).unwrap())
 }
 
 #[cfg(test)]

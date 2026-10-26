@@ -37,6 +37,12 @@ pub struct InspectArgs {
     /// is posted to (all of them, so `""` gives the summary only).
     #[arg(long)]
     search: Option<String>,
+
+    /// Read the search, street, address, admin and grid sections through the app's
+    /// readers, check them against each other on about this many samples of each, and time
+    /// warm lookups.
+    #[arg(long, num_args = 0..=1, default_missing_value = "2000")]
+    readers: Option<usize>,
 }
 
 #[derive(Args)]
@@ -200,6 +206,10 @@ pub fn inspect(args: InspectArgs) -> Result<()> {
 
     if let Some(q) = &args.search {
         search(&pack, schema.as_ref(), q)?;
+    }
+
+    if let Some(n) = args.readers {
+        super::readers::run(&first, n)?;
     }
 
     let tiles = TileReader::open(pack)?;

@@ -9,7 +9,10 @@ use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 
 pub const MAGIC: [u8; 8] = *b"\x89OMP\r\n\x1a\n";
 pub const MAJOR: u16 = 0;
-pub const MINOR: u16 = 3;
+pub const MINOR: u16 = 4;
+/// The oldest minor version the reader opens: 0.4 only added sections (`SGRD`) and
+/// changed provisional ones that the 0.3 reader did not read.
+pub const MIN_MINOR: u16 = 3;
 /// Chunk pages and section alignment.
 pub const PAGE: u64 = 4096;
 /// Payload bytes per chunk file, so a file stays under FAT32's 4 GiB − 1 byte.
@@ -367,7 +370,7 @@ impl Pack {
         let i32_at = |i: usize| i32::from_le_bytes(page[i..i + 4].try_into().unwrap());
         let (major, minor) = (u16_at(8), u16_at(10));
         // Before 1.0, minor versions may break the format too.
-        if major != MAJOR || (MAJOR == 0 && minor != MINOR) {
+        if major != MAJOR || (MAJOR == 0 && !(MIN_MINOR..=MINOR).contains(&minor)) {
             return Err(invalid(format!(
                 "pack format {major}.{minor}, this reader supports {MAJOR}.{MINOR}"
             )));
@@ -621,6 +624,34 @@ mod tests {
 
         // A damaged header is refused on open.
         write_at(&f, b"X", 100).unwrap();
+        assert!(Pack::open(&paths[0]).is_err());
+    }
+
+    #[test]
+    fn opens_older_minor_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = Writer::create(dir.path(), "t", 2 * PAGE).unwrap();
+        w.section(*b"META", &[1; 100]).unwrap();
+        let paths = w.finish(&info()).unwrap();
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&paths[0])
+            .unwrap();
+        let set_minor = |minor: u16| {
+            let mut page = vec![0; PAGE as usize];
+            read_at(&f, &mut page, 0).unwrap();
+            page[10..12].copy_from_slice(&minor.to_le_bytes());
+            let len = u32::from_le_bytes(page[12..16].try_into().unwrap()) as usize;
+            let h = xxh3_64(&page[..len - 8]);
+            page[len - 8..len].copy_from_slice(&h.to_le_bytes());
+            write_at(&f, &page, 0).unwrap();
+        };
+        set_minor(MIN_MINOR);
+        assert_eq!(Pack::open(&paths[0]).unwrap().minor, MIN_MINOR);
+        set_minor(MIN_MINOR - 1);
+        assert!(Pack::open(&paths[0]).is_err());
+        set_minor(MINOR + 1);
         assert!(Pack::open(&paths[0]).is_err());
     }
 
