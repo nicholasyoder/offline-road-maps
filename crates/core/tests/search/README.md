@@ -28,3 +28,22 @@ query times (warm: run it twice, or after another check on the same pack).
 The packs are built with `omp-builder build <pbf> --out <dir> --addresses <ISO>` (phase 2
 plan, environment notes). Rebuilding a pack can move entries and addresses, so redraw the
 address files when the merge or the street table changes.
+
+## Search levels
+
+The app searches each keystroke at level 0 and, while the user pauses, at deeper levels
+(phase 2 step 2.7b). `--level <n>` runs every query down to level `n`, as the app shows it
+after a pause. `--levels` runs address files level by level, as typed, with the whole
+continent in view. For each level it prints how many addresses are first at their point
+or among the 8 suggestions, how many were first at level 0 but not at that level
+("lost"), and the level's time. It also prints how long after the pause a deeper level put
+an address first. `--typed` types the address queries another way: `state` (the state's
+name in full), `state:N` (its first N letters), `nostate`, or `town:N` (the town's first N
+letters, with no state):
+
+```
+omp-builder search <pack> --check addresses-na.tsv --levels --typed town:4 [--fresh]
+```
+
+`--fresh` also times each level alone in a new session, to show what sharing the caches
+across levels saves.

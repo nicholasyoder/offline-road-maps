@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use omp_core::find::{Hit, HitKind, Request, number_text};
+use omp_core::find::{Hit, HitKind, Request, Session, number_text};
 use omp_core::geo::{self, P};
 use omp_core::normalize::{loose_key, street_key};
 use omp_core::pack::Pack;
@@ -57,6 +57,26 @@ pub struct SearchArgs {
     /// With `--check`, print every failure.
     #[arg(long)]
     verbose: bool,
+
+    /// With `--check`, run every search level of each address query (phase 2 step 2.7b)
+    /// and report what each finds and how long it takes; with `--fresh`, also each level
+    /// alone in a new session.
+    #[arg(long)]
+    levels: bool,
+
+    #[arg(long)]
+    fresh: bool,
+
+    /// With `--check`, search each query down to this level, as the app does after a
+    /// pause [default: 0, as each keystroke].
+    #[arg(long, default_value_t = 0)]
+    level: usize,
+
+    /// With `--check`, type the address queries another way, as the last part being
+    /// typed: `state` (the state's name in full), `state:N` (its first N letters),
+    /// `nostate`, or `town:N` (the town's first N letters, no state).
+    #[arg(long)]
+    typed: Option<String>,
 
     /// Draw this many random addresses from the pack and write them as an address query
     /// set to `--out`.
@@ -170,7 +190,23 @@ pub fn search(args: SearchArgs) -> Result<()> {
             .region
             .clone()
             .unwrap_or_else(|| pack.info.name.to_lowercase());
-        return check(&s, &args.check, &region, args.prefix, args.verbose);
+        if args.levels || args.typed.is_some() {
+            return check_levels(
+                &s,
+                &args.check,
+                args.typed.as_deref(),
+                args.fresh,
+                args.verbose,
+            );
+        }
+        return check(
+            &s,
+            &args.check,
+            &region,
+            args.prefix,
+            args.level,
+            args.verbose,
+        );
     }
     let Some(text) = &args.query else {
         bail!("give a query, --check or --sample");
@@ -461,7 +497,22 @@ struct Tally {
 
 /// Runs query sets: address files (`query lat lon approx`) and hand-written ones
 /// (`region category query near zoom kinds name lat,lon within_m`).
-fn check(s: &Search, files: &[PathBuf], region: &str, prefix: bool, verbose: bool) -> Result<()> {
+fn check(
+    s: &Search,
+    files: &[PathBuf],
+    region: &str,
+    prefix: bool,
+    level: usize,
+    verbose: bool,
+) -> Result<()> {
+    let find = |req: &Request| -> Result<Vec<Hit>> {
+        let mut session = s.start(req);
+        let mut hits = Vec::new();
+        for d in 0..=level.min(Session::LEVELS - 1) {
+            hits = session.level(d)?.unwrap_or_default();
+        }
+        Ok(hits)
+    };
     let mut times = Vec::new();
     let mut slowest: Vec<(f64, String)> = Vec::new();
     for file in files {
@@ -485,7 +536,7 @@ fn check(s: &Search, files: &[PathBuf], region: &str, prefix: bool, verbose: boo
                     ..Request::new(r[0])
                 };
                 let t = Instant::now();
-                let hits = s.find(&req)?;
+                let hits = find(&req)?;
                 times.push(t.elapsed().as_secs_f64() * 1e3);
                 slowest.push((*times.last().unwrap(), r[0].to_owned()));
                 n += 1;
@@ -582,7 +633,7 @@ fn check(s: &Search, files: &[PathBuf], region: &str, prefix: bool, verbose: boo
                 ..Request::new(&c.query)
             };
             let t = Instant::now();
-            let hits = s.find(&req)?;
+            let hits = find(&req)?;
             times.push(t.elapsed().as_secs_f64() * 1e3);
             slowest.push((*times.last().unwrap(), c.query.clone()));
             let rank = if c.kinds.is_empty() {
@@ -642,17 +693,172 @@ fn check(s: &Search, files: &[PathBuf], region: &str, prefix: bool, verbose: boo
             println!("  slow {ms:.1} ms  {q}");
         }
     }
-    if verbose {
-        slowest.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (ms, q) in slowest.iter().take(8) {
-            println!("  slow {ms:.1} ms  {q}");
-        }
-    }
     println!(
         "{n} queries: p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms; readers hold {:.1} MiB",
         quantile(&mut times, 0.5),
         quantile(&mut times, 0.95),
         quantile(&mut times, 1.0),
+        s.heap_bytes() as f64 / (1u64 << 20) as f64
+    );
+    Ok(())
+}
+
+/// An address query ("number street, town, state") typed another way (`--typed`).
+fn retype(s: &Search, query: &str, typed: &str) -> Result<String> {
+    let parts: Vec<&str> = query.split(", ").collect();
+    let [street, town, state] = parts[..] else {
+        return Ok(query.to_owned());
+    };
+    let full = || -> String {
+        let areas = s.admin.areas();
+        areas
+            .iter()
+            .take_while(|a| a.level <= 4)
+            .find(|a| a.level == 4 && a.abbr.rsplit('-').next() == Some(state))
+            .map_or(state.to_owned(), |a| a.name.clone())
+    };
+    let cut = |t: &str, n: usize| t.chars().take(n).collect::<String>();
+    Ok(match typed.split_once(':') {
+        None if typed == "state" => format!("{street}, {town}, {}", full()),
+        None if typed == "nostate" => format!("{street}, {town}"),
+        Some(("state", n)) => format!("{street}, {town}, {}", cut(&full(), n.parse()?)),
+        Some(("town", n)) => format!("{street}, {}", cut(town, n.parse()?)),
+        _ => bail!("--typed: expected state, state:N, nostate or town:N, not {typed:?}"),
+    })
+}
+
+/// Runs address query sets level by level, typed (the last word a prefix), with the whole
+/// continent in view: per level, how many are first at their point or among the 8
+/// suggestions, and the level's time.
+fn check_levels(
+    s: &Search,
+    files: &[PathBuf],
+    typed: Option<&str>,
+    fresh: bool,
+    verbose: bool,
+) -> Result<()> {
+    let levels = Session::LEVELS;
+    let mut first = vec![0usize; levels];
+    let mut top = vec![0usize; levels];
+    // First at level 0, not at this one.
+    let mut lost = vec![0usize; levels];
+    let mut times: Vec<Vec<f64>> = vec![Vec::new(); levels];
+    let mut alone: Vec<Vec<f64>> = vec![Vec::new(); levels];
+    let mut total: Vec<f64> = Vec::new();
+    // From the first level past 0 to the one that put the address first, when one did.
+    let mut deeper: Vec<f64> = Vec::new();
+    let mut peak = 0usize;
+    let mut n = 0usize;
+    for file in files {
+        let text =
+            std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
+        for l in text
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        {
+            let r: Vec<&str> = l.split('\t').collect();
+            if r.len() != 4 {
+                bail!("{}: not an address query set", file.display());
+            }
+            let want = geo::project(r[1].parse()?, r[2].parse()?);
+            let query = match typed {
+                Some(t) => retype(s, r[0], t)?,
+                None => r[0].to_owned(),
+            };
+            let req = Request {
+                prefix: true,
+                limit: 8,
+                ..Request::new(&query)
+            };
+            let at = |h: &Hit| {
+                let d = geo::dist(want, h.p) * geo::metres_per_unit(want);
+                h.kind == HitKind::Address && (d <= 10.0 || h.approx && d <= 100.0)
+            };
+            n += 1;
+            let mut session = s.start(&req);
+            let mut sum = 0.0;
+            let mut found_at = None;
+            let mut first0 = false;
+            for d in 0..levels {
+                let t = Instant::now();
+                let hits = session.level(d)?.unwrap_or_default();
+                let ms = t.elapsed().as_secs_f64() * 1e3;
+                sum += ms;
+                times[d].push(ms);
+                if hits.first().is_some_and(at) {
+                    first[d] += 1;
+                    if found_at.is_none() && d > 0 {
+                        deeper.push(sum - times[0].last().copied().unwrap_or(0.0));
+                    }
+                    found_at.get_or_insert(d);
+                    first0 |= d == 0;
+                } else if first0 {
+                    lost[d] += 1;
+                    if verbose {
+                        let got = hits.first().map_or("nothing".into(), hit_line);
+                        println!("  LOST at level {d}: {query}\n       got {got}");
+                    }
+                }
+                top[d] += usize::from(hits.iter().any(at));
+                if verbose && d + 1 == levels && !hits.first().is_some_and(at) {
+                    let got = hits.first().map_or("nothing".into(), hit_line);
+                    println!("  FAIL {query}\n       got {got}");
+                }
+            }
+            total.push(sum);
+            peak = peak.max(session.heap_bytes());
+            if fresh {
+                for (d, v) in alone.iter_mut().enumerate() {
+                    let t = Instant::now();
+                    s.start(&req).level(d)?;
+                    v.push(t.elapsed().as_secs_f64() * 1e3);
+                }
+            }
+            if verbose && let Some(d) = found_at.filter(|&d| d > 0) {
+                println!("  level {d}: {query}");
+            }
+        }
+    }
+    let pct = |k: usize| 100.0 * k as f64 / n.max(1) as f64;
+    println!(
+        "{n} addresses{}",
+        typed.map_or(String::new(), |t| format!(", typed {t}"))
+    );
+    for d in 0..levels {
+        let mut line = format!(
+            "  level {d}: first {:>5.1}%, in 8 {:>5.1}%, lost {}; ms p50 {:.1}, p95 {:.1}, max {:.1}",
+            pct(first[d]),
+            pct(top[d]),
+            lost[d],
+            quantile(&mut times[d], 0.5),
+            quantile(&mut times[d], 0.95),
+            quantile(&mut times[d], 1.0)
+        );
+        if fresh {
+            write!(
+                line,
+                "; alone p50 {:.1}, p95 {:.1}, max {:.1}",
+                quantile(&mut alone[d], 0.5),
+                quantile(&mut alone[d], 0.95),
+                quantile(&mut alone[d], 1.0)
+            )?;
+        }
+        println!("{line}");
+    }
+    println!(
+        "  found by a deeper level: {}, after the pause ms p50 {:.1}, p95 {:.1}, max {:.1}",
+        deeper.len(),
+        quantile(&mut deeper, 0.5),
+        quantile(&mut deeper, 0.95),
+        quantile(&mut deeper, 1.0)
+    );
+    println!(
+        "  all levels: ms p50 {:.1}, p95 {:.1}, max {:.1}; session caches peak {:.1} MiB; \
+         readers hold {:.1} MiB",
+        quantile(&mut total, 0.5),
+        quantile(&mut total, 0.95),
+        quantile(&mut total, 1.0),
+        peak as f64 / (1u64 << 20) as f64,
         s.heap_bytes() as f64 / (1u64 << 20) as f64
     );
     Ok(())

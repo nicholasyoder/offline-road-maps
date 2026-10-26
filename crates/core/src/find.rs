@@ -134,20 +134,86 @@ const EDIT2: f64 = 0.7;
 /// A token in fewer entries than this is also matched within edits ("Clevland" is a street
 /// somewhere, but more likely Cleveland).
 const RARE: usize = 30;
-/// Candidates read per region of a reading (a locality, the view, …).
-const PER_REGION: usize = 300;
-/// Entries read to find the places a locality names: places and areas are important, so
-/// near the start of a postings list.
-const MAX_LOCALITY_IDS: usize = 800;
-/// Localities kept per reading, most important first.
+/// Localities kept per reading, most important first; candidates are read from each with
+/// [`Bounds::per_region`].
 const MAX_LOCALITIES: usize = 6;
-/// The same for a reading with a house number whose first [`MAX_LOCALITIES`] gave no
-/// address: a small town that shares its name with larger ones is searched too, and the
-/// street there that has the number wins.
-const MAX_ADDRESS_LOCALITIES: usize = 30;
-/// Candidates read from each locality past the first [`MAX_LOCALITIES`]: the less
-/// important towns, with few streets of any one name.
-const PER_SMALL_LOCALITY: usize = 30;
+
+/// How much of the data a search level reads (phase2-plan.md 2.7b). Level 0 answers each
+/// keystroke; the deeper ones run while the user pauses, each a superset of the one before.
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    /// Candidates read per region of a reading (a locality, the view, …).
+    per_region: usize,
+    /// Entries read to find the places a locality names: places and areas are important, so
+    /// near the start of a postings list.
+    locality_ids: usize,
+    /// Localities kept for a reading whose first [`MAX_LOCALITIES`] gave no address: a
+    /// small town that shares its name with larger ones is searched too, and the street
+    /// there that has the number wins.
+    wide_localities: usize,
+    /// Candidates read from each locality past the first [`MAX_LOCALITIES`]: the less
+    /// important towns, with few streets of any one name.
+    per_small_locality: usize,
+    /// Candidates tried for a house number.
+    locate: usize,
+    /// Tokens a prefix expands to, and the IDs read from each.
+    expansions: usize,
+    expansion_ids: usize,
+    /// Run the wider town pass, the pass within edits and the pass without the words being
+    /// typed whatever the passes before found.
+    always: bool,
+}
+
+/// The search levels, from the keystroke's to the deepest.
+const LEVELS: [Bounds; 4] = [
+    Bounds {
+        per_region: 300,
+        locality_ids: 800,
+        wide_localities: 30,
+        per_small_locality: 30,
+        locate: 30,
+        expansions: 64,
+        expansion_ids: 3_000,
+        always: false,
+    },
+    Bounds {
+        per_region: 300,
+        locality_ids: 800,
+        wide_localities: 30,
+        per_small_locality: 30,
+        locate: 30,
+        expansions: 64,
+        expansion_ids: 3_000,
+        always: true,
+    },
+    Bounds {
+        per_region: 1_200,
+        locality_ids: 3_200,
+        wide_localities: 120,
+        per_small_locality: 60,
+        locate: 120,
+        expansions: 256,
+        expansion_ids: 12_000,
+        always: true,
+    },
+    Bounds {
+        per_region: 4_800,
+        locality_ids: 12_800,
+        wide_localities: 480,
+        per_small_locality: 120,
+        locate: 480,
+        expansions: 1_024,
+        expansion_ids: 48_000,
+        always: true,
+    },
+];
+
+/// Entry hits kept per reading at the deeper levels, whatever the limit: enough for a list
+/// of results asked for once the suggestions' levels are done ([`Session::set_limit`]).
+const DEEP_HITS: usize = 150;
+/// Points off a hit of the pass without the words being typed, when it runs beside hits
+/// that use them: it leaves out what the user typed.
+const UNFINISHED_POINTS: f64 = 20.0;
 /// A state, province or country name the last word, still being typed after a comma, may
 /// begin, when it has 3 letters or more and begins at most this many ("…, Kentuck"; not
 /// "…, New").
@@ -182,12 +248,8 @@ const EXTRA_POINTS: f64 = 4.0;
 const MAX_EXTRA_POINTS: f64 = 12.0;
 /// Points for a name that is the whole query, nothing left out on either side.
 const WHOLE_NAME: f64 = 6.0;
-/// Candidates tried for a house number, and how far below the best they may score.
-const MAX_LOCATE: usize = 30;
+/// How far below the best a candidate for a house number may score.
 const LOCATE_WITHIN: f64 = 15.0;
-/// Tokens a prefix expands to, and the IDs read from each.
-const MAX_EXPANSIONS: usize = 64;
-const EXPANSION_IDS: usize = 3_000;
 /// Postings longer than this are read only in part (most important first).
 const MAX_POSTINGS: usize = 400_000;
 
@@ -391,27 +453,48 @@ struct Scored {
     exact: bool,
 }
 
-/// Locality words, the state, the fuzzy pass and the entries read.
-type LocalityKey = (String, Option<u32>, bool, usize, usize);
+/// Locality words, the state and the fuzzy pass.
+type LocalityKey = (String, Option<u32>, bool);
 type Tokens = Vec<String>;
 
 /// A token's postings and whether it was left out of them (a common generic token).
 type Posted = (Rc<Vec<u32>>, bool);
 
-/// One query's state: the postings, entries and localities it has read.
+/// Postings as read: the IDs, whether the token was left out of them, and whether they are
+/// the whole list.
+struct Read {
+    ids: Rc<Vec<u32>>,
+    stopped: bool,
+    whole: bool,
+}
+
+/// Localities as found: the entries read and the localities kept.
+struct Towns {
+    ids: usize,
+    keep: usize,
+    list: Rc<Vec<Locality>>,
+}
+
+/// One query's state: the postings, entries and localities it has read. Its caches serve
+/// every level of a [`Session`]; a larger bound reads on from what they hold.
 struct Run<'a> {
     s: &'a Search,
-    req: &'a Request<'a>,
+    near: Option<P>,
+    zoom: f64,
+    limit: usize,
+    b: Bounds,
+    /// Asked between readings, towns and candidates whether to give up: a newer query.
+    stop: Option<Box<dyn Fn() -> bool>>,
     fuzzy: bool,
     /// Rare tokens are matched within edits too (a second pass).
     rare: bool,
     /// The words after the last comma are left out (a last pass while typing).
     unfinished: bool,
-    /// [`MAX_ADDRESS_LOCALITIES`] localities are read, not [`MAX_LOCALITIES`].
+    /// [`Bounds::wide_localities`] localities are read, not [`MAX_LOCALITIES`].
     wide: bool,
-    postings: HashMap<(String, usize), Posted>,
+    postings: HashMap<String, Read>,
     entries: HashMap<u32, Rc<Entry>>,
-    localities: HashMap<LocalityKey, Rc<Vec<Locality>>>,
+    localities: HashMap<LocalityKey, Towns>,
     /// Per entry, its names' tokens.
     names: HashMap<u32, Rc<Vec<Vec<String>>>>,
     /// Candidate IDs per list of query tokens.
@@ -422,6 +505,14 @@ struct Run<'a> {
 }
 
 impl<'a> Run<'a> {
+    /// An `Interrupted` error once the search is to stop.
+    fn check(&self) -> io::Result<()> {
+        match &self.stop {
+            Some(f) if f() => Err(io::ErrorKind::Interrupted.into()),
+            _ => Ok(()),
+        }
+    }
+
     fn entry(&mut self, id: u32) -> io::Result<Rc<Entry>> {
         if let Some(e) = self.entries.get(&id) {
             return Ok(e.clone());
@@ -454,13 +545,26 @@ impl<'a> Run<'a> {
         let Some(offset) = self.s.index.tokens().get(token) else {
             return Ok(None);
         };
-        let key = (token.to_owned(), limit);
-        if let Some(v) = self.postings.get(&key) {
-            return Ok(Some(v.clone()));
+        // Postings are read most important first, so a shorter read is the start of a
+        // longer one.
+        if let Some(r) = self.postings.get(token)
+            && (r.whole || r.ids.len() >= limit)
+        {
+            let ids = if r.ids.len() <= limit {
+                r.ids.clone()
+            } else {
+                Rc::new(r.ids[..limit].to_vec())
+            };
+            return Ok(Some((ids, r.stopped)));
         }
         let p = self.s.index.postings_at(offset, limit)?;
-        let v = (Rc::new(p.ids), p.total > p.stored);
-        self.postings.insert(key, v.clone());
+        let r = Read {
+            whole: p.ids.len() as u64 == p.stored,
+            ids: Rc::new(p.ids),
+            stopped: p.total > p.stored,
+        };
+        let v = (r.ids.clone(), r.stopped);
+        self.postings.insert(token.to_owned(), r);
         Ok(Some(v))
     }
 
@@ -482,12 +586,12 @@ impl<'a> Run<'a> {
             let mut found = Vec::new();
             while let Some((k, _)) = stream.next() {
                 found.push(String::from_utf8_lossy(k).into_owned());
-                if found.len() >= MAX_EXPANSIONS {
+                if found.len() >= self.b.expansions {
                     break;
                 }
             }
             for t in found {
-                if let Some((ids, _)) = self.postings(&t, EXPANSION_IDS)? {
+                if let Some((ids, _)) = self.postings(&t, self.b.expansion_ids)? {
                     lists.push(ids);
                 }
             }
@@ -508,8 +612,8 @@ impl<'a> Run<'a> {
             .iter()
             .map(|q| {
                 format!(
-                    "{}/{:?}/{}/{}/{}|",
-                    q.text, q.prefix, q.fuzzy, q.generic, self.fuzzy
+                    "{}/{:?}/{}/{}/{}/{}|",
+                    q.text, q.prefix, q.fuzzy, q.generic, self.fuzzy, self.b.expansions
                 )
             })
             .collect();
@@ -606,11 +710,11 @@ impl<'a> Run<'a> {
     /// The places, admin areas and postal codes the words `loc` name, most important first.
     fn localities(&mut self, r: &Reading) -> io::Result<Rc<Vec<Locality>>> {
         let keep = if self.wide {
-            MAX_ADDRESS_LOCALITIES
+            self.b.wide_localities
         } else {
             MAX_LOCALITIES
         };
-        self.localities_within(r, MAX_LOCALITY_IDS, keep)
+        self.localities_within(r, self.b.locality_ids, keep)
     }
 
     /// The `keep` most important of [`Self::localities`] among the first `max_ids` entries
@@ -621,13 +725,24 @@ impl<'a> Run<'a> {
         max_ids: usize,
         keep: usize,
     ) -> io::Result<Rc<Vec<Locality>>> {
-        let key = (r.loc_text.clone(), r.state, self.fuzzy, max_ids, keep);
-        if let Some(v) = self.localities.get(&key) {
-            return Ok(v.clone());
+        let key = (r.loc_text.clone(), r.state, self.fuzzy);
+        // Most important first: a read of more entries, keeping more, holds this one.
+        if let Some(f) = self.localities.get(&key)
+            && f.ids >= max_ids
+            && f.keep >= keep
+        {
+            return Ok(if f.list.len() <= keep {
+                f.list.clone()
+            } else {
+                Rc::new(f.list[..keep].to_vec())
+            });
         }
         let ids = self.name_ids(&r.loc)?;
         let mut out: Vec<Locality> = Vec::new();
-        for &id in ids.iter().take(max_ids) {
+        for (i, &id) in ids.iter().take(max_ids).enumerate() {
+            if i % 256 == 255 {
+                self.check()?;
+            }
             let e = self.entry(id)?;
             // Postings run by importance bucket: once enough are found, the rest are less
             // important than all of them.
@@ -681,13 +796,26 @@ impl<'a> Run<'a> {
         out.sort_by_key(|l| std::cmp::Reverse(l.importance));
         out.truncate(keep);
         let v = Rc::new(out);
-        self.localities.insert(key, v.clone());
+        let covers = self
+            .localities
+            .get(&key)
+            .is_none_or(|f| max_ids >= f.ids && keep >= f.keep);
+        if covers {
+            self.localities.insert(
+                key,
+                Towns {
+                    ids: max_ids,
+                    keep,
+                    list: v.clone(),
+                },
+            );
+        }
         Ok(v)
     }
 
     /// Distance from the view centre to `p` as a nearness between 0 and 1.
     fn nearness(&self, p: P) -> f64 {
-        let Some(c) = self.req.near else {
+        let Some(c) = self.near else {
             return 0.0;
         };
         let scale = self.view_scale_m();
@@ -697,7 +825,7 @@ impl<'a> Run<'a> {
 
     /// How far "near the view" reaches: three tile widths at the view's zoom.
     fn view_scale_m(&self) -> f64 {
-        3.0 * 40_075_016.0 / 2f64.powf(self.req.zoom.clamp(0.0, 20.0))
+        3.0 * 40_075_016.0 / 2f64.powf(self.zoom.clamp(0.0, 20.0))
     }
 
     /// The candidates of reading `r`, scored, best first.
@@ -719,7 +847,7 @@ impl<'a> Run<'a> {
         // the most important anywhere.
         let mut chosen: Vec<u32> = Vec::new();
         if postcode.is_none() && r.state.is_none() && localities.is_empty() {
-            chosen.extend(ids.iter().copied().take(PER_REGION));
+            chosen.extend(ids.iter().copied().take(self.b.per_region));
         }
         let mut take = |run: &Self, b: [u32; 4], n: usize| -> io::Result<()> {
             let iv = run.s.index.intervals(&[b])?;
@@ -729,25 +857,25 @@ impl<'a> Run<'a> {
         if !localities.is_empty() {
             for (i, l) in localities.iter().enumerate() {
                 let n = if i < MAX_LOCALITIES {
-                    PER_REGION
+                    self.b.per_region
                 } else {
-                    PER_SMALL_LOCALITY
+                    self.b.per_small_locality
                 };
                 take(self, l.bbox, n)?;
             }
             if let Some(st) = r.state.and_then(|s| self.s.admin.area(s)) {
-                take(self, st.bbox, PER_REGION)?;
+                take(self, st.bbox, self.b.per_region)?;
             }
         } else {
             match (postcode, r.state.and_then(|s| self.s.admin.area(s))) {
-                (Some(pc), _) => take(self, pc.bbox, 2 * PER_REGION)?,
-                (None, Some(st)) => take(self, st.bbox, 2 * PER_REGION)?,
+                (Some(pc), _) => take(self, pc.bbox, 2 * self.b.per_region)?,
+                (None, Some(st)) => take(self, st.bbox, 2 * self.b.per_region)?,
                 (None, None) => {}
             }
-            if let Some(c) = self.req.near {
+            if let Some(c) = self.near {
                 let scale = self.view_scale_m();
                 for radius in [scale / 2.0, 4.0 * scale] {
-                    take(self, geo::bbox_around(c, radius), PER_REGION)?;
+                    take(self, geo::bbox_around(c, radius), self.b.per_region)?;
                 }
             }
         }
@@ -755,7 +883,10 @@ impl<'a> Run<'a> {
         chosen.dedup();
 
         let mut out = Vec::new();
-        for id in chosen {
+        for (k, id) in chosen.into_iter().enumerate() {
+            if k % 64 == 63 {
+                self.check()?;
+            }
             let e = self.entry(id)?;
             if r.number.is_some() && !matches!(e.kind, Kind::Street | Kind::AddressStreet) {
                 continue;
@@ -1071,9 +1202,10 @@ impl<'a> Run<'a> {
         let best = cands.first().map_or(0.0, |c| c.score);
         for c in cands
             .iter()
-            .take(MAX_LOCATE)
+            .take(self.b.locate)
             .take_while(|c| c.score >= best - LOCATE_WITHIN)
         {
+            self.check()?;
             let e = &c.entry;
             let mut base = self.entry_hit(c)?;
             base.name = format!("{} {}", number_text(n.number, &n.suffix), base.name);
@@ -1194,43 +1326,54 @@ impl<'a> Run<'a> {
                     penalty = 6.0;
                 }
             }
+            self.check()?;
             let mut cands = self.candidates(&r, postcode.as_ref())?;
             for c in &mut cands {
                 c.score -= penalty;
             }
+            // Towns past the most important of that name: when they hold no address, or
+            // at the deeper levels whatever they hold.
+            let full = !r.loc.is_empty() && self.localities(&r)?.len() >= MAX_LOCALITIES;
+            let wider = |run: &mut Self| -> io::Result<Vec<Scored>> {
+                run.wide = true;
+                let cands = run.candidates(&r, postcode.as_ref());
+                run.wide = false;
+                let mut cands = cands?;
+                for c in &mut cands {
+                    c.score -= penalty;
+                }
+                Ok(cands)
+            };
             match &r.number {
                 Some(n) => {
-                    let mut found = self.addresses(
-                        n,
-                        parsed.unit.as_deref(),
-                        parsed.postcode.as_deref(),
-                        &cands,
-                    )?;
-                    // No address in the most important towns of that name: the smaller
-                    // ones too.
-                    if !found.iter().any(|h| h.kind == HitKind::Address)
-                        && !r.loc.is_empty()
-                        && self.localities(&r)?.len() >= MAX_LOCALITIES
-                    {
-                        self.wide = true;
-                        let wider = self.candidates(&r, postcode.as_ref());
-                        self.wide = false;
-                        let mut cands = wider?;
-                        for c in &mut cands {
-                            c.score -= penalty;
+                    let unit = parsed.unit.as_deref();
+                    let code = parsed.postcode.as_deref();
+                    let mut found = self.addresses(n, unit, code, &cands)?;
+                    let none = !found.iter().any(|h| h.kind == HitKind::Address);
+                    if full && (none || self.b.always) {
+                        let cands = wider(self)?;
+                        let more = self.addresses(n, unit, code, &cands)?;
+                        if self.b.always {
+                            found.extend(more);
+                        } else {
+                            found = more;
                         }
-                        found = self.addresses(
-                            n,
-                            parsed.unit.as_deref(),
-                            parsed.postcode.as_deref(),
-                            &cands,
-                        )?;
                     }
                     hits.extend(found);
                 }
                 None => {
-                    for c in cands.iter().take(self.req.limit.max(10) * 3) {
+                    let n = if self.b.always {
+                        DEEP_HITS.max(self.limit * 3)
+                    } else {
+                        self.limit.max(10) * 3
+                    };
+                    for c in cands.iter().take(n) {
                         hits.push(self.entry_hit(c)?);
+                    }
+                    if full && self.b.always {
+                        for c in wider(self)?.iter().take(n) {
+                            hits.push(self.entry_hit(c)?);
+                        }
                     }
                 }
             }
@@ -1373,61 +1516,155 @@ impl Search {
         Ok((self.streets.street(id)?.length_m as f64 / 2.0).max(100.0))
     }
 
-    /// Searches the pack: the best `req.limit` hits, best first.
+    /// Searches the pack: the best `req.limit` hits, best first. The keystroke's search,
+    /// level 0 of a [`Session`].
     pub fn find(&self, req: &Request) -> io::Result<Vec<Hit>> {
-        let parsed = query::parse(req.text, req.prefix);
-        if parsed.words.is_empty() && parsed.lead.is_empty() {
-            return Ok(Vec::new());
+        Ok(self.start(req).level(0)?.unwrap_or_default())
+    }
+
+    /// A search to run level by level, deeper while the user pauses.
+    pub fn start(&self, req: &Request) -> Session<'_> {
+        Session {
+            parsed: query::parse(req.text, req.prefix),
+            prefix: req.prefix,
+            run: Run {
+                s: self,
+                near: req.near,
+                zoom: req.zoom,
+                limit: req.limit,
+                b: LEVELS[0],
+                stop: None,
+                fuzzy: false,
+                rare: false,
+                unfinished: false,
+                wide: false,
+                postings: HashMap::new(),
+                entries: HashMap::new(),
+                localities: HashMap::new(),
+                names: HashMap::new(),
+                name_ids: HashMap::new(),
+                contexts: HashMap::new(),
+                towns: HashMap::new(),
+            },
+            hits: Vec::new(),
+            radii: HashMap::new(),
+            done: None,
         }
-        let mut run = Run {
-            s: self,
-            req,
-            fuzzy: false,
-            rare: false,
-            unfinished: false,
-            wide: false,
-            postings: HashMap::new(),
-            entries: HashMap::new(),
-            localities: HashMap::new(),
-            names: HashMap::new(),
-            name_ids: HashMap::new(),
-            contexts: HashMap::new(),
-            towns: HashMap::new(),
-        };
-        let mut hits = run.all(&parsed)?;
+    }
+}
+
+/// One query searched level by level ([`Search::start`]): level 0 is [`Search::find`],
+/// each deeper level reads more of the data (more towns of a name, more completions of a
+/// word being typed, more candidates per region) and adds what it finds to the hits so far,
+/// so the list only grows or improves. Levels share the postings, entries and localities
+/// read. A session holds `Rc`s, so it stays on the thread that started it.
+pub struct Session<'a> {
+    parsed: Parsed,
+    prefix: bool,
+    run: Run<'a>,
+    /// Every hit found so far, before duplicates are removed.
+    hits: Vec<Hit>,
+    radii: HashMap<u32, f64>,
+    done: Option<usize>,
+}
+
+impl Session<'_> {
+    /// How many levels there are.
+    pub const LEVELS: usize = LEVELS.len();
+
+    /// Gives up a level when `stop` returns true, asked often enough that a level ends
+    /// within milliseconds of it.
+    pub fn stop_when(&mut self, stop: impl Fn() -> bool + 'static) {
+        self.run.stop = Some(Box::new(stop));
+    }
+
+    /// The best hits for limit `limit` from now on (the results panel asks for more than
+    /// the suggestions). The deeper levels keep enough hits for a limit up to 50.
+    pub fn set_limit(&mut self, limit: usize) {
+        self.run.limit = limit;
+    }
+
+    /// The best hits of every level run so far.
+    pub fn hits(&mut self) -> io::Result<Vec<Hit>> {
+        self.best()
+    }
+
+    /// The deepest level run to the end.
+    pub fn done(&self) -> Option<usize> {
+        self.done
+    }
+
+    /// Runs level `d` (below [`Self::LEVELS`]) and gives the best hits of every level run
+    /// so far, or `None` if it was stopped.
+    pub fn level(&mut self, d: usize) -> io::Result<Option<Vec<Hit>>> {
+        if self.parsed.words.is_empty() && self.parsed.lead.is_empty() {
+            self.done = Some(d.max(self.done.unwrap_or(0)));
+            return Ok(Some(Vec::new()));
+        }
+        self.run.b = LEVELS[d.min(LEVELS.len() - 1)];
+        match self.passes() {
+            Ok(hits) => self.hits.extend(hits),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(None),
+            Err(e) => return Err(e),
+        }
+        self.done = Some(d.max(self.done.unwrap_or(0)));
+        self.best().map(Some)
+    }
+
+    /// The hits of one level: the exact pass, then within edits and without the words
+    /// being typed when it calls for them.
+    fn passes(&mut self) -> io::Result<Vec<Hit>> {
+        let (run, parsed) = (&mut self.run, &self.parsed);
+        let always = run.b.always;
+        run.fuzzy = false;
+        run.rare = false;
+        run.unfinished = false;
+        let mut hits = run.all(parsed)?;
         // A second pass within edits: of every token if nothing matched exactly, else of
         // the rare ones ("Clevland" is a street, but more likely Cleveland), unless an
-        // address was found.
+        // address was found. The deeper levels run it within edits of every token.
         let exact = hits.iter().any(|h| h.exact && !h.number_missing);
         let address = hits.iter().any(|h| h.kind == HitKind::Address && h.exact);
-        if !exact || !address && run.any_rare(&parsed)? {
-            run.fuzzy = !exact;
+        if always || !exact || !address && run.any_rare(parsed)? {
+            run.fuzzy = always || !exact;
             run.rare = true;
-            for mut h in run.all(&parsed)? {
+            for mut h in run.all(parsed)? {
                 h.exact = false;
                 hits.push(h);
             }
-        }
-        // Still typing and nothing found: the words after the last comma may be a town or
-        // state not yet typed far enough to name it, so try without them.
-        if hits.is_empty() && req.prefix {
             run.fuzzy = false;
             run.rare = false;
+        }
+        // Still typing and nothing found: the words after the last comma may be a town or
+        // state not yet typed far enough to name it, so try without them. The deeper
+        // levels try it whatever was found, below what uses those words.
+        if (always || hits.is_empty()) && self.prefix {
             run.unfinished = true;
-            for mut h in run.all(&parsed)? {
+            let found = run.all(parsed);
+            run.unfinished = false;
+            for mut h in found? {
                 h.exact = false;
+                if always {
+                    h.score -= UNFINISHED_POINTS;
+                }
                 hits.push(h);
             }
         }
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        Ok(hits)
+    }
+
+    /// The best hits found so far, one of each thing.
+    fn best(&mut self) -> io::Result<Vec<Hit>> {
+        let s = self.run.s;
+        let radii = &mut self.radii;
+        self.hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         let mut out: Vec<Hit> = Vec::new();
-        let mut radii: HashMap<u32, f64> = HashMap::new();
         let mut radius = |h: &Hit| -> io::Result<f64> {
             match h.street {
                 Some(id) if h.radius_m.is_nan() => match radii.get(&id) {
                     Some(&r) => Ok(r),
                     None => {
-                        let r = self.street_radius_m(id)?;
+                        let r = s.street_radius_m(id)?;
                         radii.insert(id, r);
                         Ok(r)
                     }
@@ -1435,23 +1672,54 @@ impl Search {
                 _ => Ok(h.radius_m),
             }
         };
-        for mut h in hits {
+        for h in &self.hits {
             let mut dup = false;
             for o in &out {
-                if same(o, &h, &mut radius)? {
+                if same(o, h, &mut radius)? {
                     dup = true;
                     break;
                 }
             }
             if !dup {
+                let mut h = h.clone();
                 h.radius_m = radius(&h)?;
                 out.push(h);
-                if out.len() >= req.limit {
+                if out.len() >= self.run.limit {
                     break;
                 }
             }
         }
         Ok(out)
+    }
+
+    /// Bytes the session's caches hold, roughly: they grow with depth and live as long as
+    /// the session.
+    pub fn heap_bytes(&self) -> usize {
+        let r = &self.run;
+        let strings = |v: &[String]| v.iter().map(|t| 24 + t.len()).sum::<usize>();
+        r.postings
+            .iter()
+            .map(|(k, v)| 64 + k.len() + 4 * v.ids.len())
+            .sum::<usize>()
+            + r.entries
+                .values()
+                .map(|e| 160 + e.name.len() + e.alts.iter().map(|a| 24 + a.len()).sum::<usize>())
+                .sum::<usize>()
+            + r.names
+                .values()
+                .map(|n| 32 + n.iter().map(|t| 24 + strings(t)).sum::<usize>())
+                .sum::<usize>()
+            + r.name_ids
+                .iter()
+                .map(|(k, v)| 48 + k.len() + 4 * v.len())
+                .sum::<usize>()
+            + r.localities
+                .values()
+                .map(|f| 64 + f.list.len() * std::mem::size_of::<Locality>())
+                .sum::<usize>()
+            + r.contexts.values().map(|t| 48 + strings(t)).sum::<usize>()
+            + r.towns.values().map(|t| 48 + strings(t)).sum::<usize>()
+            + self.hits.len() * (std::mem::size_of::<Hit>() + 64)
     }
 }
 

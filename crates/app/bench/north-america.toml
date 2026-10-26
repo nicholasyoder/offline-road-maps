@@ -138,12 +138,20 @@ lon = -149.9003
 zoom = 11
 
 # Searches (phase2-plan.md 2.7): each typed one character at a time from the view the
-# previous step left, then Enter, which jumps to the first result. Skipped on packs
-# without search.
+# previous step left, then the deeper search levels (2.7b), then Enter, which jumps to the
+# first result. `expect` is part of the name of the result the search should find. Skipped
+# on packs without search.
 
 [[step]]
 label = "search: address"
 search = "1100 E 9th St, Cleveland, OH"
+expect = "1100 East 9th"
+hold = 0.5
+
+[[step]]
+label = "search: address, town cut short"
+search = "8723 River Road, Amar"
+expect = "8723 River Road"
 hold = 0.5
 
 [[step]]

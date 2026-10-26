@@ -1037,6 +1037,42 @@ fn query_set_on_the_test_pack() {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "Road 2");
 
+        // Levels: each query's first hit stays first at every level, a level stops when
+        // asked to, and the hits of the levels run are kept for a larger limit.
+        use crate::find::Session;
+        for line in set.lines().filter(|l| !l.starts_with('#')) {
+            let q = line.split('\t').nth(2).unwrap();
+            let req = Request {
+                prefix: true,
+                ..Request::new(q)
+            };
+            let mut session = s.start(&req);
+            let first = session.level(0).unwrap().unwrap().first().cloned();
+            for d in 1..Session::LEVELS {
+                let hits = session.level(d).unwrap().unwrap();
+                assert_eq!(
+                    hits.first().map(|h| &h.name),
+                    first.as_ref().map(|h| &h.name),
+                    "{q}, level {d}"
+                );
+            }
+            assert_eq!(session.done(), Some(Session::LEVELS - 1));
+        }
+        let mut session = s.start(&Request::new("Main St"));
+        session.stop_when(|| true);
+        assert_eq!(session.level(2).unwrap(), None);
+        assert_eq!(session.done(), None);
+        let mut session = s.start(&Request {
+            limit: 1,
+            ..Request::new("Road")
+        });
+        assert_eq!(session.level(0).unwrap().unwrap().len(), 1);
+        session.set_limit(10);
+        assert_eq!(
+            session.hits().unwrap(),
+            s.find(&Request::new("Road")).unwrap()
+        );
+
         // What's here: the address at a point, its street, the chain, nearby entries.
         let p = main.point_at(2.0 * STEP_M);
         let here = s.here(p, 100.0, 300.0).unwrap();

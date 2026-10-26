@@ -6,8 +6,18 @@
 //! tile loader drops tiles the view has left. The worker opens the pack's search readers
 //! itself when the pack opens, so start-up does not wait for them, and wakes the UI when an
 //! answer is ready; nothing polls.
+//!
+//! Search is progressive (2.7b): a keystroke is answered at level 0 of a
+//! [`find::Session`]; when the user pauses for [`PAUSE`], the worker runs the deeper levels
+//! one by one and sends each one's answer, until the last, then sleeps. A new query stops a
+//! level within milliseconds (a generation number the session checks), so deep work never
+//! delays the next keystroke. Enter runs every level at once for the results panel, going
+//! on with the suggestions' session when it is for the same text: after a pause, its
+//! levels are done and Enter is answered at once. A session's caches are kept until the
+//! next query.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -16,7 +26,7 @@ use eframe::egui::{
     self, Align2, Color32, Event, EventFilter, FontId, Id, Key, Pos2, Rect, Sense, Stroke,
     StrokeKind, Vec2,
 };
-use omp_core::find::{Hit, HitKind, Request};
+use omp_core::find::{self, Hit, HitKind, Request};
 use omp_core::geo::P;
 use omp_core::pack::Pack;
 use omp_core::schema::Schema;
@@ -31,6 +41,9 @@ pub const SUGGESTIONS: usize = 8;
 pub const RESULTS: usize = 50;
 /// Searches kept in `config.toml`.
 pub const RECENT: usize = 8;
+/// How long typing pauses before the deeper search levels start, so fast typing never
+/// starts them.
+pub const PAUSE: Duration = Duration::from_millis(150);
 /// The zoom an address is shown at.
 const ADDRESS_ZOOM: f64 = 17.0;
 /// The most a place or street is zoomed in to, and the least.
@@ -38,6 +51,9 @@ const FIT_ZOOM: [f64; 2] = [4.0, 17.0];
 const EARTH_RADIUS_M: f64 = 6_371_008.8;
 const CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const WORLD: f64 = 4_294_967_296.0;
+
+/// Shown while the deeper search levels run.
+const SEARCHING_MORE: &str = "Searching smaller towns and more names…";
 
 const BOX_WIDTH: f32 = 320.0;
 const PANEL_WIDTH: f32 = 360.0;
@@ -74,8 +90,12 @@ pub struct Query {
 pub struct Answer {
     pub query: Query,
     pub hits: Result<Vec<Hit>, String>,
-    /// Time in `find`.
+    /// Time in `find`: in this level, or in every level for Enter.
     pub find: Duration,
+    /// The search level answered.
+    pub level: usize,
+    /// Deeper levels will follow.
+    pub more: bool,
 }
 
 /// What the readers hold and have read, for the overlay and the bench.
@@ -85,6 +105,9 @@ pub struct Stats {
     pub open: Option<Duration>,
     pub heap_bytes: usize,
     pub bytes_read: u64,
+    /// What the latest query's session caches hold, and the most any has held.
+    pub session_bytes: usize,
+    pub session_peak: usize,
 }
 
 struct Slot {
@@ -97,6 +120,8 @@ struct Slot {
 struct Shared {
     slot: Mutex<Slot>,
     ready: Condvar,
+    /// Counts the queries asked: a level stops once it is not its query's.
+    generation: AtomicU64,
 }
 
 pub struct Worker {
@@ -116,12 +141,13 @@ impl Worker {
                 stats: Stats::default(),
             }),
             ready: Condvar::new(),
+            generation: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         let s = shared.clone();
         std::thread::Builder::new()
             .name("search".into())
-            .spawn(move || work(&s, &first_chunk, &tx, &wake))
+            .spawn(move || work(s, &first_chunk, &tx, &wake))
             .expect("spawn search worker");
         Self { shared, rx }
     }
@@ -137,6 +163,7 @@ impl Worker {
                 stats: Stats::default(),
             }),
             ready: Condvar::new(),
+            generation: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         (Self { shared, rx }, tx)
@@ -147,9 +174,12 @@ impl Worker {
         self.shared.slot.lock().unwrap().query.take()
     }
 
-    /// Replaces the query waiting, if any.
+    /// Replaces the query waiting, if any, and stops the one running.
     pub fn ask(&self, q: Query) {
-        self.shared.slot.lock().unwrap().query = Some(q);
+        let mut slot = self.shared.slot.lock().unwrap();
+        self.shared.generation.fetch_add(1, Ordering::Relaxed);
+        slot.query = Some(q);
+        drop(slot);
         self.shared.ready.notify_one();
     }
 
@@ -175,7 +205,7 @@ impl Drop for Worker {
     }
 }
 
-fn work(shared: &Shared, first_chunk: &std::path::Path, tx: &Sender<Answer>, wake: &dyn Fn()) {
+fn work(shared: Arc<Shared>, first_chunk: &std::path::Path, tx: &Sender<Answer>, wake: &dyn Fn()) {
     let t0 = Instant::now();
     let opened = Pack::open(first_chunk).map(Arc::new).and_then(|p| {
         let minor = p.minor;
@@ -194,6 +224,7 @@ fn work(shared: &Shared, first_chunk: &std::path::Path, tx: &Sender<Answer>, wak
                 open: Some(t0.elapsed()),
                 heap_bytes: s.heap_bytes(),
                 bytes_read: s.bytes_read(),
+                ..Stats::default()
             };
             set(Status::Ready, Some(stats));
             s
@@ -218,44 +249,106 @@ fn work(shared: &Shared, first_chunk: &std::path::Path, tx: &Sender<Answer>, wak
         }
     };
     wake();
+    // The latest query, its session, the next level to run and when it may start.
+    let mut current: Option<(Query, find::Session, usize, Instant)> = None;
     loop {
-        let q = {
+        let (new, generation) = {
             let mut slot = shared.slot.lock().unwrap();
             loop {
                 if slot.quit {
                     return;
                 }
                 if let Some(q) = slot.query.take() {
-                    break q;
+                    break (Some(q), shared.generation.load(Ordering::Relaxed));
                 }
-                slot = shared.ready.wait(slot).unwrap();
+                match &current {
+                    Some((_, _, next, at)) if *next < find::Session::LEVELS => {
+                        let now = Instant::now();
+                        if now >= *at {
+                            break (None, shared.generation.load(Ordering::Relaxed));
+                        }
+                        slot = shared.ready.wait_timeout(slot, *at - now).unwrap().0;
+                    }
+                    _ => slot = shared.ready.wait(slot).unwrap(),
+                }
             }
         };
-        let t = Instant::now();
-        let req = Request {
-            text: &q.text,
-            near: Some(to_p(q.near)),
-            zoom: q.zoom,
-            limit: q.limit,
-            // Typed, Enter included: Enter on a word still being typed means what its
-            // suggestions showed.
-            prefix: true,
+        // Enter on the text the suggestions are for (same view) goes on with their session:
+        // after a pause, its levels are done.
+        let same = |c: &Query, q: &Query| c.text == q.text && c.near == q.near && c.zoom == q.zoom;
+        if let Some(q) = new.as_ref().filter(|q| q.submit)
+            && let Some((c, session, _, _)) = current.as_mut().filter(|c| same(&c.0, q))
+        {
+            session.set_limit(q.limit);
+            let s = shared.clone();
+            session.stop_when(move || s.generation.load(Ordering::Relaxed) != generation);
+            *c = q.clone();
+        } else if let Some(q) = new {
+            let req = Request {
+                text: &q.text,
+                near: Some(to_p(q.near)),
+                zoom: q.zoom,
+                limit: q.limit,
+                // Typed, Enter included: Enter on a word still being typed means what its
+                // suggestions showed.
+                prefix: true,
+            };
+            let mut session = search.start(&req);
+            let s = shared.clone();
+            session.stop_when(move || s.generation.load(Ordering::Relaxed) != generation);
+            current = Some((q, session, 0, Instant::now()));
+        }
+        let Some((q, session, next, at)) = current.as_mut() else {
+            continue;
         };
-        let hits = search.find(&req).map_err(|e| e.to_string());
+        // Enter runs every level at once; a keystroke one level, and the next after a pause.
+        let last = if q.submit {
+            find::Session::LEVELS - 1
+        } else {
+            *next
+        };
+        let t = Instant::now();
+        let mut hits = Ok(None);
+        if *next > last {
+            hits = session.hits().map(Some);
+        }
+        for d in *next..=last {
+            hits = session.level(d);
+            if !matches!(hits, Ok(Some(_))) {
+                break;
+            }
+        }
         let find = t.elapsed();
+        let hits = match hits {
+            // Stopped by a newer query, which is waiting.
+            Ok(None) => continue,
+            Ok(Some(h)) => Ok(h),
+            Err(e) => {
+                *next = find::Session::LEVELS;
+                Err(e.to_string())
+            }
+        };
+        let level = last;
+        if hits.is_ok() {
+            *next = (*next).max(last + 1);
+        }
+        *at = Instant::now() + if level == 0 { PAUSE } else { Duration::ZERO };
+        let more = *next < find::Session::LEVELS;
         {
             let mut slot = shared.slot.lock().unwrap();
             slot.stats.heap_bytes = search.heap_bytes();
             slot.stats.bytes_read = search.bytes_read();
+            slot.stats.session_bytes = session.heap_bytes();
+            slot.stats.session_peak = slot.stats.session_peak.max(slot.stats.session_bytes);
         }
-        if tx
-            .send(Answer {
-                query: q,
-                hits,
-                find,
-            })
-            .is_err()
-        {
+        let answer = Answer {
+            query: q.clone(),
+            hits,
+            find,
+            level,
+            more,
+        };
+        if tx.send(answer).is_err() {
             return;
         }
         wake();
@@ -338,8 +431,12 @@ pub struct Taken {
     /// From the query being asked to the answer reaching the UI.
     pub latency: Duration,
     pub find: Duration,
+    pub level: usize,
+    pub more: bool,
     pub hits: usize,
     pub first: Option<Hit>,
+    /// The names of the hits, as shown.
+    pub names: Vec<String>,
 }
 
 /// The queries and answers, without the UI.
@@ -352,6 +449,9 @@ pub struct Session {
     /// The suggestions and the text they are for.
     pub hits: Vec<Hit>,
     pub hits_for: String,
+    /// The search level of the suggestions, and whether deeper ones are still running.
+    pub level: usize,
+    pub more: bool,
     pub error: Option<String>,
     pub results: Option<Results>,
     pub marker: Option<Hit>,
@@ -384,6 +484,7 @@ impl Session {
         self.latest = None;
         self.hits.clear();
         self.hits_for.clear();
+        self.more = false;
         self.error = None;
     }
 
@@ -392,24 +493,40 @@ impl Session {
         self.latest.is_some() && !self.answered
     }
 
+    /// Whether the latest query is still out, or deeper levels of it are running.
+    pub fn searching(&self) -> bool {
+        self.waiting() || self.latest.is_some() && self.more
+    }
+
     /// Takes an answer, unless it is stale. An answer to Enter opens the results panel
-    /// when there is more than one result, and its first result is given to fly to.
-    pub fn take(&mut self, a: Answer) -> Option<Taken> {
+    /// when there is more than one result, and its first result is given to fly to. A
+    /// deeper level's suggestions keep the rows up to `pinned` (highlighted or under the
+    /// pointer) where they are.
+    pub fn take(&mut self, a: Answer, pinned: Option<usize>) -> Option<Taken> {
         if self.latest.as_ref().map(|q| q.id) != Some(a.query.id) {
             self.dropped += 1;
             return None;
         }
+        let deeper = self.answered && !a.query.submit;
         self.answered = true;
-        let (hits, error) = match a.hits {
+        self.more = a.more;
+        self.level = a.level;
+        let (mut hits, error) = match a.hits {
             Ok(h) => (h, None),
             Err(e) => (Vec::new(), Some(e)),
         };
+        if deeper {
+            hits = merge(&self.hits, hits, pinned);
+        }
         let taken = Taken {
             submit: a.query.submit,
             latency: a.query.asked.elapsed(),
             find: a.find,
+            level: a.level,
+            more: a.more,
             hits: hits.len(),
             first: hits.first().cloned(),
+            names: hits.iter().map(|h| h.name.clone()).collect(),
         };
         self.error = error;
         if a.query.submit {
@@ -428,6 +545,23 @@ impl Session {
         self.last = Some((a.query.text, taken.clone()));
         Some(taken)
     }
+}
+
+/// A deeper level's hits, with `old`'s rows up to `pinned` kept first where they were and
+/// the new ones in rank order beneath them.
+fn merge(old: &[Hit], new: Vec<Hit>, pinned: Option<usize>) -> Vec<Hit> {
+    let Some(k) = pinned.filter(|&k| k < old.len()) else {
+        return new;
+    };
+    let n = new.len().max(k + 1);
+    let same = |a: &Hit, b: &Hit| a.kind == b.kind && a.name == b.name && a.p == b.p;
+    let mut out = old[..=k].to_vec();
+    out.extend(
+        new.into_iter()
+            .filter(|h| !old[..=k].iter().any(|o| same(o, h))),
+    );
+    out.truncate(n);
+    out
 }
 
 /// A keystroke from the bench, handled as if typed.
@@ -512,8 +646,9 @@ pub struct SearchUi {
     sent: String,
     /// Escape closed the suggestions; they stay closed until the text changes.
     dismissed: bool,
-    /// The suggestion highlighted with the arrow keys.
+    /// The suggestion highlighted with the arrow keys, and the one under the pointer.
     selected: Option<usize>,
+    hovered: Option<usize>,
     /// Where the suggestions were last drawn, so a click on them keeps the box focused.
     popup_rect: Option<Rect>,
     /// The box had the focus at the end of the last frame.
@@ -544,6 +679,7 @@ impl SearchUi {
             sent: String::new(),
             dismissed: false,
             selected: None,
+            hovered: None,
             popup_rect: None,
             was_focused: false,
             icons: Icons::new(schema),
@@ -603,11 +739,15 @@ impl SearchUi {
         }];
         if let Some((text, t)) = &self.session.last {
             lines.push(format!(
-                "last search \"{text}\"{}: {} hits, find {:.1} ms, shown after {:.1} ms",
+                "last search \"{text}\"{}: level {}{}, {} hits, find {:.1} ms, shown after {:.1} ms; session caches {:.1} MiB (peak {:.1})",
                 if t.submit { " (Enter)" } else { "" },
+                t.level,
+                if t.more { " (deeper running)" } else { "" },
                 t.hits,
                 t.find.as_secs_f64() * 1e3,
-                t.latency.as_secs_f64() * 1e3
+                t.latency.as_secs_f64() * 1e3,
+                mib(s.session_bytes as f64),
+                mib(s.session_peak as f64)
             ));
         }
         lines
@@ -628,7 +768,8 @@ impl SearchUi {
         let answers: Vec<Answer> = self.worker.poll().collect();
         for a in answers {
             let text = a.query.text.clone();
-            if let Some(t) = self.session.take(a) {
+            let pinned = self.selected.max(self.hovered);
+            if let Some(t) = self.session.take(a, pinned) {
                 if t.submit {
                     out.fly = t.first.clone();
                     if t.first.is_some() {
@@ -818,11 +959,17 @@ impl SearchUi {
                 (Status::Opening, _) => Some("Opening search…".to_string()),
                 (_, Some(e)) => Some(format!("Search failed: {e}")),
                 _ if self.session.waiting() => Some("Searching…".into()),
+                _ if self.session.searching() => Some(SEARCHING_MORE.into()),
                 _ => Some("Nothing found".into()),
             }
         } else {
             None
         };
+        // Below the suggestions while deeper levels run.
+        let more = !rows.is_empty()
+            && matches!(rows[0], Row::Hit(_))
+            && self.session.searching()
+            && !self.session.waiting();
         if !rows.is_empty() {
             let n = rows.len();
             if down > 0 || up > 0 {
@@ -857,14 +1004,32 @@ impl SearchUi {
                     panel.show(ui, |ui| {
                         ui.set_width(BOX_WIDTH);
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        if let Some(m) = &message {
-                            ui.label(egui::RichText::new(m).color(WEAK));
+                        let searching = |ui: &mut egui::Ui, text: &str| {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Spinner::new().size(12.0).color(WEAK));
+                                ui.label(egui::RichText::new(text).color(WEAK));
+                            });
+                        };
+                        match &message {
+                            Some(m) if m == SEARCHING_MORE => searching(ui, m),
+                            Some(m) => {
+                                ui.label(egui::RichText::new(m).color(WEAK));
+                            }
+                            None => {}
                         }
+                        self.hovered = None;
                         for (i, row) in rows.iter().enumerate() {
                             let r = self.row(ui, row, cam, units, self.selected == Some(i));
                             if r.clicked() {
                                 chosen = Some(i);
                             }
+                            if r.hovered() {
+                                self.hovered = Some(i);
+                            }
+                        }
+                        if more {
+                            ui.add_space(3.0);
+                            searching(ui, SEARCHING_MORE);
                         }
                     })
                 });
@@ -1174,6 +1339,8 @@ mod tests {
             query: q.clone(),
             hits: Ok(hits),
             find: Duration::from_millis(3),
+            level: 0,
+            more: false,
         }
     }
 
@@ -1184,18 +1351,63 @@ mod tests {
         let b = s.ask("Colu", false, [0.3, 0.4], 8.0);
         assert_eq!(b.limit, SUGGESTIONS);
         assert!(
-            s.take(answer(&a, vec![hit(HitKind::Address, 40.0, -83.0, 10.0)]))
-                .is_none()
+            s.take(
+                answer(&a, vec![hit(HitKind::Address, 40.0, -83.0, 10.0)]),
+                None
+            )
+            .is_none()
         );
         assert_eq!((s.dropped, s.hits.len()), (1, 0));
         assert!(s.waiting());
         let t = s
-            .take(answer(&b, vec![hit(HitKind::Address, 40.0, -83.0, 10.0)]))
+            .take(
+                answer(&b, vec![hit(HitKind::Address, 40.0, -83.0, 10.0)]),
+                None,
+            )
             .unwrap();
         assert!(!t.submit && t.hits == 1 && !s.waiting());
         assert_eq!(s.hits_for, "Colu");
         s.cancel();
         assert!(!s.waiting() && s.hits.is_empty());
+    }
+
+    #[test]
+    fn deeper_levels_keep_the_rows_in_use() {
+        let named = |name: &str, lat: f64| Hit {
+            name: name.into(),
+            ..hit(HitKind::Address, lat, -83.0, 10.0)
+        };
+        let mut s = Session::default();
+        let q = s.ask("12 Main St, Spri", false, [0.3, 0.4], 8.0);
+        let level = |hits: Vec<Hit>, level: usize, more: bool| Answer {
+            level,
+            more,
+            ..answer(&q, hits)
+        };
+        let (a, b, c, d) = (
+            named("a", 40.0),
+            named("b", 41.0),
+            named("c", 42.0),
+            named("d", 43.0),
+        );
+        s.take(level(vec![a.clone(), b.clone()], 0, true), None);
+        assert!(s.searching() && !s.waiting());
+        // Nothing highlighted: the deeper list as it comes.
+        s.take(level(vec![c.clone(), a.clone(), b.clone()], 1, true), None);
+        assert_eq!(s.hits, [c.clone(), a.clone(), b.clone()]);
+        // The second row highlighted: the first two stay, the rest follow in rank order.
+        let t = s
+            .take(
+                level(vec![d.clone(), a.clone(), c.clone(), b.clone()], 2, false),
+                Some(1),
+            )
+            .unwrap();
+        assert_eq!(s.hits, [c, a, d, b]);
+        assert!(t.level == 2 && !t.more && !s.searching());
+        // A new query drops the rest of the old one's levels.
+        let r = s.ask("12 Main St, Sprin", false, [0.3, 0.4], 8.0);
+        assert!(s.take(level(Vec::new(), 3, false), None).is_none());
+        assert!(s.waiting() && r.id == q.id + 1);
     }
 
     #[test]
@@ -1207,16 +1419,19 @@ mod tests {
             hit(HitKind::Entry(Kind::Place), 39.8, -89.6, 8000.0),
             hit(HitKind::Entry(Kind::Place), 37.2, -93.3, 8000.0),
         ];
-        let t = s.take(answer(&q, hits)).unwrap();
+        let t = s.take(answer(&q, hits), None).unwrap();
         assert!(t.submit && t.first.is_some());
         assert_eq!(s.results.as_ref().unwrap().hits.len(), 2);
         assert!(s.marker.is_some() && s.hits.is_empty());
         // One result: no panel.
         let q = s.ask("45201", true, [0.3, 0.4], 8.0);
-        s.take(answer(
-            &q,
-            vec![hit(HitKind::Entry(Kind::Postcode), 39.1, -84.5, 1000.0)],
-        ));
+        s.take(
+            answer(
+                &q,
+                vec![hit(HitKind::Entry(Kind::Postcode), 39.1, -84.5, 1000.0)],
+            ),
+            None,
+        );
         assert!(s.results.is_none());
     }
 

@@ -12,8 +12,10 @@
 //! A step with `search` types it into the search box one character at a time, after the
 //! move: each keystroke waits for its suggestions (or [`SEARCH_TIMEOUT`]) and at least
 //! `keystroke_ms` after the previous one, and its latency is the time from the keystroke to
-//! the frame that shows them. Then it presses Enter, jumps to the first result as picking
-//! it does, and waits for that view to be detailed. With `OMP_BENCH_SHOTS=<dir>`, the window
+//! the frame that shows them (search level 0). After the last keystroke it waits for the
+//! deeper levels (2.7b) and records when each was shown and, with `expect`, when a result
+//! of that name first was. Then it presses Enter, jumps to the first result as picking it
+//! does, and waits for that view to be detailed. With `OMP_BENCH_SHOTS=<dir>`, the window
 //! is saved there as a PNG with the suggestions open and again at the result.
 
 use std::path::{Path, PathBuf};
@@ -73,6 +75,8 @@ pub struct Step {
     pub search: Option<String>,
     /// Least time from one keystroke to the next.
     pub keystroke_ms: Option<f64>,
+    /// Text of the name of the result the search should find.
+    pub expect: Option<String>,
 }
 
 impl Flight {
@@ -138,6 +142,11 @@ struct SearchLog {
     /// The first result's view, to jump to after Enter.
     jump: Option<(Vec2, f64)>,
     pick_detail_ms: Option<f64>,
+    /// After the last keystroke: when each level was shown, whether the last was, and when
+    /// (and at which level) the expected result first was.
+    levels: Vec<f64>,
+    deep_done: bool,
+    expected: Option<(f64, usize)>,
     timed_out: bool,
     /// The pack has no search.
     skipped: bool,
@@ -315,6 +324,14 @@ impl Bench {
             log.awaiting = true;
             return Some(BenchKey::Type(text.chars().take(log.typed).collect()));
         }
+        // The deeper levels of the last keystroke run first.
+        if !log.deep_done {
+            if log.key_at.is_some_and(|t| now - t < SEARCH_TIMEOUT) {
+                return None;
+            }
+            log.timed_out = true;
+            log.deep_done = true;
+        }
         // A screenshot of the suggestions is saved a few frames after it is asked for.
         if self.shots.is_some() && log.key_at.is_some_and(|t| now - t < SHOT_WAIT) {
             return None;
@@ -330,12 +347,25 @@ impl Bench {
         if self.phase != Phase::Type {
             return;
         }
+        let step = &self.flight.steps[self.step];
         let log = &mut self.logs[self.step].search;
-        if !log.awaiting {
+        let last = log.typed == step.search.as_ref().map_or(0, |q| q.chars().count());
+        let latency = ms(t.latency);
+        if !t.submit && last && !log.entered && (t.level == 0) == log.awaiting {
+            log.levels.push(latency);
+            log.deep_done = !t.more;
+            let expect = step.expect.as_deref().map(str::to_lowercase);
+            if let Some(e) = expect
+                && log.expected.is_none()
+                && t.names.iter().any(|n| n.to_lowercase().contains(&e))
+            {
+                log.expected = Some((latency, t.level));
+            }
+        }
+        if !log.awaiting || t.level > 0 && !t.submit {
             return;
         }
         log.awaiting = false;
-        let latency = ms(t.latency);
         if t.submit {
             log.enter_ms = Some(latency);
             log.top = t.first.as_ref().map(|h| match h.context.as_str() {
@@ -346,11 +376,6 @@ impl Bench {
         } else {
             log.latency.push(latency);
             log.find.push(ms(t.find));
-            let last = log.typed
-                == self.flight.steps[self.step]
-                    .search
-                    .as_ref()
-                    .map_or(0, |q| q.chars().count());
             self.keystrokes.push(latency);
             self.first_keystroke_ms.get_or_insert(latency);
             if last {
@@ -542,6 +567,10 @@ impl Bench {
                     enter_ms: l.search.enter_ms,
                     top: l.search.top.clone(),
                     pick_detail_ms: l.search.pick_detail_ms,
+                    levels_ms: l.search.levels.clone(),
+                    expect: s.expect.clone(),
+                    expected_ms: l.search.expected.map(|e| e.0),
+                    expected_level: l.search.expected.map(|e| e.1),
                     timed_out: l.search.timed_out,
                     skipped: l.search.skipped,
                 }),
@@ -708,6 +737,13 @@ pub struct SearchStepReport {
     pub top: Option<String>,
     /// After jumping to the first result, until that view was fully detailed.
     pub pick_detail_ms: Option<f64>,
+    /// From the last keystroke to each search level's suggestions being shown.
+    pub levels_ms: Vec<f64>,
+    /// The step's expected name, and when (and at which level) a suggestion of that name
+    /// was first shown after the last keystroke.
+    pub expect: Option<String>,
+    pub expected_ms: Option<f64>,
+    pub expected_level: Option<usize>,
     pub timed_out: bool,
     /// The pack has no search.
     pub skipped: bool,
@@ -818,12 +854,23 @@ impl Report {
                 s += &match (q.skipped, &q.top) {
                     (true, _) => "    search skipped: the pack has no search\n".to_string(),
                     (false, top) => format!(
-                        "    \"{}\": {} keystrokes, p95 {:.1} / max {:.1} ms (find p95 {:.1}), Enter {} ms → {}{}\n",
+                        "    \"{}\": {} keystrokes, p95 {:.1} / max {:.1} ms (find p95 {:.1}), levels at {} ms{}, Enter {} ms → {}{}\n",
                         q.query,
                         q.keystrokes,
                         q.latency_ms.p95,
                         q.latency_ms.max,
                         q.find_ms.p95,
+                        q.levels_ms
+                            .iter()
+                            .map(|v| format!("{v:.0}"))
+                            .collect::<Vec<_>>()
+                            .join(" / "),
+                        match (&q.expect, q.expected_ms, q.expected_level) {
+                            (Some(_), Some(v), Some(l)) =>
+                                format!(", expected at {v:.0} ms (level {l})"),
+                            (Some(_), _, _) => ", expected not found".into(),
+                            _ => String::new(),
+                        },
                         q.enter_ms.map_or("-".into(), |v| format!("{v:.1}")),
                         top.as_deref().unwrap_or("nothing"),
                         if q.timed_out { " (timed out)" } else { "" },
@@ -925,6 +972,7 @@ mod tests {
             lon = -83.0
             zoom = 8
             search = "Ohi"
+            expect = "ohio"
             keystroke_ms = 0
             "#,
         )
@@ -948,12 +996,15 @@ mod tests {
         b.end_frame(sample(true), &mut cam, &ctx);
         b.end_frame(sample(true), &mut cam, &ctx);
         assert_eq!(b.phase, Phase::Type);
-        let taken = |submit| Taken {
+        let taken = |submit, level, more| Taken {
             submit,
-            latency: Duration::from_millis(12),
+            latency: Duration::from_millis(12 + 100 * level as u64),
             find: Duration::from_millis(9),
+            level,
+            more,
             hits: 1,
             first: None,
+            names: vec!["Ohio".into()],
         };
         let mut typed = Vec::new();
         for _ in 0..3 {
@@ -962,13 +1013,18 @@ mod tests {
             };
             // Nothing more until it is answered.
             assert!(b.search_key(true).is_none());
-            b.search_answer(&taken(false), None);
+            b.search_answer(&taken(false, 0, true), None);
             assert!(b.end_frame(sample(true), &mut cam, &ctx).is_none());
             typed.push(t);
         }
         assert_eq!(typed, ["O", "Oh", "Ohi"]);
+        // Enter waits for the deeper levels of the last keystroke.
+        assert!(b.search_key(true).is_none());
+        b.search_answer(&taken(false, 1, true), None);
+        assert!(b.search_key(true).is_none());
+        b.search_answer(&taken(false, 2, false), None);
         assert_eq!(b.search_key(true), Some(BenchKey::Enter));
-        b.search_answer(&taken(true), Some(([0.25, 0.375], 11.0)));
+        b.search_answer(&taken(true, 3, false), Some(([0.25, 0.375], 11.0)));
         b.end_frame(sample(true), &mut cam, &ctx);
         assert_eq!(
             (cam.center, cam.zoom, b.phase),
@@ -977,7 +1033,9 @@ mod tests {
         b.end_frame(sample(true), &mut cam, &ctx);
         let r = b.end_frame(sample(true), &mut cam, &ctx).unwrap();
         let q = r.steps[0].search.as_ref().unwrap();
-        assert_eq!((q.keystrokes, q.enter_ms), (3, Some(12.0)));
+        assert_eq!((q.keystrokes, q.enter_ms), (3, Some(312.0)));
+        assert_eq!(q.levels_ms, [12.0, 112.0, 212.0]);
+        assert_eq!((q.expected_ms, q.expected_level), (Some(12.0), Some(0)));
         assert!(q.pick_detail_ms.is_some() && !q.skipped);
         let sr = r.search.as_ref().unwrap();
         assert_eq!(

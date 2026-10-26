@@ -41,7 +41,7 @@ The roadmap's items are "search suggestions as you type, ranking by importance a
 | 2.5 Spatial grid and core readers | **Done** 2026-10-26 | Readers in `omp-core` (`search`, `addr`, `street`, `admin`, `grid`); `SGRD` at z14 (North America 7.8 MiB); format 0.4 specifies every search and address section. Ohio and Quebec read and cross-checked by `inspect --readers`; lookups under 1 ms p95 warm. |
 | 2.6 Query parsing, matching and ranking (`omp-core`) | **Done** 2026-10-26 | `omp_core::find` + `query` + `fuzzy` + `here`; `omp-builder search` / `here`. Query set: 1,000 random addresses (Ohio, Quebec, Ontario) and 241 hand-written queries. Ohio / Quebec: addresses 99.4 / 97.3% first, hand-written 98.9 / 98.7% first and 100% top 5, "what's here" 100%; warm p95 17.0 / 15.3 ms. No format change. |
 | 2.7 Search UI | **Done** 2026-10-26 | Search box, suggestions, results panel, fly-to and marker (`app/src/search.rs`); queries on one worker, stale answers dropped. North America rebuilt to format 0.4 (53 min, 49.4 GiB). Bench keystroke latency p95 53 ms Ohio, 89 ms North America, warm; RSS peak 193 / 239 MiB. The on-map credit is now OpenStreetMap's only. |
-| 2.7b Progressive search | Not started | Added 2026-10-26 at the owner's request; design settled the same day (levels share one run). |
+| 2.7b Progressive search | **Done** 2026-10-26 | `find::Session`, 4 levels sharing one run; the worker goes deeper after a 150 ms pause, cancelled by the next keystroke. North America, town cut to 4 letters: 71.3 → **89.3%** first (94.0% in the 8 suggestions), shown within 1.74 s of the pause; level 0 unchanged. Enter after a pause ≤ 8 ms. |
 | 2.8 "What's here" | Not started | |
 | 2.9 Performance, accuracy and hardware checks | Not started | |
 
@@ -329,6 +329,39 @@ The idea: answer at once as now, then, while the user pauses, keep searching dee
 - **Budget.** Level 0 keeps criterion 3 (100 ms p95 per keystroke on the dev machine, 250 ms on the E6430). A deep level may take up to a second or two on the E6430, since it runs only during a pause and is cancelled by the next keystroke. Memory stays within the readers' cache budgets (no larger caches for deep levels).
 
 **Done when:** on North America, typing an address and pausing finds it at some level when the town is typed only partly or the state is left out, in clearly more cases than level 0 alone (measured on the random address sets), within 2 s of the pause on the dev machine. Level 0 latency is unchanged, a keystroke during a deep level is answered as fast as without it, and the list shows when it is still searching.
+
+> **Done 2026-10-26** (the commit that adds `find::Session`).
+> - **Code.** `omp_core::find`: the bounds are a `Bounds` per level (`LEVELS`). `Search::start(&Request) -> Session` holds the parsed query and the `Run`. `Session::level(d)` runs level *d* and returns the best hits of every level run so far, or `None` once `stop_when`'s check says a newer query came; the check runs between readings, every 256 locality entries, every 64 candidates and before each street located. `find` is level 0 of a new session. The CLI, tests and query sets are unchanged: Ohio and Quebec give exactly 2.6's results at level 0. Postings are cached by token, keeping the longest read and slicing it. Localities are cached by words, state and pass, and a read of more entries keeping more serves a smaller one. `name_ids` is keyed by the expansion bound too.
+>   - **Levels.** Level 0 is 2.6's `find`. Level 1 always runs the wider town pass, the pass within edits (every token) and, while typing, the pass without the words after the last comma; that pass's hits lose 20 points there, so a hit that uses the typed words ranks above one that ignores them. Level 2 multiplies the bounds by 4, and level 3 by 16: 300 → 1,200 → 4,800 candidates per region, 800 → 3,200 → 12,800 locality entries, 30 → 120 → 480 towns for an address, 64 → 256 → 1,024 expansions of 3,000 → 12,000 → 48,000 IDs, 30 → 120 → 480 streets to locate a number on. The plan's "every town of the name" at level 2 was not needed: 120 towns, then 480, found what the measurements did. From level 1, 150 entry hits are kept per reading whatever the limit, so a finished session can serve Enter's results panel.
+>   - **Not built:** the cache of scored candidates. Sharing the run already makes the deep levels 2–3 times cheaper than running each alone (below), and memory stays small.
+>   - **App** (`search.rs`). The worker keeps the latest query's session. After answering level 0 it waits `PAUSE` (150 ms); if no query comes, it runs levels 1–3 one at a time, sending each answer (`Answer::level`, `more`). `Worker::ask` bumps an atomic generation that the session's stop check compares, so a deep level gives up within milliseconds of a keystroke. Enter runs the remaining levels at once; when the suggestions' session is for the same text and view, Enter goes on with it, so after a pause it is answered at once. A session's caches are kept until the next query. A deeper answer keeps the rows up to the highlighted one or the one under the pointer where they were, and puts the new ones below them in rank order (`merge`). While deeper levels run, a last row shows a spinner and "Searching smaller towns and more names…" (the only row if nothing is found yet). "Nothing found" now shows only once the last level is done. The F3 overlay shows the last answer's level, whether deeper ones are running, and the session caches (current and peak). A headless test checks the merge and that a new query drops the old one's levels. The UI was not tried by hand (no window automation tool).
+>   - **Builder.** `search --check` takes `--level N` (each query down to level N), `--levels` (address files level by level: first, in 8, "lost" against level 0, time per level, time from the pause to a deeper level's find, session cache peak), `--fresh` (each level alone too) and `--typed state|state:N|nostate|town:N`. Documented in `crates/core/tests/search/README.md`.
+> - **Measured** on North America, dev machine, warm, 300 random addresses (`--sample 300`, kept in `$OMP_WORK/measure/levels27b/` with the logs), typed (last word a prefix), with the whole continent in view. Share of addresses first at their point at level 0 → 1 → 2 → 3, then the share among the 8 suggestions at the deepest level:
+>
+>   | Typed | Level 0 | 1 | 2 | 3 | In 8 at 3 | Found by levels 1–3: shown after the pause, p95 / max | All levels p95 / max |
+>   |---|---:|---:|---:|---:|---:|---:|---:|
+>   | full state | 97.7% | 97.7% | 98.0% | **98.3%** | 98.7% | | 0.69 / 1.23 s |
+>   | state cut to 4 letters | 96.7% | 97.0% | 97.7% | **98.0%** | 98.3% | | 0.73 / 1.36 s |
+>   | no state | 96.0% | 96.0% | 97.3% | **97.3%** | 98.3% | | 1.41 / 2.57 s |
+>   | town cut to 4 letters, no state | 71.3% | 76.0% | 85.7% | **89.3%** | 94.0% | 55 queries: 1.33 / **1.74 s** | 1.73 / 3.17 s |
+>   | town cut to 2 letters, no state | 47.0% | 56.7% | 66.3% | **76.0%** | 89.3% | 90 queries: 1.57 / 2.28 s | 2.03 / 3.08 s |
+>
+>   No address first at level 0 lost first place at a deeper level ("lost" 0 at every level, town cut to 4 and no state). Most addresses still missed with the town cut short have a town that is ambiguous at that point ("West…", "San ", "New ", "Town…"), and only more typing settles those. Levels alone against shared, p50 (full state): level 1 106 vs 44 ms, level 2 212 vs 131 ms, level 3 283 vs 91 ms. The session caches peak at 14.7–24.4 MiB (town cut to 2), freed with the session. With the town cut to 2 letters, 5% of the addresses deeper levels find take more than 1.57 s to show, the slowest 2.28 s, a little past the 2 s of "Done when".
+> - **Query sets at the deepest level** (`--prefix --level 3`), Ohio / Quebec / Ontario: hand-written 98.9 / 98.7 / 98.6% first, addresses 99.4 / 97.3 / 95.8% first. Both are exactly 2.6's rates, so the deeper levels do not reorder what level 0 gets right. Time with every level: p95 81 / 101 / 93 ms, max 473 ms.
+> - **Bench** (`$OMP_WORK/measure/levels27b/bench-*.json`). After the last keystroke the bench waits for the deeper levels and records when each was shown (`levels_ms`) and, for a step with `expect`, when that name first showed (`expected_ms`, `expected_level`). North America gains a step with the town cut short ("8723 River Road, Amar"; with the bench's view it is found at level 0).
+>
+>   | | Ohio | North America |
+>   |---|---:|---:|
+>   | Keystrokes (level 0): p50 / p95 / max (ms) | 9.4 / **49.2** / 72 | 28.8 / **90.8** / 167 |
+>   | Last level shown after the last keystroke (ms) | 152–404 | 180–1,728 |
+>   | Enter after the pause: max (ms) | 7.7 | 8.2 |
+>   | RSS peak (MiB) | 186 | 237 |
+>   | Idle CPU after the flight | 0.30% | 0.40% |
+>
+>   Keystroke latency is as in 2.7 (53.3 / 89.5 ms p95); the new North America step's slowest keystroke is the 167 ms max. Keystrokes typed 150 ms apart now often land while a deep level runs, so this also shows a keystroke during a deep level is answered as fast. Enter was 114 ms max in 2.7.
+> - **Left open, for 2.9:**
+>   - Level 0 with the town cut short is slower than the bench suggests: keystroke p95 171 ms (town cut to 4) and 174 ms (cut to 2) in `--levels`, over the 100 ms target; with the full state, 103 ms. That is 2.6's `find` with a partly typed town expanding to many towns, and the E6430 run will show how much it matters.
+>   - The deep levels on the E6430: they may take 3–4 times as long, and a level-3 time of 2.3 s here would be about 7 s there. If so, the level 3 bounds come down (it adds 3.6 points of the 18 gained with the town cut to 4).
 
 ## 2.8 "What's here"
 
