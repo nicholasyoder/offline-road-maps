@@ -133,6 +133,29 @@ The street table (`SSTR`) and street geometry simplified to 2 m (`SGEO`), 32 KiB
 
 Block size hardly matters: at 16 KiB blocks North America is 95.6 + 241.5 MiB, at 64 KiB 87.4 + 240.3. The geometry is 241 MiB, below the 250–500 MiB guessed in the plan. The street names in `SSTR` overlap with the search entries of step 2.3, so part of phase 0's 253 MiB for search is now counted here. The North America total moves from about 9,984 to **about 10,316 MiB**. `omp-builder streets` takes 6.4 min and 20 GiB on North America (3 min to read the ways, 39 s to build the table).
 
+### Phase 2 step 2.3: search
+
+The search sections (`SENT` in 16 KiB blocks, `STWN`, `SFST`, `SPST`), from `build` with `--postcodes` from `addr-spike` (`$OMP_WORK/measure/search/`). Streets as in step 2.2 (no address splits in `build` yet).
+
+| | Ohio | Quebec | North America |
+|---|---:|---:|---:|
+| Entries | 291,697 | 441,140 | 12.55M |
+| — streets / POIs / places / admin areas | 253,216 / 22,177 / 6,744 / 1,451 | 136,176 / 19,313 / 6,739 / 469 | 10.02M / 811,485 / 333,846 / 21,327 |
+| — postcodes / map labels | 1,197 / 6,912 | 221,296 / 57,147 | 895,164 / 470,719 |
+| Places that stand for an admin area | 956 | 1,080 | 33,610 |
+| Tokens / postings | 50,836 / 0.75M | 262,159 / 0.82M | 1.49M / 21.7M |
+| `SENT` (MiB) | 4.23 | 4.83 | 173.85 |
+| — without street names (also in `SSTR`) | 2.62 | 3.88 | 110.28 |
+| `STWN` / `SFST` / `SPST` (MiB) | 0.01 / 0.33 / 1.23 | 0.01 / 0.45 / 2.25 | 0.19 / 4.72 / 41.70 |
+| **Search total (MiB)** | **5.8** | **7.5** | **220.5** |
+| Bytes per entry | 20.8 | 17.9 | 18.4 |
+
+- **Street names** are stored in both `SENT` and `SSTR`: 63.6 MiB of `SENT` in North America. Keeping them only in `SSTR` would mean reading a street block for each street candidate shown or checked; left for step 2.6 to decide with the reader in hand.
+- **Generic tokens** (`STOP_MIN` = 100,000 entries): 19 are left out of postings in North America, from "road" (1,813,876 entries, 4,609 kept because all their tokens are generic) to "southeast" (105,399). Ohio's and Quebec's longest lists ("road" 53,016, "rue" 74,803) are under the threshold. Spanish street words are not in the generic list, so "calle" (751,618 entries) and "privada" (142,685) keep full lists.
+- **Postcodes per address** (`addr-spike`, summed over the 66 subdivisions; streets near a border count in both): 133.4M of 151.5M merged addresses have a postcode; 45,242 five-digit and 859,377 Canadian codes. The street's commonest postcode is right for 93.5% of attached addresses (US 97.5%, Canada 57.1%, where codes are per block face). Stored one per street with exceptions: 0.75 (code table) + 2.27 + 4.53 MiB (7.8M exceptions) = **7.6 MiB**; one per address: 0.75 + 8.13 = 8.9 MiB.
+
+The phase 0 estimate for search was 253 MiB, so the North America total moves from about 10,316 to **about 10,284 MiB**; the pack as built (tiles, admin, streets, search; no addresses or routing yet) is 6,780 MiB in 2 chunks. `build` on North America took 34.2 min at 47.2 GiB peak (step 1.5c: 24.3 min, 43.1 GiB). Of the 10 extra minutes, the street table (step 2.2, first built on North America by `build` here) takes 4 and search 1.4 (1 of them the pass for alternative names); the rest is slower band reads (about 7 min each), not looked into. The 4 GiB more at peak are presumably the street entries, held through the bands (not measured apart). Both stay under the 56 GB cap. `addr-spike --each` took 28.5 min at 39.0 GiB.
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

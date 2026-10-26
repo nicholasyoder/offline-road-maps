@@ -10,6 +10,10 @@
 //! of admin areas; for now only the coverage is reported. Then the street table (`SSTR`,
 //! `SGEO`), split at admin 8 boundaries and the length cap: postal towns need the addresses,
 //! which `build` does not read yet (step 2.4).
+//!
+//! Search (`SENT`, `STWN`, `SFST`, `SPST`) takes its streets from the table before it is
+//! dropped, its places, POIs and labels from the bands, and its postcodes from the
+//! `postcodes.tsv` files `addr-spike` writes (`--postcodes`), until step 2.4.
 
 pub mod inspect;
 
@@ -39,6 +43,7 @@ use crate::measure::peak_rss_mib;
 use crate::measure::poly::Poly;
 use crate::measure::tiles::{self, Band, Entry, Store};
 use crate::measure::water;
+use crate::search::{self, encode as search_encode};
 use crate::street::{self, encode as street_encode};
 
 /// Tiles compressed in parallel before they are written in order.
@@ -82,6 +87,15 @@ pub struct BuildArgs {
     /// --sources poly`), to split the route coverage report by [default: <work dir>/inputs/poly].
     #[arg(long)]
     route_regions: Option<PathBuf>,
+
+    /// Postcode points from `addr-spike` (`postcodes.tsv` files, or directories holding them
+    /// one level down, as `--each` writes them); none if not given.
+    #[arg(long)]
+    postcodes: Vec<PathBuf>,
+
+    /// Uncompressed KiB per `SENT` block; the first is written, the others only measured.
+    #[arg(long, hide = true, value_delimiter = ',', default_value = "16")]
+    search_block_kib: Vec<usize>,
 
     /// Directory for the temporary tile store [default: <work dir>/tmp].
     #[arg(long)]
@@ -299,14 +313,18 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let admin = admin::load(&args.input)?;
     let mut chains = ChainStats::default();
     log_stage("admin", &mut t);
+    let postcodes = crate::addr::postcodes::read(&args.postcodes)?;
+    let mut search = search::Builder::new();
     let street_sections = {
         let ways = read_streets(&args.input)?;
         let table = street::Table::build(&ways, &admin, &[], &[]);
         drop(ways);
         street::print_stats(&table.stats);
+        search.add_streets(&table, &admin);
         street_encode::sections(&table, street_encode::BLOCK)?
     };
     log_stage("streets", &mut t);
+    let mut collected = search::Collector::new(&wl);
     let store_path = temp.join(format!("{file_name}-build.v2"));
     let mut store = Store::create(&store_path)?;
     let mut cut = tiles::Stats::default();
@@ -343,6 +361,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
             log_stage("water", &mut t);
         }
         chains.add(&data.features, &wl, &admin);
+        collected.add(&data.features);
         cut.merge(tiles::cut_pyramid(
             &data.features,
             &wl,
@@ -353,6 +372,19 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         drop(data);
         log_stage("tiles", &mut t);
     }
+    let index = search.finish(&admin, &wl, collected, &args.input, &postcodes)?;
+    search::print_stats(&index.stats);
+    let block_kib = args
+        .search_block_kib
+        .first()
+        .map_or(search_encode::BLOCK, |k| k << 10);
+    let (search_sections, search_sizes) = search_encode::sections(&index, block_kib)?;
+    print_search_sizes(&search_sizes);
+    for &kib in args.search_block_kib.iter().skip(1) {
+        print_search_sizes(&search_encode::sections(&index, kib << 10)?.1);
+    }
+    drop(index);
+    log_stage("search", &mut t);
     let (mut entries, store_bytes) = store.finish()?;
     let store_file =
         File::open(&store_path).with_context(|| format!("open {}", store_path.display()))?;
@@ -369,6 +401,9 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     settings.insert("admin_tolerance_m".into(), admin::PACK_TOLERANCE_M.into());
     settings.insert("street_tolerance_m".into(), street::SIMPLIFY_M.into());
     settings.insert("street_max_m".into(), street::STREET_MAX_M.into());
+    settings.insert("search_stop_min".into(), search::STOP_MIN.into());
+    settings.insert("search_block_kib".into(), (block_kib >> 10).into());
+    settings.insert("postcodes".into(), postcodes.len().into());
     settings.insert("input".into(), file_label(&args.input).into());
     if let Some(z) = &water_zip {
         settings.insert("water".into(), file_label(z).into());
@@ -457,6 +492,17 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     sections.push(w.section(street_encode::SSTR, &sstr)?);
     sections.push(w.section(street_encode::SGEO, &sgeo)?);
     drop((sstr, sgeo));
+    let search_encode::Sections {
+        sent,
+        stwn,
+        sfst,
+        spst,
+    } = search_sections;
+    sections.push(w.section(search_encode::SENT, &sent)?);
+    sections.push(w.section(search_encode::STWN, &stwn)?);
+    sections.push(w.section(search_encode::SFST, &sfst)?);
+    sections.push(w.section(search_encode::SPST, &spst)?);
+    drop((sent, stwn, sfst, spst));
     drop(admin);
     drop(store_file);
     let _ = std::fs::remove_file(&store_path);
@@ -527,6 +573,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     );
     chains.print();
     street::print_sizes(&street_sizes);
+    print_search_sizes(&search_sizes);
     eprintln!(
         "wrote {} in {} chunk(s), {:.1} MiB (tiles {} B, TIDX {} B, TDIC {} dictionaries); \
          {:.0} s, peak RSS {:.0} MiB, temp store {:.1} MiB",
@@ -726,6 +773,30 @@ fn print_routes(r: &osm::RouteStats) {
         "    {} networks; ways per network: {}",
         nets.len(),
         top.join(", ")
+    );
+}
+
+fn print_search_sizes(s: &search_encode::Sizes) {
+    let kinds: Vec<String> = s
+        .raw_by_kind
+        .iter()
+        .map(|(k, b)| format!("{k:?} {:.2}", mib(*b)))
+        .collect();
+    eprintln!(
+        "  search: {} KiB blocks: SENT {:.2} MiB ({:.2} raw: {}; street names {:.2}; {} \
+         blocks), {:.2} MiB without street names; STWN {:.2} MiB, SFST {:.2} MiB, SPST {:.2} \
+         MiB; {:.1} bytes per entry in all",
+        s.block_kib,
+        mib(s.sent),
+        mib(s.sent_raw),
+        kinds.join(", "),
+        mib(s.street_names_raw),
+        s.sent_blocks,
+        mib(s.sent_without_street_names),
+        mib(s.stwn),
+        mib(s.sfst),
+        mib(s.spst),
+        (s.sent + s.stwn + s.sfst + s.spst) as f64 / s.entries.max(1) as f64
     );
 }
 

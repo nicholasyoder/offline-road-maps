@@ -8,6 +8,7 @@ mod build;
 mod fetch;
 mod measure;
 mod report;
+mod search;
 mod street;
 
 /// Builds offline map packs from OSM and address sources.

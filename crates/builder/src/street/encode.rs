@@ -29,7 +29,7 @@ pub struct Sizes {
     pub sgeo_blocks: u64,
 }
 
-fn put_str(out: &mut Vec<u8>, s: &str) {
+pub fn put_str(out: &mut Vec<u8>, s: &str) {
     put(out, s.len() as u64);
     out.extend_from_slice(s.as_bytes());
 }
@@ -79,7 +79,7 @@ fn geometry(s: &Street, cur: &mut [i32; 2], out: &mut Vec<u8>) {
 
 /// `count:u32 nblocks:u32 (first:u32 offset:u32 length:u32)* block*`, offsets from the
 /// section's start.
-fn blocked(count: usize, blocks: Blocks) -> Result<(Vec<u8>, u64)> {
+pub fn blocked(count: usize, blocks: Blocks) -> Result<(Vec<u8>, u64)> {
     let frames: Vec<(u32, Vec<u8>)> = blocks
         .into_par_iter()
         .map(|(f, b)| Ok((f, zstd::bulk::compress(&b, LEVEL)?)))
@@ -159,20 +159,20 @@ pub struct Record {
     pub refs: Vec<String>,
 }
 
-fn invalid(msg: &str) -> io::Error {
+pub fn invalid(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
-fn string(r: &mut Reader) -> io::Result<String> {
+pub fn string(r: &mut Reader) -> io::Result<String> {
     let n = r.count()?;
     String::from_utf8(r.bytes(n)?.to_vec()).map_err(|_| invalid("bad UTF-8"))
 }
 
 /// Blocks with their first street.
-type Blocks = Vec<(u32, Vec<u8>)>;
+pub type Blocks = Vec<(u32, Vec<u8>)>;
 
 /// The street count and decompressed blocks of a blocked section.
-fn read_blocks(section: &[u8]) -> io::Result<(usize, Blocks)> {
+pub fn read_blocks(section: &[u8]) -> io::Result<(usize, Blocks)> {
     let u32_at = |i: usize| -> io::Result<u32> {
         section
             .get(i..i + 4)

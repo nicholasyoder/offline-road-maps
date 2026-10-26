@@ -148,6 +148,7 @@ struct Tagged {
     street: String,
     unit: String,
     city: String,
+    postcode: String,
 }
 
 fn tagged(tags: &[(&str, &str)], stats: &mut OsmStats) -> Option<Tagged> {
@@ -168,6 +169,10 @@ fn tagged(tags: &[(&str, &str)], stats: &mut OsmStats) -> Option<Tagged> {
         street: street.to_owned(),
         unit: get(tags, "addr:unit").unwrap_or_default().to_owned(),
         city: get(tags, "addr:city").unwrap_or_default().trim().to_owned(),
+        postcode: get(tags, "addr:postcode")
+            .unwrap_or_default()
+            .trim()
+            .to_owned(),
     })
 }
 
@@ -189,6 +194,7 @@ fn push_raws(t: Tagged, p: P, out: &mut Vec<Raw>, stats: &mut OsmStats) {
             street: t.street.clone(),
             unit: t.unit.clone(),
             city: t.city.clone(),
+            postcode: t.postcode.clone(),
             p,
         });
     }

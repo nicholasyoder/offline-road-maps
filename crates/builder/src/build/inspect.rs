@@ -32,6 +32,11 @@ pub struct InspectArgs {
     /// `labels/8`), one per line with its tile and position.
     #[arg(long)]
     features: Option<String>,
+
+    /// Summarize the search sections and list the entries each search token of these words
+    /// is posted to (all of them, so `""` gives the summary only).
+    #[arg(long)]
+    search: Option<String>,
 }
 
 #[derive(Args)]
@@ -42,6 +47,71 @@ pub struct VerifyArgs {
 
 fn mib(b: u64) -> f64 {
     b as f64 / (1u64 << 20) as f64
+}
+
+/// `inspect --search`: entry counts, then the entries posted to each token of `query`.
+fn search(pack: &Pack, schema: Option<&Schema>, query: &str) -> Result<()> {
+    use crate::search::Kind;
+    use crate::search::encode::{SENT, SFST, SPST, STWN, decode_entries, decode_towns, lookup};
+    let read = |id: [u8; 4]| -> Result<Vec<u8>> {
+        let s = pack
+            .section(id)
+            .with_context(|| format!("no {} section", String::from_utf8_lossy(&id)))?;
+        Ok(pack.read_section(s)?)
+    };
+    let entries = decode_entries(&read(SENT)?)?;
+    let towns = decode_towns(&read(STWN)?)?;
+    let (sfst, spst) = (read(SFST)?, read(SPST)?);
+    let mut kinds: BTreeMap<Kind, u64> = BTreeMap::new();
+    for e in &entries {
+        *kinds.entry(e.kind).or_default() += 1;
+    }
+    let tokens = fst::Map::new(&sfst[..])?.len();
+    println!(
+        "\nsearch   {} entries ({kinds:?}), {} towns, {tokens} tokens",
+        entries.len(),
+        towns.len()
+    );
+    let layer_class = |layer: &str, class: u16| {
+        schema
+            .and_then(|s| s.layers.iter().find(|l| l.name == layer))
+            .and_then(|l| l.classes.get(class as usize))
+            .map_or_else(|| class.to_string(), |c| c.name.clone())
+    };
+    for token in omp_core::normalize::search_tokens(query) {
+        let Some((ids, total)) = lookup(&sfst, &spst, &token)? else {
+            println!("  {token}: not indexed");
+            continue;
+        };
+        println!("  {token}: {} posted of {total}", ids.len());
+        for &id in ids.iter().take(20) {
+            let e = &entries[id as usize];
+            let class = match e.kind {
+                Kind::Admin => format!("level {}", e.class),
+                Kind::Place => layer_class("places", e.class),
+                Kind::Street => crate::addr::osm::HIGHWAYS
+                    .get(e.class as usize)
+                    .map_or_else(|| "other".into(), |h| (*h).to_owned()),
+                Kind::Poi => layer_class("pois", e.class),
+                Kind::Postcode => ["numeric", "canadian"][usize::from(e.class.min(1))].into(),
+                Kind::Feature => layer_class("labels", e.class),
+            };
+            let (lat, lon) = crate::measure::geom::unproject(e.p);
+            let town = match e.town {
+                0 => String::new(),
+                t => format!(", {}", towns[t as usize - 1]),
+            };
+            let alts = match e.alts.is_empty() {
+                true => String::new(),
+                false => format!(" (also {})", e.alts.join("; ")),
+            };
+            println!(
+                "    {id:>8} {:?}/{class} {}{town}{alts} at {lat:.5},{lon:.5}, importance {}, admin {:?}, ref {}",
+                e.kind, e.name, e.importance, e.admin, e.reference
+            );
+        }
+    }
+    Ok(())
 }
 
 fn time(secs: i64) -> String {
@@ -126,6 +196,10 @@ pub fn inspect(args: InspectArgs) -> Result<()> {
             .and_then(|s| s.layers.get(id as usize))
             .map_or_else(|| format!("layer {id}"), |l| l.name.clone())
     };
+
+    if let Some(q) = &args.search {
+        search(&pack, schema.as_ref(), q)?;
+    }
 
     let tiles = TileReader::open(pack)?;
     println!("\nzoom      tiles");

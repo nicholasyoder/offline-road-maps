@@ -36,7 +36,7 @@ The roadmap's items are "search suggestions as you type, ranking by importance a
 |---|---|---|
 | 2.1 Admin hierarchy in the builder | **Done** 2026-10-25 | `SADM` + `SAPL` in `build`; North America 54,937 areas, 14.3 MiB. Postal town for 70.5% of streets; fallback order changed (decision 4, revised and approved). |
 | 2.2 Street table and street geometry | **Done** 2026-10-25 | `SSTR` + `SGEO` in `build`; North America 10.0M streets, 332 MiB (geometry 241 MiB). 99.6% of sampled addresses within 5 m of the spike's point (the rest are addresses far from a curving street). |
-| 2.3 Search entries and index | Not started | |
+| 2.3 Search entries and index | **Done** 2026-10-25 | `SENT` + `STWN` + `SFST` + `SPST` in `build`; North America 12.55M entries, 220.5 MiB. Postcodes per street with exceptions: 7.6 MiB, so they will be shown (decision 5); stored in 2.4. |
 | 2.4 Address store in `build` | Not started | |
 | 2.5 Spatial grid and core readers | Not started | |
 | 2.6 Query parsing, matching and ranking (`omp-core`) | Not started | |
@@ -147,6 +147,20 @@ Build the search index for places, admin areas, streets, POIs and postcodes.
 
 **Done when:** Ohio, Quebec and North America packs have search sections, their sizes per part are in the size table, and the per-street postcode cost is measured and decided.
 
+> **Done 2026-10-25** (the commit that adds `crates/builder/src/search/`).
+> - **Code.** `search/mod.rs` builds the entries: one per street record (at its middle, with its town, alternate names and refs), admin area, place, POI, `labels` feature (lakes, rivers, parks; so "Lac Saint-Jean" is found) and postcode. A place node inside an admin area of a matching level with the same name key stands for it (one entry, referring to the area). Alternative names and `brand` come from one more PBF pass over the features' IDs (1 min on North America). POIs, minor places and postcodes get their town from the decision 4 fallbacks. Importance is one byte per kind (`*_importance`). Entry IDs run by importance bucket, then Morton order, so postings in ID order list the important candidates first. `search/encode.rs` writes and decodes the four sections ([format.md](format.md#search--provisional), *provisional*). Tokens are `omp_core::normalize::search_tokens` (the street key's words, so "Mt"/"Mount", "OH 161"/"State Route 161" agree; possessives joined, French elisions split), shared with the query side; `normalize::postcode` parses US and Canadian codes. `inspect --search "<words>"` lists the entries posted to each token. Unit tests cover the ID order, the round trip through all four sections, generic-token stopping and importance.
+> - **Postcodes.** `build` has no addresses until 2.4, so `addr-spike` now reads OpenAddresses `postcode`, NAR `MAIL_POSTAL_CODE`, ODA `postal_code` and OSM `addr:postcode`, gives each merged address the postcode of any record in its cluster, and writes `<samples>/postcodes.tsv` (median point, radius holding 90% of addresses), which `build --postcodes` reads, merging codes that cross a state line and dropping rows over 50 km from the largest. Step 2.4 moves this into `build`.
+> - **Sizes** ([size-table.md](size-table.md#phase-2-step-23-search)): Ohio 5.8 MiB, Quebec 7.5 MiB, North America **220.5 MiB** (`SENT` 173.9, `STWN` 0.2, `SFST` 4.7, `SPST` 41.7; 18.4 bytes per entry), against phase 0's estimate of 253. The `fst` is 4.7 MiB, as phase 0 found, and stays in RAM (decision 1). 63.6 MiB of `SENT` are street names also in `SSTR`.
+> - **Long postings lists:** "road" 1.81M entries, "street" 1.59M, "drive" 1.23M, "avenue" 0.92M, "calle" 0.75M. Generic tokens (street types, directions, articles) in more than 100,000 entries are left out of postings except for the entries made only of such tokens ("Avenue Road"): 19 tokens in North America, none in Ohio or Quebec.
+> - **Per-street postcode cost, decided** (decision 5): the street's commonest postcode is right for 93.5% of attached addresses (US 97.5%, Canada 57.1%). One per street with exceptions is 7.6 MiB for North America, one per address 8.9 MiB; both are small, so postcodes are shown with addresses and in "what's here", stored per street with exceptions in the address sections (step 2.4).
+> - **Build cost:** North America `build` 34.2 min at 47.2 GiB peak (was 24.3 min, 43.1 GiB without the street table and search), `addr-spike --each` 28.5 min at 39.0 GiB; Ohio 24 s, Quebec 61 s. `verify` passes on all three packs.
+> - **Left open:**
+>   - Street names are in both `SENT` and `SSTR` (63.6 MiB); whether street entries should drop theirs is for 2.6, with the reader.
+>   - Spanish street words ("calle", "privada", "avenida") are not generic, so Mexico's "calle" keeps a 0.75M list (decision 3 keeps Spanish out of scope; revisit in 2.6 if it is slow).
+>   - The admin 8 name is not posted as an alias of streets (decision 4); entries carry their admin area, so 2.6 filters "Liberty Township" through the chain instead.
+>   - Streets are still split by area only in `build`, and their entries are often several per road (carriageways, town splits: "Wilmington Expressway" is 7); grouping them in results is for 2.6.
+>   - Waterway lines (rivers drawn as lines) are not entries; only named water and park areas from the `labels` layer are.
+
 ## 2.4 Address store in `build`
 
 Move the address merge from `addr-spike` into `build`, writing the A3 sections keyed to the street table from 2.2.
@@ -154,6 +168,7 @@ Move the address merge from `addr-spike` into `build`, writing the A3 sections k
 - **Pipeline:** the same sources and rules as phase 0 (OSM, OpenAddresses, NAR building and blockface points, TIGER ranges; attach within 200 m, dedup at 250 m, OSM wins; decisions 9–13), run per state and province as `--each` does, after the tile bands so their memory is free. `--exclude-license` stays.
 - **Better attach.** 11% of North America's addresses matched no street (103 MiB in `ALSE`, a third of the address bytes). Phase 0 found the causes: streets missing from OSM, spelling differences (Dixon/Dixion), and prefixes like "Oro-Medonte Line 4". Add fuzzy matching (edit distance 1 on a token of 5+ letters, only when there is one candidate within the distance), and matching through the postal city alias. Measure the attach rate and the false matches on the phase 0 samples.
 - **Format changes for random access:** `ALSE` is split into blocks by spatial cell (for "what's here") with names per block, and `ASUF` and `AUNI` into blocks aligned with `ASTR` blocks, as format.md already allows. Check whether 4 KiB `ASTR` blocks are worth their 3.6% for faster cold lookups on USB.
+- **Postcodes** (from 2.3): compute the postcode points in `build` instead of reading `addr-spike`'s `postcodes.tsv`, and store one postcode per street with exceptions (7.6 MiB for North America, decision 5) in the address sections.
 - **Unattached addresses in search:** an `ALSE` point has its own street name. Index those names too, so a street missing from OSM can still be found by its addresses.
 - **Attribution:** the pack's `META` lists every address source used, with its license and attribution text, from the fetch manifest (roadmap §3 and §8). The app's About window (phase 1 step 1.9) shows them.
 - **Build cost:** record wall time and peak RSS for Ohio, Quebec and North America. Phase 0's `addr-spike --each` took 18.7 min and 30.8 GB, and `build` peaks at 43 GB, so they must run one after another.
@@ -244,6 +259,7 @@ Settled by the owner (2026-10-25):
 4. **The town shown is the postal town** (2.1), taken per street from its addresses (NAR, OpenAddresses, OSM `addr:city`). Where the data has none: the admin 8 name when it is a city, town or village, otherwise the nearest place node's name. Admin names are search aliases. This is the town shown in search results and "what's here".
    - *Revised in 2.1 from measurement, approved by the owner (2026-10-25):* where the data has none, the postal town of the neighbouring streets in the same municipality or township comes first, then the admin 8 town, then neighbours anywhere, then the nearest city, town or village, then any place node. On streets whose postal town is known, this order names it 93.8% of the time in North America, the original order 59.4% (see 2.1's Done note).
 5. **Postcodes** (2.3): searchable, as a point at the centroid of their addresses. They are shown with addresses only if storing one per street turns out small.
+   - *Measured in 2.3:* one per street with exceptions costs 7.6 MiB for North America (one per address 8.9 MiB), so they are shown; stored per street with exceptions in step 2.4.
 6. **Alternative names** (2.3): `name:en`, `name:fr`, `alt_name`, `short_name`, `official_name`, `old_name` and `brand` are searchable; only `name` is displayed.
 7. **No search-only POIs.** Search covers the POIs that are on the map. A larger POI set is left for later, once the final pack sizes are known, and would be added to the map and search together ([roadmap](roadmap.md#later-or-optional)).
 8. **"What's here" on right-click** (2.8), so left click stays for panning.

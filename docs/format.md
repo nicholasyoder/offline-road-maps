@@ -15,7 +15,7 @@ Status of each part:
 | Routing (`RCH*`) | *Provisional*, finalized in Phase 3. |
 | Admin areas (`SADM`, `SAPL`) | *Provisional* (phase 2 step 2.1). Written by `build`; finalized with the search sections in step 2.5. |
 | Streets (`SSTR`, `SGEO`) | *Provisional* (phase 2 step 2.2). Written by `build`; finalized with the search sections in step 2.5. |
-| Search (`SFST`, `SPST`, `SENT`) | *Provisional*, finalized in Phase 2. |
+| Search (`SENT`, `STWN`, `SFST`, `SPST`) | *Provisional* (phase 2 step 2.3). Written by `build`; finalized with the readers in step 2.5. |
 | Label data in tiles (`labels` layer, `routes` prop) | **Specified** (phase 1 step 1.3, whitelist v2). |
 | Style (`STYL`) | **Not used:** the style lives in the app (phase 1 decision 8). |
 
@@ -377,12 +377,57 @@ street = nparts:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
 
 ## Search — *provisional*
 
-Phase 2. The phase 0 spike measured an `fst` of normalized tokens, postings lists, and an entries table (at most 253 MiB for North America):
-- `SFST`: an `fst` map from token to postings offset.
-- `SPST`: postings lists (delta-coded entry IDs).
-- `SENT`: entries: places, streets (referring to the [street table](#streets--provisional)), POIs, each with a name, kind, position and admin context.
+The search index (phase 2 step 2.3), finalized with the readers in step 2.5. Four sections: the entries (`SENT`), the towns shown with them (`STWN`), an `fst` from token to postings (`SFST`) and the postings (`SPST`). The app holds `SFST`, `STWN` and the block indexes in RAM and reads entries and postings with positioned reads (phase 2 decision 1). Sizes are in the [size table](size-table.md#phase-2-step-23-search).
 
-Ranking data is open; the admin hierarchy is in [`SADM` and `SAPL`](#admin-areas--provisional).
+**Tokens.** A name's tokens are `omp_core::normalize::search_tokens`: case and accents folded, abbreviations expanded ("St" → "street" or "saint" by position, "Mt" → "mount", "N" → "north"), French directions in English, ordinals as numbers ("21st" → "21"), route designators shortened ("State Route 161" and "OH 161" → "sr 161"), possessives joined ("Tim's" → "tims") and French elisions split ("l'Église" → "l eglise"). Each entry is posted under the tokens of its name and of each alternative name. A postcode has one token, its display form folded without the space ("K7L 3N6" → `k7l3n6`). The query side uses the same functions.
+
+### `SENT`: entries (contiguous)
+
+zstd blocks (level 19) of consecutive entries, about 16 KiB uncompressed each, in the same layout as the [street sections](#streets--provisional):
+
+```
+section = count:u32  nblocks:u32  (first_entry:u32  offset:u32  length:u32)*  block*
+block   = entry*
+entry   = (class << 3 | kind):varint  importance:u8  name:str  dx:zvarint  dy:zvarint
+          admin:varint  town:varint  ref:varint  nalt:varint  alt:str*
+```
+
+- **Entry IDs** are positions in this section. Entries are ordered by importance bucket (`importance >> 4`, highest first), then along a Morton curve of their point. So a postings list, which is in ID order, lists the most important candidates first, and nearby entries of one bucket share blocks.
+- `kind` and `class`, and what `ref` means for each:
+
+  | `kind` | Entry | `class` | `ref` |
+  |---:|---|---|---|
+  | 0 | Admin area that no place node stands for | admin level | admin ID |
+  | 1 | Place (`places` layer node) | class in the `places` layer (`SCHM`) | admin ID + 1 of the area it stands for, or 0 |
+  | 2 | Street | road class, as in `SSTR` flags | street ID |
+  | 3 | POI (`pois` layer) | class in the `pois` layer | 0 |
+  | 4 | Postcode | 0 five digits (US, Mexico), 1 Canadian | metres from the point holding 90% of its addresses |
+  | 5 | Map label (`labels` layer: lakes, rivers, parks, protected areas, forests) | class in the `labels` layer | 0 |
+
+  A place node and an admin area are one entry when the node lies in an area of a matching level (country 2; state 3–4; city, town, village, hamlet 5–8; suburb, neighbourhood, locality 7–10) whose name has the same key: the place entry refers to the area, and the area has no entry of its own.
+- `importance` (0–255) ranks entries before distance is known: places by class and population, admin areas by level, streets by road class and length, POIs by class, labels by the zoom they first show at, postcodes at 110. The builder's `search::*_importance` functions are the reference; step 2.6 tunes them.
+- `name` is the name shown, as on the map (decision 6). For a postcode it is the display form ("45201", "K7L 3N6").
+- `dx`, `dy`: the entry's point in units of 2⁶ world units, as deltas from a cursor that starts at (0, 0) in each block: a street's middle (half its length along its parts), a place or POI node (an area POI's centroid), a label's polylabel point, an admin area's label point, a postcode's median address.
+- `admin`: the admin ID + 1 of the deepest area holding the point, or 0; for an admin area or a place that stands for one, that area's parent. Its parents give the rest of the chain.
+- `town`: the index + 1 into `STWN` of the town shown with the entry (decision 4), or 0. A street's is its `SSTR` town; POIs, places smaller than a village and postcodes take theirs from the decision 4 fallbacks; admin areas, larger places and labels have none.
+- `alt`: searchable names that are not shown, sorted: `name:en`, `name:fr`, `alt_name`, `short_name`, `official_name`, `old_name` (decision 6), `brand` for POIs, a street's `SSTR` alternate names and refs. Names whose tokens are the name's are left out.
+
+### `STWN`: towns (contiguous)
+
+One zstd frame: `count:varint  town:str*`, sorted by bytes.
+
+### `SFST`: token index (contiguous)
+
+An [`fst`](https://docs.rs/fst) map (the crate's own byte format, version 3) from each token to the offset of its postings list in `SPST`. Every token of every entry is in it, including those left out of postings below, so prefix search can complete them.
+
+### `SPST`: postings (contiguous)
+
+```
+list = n:varint  total:varint  bytes:varint  id_delta:varint*      ; n deltas in `bytes` bytes
+```
+
+- The entry IDs holding the token, ascending (so by importance bucket), as deltas from the previous ID, the first from 0. `bytes` lets a reader read the list in one go, or stop after the first IDs.
+- `total` is the number of entries holding the token. It equals `n`, except for **generic tokens left out of postings**: a token in more than 100,000 entries that names a kind of street, a direction or an article (`omp_core::normalize::is_generic`: "street", "road", "north", "de") lists only the entries all of whose tokens are left out ("Avenue Road", "North Street"). Every other entry holding it is found by its other tokens, and the query checks the generic word against the name.
 
 ## Style
 

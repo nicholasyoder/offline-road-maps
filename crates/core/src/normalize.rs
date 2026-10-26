@@ -265,6 +265,83 @@ pub fn street_key(name: &str) -> String {
     t.join(" ")
 }
 
+/// The search tokens of a name, as both the index and the query use them: the words of its
+/// [`street_key`] (abbreviations expanded, route designators shortened, ordinals as
+/// numbers), each once. Applied to every kind of name, so "Mt Vernon" meets "Mount Vernon"
+/// and "St. Louis" meets "Saint Louis". An apostrophe after one letter (or "qu") splits the
+/// word, as in French elision ("l'Église" gives "l", "eglise"); any other joins it, so
+/// "Tim's" gives "tims" rather than "tim" and "s".
+pub fn search_tokens(name: &str) -> Vec<String> {
+    let mut text = String::with_capacity(name.len());
+    let mut run = String::new();
+    for c in name.chars() {
+        if matches!(c, '\'' | '’') {
+            let elision = run.chars().count() == 1 || run.eq_ignore_ascii_case("qu");
+            if elision {
+                text.push(' ');
+            }
+            run.clear();
+            continue;
+        }
+        if c.is_alphabetic() {
+            run.push(c);
+        } else {
+            run.clear();
+        }
+        text.push(c);
+    }
+    let mut out: Vec<String> = Vec::new();
+    for w in street_key(&text).split(' ').filter(|w| !w.is_empty()) {
+        if !out.iter().any(|o| o == w) {
+            out.push(w.to_owned());
+        }
+    }
+    out
+}
+
+/// Whether a search token names a kind of street, a direction or an article rather than
+/// saying which one: such tokens may be left out of postings when they are very common.
+pub fn is_generic(token: &str) -> bool {
+    TYPES.contains(&token) || is_direction(token) || ARTICLES.contains(&token)
+}
+
+/// A postal code in its display form: a US (or Mexican) five-digit code, from ZIP+4 too
+/// ("45201-1234" → "45201"; four digits get the leading zero numeric sources drop), or a
+/// Canadian code ("k7l3n6" → "K7L 3N6"). Anything else → `None`.
+pub fn postcode(raw: &str) -> Option<String> {
+    let s: String = raw
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '\u{a0}'))
+        .flat_map(char::to_uppercase)
+        .collect();
+    let b = s.as_bytes();
+    if b.iter().all(u8::is_ascii_digit) {
+        let code = match b.len() {
+            4 => format!("0{s}"),
+            5 | 9 => s[..5].to_owned(),
+            _ => return None,
+        };
+        return (code != "00000").then_some(code);
+    }
+    let canadian = b.len() == 6
+        && b.iter().enumerate().all(|(i, c)| {
+            if i % 2 == 0 {
+                c.is_ascii_uppercase()
+            } else {
+                c.is_ascii_digit()
+            }
+        });
+    canadian.then(|| format!("{} {}", &s[..3], &s[3..]))
+}
+
+/// The search token of a postal code's display form: "K7L 3N6" → "k7l3n6".
+pub fn postcode_token(code: &str) -> String {
+    code.chars()
+        .filter(|c| *c != ' ')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// A looser key from a [`street_key`], for a second matching attempt: street types,
 /// directions, articles and (in numbered names) route designators dropped, a plural "s"
 /// removed from each word, and the words sorted and run together. So "Valleyvista Dr" meets
@@ -444,6 +521,44 @@ mod tests {
             loose("Osprey-The Blue Mountains Townline")
         );
         assert_ne!(loose("N High St"), loose("Highland Ave"));
+    }
+
+    #[test]
+    fn search_tokens_agree_across_spellings() {
+        let same = |a: &str, b: &str| {
+            let (mut x, mut y) = (search_tokens(a), search_tokens(b));
+            x.sort();
+            y.sort();
+            assert_eq!(x, y, "{a} vs {b}");
+        };
+        same("Mt Vernon", "Mount Vernon");
+        same("St. Louis", "Saint Louis");
+        same("State Route 161", "OH 161");
+        same("N High St", "High Street North");
+        same("Montréal", "Montreal");
+        assert_eq!(search_tokens("Main Main St"), ["main", "street"]);
+        assert_eq!(search_tokens("Tim's"), ["tims"]);
+        assert_eq!(
+            search_tokens("Rue de l'Église"),
+            ["rue", "de", "l", "eglise"]
+        );
+        assert_eq!(search_tokens("Jackie’s Bend"), ["jackies", "bend"]);
+        assert!(is_generic("street") && is_generic("north") && is_generic("de"));
+        assert!(!is_generic("main"));
+    }
+
+    #[test]
+    fn postcodes() {
+        assert_eq!(postcode("45201").as_deref(), Some("45201"));
+        assert_eq!(postcode("45201-1234").as_deref(), Some("45201"));
+        assert_eq!(postcode("452011234").as_deref(), Some("45201"));
+        assert_eq!(postcode("2134").as_deref(), Some("02134"));
+        assert_eq!(postcode("k7l3n6").as_deref(), Some("K7L 3N6"));
+        assert_eq!(postcode("G0M 2A0").as_deref(), Some("G0M 2A0"));
+        for bad in ["", "00000", "123", "K7L", "K7L 3N", "7KL 3N6", "ABCDEF"] {
+            assert_eq!(postcode(bad), None, "{bad}");
+        }
+        assert_eq!(postcode_token("K7L 3N6"), "k7l3n6");
     }
 
     #[test]

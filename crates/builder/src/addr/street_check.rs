@@ -71,7 +71,8 @@ fn quantiles(mut v: Vec<f64>) -> [f64; 4] {
 }
 
 /// Builds the table with the postal town votes of the attached records, encodes it and
-/// checks a sample of the merged addresses (`reps`).
+/// checks a sample of the merged addresses (`reps`). Returns the table too, for the
+/// postcode measurement.
 pub fn run(
     admin: &Admin,
     streets: &Streets,
@@ -79,13 +80,13 @@ pub fn run(
     reps: &[u32],
     cities: &[String],
     samples: &Path,
-) -> Result<StreetReport> {
+) -> Result<(StreetReport, Table)> {
     let votes: Vec<(u32, P, u32)> = recs
         .iter()
         .filter(|r| r.city != 0)
         .filter_map(|r| r.att.map(|a| (a.way, r.p, r.city)))
         .collect();
-    let table = Table::build(&streets.raw, admin, &votes, cities);
+    let mut table = Table::build(&streets.raw, admin, &votes, cities);
     drop(votes);
     street::print_stats(&table.stats);
     let (sstr, sgeo, sizes) = encode::sections(&table, encode::BLOCK)?;
@@ -232,9 +233,10 @@ pub fn run(
         check.beyond_5m_nearer,
         check.beyond_5m_far
     );
-    Ok(StreetReport {
-        stats: table.stats,
+    let report = StreetReport {
+        stats: std::mem::take(&mut table.stats),
         sizes,
         check,
-    })
+    };
+    Ok((report, table))
 }

@@ -1,10 +1,13 @@
 //! `omp-builder addr-spike`: Phase 0 step 0.4. Extracts address points from OSM,
 //! OpenAddresses and StatCan (NAR, ODA) plus TIGER ranges, attaches the points to OSM
 //! streets, deduplicates across sources, and reports coverage, merge quality and bytes per
-//! address for the encodings A1–A4.
+//! address for the encodings A1–A4. Phase 2 added the town per street (2.1), the street
+//! table check (2.2) and the postcodes (2.3), whose points it writes to
+//! `<samples>/postcodes.tsv` for `build --postcodes`.
 
 mod encode;
 pub mod osm;
+pub mod postcodes;
 mod sources;
 mod street_check;
 pub mod streets;
@@ -18,7 +21,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use omp_core::normalize::{HouseNumber, house_number};
+use omp_core::normalize::{HouseNumber, house_number, postcode};
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -151,6 +154,9 @@ pub struct Raw {
     /// The postal town the source gives (OpenAddresses `city`, NAR `MAIL_MUN_NAME`, ODA
     /// `city`, OSM `addr:city`); empty if none.
     pub city: String,
+    /// The postal code as the source gives it (OpenAddresses `postcode`, NAR
+    /// `MAIL_POSTAL_CODE`, ODA `postal_code`, OSM `addr:postcode`); empty if none.
+    pub postcode: String,
     pub p: P,
 }
 
@@ -203,6 +209,8 @@ struct Rec {
     key: u32,
     unit: u32,
     city: u32,
+    /// Normalized postcode ([`omp_core::normalize::postcode`]), interned; 0 for none.
+    postcode: u32,
     p: P,
     att: Option<Att>,
 }
@@ -268,6 +276,8 @@ struct SourceRow {
     with_unit: u64,
     /// Records that name a postal town.
     with_city: u64,
+    /// Records with a postcode [`postcode`] accepts.
+    with_postcode: u64,
     kinds: BTreeMap<&'static str, u64>,
 }
 
@@ -382,6 +392,7 @@ struct Report {
     encoding: encode::EncodingReport,
     towns: towns::TownReport,
     streets: street_check::StreetReport,
+    postcodes: postcodes::PostcodeReport,
 }
 
 struct Stages {
@@ -798,6 +809,7 @@ fn run_one(
     let mut suffixes = Interner::new();
     let mut units = Interner::new();
     let mut cities = Interner::new();
+    let mut codes = Interner::new();
     let mut source_rows: BTreeMap<Src, SourceRow> = BTreeMap::new();
     let mut exceptions: Vec<(Src, String, String, P)> = Vec::new();
     let mut recs: Vec<Rec> = Vec::with_capacity(raws.len());
@@ -811,6 +823,7 @@ fn run_one(
             no_street: 0,
             with_unit: 0,
             with_city: 0,
+            with_postcode: 0,
             kinds: BTreeMap::new(),
         });
         row.records += 1;
@@ -839,6 +852,10 @@ fn run_one(
         if !r.city.is_empty() {
             row.with_city += 1;
         }
+        let code = postcode(&r.postcode);
+        if code.is_some() {
+            row.with_postcode += 1;
+        }
         recs.push(Rec {
             src: r.src,
             file: r.file,
@@ -848,6 +865,7 @@ fn run_one(
             key: NONE,
             unit: units.intern(&r.unit),
             city: cities.intern(&r.city),
+            postcode: code.map_or(0, |c| codes.intern(&c)),
             p: r.p,
             att: None,
         });
@@ -968,12 +986,17 @@ fn run_one(
     }
     stages.done("dedup");
 
-    // Per merged address: source mask and units.
+    // Per merged address: source mask, units, and the kept record's postcode, else the
+    // first one another record of the cluster gives.
     let mut masks = vec![0u8; reps.len()];
     let mut cluster_units: Vec<(u32, u32)> = Vec::new();
+    let mut cluster_codes: Vec<u32> = reps.iter().map(|&r| recs[r as usize].postcode).collect();
     for (i, r) in recs.iter().enumerate() {
         let c = assign[i];
         masks[c as usize] |= r.src.bit();
+        if cluster_codes[c as usize] == 0 {
+            cluster_codes[c as usize] = r.postcode;
+        }
         if r.unit != 0 {
             cluster_units.push((c, r.unit));
         }
@@ -1210,9 +1233,19 @@ fn run_one(
     )?;
     drop((votes, points));
     stages.done("towns");
-    let street_report =
+    let (street_report, table) =
         street_check::run(admin, &streets, &recs, &reps, &cities.list, &samples_dir)?;
     stages.done("streets");
+    let postcode_report = postcodes::measure(
+        &table,
+        &recs,
+        &reps,
+        &cluster_codes,
+        &codes.list,
+        &samples_dir,
+    )?;
+    drop(table);
+    stages.done("postcodes");
 
     write_samples(
         &samples_dir,
@@ -1274,6 +1307,7 @@ fn run_one(
         encoding,
         towns: town_report,
         streets: street_report,
+        postcodes: postcode_report,
     };
     if let Some(dir) = json.parent() {
         std::fs::create_dir_all(dir)?;

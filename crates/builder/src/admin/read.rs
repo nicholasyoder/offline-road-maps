@@ -113,7 +113,7 @@ struct Rel {
     centre: Option<i64>,
 }
 
-fn pass<T: Send>(
+pub fn pass<T: Send>(
     path: &Path,
     init: impl Fn() -> T + Sync + Send,
     f: impl Fn(&PrimitiveBlock, &mut T) + Sync + Send,
