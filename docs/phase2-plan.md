@@ -41,6 +41,7 @@ The roadmap's items are "search suggestions as you type, ranking by importance a
 | 2.5 Spatial grid and core readers | **Done** 2026-10-26 | Readers in `omp-core` (`search`, `addr`, `street`, `admin`, `grid`); `SGRD` at z14 (North America 7.8 MiB); format 0.4 specifies every search and address section. Ohio and Quebec read and cross-checked by `inspect --readers`; lookups under 1 ms p95 warm. |
 | 2.6 Query parsing, matching and ranking (`omp-core`) | **Done** 2026-10-26 | `omp_core::find` + `query` + `fuzzy` + `here`; `omp-builder search` / `here`. Query set: 1,000 random addresses (Ohio, Quebec, Ontario) and 241 hand-written queries. Ohio / Quebec: addresses 99.4 / 97.3% first, hand-written 98.9 / 98.7% first and 100% top 5, "what's here" 100%; warm p95 17.0 / 15.3 ms. No format change. |
 | 2.7 Search UI | **Done** 2026-10-26 | Search box, suggestions, results panel, fly-to and marker (`app/src/search.rs`); queries on one worker, stale answers dropped. North America rebuilt to format 0.4 (53 min, 49.4 GiB). Bench keystroke latency p95 53 ms Ohio, 89 ms North America, warm; RSS peak 193 / 239 MiB. The on-map credit is now OpenStreetMap's only. |
+| 2.7b Progressive search | Not started | Added 2026-10-26 at the owner's request. |
 | 2.8 "What's here" | Not started | |
 | 2.9 Performance, accuracy and hardware checks | Not started | |
 
@@ -311,6 +312,20 @@ The search engine itself, in `omp-core`, so it is tested without the app.
 >   - North America results that are wrong first: "45201" gives 05201 Bennington, VT (a fuzzy postcode; 45201 is a Cincinnati PO-box code with no addresses, so not in `APCD`), and "Tim Hortons Kingston" gives a McDonald's in Kingston (most Tim Hortons are cafés, which are not searched, decision 7; a fuzzy brand match should not win). Street records of one street are not always grouped: "Rue Sainte-Catherine Ouest" shows three times. The query set on North America will measure these.
 >   - Keystroke p95 on North America (89.5 ms warm) leaves little room under 100 ms; the E6430 target (250 ms) and the cold first query are 2.9's.
 
+## 2.7b Progressive search
+
+*Added 2026-10-26 at the owner's request, after the follow-up to 2.7.* Suggestions come back in tens of milliseconds because `find` reads a bounded slice of the data: the 6 most important towns of a name (30 when they hold no such address), 300 candidates per region, 64 expansions of a word being typed (3,000 IDs each), 30 streets to locate a number on, edits only for rare words. Anything past those bounds is missed until more is typed. A partly typed town can match only a less likely address or street ("number not found"). Someone could then decide the address is not in the pack and stop typing, when a few more letters would have found it.
+
+The idea: answer at once as now, then, while the user pauses, keep searching deeper and add what turns up, with a visible "searching more" row until there is nothing left to try. A new keystroke starts over at the fast level.
+
+- **Levels in `omp_core::find`.** `Request` gets a `depth` (0 = today's bounds). Each level raises the bounds above, roughly 4× per level, and from level 1 always runs the wider town pass and the pass within edits. Three or four levels, the last close to exhaustive for its readings. Each level's hits are a superset of the one before for the same query, or can be merged with it, so the list only grows or improves. Measure on North America how long each level takes and what it adds (the random address sets typed with the state cut short, with no state, and with the town cut to its first letters), and set the bounds from that.
+- **Worker.** After answering a query at level *d*, if no newer query is waiting, run level *d*+1 for it, up to the last. A new query preempts between levels. Also within a level: `find` checks a cancel flag (an atomic generation number) between readings and returns early, so a deep level never delays the next keystroke's fast answer. Optionally a short pause (100–200 ms) before level 1, so fast typing never starts deep work. Once the last level is done the worker sleeps, and idle CPU is back near 0%.
+- **UI.** A level's answer replaces the list for that query, merged so that rows do not jump: the highlighted row (arrow keys) and the row under the pointer stay put, and new rows go below them or in rank order beneath. A last row shows "Searching smaller towns…" (or a spinner) while deeper levels run, and "No more results" (or nothing) once the last is done. If the last level finds nothing, the message says so ("Nothing found"), which then really means nothing within the pack. Enter runs the deepest level at once for the results panel.
+- **Bench and overlay.** Keystroke latency stays level 0. The bench also reports each level's time after a pause, and when the expected result first appears (for the search steps given an expected name). The F3 overlay shows the current level.
+- **Budget.** Level 0 keeps criterion 3 (100 ms p95 per keystroke on the dev machine, 250 ms on the E6430). A deep level may take up to a second or two on the E6430, since it runs only during a pause and is cancelled by the next keystroke. Memory stays within the readers' cache budgets (no larger caches for deep levels).
+
+**Done when:** on North America, typing an address and pausing finds it at some level when the town is typed only partly or the state is left out, in clearly more cases than level 0 alone (measured on the random address sets), within 2 s of the pause on the dev machine. Level 0 latency is unchanged, a keystroke during a deep level is answered as fast as without it, and the list shows when it is still searching.
+
 ## 2.8 "What's here"
 
 - **Trigger** (decision 8): right-click on the map opens a small menu with "What's here?" and the coordinates (copyable). Left click stays free for panning, and phase 3 will add "Route from here / to here" to the same menu. Optionally, a left click on a POI icon or a place label shows the same panel.
@@ -344,6 +359,7 @@ As phase 1 step 1.10, with search added:
 - Build the North America pack at the end of 2.3 and of 2.4, so size and memory surprises show up early.
 - 2.6 can start on the Ohio pack as soon as 2.5's readers exist; the query set grows through 2.3–2.6.
 - 2.7 and 2.8 share the right-click and marker code and can be done in either order.
+- 2.7b (progressive search) builds on 2.7's worker and list. It comes before 2.9, which measures the search latencies it changes.
 
 ## Decisions
 
