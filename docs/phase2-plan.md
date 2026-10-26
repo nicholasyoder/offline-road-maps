@@ -123,7 +123,7 @@ Addresses refer to streets by street ID (format.md). Search shows streets as res
 >   | Within 5 m, both offsets rounded to 5 m | 98.59% | 98.84% |
 >   | Same side of the street | 99.52% | 99.45% |
 >
->   Not every address in the sample is within 5 m, so this falls short of the **Done when** line. Of the 0.4% more than 5 m off, 87% (Ohio) and 78% (Quebec) are more than 25 m from their street, at a cul-de-sac or a curve, where the nearest point on the line moves a long way when the line is simplified by 2 m. Most of the rest are nearer the street on the table than in the spike, because the table also projects onto the start of the next way. The decoded position is a point on the street either way, since A3 stores no distance from it. Taken as done; the owner may want to review this.
+>   Not every address in the sample is within 5 m, so this falls short of the **Done when** line. Of the 0.4% more than 5 m off, 87% (Ohio) and 78% (Quebec) are more than 25 m from their street, at a cul-de-sac or a curve, where the nearest point on the line moves a long way when the line is simplified by 2 m. Most of the rest are nearer the street on the table than in the spike, because the table also projects onto the start of the next way. The decoded position is a point on the street either way, since A3 stores no distance from it. Accepted by the owner (2026-10-25), as is the new part-offset rule.
 > - **Sizes** ([size-table.md](size-table.md#phase-2-step-22-streets)): North America 10.0M streets (0.51M with several parts, at most 54), 90.8M stored points; `SSTR` 90.9 MiB + `SGEO` 240.7 MiB = **332 MiB**, about 34 bytes per street. The geometry is below the 250–500 MiB estimate, so no fallback is needed. Ohio's pack has 253,216 streets (7.7 MiB), Quebec's 136,176 (5.8 MiB).
 > - **Postal town splits** (`addr-spike`): Ohio 250,462 streets, 151,491 of them named by their addresses' postal town; Quebec 135,367, 117,244 by postal town. Without addresses (as `build` is until 2.4): 253,216 and 136,176.
 > - **Build cost:** `omp-builder streets` on North America took 6.4 min at 20 GiB peak (3 min to read the ways, 39 s to build the table). `build` takes about 4–6 s more on Ohio and Quebec.
@@ -131,6 +131,7 @@ Addresses refer to streets by street ID (format.md). Search shows streets as res
 >   - `build` has no addresses yet, so its streets are split and named by area only. Step 2.4 passes the address votes in (the `addr-spike` path already does).
 >   - A way can only be cut at a vertex, so a long segment with no vertices passes the caps: North America's longest street is 79 km.
 >   - Streets crossing the edge of a regional extract are cut there. Each pack is built on its own, so this does not matter.
+>   - The per-state town flag fix left open in 2.1 (New York, Wisconsin, New Brunswick, Alberta, Manitoba, Yukon, Hawaii) was not done here; it moves to 2.8, where "what's here" shows the area.
 
 ## 2.3 Search entries and index
 
