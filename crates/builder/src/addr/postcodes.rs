@@ -2,12 +2,12 @@
 //! the merged addresses that carry it, and the cost of showing a postcode with each address,
 //! stored once per street with exceptions or once per address.
 //!
-//! `build` does not read addresses until step 2.4, so `addr-spike` writes the postcode
-//! points to `<samples>/postcodes.tsv` and `build --postcodes` reads them.
+//! `build` (step 2.4) computes the points per state and province and [`combine`]s them;
+//! `addr-spike` writes its run's to `<samples>/postcodes.tsv`.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use omp_core::varint::put;
@@ -73,7 +73,12 @@ fn median(v: &mut [u32]) -> u32 {
 
 /// The postcode entries of the merged addresses `reps`, whose postcodes are `rep_codes`,
 /// sorted by code.
-fn points(recs: &[Rec], reps: &[u32], rep_codes: &[u32], codes: &[String]) -> Vec<Postcode> {
+pub(super) fn points(
+    recs: &[Rec],
+    reps: &[u32],
+    rep_codes: &[u32],
+    codes: &[String],
+) -> Vec<Postcode> {
     let mut by_code: Vec<(u32, P)> = reps
         .iter()
         .zip(rep_codes)
@@ -243,46 +248,17 @@ pub fn write_tsv(path: &Path, pts: &[Postcode]) -> Result<()> {
     std::fs::write(path, text).with_context(|| format!("write {}", path.display()))
 }
 
-/// The `postcodes.tsv` files at `paths`: each a file, or a directory searched one level
-/// down (`<dir>/postcodes.tsv` and `<dir>/*/postcodes.tsv`, as `addr-spike --each` writes
-/// them). A postcode in several files (one crossing a state line) is merged: the mean of
-/// their points weighted by addresses, and a radius that covers each.
-pub fn read(paths: &[PathBuf]) -> Result<Vec<Postcode>> {
-    let mut files = Vec::new();
-    for p in paths {
-        if !p.is_dir() {
-            files.push(p.clone());
-            continue;
-        }
-        let mut found: Vec<PathBuf> = std::fs::read_dir(p)
-            .with_context(|| format!("read {}", p.display()))?
-            .filter_map(|e| e.ok().map(|e| e.path().join("postcodes.tsv")))
-            .chain([p.join("postcodes.tsv")])
-            .filter(|f| f.is_file())
-            .collect();
-        found.sort();
-        files.extend(found);
-    }
+/// One entry per postcode from the rows of several runs (one per state or province). A
+/// postcode in several (one crossing a state line) is merged: the mean of their points
+/// weighted by addresses, and a radius that covers each.
+pub fn combine(rows: Vec<Postcode>) -> Vec<Postcode> {
     let mut by_code: HashMap<String, Vec<Postcode>> = HashMap::new();
-    for f in &files {
-        let text = std::fs::read_to_string(f).with_context(|| format!("read {}", f.display()))?;
-        for (i, line) in text.lines().enumerate().skip(1) {
-            let c: Vec<&str> = line.split('\t').collect();
-            let bad = || format!("{}:{}: bad postcode row", f.display(), i + 1);
-            anyhow::ensure!(c.len() == 5, bad());
-            let num = |s: &str| s.parse::<f64>().with_context(bad);
-            let p = Postcode {
-                code: c[0].to_owned(),
-                addresses: c[1].parse().with_context(bad)?,
-                p: geom::project(num(c[2])?, num(c[3])?),
-                radius_m: num(c[4])?,
-            };
-            by_code.entry(p.code.clone()).or_default().push(p);
-        }
+    for p in rows {
+        by_code.entry(p.code.clone()).or_default().push(p);
     }
     let mut out: Vec<Postcode> = by_code.into_values().map(merge).collect();
     out.sort_by(|a, b| a.code.cmp(&b.code));
-    Ok(out)
+    out
 }
 
 /// Rows further than this from a postcode's largest row are dropped as errors (a Quebec
@@ -326,36 +302,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tsv_round_trip_and_merge() {
-        let dir = std::env::temp_dir().join(format!("omp-postcodes-{}", std::process::id()));
-        let (a, b) = (dir.join("US-OH"), dir.join("US-IN"));
-        std::fs::create_dir_all(&a).unwrap();
-        std::fs::create_dir_all(&b).unwrap();
+    fn rows_combine_across_state_lines() {
         let pc = |code: &str, n, lat, lon, r| Postcode {
             code: code.into(),
             addresses: n,
             p: geom::project(lat, lon),
             radius_m: r,
         };
-        write_tsv(
-            &a.join("postcodes.tsv"),
-            &[
-                pc("45201", 30, 39.1, -84.5, 800.0),
-                pc("45999", 10, 39.2, -84.8, 300.0),
-            ],
-        )
-        .unwrap();
-        write_tsv(
-            &b.join("postcodes.tsv"),
-            &[pc("45999", 10, 39.2, -84.82, 300.0)],
-        )
-        .unwrap();
-        let got = read(std::slice::from_ref(&dir)).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let got = combine(vec![
+            pc("45999", 10, 39.2, -84.8, 300.0),
+            pc("45201", 30, 39.1, -84.5, 800.0),
+            pc("45999", 10, 39.2, -84.82, 300.0),
+            // A stray row far from the others is dropped.
+            pc("45201", 2, 42.0, -71.0, 10.0),
+        ]);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].code, "45201");
-        assert_eq!(got[0].addresses, 30);
-        assert_eq!(got[0].radius_m, 800.0);
+        assert_eq!((got[0].addresses, got[0].radius_m), (30, 800.0));
         let m = &got[1];
         assert_eq!((m.code.as_str(), m.addresses), ("45999", 20));
         let (lat, lon) = geom::unproject(m.p);

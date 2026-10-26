@@ -1,6 +1,6 @@
 //! Search entries and index (phase 2 step 2.3): one entry per admin area, place, street,
-//! POI, named map label (lakes, parks) and postcode, an `fst` from token to postings, and
-//! the postings themselves. Written by `build` as `SENT`, `STWN`, `SFST` and `SPST`
+//! POI, named map label (lakes, parks), postcode and street known only from its addresses
+//! (step 2.4), an `fst` from token to postings, and the postings themselves. Written by `build` as `SENT`, `STWN`, `SFST` and `SPST`
 //! (`docs/format.md`); the query side is step 2.6.
 //!
 //! **Entry IDs** run in importance order: by [`bucket`] (highest first), then along a
@@ -61,16 +61,21 @@ pub enum Kind {
     /// A `labels` layer feature (lake, river, park, protected area, forest); `class` is
     /// its class in the layer.
     Feature = 5,
+    /// A street name that only unattached addresses (`ALSE`) give, with no OSM street of
+    /// that name near them (step 2.4); `class` is 0, `reference` the radius in metres
+    /// holding 90% of its addresses.
+    AddressStreet = 6,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 7] = [
         Kind::Admin,
         Kind::Place,
         Kind::Street,
         Kind::Poi,
         Kind::Postcode,
         Kind::Feature,
+        Kind::AddressStreet,
     ];
 
     pub fn from_code(c: u8) -> Option<Self> {
@@ -188,6 +193,20 @@ pub fn feature_importance(minzoom: u8) -> u8 {
 }
 
 pub const POSTCODE_IMPORTANCE: u8 = 110;
+/// Below a residential street of the map (85): it has no line to show.
+pub const ADDRESS_STREET_IMPORTANCE: u8 = 80;
+
+/// A street known only from its unattached addresses: one per street key and deepest admin
+/// area, at the median of its addresses.
+pub struct AddressStreet {
+    pub name: String,
+    pub p: P,
+    pub chain: Vec<u32>,
+    pub radius_m: f64,
+    /// The postal town most of its addresses name, in display form.
+    pub postal: Option<String>,
+    pub addresses: u64,
+}
 
 /// Which layer a feature comes from.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -458,7 +477,8 @@ impl Builder {
         self.postal.extend(postal);
     }
 
-    /// Admin areas, the collected features and the postcodes; then IDs and postings.
+    /// Admin areas, the collected features, the postcodes and the streets known only from
+    /// addresses; then IDs and postings.
     pub fn finish(
         mut self,
         admin: &Admin,
@@ -466,6 +486,7 @@ impl Builder {
         collected: Collector,
         pbf: &Path,
         postcodes: &[Postcode],
+        address_streets: &[AddressStreet],
     ) -> Result<Index> {
         let start = Instant::now();
         let mut stats = Stats::default();
@@ -545,12 +566,18 @@ impl Builder {
             chain: admin.chain(pc.p),
             postal: None,
         }));
+        rows.extend(address_streets.iter().map(|a| Located {
+            p: a.p,
+            chain: a.chain.clone(),
+            postal: None,
+        }));
         let fb = Fallbacks::new(admin, &rows);
         let found: Vec<Option<String>> = (first..rows.len())
             .into_par_iter()
             .map(|r| fb.first(r, &FALLBACK).map(|(_, (name, _))| name))
             .collect();
-        let (feat_towns, postcode_towns) = found.split_at(needs_town.len());
+        let (feat_towns, rest) = found.split_at(needs_town.len());
+        let (postcode_towns, address_street_towns) = rest.split_at(postcodes.len());
         let mut town_of: HashMap<usize, &str> = HashMap::new();
         for (&i, t) in needs_town.iter().zip(feat_towns) {
             if let Some(t) = t
@@ -636,6 +663,25 @@ impl Builder {
                 admin: admin.chain(pc.p).last().copied(),
                 town,
                 reference: pc.radius_m.round() as u64,
+            });
+        }
+
+        for (a, town) in address_streets.iter().zip(address_street_towns) {
+            let town = a
+                .postal
+                .as_deref()
+                .or(town.as_deref())
+                .map_or(0, |t| self.town(t));
+            self.entries.push(Entry {
+                kind: Kind::AddressStreet,
+                class: 0,
+                importance: ADDRESS_STREET_IMPORTANCE,
+                name: a.name.clone(),
+                alts: Vec::new(),
+                p: a.p,
+                admin: a.chain.last().copied(),
+                town,
+                reference: a.radius_m.round() as u64,
             });
         }
 

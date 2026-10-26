@@ -128,6 +128,63 @@ pub fn default_units(meta: Option<&Meta>) -> Units {
     found.unwrap_or(Units::Both)
 }
 
+/// The About window's rows for a pack's sources: one per source, or one per kind (the
+/// name's first word: `openaddresses`, `tiger`) when a kind has several files, with their
+/// count per license, commonest first, and the range of download dates.
+pub fn source_rows(sources: &[meta::Source]) -> Vec<(String, String)> {
+    let kind = |s: &meta::Source| s.name.split(' ').next().unwrap_or_default().to_owned();
+    let day = |s: &meta::Source| s.date.get(..10).unwrap_or(&s.date).to_owned();
+    let mut kinds: Vec<String> = Vec::new();
+    for s in sources {
+        if !kinds.contains(&kind(s)) {
+            kinds.push(kind(s));
+        }
+    }
+    kinds
+        .into_iter()
+        .map(|k| {
+            let of: Vec<&meta::Source> = sources.iter().filter(|s| kind(s) == k).collect();
+            if let [one] = of[..] {
+                return (
+                    one.name.clone(),
+                    format!("{}, downloaded {}", one.license, day(one)),
+                );
+            }
+            let mut licenses: Vec<(&str, usize)> = Vec::new();
+            for s in &of {
+                match licenses.iter_mut().find(|l| l.0 == s.license) {
+                    Some(l) => l.1 += 1,
+                    None => licenses.push((&s.license, 1)),
+                }
+            }
+            licenses.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            let mut parts: Vec<String> = licenses
+                .iter()
+                .take(3)
+                .map(|(l, n)| format!("{n} {l}"))
+                .collect();
+            if licenses.len() > 3 {
+                let rest: usize = licenses[3..].iter().map(|l| l.1).sum();
+                parts.push(format!(
+                    "{rest} under {} other licenses",
+                    licenses.len() - 3
+                ));
+            }
+            let days: Vec<String> = of.iter().map(|s| day(s)).collect();
+            let (first, last) = (days.iter().min().unwrap(), days.iter().max().unwrap());
+            let when = if first == last {
+                format!("downloaded {first}")
+            } else {
+                format!("downloaded {first} to {last}")
+            };
+            (
+                k,
+                format!("{} files ({}), {when}", of.len(), parts.join(", ")),
+            )
+        })
+        .collect()
+}
+
 /// `YYYY-MM-DD` of Unix seconds, UTC.
 pub fn date(unix: i64) -> String {
     // Howard Hinnant's civil_from_days.
@@ -200,6 +257,40 @@ mod tests {
         assert_eq!(default_units(Some(&meta(&[&na]))), Units::Both);
         assert_eq!(default_units(Some(&meta(&[&us, &ca]))), Units::Both);
         assert_eq!(default_units(None), Units::Both);
+    }
+
+    #[test]
+    fn sources_grouped_by_kind() {
+        let src = |name: &str, license: &str, date: &str| omp_core::meta::Source {
+            name: name.into(),
+            license: license.into(),
+            date: date.into(),
+            ..Default::default()
+        };
+        let rows = source_rows(&[
+            src("osm", "ODbL-1.0", "2026-10-02T10:00:00Z"),
+            src(
+                "openaddresses us/oh/a",
+                "unspecified",
+                "2026-10-03T00:00:00Z",
+            ),
+            src("openaddresses us/oh/b", "CC0", "2026-10-05T00:00:00Z"),
+            src(
+                "openaddresses us/oh/c",
+                "unspecified",
+                "2026-10-04T00:00:00Z",
+            ),
+        ]);
+        assert_eq!(
+            rows,
+            [
+                ("osm".into(), "ODbL-1.0, downloaded 2026-10-02".into()),
+                (
+                    "openaddresses".into(),
+                    "3 files (2 unspecified, 1 CC0), downloaded 2026-10-03 to 2026-10-05".into()
+                ),
+            ]
+        );
     }
 
     #[test]

@@ -895,6 +895,30 @@ impl Table {
         best
     }
 
+    /// Where `p` lies on street `s`: projected onto the nearest of its parts.
+    pub fn project_onto(&self, s: u32, p: P) -> Spot {
+        let st = &self.streets[s as usize];
+        let mut best = Spot {
+            street: s,
+            offset_m: 0.0,
+            dist_m: f64::INFINITY,
+            left: false,
+        };
+        for (k, part) in st.parts.iter().enumerate() {
+            let (offset_m, dist_m, left) =
+                project(part, &st.along.cum[k], st.along.mpu, 0, part.len() - 1, p);
+            if dist_m < best.dist_m {
+                best = Spot {
+                    street: s,
+                    offset_m,
+                    dist_m,
+                    left,
+                };
+            }
+        }
+        best
+    }
+
     /// The street of each piece, for tests.
     #[cfg(test)]
     fn piece_streets(&self) -> Vec<u32> {

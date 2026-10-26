@@ -1203,9 +1203,8 @@ impl App {
                         row("Built", packs::date(info.build_time));
                         row("Data as of", info.snapshot.clone());
                         if let Ok(meta) = &m.opened.meta {
-                            for src in &meta.sources {
-                                let date = src.date.get(..10).unwrap_or(&src.date);
-                                row(&src.name, format!("{}, downloaded {date}", src.license));
+                            for (k, v) in packs::source_rows(&meta.sources) {
+                                row(&k, v);
                             }
                             row(
                                 "Builder",
@@ -1222,15 +1221,23 @@ impl App {
                 ui.separator();
                 match &m.opened.meta {
                     Ok(meta) => {
-                        ui.label(&meta.attribution);
-                        // Sources' own attributions that the pack's does not already carry.
-                        let mut shown: Vec<&str> = vec![&meta.attribution];
-                        for src in meta.sources.iter().filter_map(|s| s.attribution.as_deref()) {
-                            if !shown.iter().any(|s| s.contains(src)) {
-                                ui.label(src);
-                                shown.push(src);
-                            }
-                        }
+                        // A pack with addresses credits hundreds of sources.
+                        egui::ScrollArea::vertical()
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                ui.label(&meta.attribution);
+                                // Sources' own attributions that the pack's does not already
+                                // carry.
+                                let mut shown: Vec<&str> = vec![&meta.attribution];
+                                for src in
+                                    meta.sources.iter().filter_map(|s| s.attribution.as_deref())
+                                {
+                                    if !shown.iter().any(|s| s.contains(src)) {
+                                        ui.label(src);
+                                        shown.push(src);
+                                    }
+                                }
+                            });
                     }
                     Err(e) => {
                         ui.label(format!("© OpenStreetMap contributors. ({e})"));

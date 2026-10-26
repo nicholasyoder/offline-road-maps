@@ -50,6 +50,11 @@ impl Keys {
         id
     }
 
+    /// The ID of `key`, if it is interned.
+    pub fn get(&self, key: &str) -> Option<u32> {
+        self.map.get(key).copied()
+    }
+
     /// Keys for many names at once: normalized in parallel, interned in order.
     pub fn intern_names(&mut self, names: &[String]) -> Vec<u32> {
         let keys: Vec<String> = names.par_iter().map(|n| street_key(n)).collect();
@@ -88,6 +93,8 @@ pub struct Streets {
     strict: HashMap<(u32, i32, i32), Vec<u32>>,
     loose: HashMap<(u32, i32, i32), Vec<u32>>,
     any: HashMap<(i32, i32), Vec<u32>>,
+    /// The distinct strict keys of the ways in each cell, for fuzzy matching.
+    cell_keys: HashMap<(i32, i32), Vec<u32>>,
     /// Sorted by the Morton code of their first point, so nearby streets are stored together.
     pub comps: Vec<Comp>,
     /// `(way, key)` → (component, offset of the way's start along the component).
@@ -167,6 +174,11 @@ impl Streets {
             }
         }
 
+        let mut cell_keys: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+        for &(k, x, y) in strict.keys() {
+            cell_keys.entry((x, y)).or_default().push(k);
+        }
+
         // Components: (way, key) entries for strict and loose keys, joined when two ways
         // with the same key share a node.
         let mut entries: Vec<(u32, u32)> = Vec::new();
@@ -239,6 +251,7 @@ impl Streets {
             strict,
             loose,
             any,
+            cell_keys,
             comps,
             entry,
         }
@@ -294,6 +307,20 @@ impl Streets {
             }
         }
         best
+    }
+
+    /// The distinct strict keys of the ways in the 3 × 3 cells around `p`.
+    pub fn keys_near(&self, p: P) -> Vec<u32> {
+        let (cx, cy) = cell(p);
+        let mut out: Vec<u32> = Vec::new();
+        for x in cx - 1..=cx + 1 {
+            for y in cy - 1..=cy + 1 {
+                out.extend(self.cell_keys.get(&(x, y)).into_iter().flatten());
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// Component and offset along it for a hit found under `key`.

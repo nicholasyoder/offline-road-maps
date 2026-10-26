@@ -360,6 +360,31 @@ pub fn split(
     polys: &[Poly],
     margin_deg: f64,
 ) -> (Vec<OsmAddresses>, SplitStats) {
+    let (mut parts, owned, streets, stats) = split_indexed(all, polys, margin_deg);
+    let mut owners: Vec<Vec<usize>> = vec![Vec::new(); streets.len()];
+    for (i, list) in owned.iter().enumerate() {
+        for &s in list {
+            owners[s as usize].push(i);
+        }
+    }
+    for (s, owners) in streets.into_iter().zip(owners) {
+        if let Some((&last, rest)) = owners.split_last() {
+            for &i in rest {
+                parts[i].streets.push(s.clone());
+            }
+            parts[last].streets.push(s);
+        }
+    }
+    (parts, stats)
+}
+
+/// As [`split`], but the streets stay in one list (returned): each part gets the indexes
+/// of its streets instead, in order.
+pub fn split_indexed(
+    all: OsmAddresses,
+    polys: &[Poly],
+    margin_deg: f64,
+) -> (Vec<OsmAddresses>, Vec<Vec<u32>>, Vec<StreetWay>, SplitStats) {
     let owner = |p: P| polys.iter().position(|poly| poly.contains(p));
     let point_owner: Vec<Option<usize>> = all.raws.par_iter().map(|r| owner(r.p)).collect();
     let range_owner: Vec<Option<usize>> = all
@@ -415,23 +440,21 @@ pub fn split(
             None => stats.ranges_outside += 1,
         }
     }
-    for (s, owners) in all.streets.into_iter().zip(street_owners) {
-        if let Some((&last, rest)) = owners.split_last() {
-            for &i in rest {
-                parts[i].streets.push(s.clone());
-            }
-            parts[last].streets.push(s);
+    let mut owned: Vec<Vec<u32>> = vec![Vec::new(); polys.len()];
+    for (s, owners) in street_owners.iter().enumerate() {
+        for &i in owners {
+            owned[i].push(s as u32);
         }
     }
-    for p in &mut parts {
-        p.stats.street_ways = p.streets.len() as u64;
+    for (p, o) in parts.iter_mut().zip(&owned) {
+        p.stats.street_ways = o.len() as u64;
         stats.per_subdivision.push([
             p.raws.len() as u64,
             p.ranges.len() as u64,
             p.stats.street_ways,
         ]);
     }
-    (parts, stats)
+    (parts, owned, all.streets, stats)
 }
 
 pub fn read(path: &Path) -> Result<OsmAddresses> {
@@ -503,11 +526,22 @@ fn read_with(path: &Path, addresses: bool) -> Result<OsmAddresses> {
         push_raws(t, p, &mut raws, &mut stats);
     }
 
+    interps.sort_unstable_by_key(|i| i.id);
     let mut ranges = Vec::new();
     for i in interps {
         interpolate(&i, &locs, &endpoints, &mut ranges, &mut stats);
     }
-    raws.sort_unstable_by_key(|r| r.p);
+    // Blocks arrive in any order: sort on everything, so the merge is the same every run.
+    raws.sort_unstable_by(|a, b| {
+        (a.p, &a.number, &a.street, &a.unit, &a.city, &a.postcode).cmp(&(
+            b.p,
+            &b.number,
+            &b.street,
+            &b.unit,
+            &b.city,
+            &b.postcode,
+        ))
+    });
     Ok(OsmAddresses {
         raws,
         ranges,

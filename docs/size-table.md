@@ -156,6 +156,32 @@ The search sections (`SENT` in 16 KiB blocks, `STWN`, `SFST`, `SPST`), from `bui
 
 The phase 0 estimate for search was 253 MiB, so the North America total moves from about 10,316 to **about 10,284 MiB**; the pack as built (tiles, admin, streets, search; no addresses or routing yet) is 6,780 MiB in 2 chunks. `build` on North America took 34.2 min at 47.2 GiB peak (step 1.5c: 24.3 min, 43.1 GiB). Of the 10 extra minutes, the street table (step 2.2, first built on North America by `build` here) takes 4 and search 1.4 (1 of them the pass for alternative names); the rest is slower band reads (about 7 min each), not looked into. The 4 GiB more at peak are presumably the street entries, held through the bands (not measured apart). Both stay under the 56 GB cap. `addr-spike --each` took 28.5 min at 39.0 GiB.
 
+### Phase 2 step 2.4: addresses
+
+The address sections in 16 KiB blocks (`ASTR`, `ASUF`, `AUNI`, `ALSE`, `ARNG`, `APCD`), from `build --addresses` (`$OMP_WORK/measure/addr24/`). Sources OSM, OpenAddresses, NAR and TIGER, as in phase 0.5; attach 200 m with alias and fuzzy matching, dedup 250 m.
+
+| | Ohio | Quebec | Ontario | North America |
+|---|---:|---:|---:|---:|
+| Addresses | 4,941,837 | 4,232,265 | 5,508,813 | 151.25M |
+| — attached to a street | 95.28% | 96.37% | 94.72% | 89.89% |
+| — approximate (NAR blockface) | 0 | 2,357 | 274,283 | 448,311 |
+| Units | 0.70M | 1.80M | 2.75M | 32.0M |
+| Streets with addresses | 194,107 | 117,414 | 185,020 | 6.57M |
+| Ranges kept (TIGER, OSM) | 367,222 | 10 | 33 | 10.58M |
+| Postcodes / exceptions to the street's | 1,191 / 94,741 | 221,290 / 1.56M | 282,902 / 1.79M | 895,148 / 7.86M |
+| `ASTR` (MiB) | 7.18 | 5.44 | 7.06 | 198.18 |
+| `ASUF` / `AUNI` (MiB) | 0.07 / 0.58 | 1.19 / 1.20 | 1.29 / 1.58 | 7.92 / 24.07 |
+| `ALSE` (MiB) | 1.73 | 1.22 | 2.03 | 106.80 |
+| `ARNG` / `APCD` (MiB) | 1.99 / 0.00 | 0.00 / 0.16 | 0.00 / 0.21 | 54.58 / 0.68 |
+| **Addresses total (MiB)** | **11.55** | **9.22** | **12.16** | **392.23** |
+| Bytes per address, ranges apart | 2.03 | 2.28 | 2.31 | 2.34 |
+
+- **Against phase 0** (315 + 50 = 365 MiB): postcodes are new (one per street with exceptions, about 10 MiB with their table), `ALSE` has a name table per z14 block and a postcode per point (106.8 MiB for 15.3M points, phase 0 103.5 for 16.8M), and blocks are 16 KiB instead of 32 KiB.
+- **Block size** (North America, all six sections): 4 KiB 412.0 MiB (+5.1%), 16 KiB 392.2, 32 KiB 386.7. Decoding one `ASTR` block with its side blocks takes 63 / 182–296 / 431 µs.
+- **Search** grows with the streets known only from addresses (1.95M entries, step 2.4): North America `SENT` 196.27, `STWN` 0.28, `SFST` 5.05, `SPST` 48.23 MiB = **249.8 MiB** (was 220.5). Streets, now split by postal town: 10.0M, `SSTR` 91.79 + `SGEO` 240.59 = 332.4 MiB (was 331.6).
+
+The North America total moves from about 10,284 to **about 10,341 MiB** (addresses +27, search +29, streets +1); the pack as built (tiles, admin, streets, search, addresses; no routing yet) is 7,202.6 MiB in 2 chunks. `build --addresses all` on North America took 51.0 min at 49.5 GiB peak, under the 56 GB cap (step 2.3: 34.2 min, 47.2 GiB).
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

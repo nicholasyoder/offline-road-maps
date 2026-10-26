@@ -3,15 +3,19 @@
 //! streets, deduplicates across sources, and reports coverage, merge quality and bytes per
 //! address for the encodings A1–A4. Phase 2 added the town per street (2.1), the street
 //! table check (2.2) and the postcodes (2.3), whose points it writes to
-//! `<samples>/postcodes.tsv` for `build --postcodes`.
+//! `<samples>/postcodes.tsv`. Step 2.4 moved the merge into `build` ([`merge`], [`store`]):
+//! both run the stages below, and the spike adds its measurements.
 
+mod attach;
 mod encode;
+pub mod merge;
 pub mod osm;
 pub mod postcodes;
 mod sources;
+pub mod store;
 mod street_check;
 pub mod streets;
-mod tiger;
+pub mod tiger;
 mod towns;
 
 use std::collections::{BTreeMap, HashMap};
@@ -31,6 +35,7 @@ use crate::fetch::regions::Subdivision;
 use crate::measure::geom::{self, P};
 use crate::measure::peak_rss_mib;
 use crate::measure::poly;
+use attach::How;
 use streets::{Streets, cell};
 
 #[derive(Args)]
@@ -92,8 +97,8 @@ pub struct AddrArgs {
     zstd_level: i32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Input {
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub enum Input {
     Osm,
     #[value(name = "openaddresses")]
     OpenAddresses,
@@ -134,7 +139,7 @@ impl Src {
         }
     }
 
-    fn approx(self) -> bool {
+    pub fn approx(self) -> bool {
         self == Src::NarBlockface
     }
 
@@ -161,6 +166,7 @@ pub struct Raw {
 }
 
 const NONE: u32 = u32::MAX;
+
 const ATTACH_M: [f64; 3] = [100.0, 200.0, 500.0];
 const DEDUP_M: [f64; 5] = [25.0, 50.0, 100.0, 250.0, 1000.0];
 /// Approximate points (NAR blockface) join a cluster of the same address on the same street
@@ -193,8 +199,7 @@ const SGC: &[(&str, &str)] = &[
 struct Att {
     comp: u32,
     way: u32,
-    /// Attached by the exact key, not the loose one.
-    strict: bool,
+    how: How,
     offset_m: f64,
     dist_m: f64,
     left: bool,
@@ -216,19 +221,19 @@ struct Rec {
 }
 
 #[derive(Default)]
-struct Interner {
+pub struct Interner {
     map: HashMap<String, u32>,
-    list: Vec<String>,
+    pub list: Vec<String>,
 }
 
 impl Interner {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut i = Self::default();
         i.intern("");
         i
     }
 
-    fn intern(&mut self, s: &str) -> u32 {
+    pub fn intern(&mut self, s: &str) -> u32 {
         if let Some(&id) = self.map.get(s) {
             return id;
         }
@@ -240,7 +245,7 @@ impl Interner {
 }
 
 #[derive(Serialize)]
-struct FileRow {
+pub struct FileRow {
     path: String,
     source: String,
     license: String,
@@ -290,6 +295,9 @@ struct AttachRow {
     strict: [u64; 3],
     /// Not by the exact key, but by the loose key, at 100 / 200 / 500 m.
     loose: [u64; 3],
+    /// By neither, at `--attach-m`: with a town's name dropped, or by one edit.
+    alias: u64,
+    fuzzy: u64,
 }
 
 #[derive(Serialize, Default)]
@@ -398,6 +406,7 @@ struct Report {
 struct Stages {
     list: Vec<Stage>,
     t: Instant,
+    quiet: bool,
 }
 
 impl Stages {
@@ -405,13 +414,24 @@ impl Stages {
         Self {
             list: Vec::new(),
             t: Instant::now(),
+            quiet: false,
+        }
+    }
+
+    /// Records the stages without printing them.
+    fn quiet() -> Self {
+        Self {
+            quiet: true,
+            ..Self::new()
         }
     }
 
     fn done(&mut self, name: &'static str) {
         let secs = self.t.elapsed().as_secs_f64();
         let rss = peak_rss_mib();
-        eprintln!("  {name}: {secs:.1} s, peak RSS {rss:.0} MiB");
+        if !self.quiet {
+            eprintln!("  {name}: {secs:.1} s, peak RSS {rss:.0} MiB");
+        }
         self.list.push(Stage {
             name,
             secs,
@@ -493,6 +513,13 @@ fn lat_lon(p: P) -> String {
     format!("{lat:.6}\t{lon:.6}")
 }
 
+/// Which sources to read and which licenses to leave out.
+pub struct SourceOpts {
+    pub sources: Vec<Input>,
+    /// Skip files whose license name contains one of these, ignoring case.
+    pub exclude_license: Vec<String>,
+}
+
 struct Selected {
     osm: bool,
     openaddresses: Vec<(u32, PathBuf)>,
@@ -503,7 +530,7 @@ struct Selected {
 
 /// Picks the manifest files for the subdivisions and sources, and applies the license filter.
 fn select(
-    args: &AddrArgs,
+    args: &SourceOpts,
     inputs: &Path,
     subs: &[Subdivision],
     files: &mut Vec<FileRow>,
@@ -747,7 +774,11 @@ fn run_one(
         kept: 0,
         conflicts: 0,
     }];
-    let sel = select(args, inputs, subs, &mut files)?;
+    let opts = SourceOpts {
+        sources: args.sources.clone(),
+        exclude_license: args.exclude_license.clone(),
+    };
+    let sel = select(&opts, inputs, subs, &mut files)?;
     eprintln!(
         "addr-spike {region}: {} OpenAddresses files, {} TIGER files, NAR {}, ODA {}",
         sel.openaddresses.len(),
@@ -757,252 +788,60 @@ fn run_one(
     );
 
     // Extract.
-    let mut raws: Vec<Raw> = Vec::new();
-    let osm = osm.filter(|_| sel.osm).map(|mut o| {
-        raws.append(&mut o.raws);
-        o
-    });
-    let oa = if sel.openaddresses.is_empty() {
-        None
-    } else {
-        let (mut r, s) = sources::openaddresses(&sel.openaddresses)?;
-        raws.append(&mut r);
-        Some(s)
+    let (osm_raws, osm_ranges, osm_streets, osm_stats) = match osm.filter(|_| sel.osm) {
+        Some(o) => (o.raws, o.ranges, o.streets, Some(o.stats)),
+        None => (Vec::new(), Vec::new(), Vec::new(), None),
     };
-    stages.done("openaddresses");
-    let nar = match &sel.nar {
-        Some((file, path, codes)) => {
-            let (mut r, s) = sources::nar(path, codes, *file)?;
-            raws.append(&mut r);
-            Some(s)
-        }
-        None => None,
-    };
-    let oda = if sel.oda.is_empty() {
-        None
-    } else {
-        let mut total = sources::Skipped::default();
-        for (file, path, abbr, code) in &sel.oda {
-            let (mut r, s) = sources::oda(path, abbr, code, *file)?;
-            raws.append(&mut r);
-            total.bad_rows += s.bad_rows;
-            total.no_location += s.no_location;
-        }
-        Some(total)
-    };
-    stages.done("statcan");
-    let (mut ranges, tiger_stats) = if sel.tiger.is_empty() {
-        (Vec::new(), None)
-    } else {
-        let (r, s) = tiger::read(&sel.tiger)?;
-        (r, Some(s))
-    };
-    stages.done("tiger");
+    let Extracted {
+        raws,
+        oa,
+        nar,
+        oda,
+        mut ranges,
+        tiger: tiger_stats,
+    } = extract(&sel, osm_raws, &mut stages)?;
+    ranges.extend(osm_ranges);
 
     // Normalize.
-    for r in &raws {
-        files[r.file as usize].records += 1;
-    }
-    let parsed: Vec<Option<HouseNumber>> =
-        raws.par_iter().map(|r| house_number(&r.number)).collect();
-    let mut street_names = Interner::new();
-    let mut suffixes = Interner::new();
-    let mut units = Interner::new();
-    let mut cities = Interner::new();
-    let mut codes = Interner::new();
-    let mut source_rows: BTreeMap<Src, SourceRow> = BTreeMap::new();
-    let mut exceptions: Vec<(Src, String, String, P)> = Vec::new();
-    let mut recs: Vec<Rec> = Vec::with_capacity(raws.len());
-    for (r, hn) in raws.into_iter().zip(parsed) {
-        let row = source_rows.entry(r.src).or_insert_with(|| SourceRow {
-            source: r.src,
-            records: 0,
-            no_number: 0,
-            number_exceptions: 0,
-            zero_number: 0,
-            no_street: 0,
-            with_unit: 0,
-            with_city: 0,
-            with_postcode: 0,
-            kinds: BTreeMap::new(),
-        });
-        row.records += 1;
-        let Some(hn) = hn else {
-            if r.number.trim().is_empty() {
-                row.no_number += 1;
-                continue;
-            }
-            row.number_exceptions += 1;
-            exceptions.push((r.src, r.number, r.street, r.p));
-            continue;
-        };
-        if hn.number == 0 {
-            // OpenAddresses uses 0 for "unknown".
-            row.zero_number += 1;
-            continue;
-        }
-        *row.kinds.entry(hn.kind.as_str()).or_default() += 1;
-        if r.street.is_empty() {
-            row.no_street += 1;
-            continue;
-        }
-        if !r.unit.is_empty() {
-            row.with_unit += 1;
-        }
-        if !r.city.is_empty() {
-            row.with_city += 1;
-        }
-        let code = postcode(&r.postcode);
-        if code.is_some() {
-            row.with_postcode += 1;
-        }
-        recs.push(Rec {
-            src: r.src,
-            file: r.file,
-            num: hn.number,
-            suffix: suffixes.intern(&hn.suffix),
-            street: street_names.intern(&r.street),
-            key: NONE,
-            unit: units.intern(&r.unit),
-            city: cities.intern(&r.city),
-            postcode: code.map_or(0, |c| codes.intern(&c)),
-            p: r.p,
-            att: None,
-        });
-    }
-    let mut keys = streets::Keys::default();
-    let street_keys = keys.intern_names(&street_names.list);
-    for r in &mut recs {
-        r.key = street_keys[r.street as usize];
-    }
-    let (osm_stats, osm_streets) = match osm {
-        Some(mut o) => {
-            ranges.append(&mut o.ranges);
-            (Some(o.stats), o.streets)
-        }
-        None => (None, Vec::new()),
-    };
+    let Normalized {
+        mut recs,
+        street_names,
+        suffixes,
+        units,
+        cities,
+        codes,
+        source_rows,
+        exceptions,
+        mut keys,
+    } = normalize(raws, &mut files);
     let streets = Streets::build(osm_streets, &mut keys);
     stages.done("normalize");
 
     // Attach.
-    let loose_from = ATTACH_M[0].min(args.attach_m);
-    let found: Vec<(f64, f64, Option<Att>)> = recs
-        .par_iter()
-        .map(|r| {
-            let hs = streets.nearest(r.key, false, r.p);
-            let ds = hs.map_or(f64::INFINITY, |h| h.dist_m);
-            let lk = keys.loose[r.key as usize];
-            let hl = if ds > loose_from {
-                streets.nearest(lk, true, r.p)
-            } else {
-                None
-            };
-            let dl = hl.map_or(f64::INFINITY, |h| h.dist_m);
-            let pick = if ds <= args.attach_m {
-                hs.map(|h| (h, r.key, true))
-            } else if dl <= args.attach_m {
-                hl.map(|h| (h, lk, false))
-            } else {
-                None
-            };
-            let att = pick.and_then(|(h, k, strict)| {
-                streets.locate(&h, k).map(|(comp, offset_m)| Att {
-                    comp,
-                    way: h.way,
-                    strict,
-                    offset_m,
-                    dist_m: h.dist_m,
-                    left: h.left,
-                })
-            });
-            (ds, dl, att)
-        })
-        .collect();
-    let mut attach: BTreeMap<Src, AttachRow> = BTreeMap::new();
-    for (r, (ds, dl, att)) in recs.iter_mut().zip(&found) {
-        let row = attach.entry(r.src).or_insert_with(|| AttachRow {
-            source: r.src,
-            records: 0,
-            strict: [0; 3],
-            loose: [0; 3],
-        });
-        row.records += 1;
-        for (i, t) in ATTACH_M.iter().enumerate() {
-            if ds <= t {
-                row.strict[i] += 1;
-            } else if dl <= t {
-                row.loose[i] += 1;
-            }
-        }
-        r.att = *att;
-    }
-    drop(found);
+    let attach = attach_records(
+        &mut recs,
+        &street_names,
+        &cities,
+        &streets,
+        &keys,
+        admin,
+        args.attach_m,
+    );
     stages.done("attach");
 
-    // Dedup: group by (street component or unattached key, number, suffix), sources in
-    // priority order, then cluster greedily within each group.
-    let group = |r: &Rec| match r.att {
-        Some(a) => (false, a.comp, keys.dirs[r.key as usize], r.num, r.suffix),
-        None => (true, r.key, 0, r.num, r.suffix),
-    };
-    let mut order: Vec<u32> = (0..recs.len() as u32).collect();
-    order.par_sort_unstable_by_key(|&i| {
-        let r = &recs[i as usize];
-        (group(r), r.src, i)
-    });
-    let mut bounds = Vec::new();
-    let mut s = 0;
-    for i in 1..=order.len() {
-        if i == order.len() || group(&recs[order[i] as usize]) != group(&recs[order[s] as usize]) {
-            bounds.push((s, i));
-            s = i;
-        }
-    }
-    let mut dedup = Vec::new();
-    let mut chosen: Option<Merge> = None;
-    let mut ds_list: Vec<f64> = DEDUP_M.to_vec();
-    if !ds_list.contains(&args.dedup_m) {
-        ds_list.push(args.dedup_m);
-    }
-    for &d in &ds_list {
-        let keep = d == args.dedup_m;
-        let (row, merge) = cluster(&recs, &order, &bounds, d, keep);
-        dedup.push(row);
-        if keep {
-            chosen = Some(merge);
-        }
-    }
-    let Merge {
-        reps,
-        assign,
-        conflicts,
-    } = chosen.expect("dedup_m is in the list");
-    for &r in &reps {
+    // Dedup.
+    let (dedup, merge) = dedup(&recs, &keys, args.dedup_m, true);
+    for &r in &merge.reps {
         files[recs[r as usize].file as usize].kept += 1;
     }
-    for &(_, other, _) in &conflicts {
+    for &(_, other, _) in &merge.conflicts {
         files[recs[other as usize].file as usize].conflicts += 1;
     }
     stages.done("dedup");
-
-    // Per merged address: source mask, units, and the kept record's postcode, else the
-    // first one another record of the cluster gives.
-    let mut masks = vec![0u8; reps.len()];
-    let mut cluster_units: Vec<(u32, u32)> = Vec::new();
-    let mut cluster_codes: Vec<u32> = reps.iter().map(|&r| recs[r as usize].postcode).collect();
-    for (i, r) in recs.iter().enumerate() {
-        let c = assign[i];
-        masks[c as usize] |= r.src.bit();
-        if cluster_codes[c as usize] == 0 {
-            cluster_codes[c as usize] = r.postcode;
-        }
-        if r.unit != 0 {
-            cluster_units.push((c, r.unit));
-        }
-    }
-    cluster_units.sort_unstable();
-    cluster_units.dedup();
+    let (masks, cluster_units, cluster_codes) = clusters(&recs, &merge);
+    let Merge {
+        reps, conflicts, ..
+    } = merge;
     let mut coverage = Vec::new();
     let mut cumulative = 0;
     for src in Src::ALL {
@@ -1022,90 +861,44 @@ fn run_one(
     }
 
     // Ranges: which have a point, then the rest (fallbacks) on OSM streets.
-    let range_keys = {
-        let mut uniq = Interner::new();
-        let ids: Vec<u32> = ranges.iter().map(|r| uniq.intern(&r.street)).collect();
-        let strict = keys.intern_names(&uniq.list);
-        ids.into_iter()
-            .map(|i| strict[i as usize])
-            .collect::<Vec<u32>>()
-    };
-    let mut by_cell: HashMap<(u32, i32, i32), Vec<u32>> = HashMap::new();
-    for (c, &r) in reps.iter().enumerate() {
-        let rec = &recs[r as usize];
-        let (x, y) = cell(rec.p);
-        by_cell
-            .entry((keys.loose[rec.key as usize], x, y))
-            .or_default()
-            .push(c as u32);
-    }
-    let hits: Vec<(bool, bool)> = ranges
+    let (hits, fallbacks) = fallback_ranges(
+        &ranges,
+        &mut keys,
+        &recs,
+        &reps,
+        &masks,
+        &streets,
+        args.attach_m,
+    );
+    let fallback: Vec<(tiger::RangeSrc, encode::TigerEntry)> = fallbacks
         .par_iter()
-        .zip(&range_keys)
-        .map(|(t, &k)| {
-            let lk = keys.loose[k as usize];
-            let b = geom::BBox::of(t.line.iter().copied());
-            let (lo, hi) = (cell(b.min), cell(b.max));
-            let (mut any, mut osm) = (false, false);
-            for x in lo.0 - 1..=hi.0 + 1 {
-                for y in lo.1 - 1..=hi.1 + 1 {
-                    for &c in by_cell.get(&(lk, x, y)).into_iter().flatten() {
-                        let rec = &recs[reps[c as usize] as usize];
-                        if !t.contains(rec.num) || dist_to_line_m(&t.line, rec.p) > TIGER_NEAR_M {
-                            continue;
-                        }
-                        any = true;
-                        osm |= masks[c as usize] & Src::Osm.bit() != 0;
-                        if osm {
-                            return (true, true);
-                        }
-                    }
-                }
-            }
-            (any, osm)
-        })
-        .collect();
-    drop(by_cell);
-    let fallback: Vec<(tiger::RangeSrc, encode::TigerEntry)> = (0..ranges.len())
-        .into_par_iter()
-        .filter(|&i| !hits[i].0)
-        .filter_map(|i| {
-            let t = &ranges[i];
-            let k = range_keys[i];
-            let lk = keys.loose[k as usize];
-            let mid = midpoint(&t.line);
-            let (hit, key) = match streets.nearest(k, false, mid) {
-                Some(h) if h.dist_m <= args.attach_m => (h, k),
-                _ => match streets.nearest(lk, true, mid) {
-                    Some(h) if h.dist_m <= args.attach_m => (h, lk),
-                    _ => return None,
-                },
-            };
-            let s = streets.project(hit.way, t.line[0]);
-            let e = streets.project(hit.way, *t.line.last().unwrap());
-            let (comp, start_m) = streets.locate(&s, key)?;
-            let (_, end_m) = streets.locate(&e, key)?;
+        .filter_map(|f| {
+            let s = streets.project(f.way, f.start);
+            let e = streets.project(f.way, f.end);
+            let (comp, start_m) = streets.locate(&s, f.key)?;
+            let (_, end_m) = streets.locate(&e, f.key)?;
             // TIGER sides are relative to the segment; an OSM interpolation line lies on
             // its side of the street.
-            let left = match t.right {
+            let left = match f.right {
                 Some(right) if end_m >= start_m => !right,
                 Some(right) => right,
-                None => hit.left,
+                None => f.left,
             };
             Some((
-                t.src,
+                f.src,
                 encode::TigerEntry {
                     comp,
                     start_m,
                     end_m,
-                    from: t.from,
-                    to: t.to,
-                    parity: t.parity,
+                    from: f.from,
+                    to: f.to,
+                    parity: f.parity,
                     left,
                 },
             ))
         })
         .collect();
+    drop(fallbacks);
     let mut range_rows: BTreeMap<tiger::RangeSrc, RangeRow> = BTreeMap::new();
     let mut segments: HashMap<(tiger::RangeSrc, u64), bool> = HashMap::new();
     for (i, t) in ranges.iter().enumerate() {
@@ -1324,6 +1117,400 @@ fn run_one(
     Ok(())
 }
 
+/// The records and ranges of one merge run besides OSM's.
+struct Extracted {
+    raws: Vec<Raw>,
+    oa: Option<sources::Skipped>,
+    nar: Option<sources::NarStats>,
+    oda: Option<sources::Skipped>,
+    ranges: Vec<tiger::Range>,
+    tiger: Option<tiger::TigerStats>,
+}
+
+/// Reads the selected files, after the OSM records `raws`.
+fn extract(sel: &Selected, mut raws: Vec<Raw>, stages: &mut Stages) -> Result<Extracted> {
+    let oa = if sel.openaddresses.is_empty() {
+        None
+    } else {
+        let (mut r, s) = sources::openaddresses(&sel.openaddresses)?;
+        raws.append(&mut r);
+        Some(s)
+    };
+    stages.done("openaddresses");
+    let nar = match &sel.nar {
+        Some((file, path, codes)) => {
+            let (mut r, s) = sources::nar(path, codes, *file)?;
+            raws.append(&mut r);
+            Some(s)
+        }
+        None => None,
+    };
+    let oda = if sel.oda.is_empty() {
+        None
+    } else {
+        let mut total = sources::Skipped::default();
+        for (file, path, abbr, code) in &sel.oda {
+            let (mut r, s) = sources::oda(path, abbr, code, *file)?;
+            raws.append(&mut r);
+            total.bad_rows += s.bad_rows;
+            total.no_location += s.no_location;
+        }
+        Some(total)
+    };
+    stages.done("statcan");
+    let (ranges, tiger) = if sel.tiger.is_empty() {
+        (Vec::new(), None)
+    } else {
+        let (r, s) = tiger::read(&sel.tiger)?;
+        (r, Some(s))
+    };
+    stages.done("tiger");
+    Ok(Extracted {
+        raws,
+        oa,
+        nar,
+        oda,
+        ranges,
+        tiger,
+    })
+}
+
+/// Records with a house number and a street, their strings interned and their street keys
+/// in `keys`.
+struct Normalized {
+    recs: Vec<Rec>,
+    street_names: Interner,
+    suffixes: Interner,
+    units: Interner,
+    cities: Interner,
+    codes: Interner,
+    source_rows: BTreeMap<Src, SourceRow>,
+    /// House numbers [`house_number`] cannot parse: `(source, number, street, point)`.
+    exceptions: Vec<(Src, String, String, P)>,
+    keys: streets::Keys,
+}
+
+fn normalize(raws: Vec<Raw>, files: &mut [FileRow]) -> Normalized {
+    for r in &raws {
+        files[r.file as usize].records += 1;
+    }
+    let parsed: Vec<Option<HouseNumber>> =
+        raws.par_iter().map(|r| house_number(&r.number)).collect();
+    let mut street_names = Interner::new();
+    let mut suffixes = Interner::new();
+    let mut units = Interner::new();
+    let mut cities = Interner::new();
+    let mut codes = Interner::new();
+    let mut source_rows: BTreeMap<Src, SourceRow> = BTreeMap::new();
+    let mut exceptions: Vec<(Src, String, String, P)> = Vec::new();
+    let mut recs: Vec<Rec> = Vec::with_capacity(raws.len());
+    for (r, hn) in raws.into_iter().zip(parsed) {
+        let row = source_rows.entry(r.src).or_insert_with(|| SourceRow {
+            source: r.src,
+            records: 0,
+            no_number: 0,
+            number_exceptions: 0,
+            zero_number: 0,
+            no_street: 0,
+            with_unit: 0,
+            with_city: 0,
+            with_postcode: 0,
+            kinds: BTreeMap::new(),
+        });
+        row.records += 1;
+        let Some(hn) = hn else {
+            if r.number.trim().is_empty() {
+                row.no_number += 1;
+                continue;
+            }
+            row.number_exceptions += 1;
+            exceptions.push((r.src, r.number, r.street, r.p));
+            continue;
+        };
+        if hn.number == 0 {
+            // OpenAddresses uses 0 for "unknown".
+            row.zero_number += 1;
+            continue;
+        }
+        *row.kinds.entry(hn.kind.as_str()).or_default() += 1;
+        if r.street.is_empty() {
+            row.no_street += 1;
+            continue;
+        }
+        if !r.unit.is_empty() {
+            row.with_unit += 1;
+        }
+        if !r.city.is_empty() {
+            row.with_city += 1;
+        }
+        let code = postcode(&r.postcode);
+        if code.is_some() {
+            row.with_postcode += 1;
+        }
+        recs.push(Rec {
+            src: r.src,
+            file: r.file,
+            num: hn.number,
+            suffix: suffixes.intern(&hn.suffix),
+            street: street_names.intern(&r.street),
+            key: NONE,
+            unit: units.intern(&r.unit),
+            city: cities.intern(&r.city),
+            postcode: code.map_or(0, |c| codes.intern(&c)),
+            p: r.p,
+            att: None,
+        });
+    }
+    let mut keys = streets::Keys::default();
+    let street_keys = keys.intern_names(&street_names.list);
+    for r in &mut recs {
+        r.key = street_keys[r.street as usize];
+    }
+    Normalized {
+        recs,
+        street_names,
+        suffixes,
+        units,
+        cities,
+        codes,
+        source_rows,
+        exceptions,
+        keys,
+    }
+}
+
+/// Attaches the records within `attach_m` ([`attach::attach`]) and counts, per source, the
+/// records each key finds at [`ATTACH_M`] and those found by alias or by one edit.
+fn attach_records(
+    recs: &mut [Rec],
+    names: &Interner,
+    cities: &Interner,
+    streets: &Streets,
+    keys: &streets::Keys,
+    admin: &Admin,
+    attach_m: f64,
+) -> BTreeMap<Src, AttachRow> {
+    let loose_from = ATTACH_M[0].min(attach_m);
+    let found = attach::attach(
+        recs,
+        &names.list,
+        &cities.list,
+        streets,
+        keys,
+        admin,
+        attach_m,
+        loose_from,
+    );
+    let mut rows: BTreeMap<Src, AttachRow> = BTreeMap::new();
+    for (r, f) in recs.iter_mut().zip(found) {
+        let row = rows.entry(r.src).or_insert_with(|| AttachRow {
+            source: r.src,
+            records: 0,
+            strict: [0; 3],
+            loose: [0; 3],
+            alias: 0,
+            fuzzy: 0,
+        });
+        row.records += 1;
+        for (i, &t) in ATTACH_M.iter().enumerate() {
+            if f.strict_m <= t {
+                row.strict[i] += 1;
+            } else if f.loose_m <= t {
+                row.loose[i] += 1;
+            }
+        }
+        r.att = f.hit.and_then(|(h, k, how)| {
+            let (comp, offset_m) = streets.locate(&h, k)?;
+            Some(Att {
+                comp,
+                way: h.way,
+                how,
+                offset_m,
+                dist_m: h.dist_m,
+                left: h.left,
+            })
+        });
+        match r.att.map(|a| a.how) {
+            Some(How::Alias) => row.alias += 1,
+            Some(How::Fuzzy) => row.fuzzy += 1,
+            _ => {}
+        }
+    }
+    rows
+}
+
+/// Groups the records by (street component or unattached key, direction set, number,
+/// suffix), sources in priority order, and clusters each group at `dedup_m` ([`cluster`]);
+/// with `all`, also at each of [`DEDUP_M`] for the report.
+fn dedup(recs: &[Rec], keys: &streets::Keys, dedup_m: f64, all: bool) -> (Vec<DedupRow>, Merge) {
+    let group = |r: &Rec| match r.att {
+        Some(a) => (false, a.comp, keys.dirs[r.key as usize], r.num, r.suffix),
+        None => (true, r.key, 0, r.num, r.suffix),
+    };
+    let mut order: Vec<u32> = (0..recs.len() as u32).collect();
+    order.par_sort_unstable_by_key(|&i| {
+        let r = &recs[i as usize];
+        (group(r), r.src, i)
+    });
+    let mut bounds = Vec::new();
+    let mut s = 0;
+    for i in 1..=order.len() {
+        if i == order.len() || group(&recs[order[i] as usize]) != group(&recs[order[s] as usize]) {
+            bounds.push((s, i));
+            s = i;
+        }
+    }
+    let mut rows = Vec::new();
+    let mut chosen: Option<Merge> = None;
+    let mut ds_list: Vec<f64> = if all { DEDUP_M.to_vec() } else { Vec::new() };
+    if !ds_list.contains(&dedup_m) {
+        ds_list.push(dedup_m);
+    }
+    for &d in &ds_list {
+        let keep = d == dedup_m;
+        let (row, merge) = cluster(recs, &order, &bounds, d, keep);
+        rows.push(row);
+        if keep {
+            chosen = Some(merge);
+        }
+    }
+    (rows, chosen.expect("dedup_m is in the list"))
+}
+
+/// Per merged address: the sources of its records, its units as `(address, unit)` pairs
+/// (sorted, distinct), and its kept record's postcode, else the first one another record of
+/// the cluster gives.
+fn clusters(recs: &[Rec], merge: &Merge) -> (Vec<u8>, Vec<(u32, u32)>, Vec<u32>) {
+    let mut masks = vec![0u8; merge.reps.len()];
+    let mut units: Vec<(u32, u32)> = Vec::new();
+    let mut codes: Vec<u32> = merge
+        .reps
+        .iter()
+        .map(|&r| recs[r as usize].postcode)
+        .collect();
+    for (i, r) in recs.iter().enumerate() {
+        let c = merge.assign[i];
+        masks[c as usize] |= r.src.bit();
+        if codes[c as usize] == 0 {
+            codes[c as usize] = r.postcode;
+        }
+        if r.unit != 0 {
+            units.push((c, r.unit));
+        }
+    }
+    units.sort_unstable();
+    units.dedup();
+    (masks, units, codes)
+}
+
+/// An interpolation range with no merged point in it, on the OSM way nearest its middle.
+pub struct Fallback {
+    pub src: tiger::RangeSrc,
+    pub way: u32,
+    /// The key the way was found under.
+    key: u32,
+    pub start: P,
+    pub end: P,
+    pub mid: P,
+    pub from: u32,
+    pub to: u32,
+    pub parity: u8,
+    /// TIGER's side, relative to the segment's direction; `None` for OSM.
+    pub right: Option<bool>,
+    /// Whether `mid` is left of the way, in its direction.
+    pub left: bool,
+}
+
+/// For each range, whether a merged address (`reps`, with source masks `masks`) on its street
+/// lies in it within [`TIGER_NEAR_M`] of its line, and whether one from OSM does; and the
+/// ranges with none, on the street nearest their middle within `attach_m`.
+fn fallback_ranges(
+    ranges: &[tiger::Range],
+    keys: &mut streets::Keys,
+    recs: &[Rec],
+    reps: &[u32],
+    masks: &[u8],
+    streets: &Streets,
+    attach_m: f64,
+) -> (Vec<(bool, bool)>, Vec<Fallback>) {
+    let range_keys = {
+        let mut uniq = Interner::new();
+        let ids: Vec<u32> = ranges.iter().map(|r| uniq.intern(&r.street)).collect();
+        let strict = keys.intern_names(&uniq.list);
+        ids.into_iter()
+            .map(|i| strict[i as usize])
+            .collect::<Vec<u32>>()
+    };
+    let mut by_cell: HashMap<(u32, i32, i32), Vec<u32>> = HashMap::new();
+    for (c, &r) in reps.iter().enumerate() {
+        let rec = &recs[r as usize];
+        let (x, y) = cell(rec.p);
+        by_cell
+            .entry((keys.loose[rec.key as usize], x, y))
+            .or_default()
+            .push(c as u32);
+    }
+    let hits: Vec<(bool, bool)> = ranges
+        .par_iter()
+        .zip(&range_keys)
+        .map(|(t, &k)| {
+            let lk = keys.loose[k as usize];
+            let b = geom::BBox::of(t.line.iter().copied());
+            let (lo, hi) = (cell(b.min), cell(b.max));
+            let (mut any, mut osm) = (false, false);
+            for x in lo.0 - 1..=hi.0 + 1 {
+                for y in lo.1 - 1..=hi.1 + 1 {
+                    for &c in by_cell.get(&(lk, x, y)).into_iter().flatten() {
+                        let rec = &recs[reps[c as usize] as usize];
+                        if !t.contains(rec.num) || dist_to_line_m(&t.line, rec.p) > TIGER_NEAR_M {
+                            continue;
+                        }
+                        any = true;
+                        osm |= masks[c as usize] & Src::Osm.bit() != 0;
+                        if osm {
+                            return (true, true);
+                        }
+                    }
+                }
+            }
+            (any, osm)
+        })
+        .collect();
+    drop(by_cell);
+    let keys = &*keys;
+    let fallback: Vec<Fallback> = (0..ranges.len())
+        .into_par_iter()
+        .filter(|&i| !hits[i].0)
+        .filter_map(|i| {
+            let t = &ranges[i];
+            let k = range_keys[i];
+            let lk = keys.loose[k as usize];
+            let mid = midpoint(&t.line);
+            let (hit, key) = match streets.nearest(k, false, mid) {
+                Some(h) if h.dist_m <= attach_m => (h, k),
+                _ => match streets.nearest(lk, true, mid) {
+                    Some(h) if h.dist_m <= attach_m => (h, lk),
+                    _ => return None,
+                },
+            };
+            Some(Fallback {
+                src: t.src,
+                way: hit.way,
+                key,
+                start: t.line[0],
+                end: *t.line.last().unwrap(),
+                mid,
+                from: t.from,
+                to: t.to,
+                parity: t.parity,
+                right: t.right,
+                left: hit.left,
+            })
+        })
+        .collect();
+    (hits, fallback)
+}
+
 /// The merge at the chosen dedup distance.
 struct Merge {
     /// The kept record of each cluster (each unique address).
@@ -1490,11 +1677,11 @@ fn write_samples(
     }
     write("unattached.tsv", text)?;
 
-    // Attached only by the loose key: what the strict key misses.
+    // Attached by the loose key: what the strict key misses.
     let mut text = String::from("source\tnumber\tstreet\tattached_to\tdistance_m\turl\n");
     for src in Src::ALL {
         let idx: Vec<usize> = (0..recs.len())
-            .filter(|&i| recs[i].src == src && recs[i].att.is_some_and(|a| !a.strict))
+            .filter(|&i| recs[i].src == src && recs[i].att.is_some_and(|a| a.how == How::Loose))
             .collect();
         for k in sample(idx.len(), 40, 5) {
             let r = &recs[idx[k]];
@@ -1513,6 +1700,33 @@ fn write_samples(
         }
     }
     write("loose-attached.tsv", text)?;
+
+    // Attached by alias or by one edit (step 2.4): 100 of each per source, to check for
+    // false matches.
+    let mut text = String::from("source\thow\tnumber\tstreet\tattached_to\tdistance_m\turl\n");
+    for src in Src::ALL {
+        for how in [How::Alias, How::Fuzzy] {
+            let idx: Vec<usize> = (0..recs.len())
+                .filter(|&i| recs[i].src == src && recs[i].att.is_some_and(|a| a.how == how))
+                .collect();
+            for k in sample(idx.len(), 100, 6) {
+                let r = &recs[idx[k]];
+                let a = r.att.unwrap();
+                let _ = writeln!(
+                    text,
+                    "{}\t{}\t{}\t{}\t{}\t{:.0}\t{}",
+                    src.as_str(),
+                    how.as_str(),
+                    number(r),
+                    street(r),
+                    streets.name(a.way),
+                    a.dist_m,
+                    osm_url(r.p)
+                );
+            }
+        }
+    }
+    write("fuzzy-attached.tsv", text)?;
 
     let mut text = String::from(
         "number\tkept_source\tkept_street\tkept_lat\tkept_lon\tother_source\tother_street\tother_lat\tother_lon\tdistance_m\tattached\tkept_url\tother_url\n",

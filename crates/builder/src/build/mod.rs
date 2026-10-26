@@ -7,13 +7,17 @@
 //! all of it, then tiles are compressed and written in zoom, then Hilbert order.
 //!
 //! Admin areas are read first (`SADM`, `SAPL`), and every place and POI is given its chain
-//! of admin areas; for now only the coverage is reported. Then the street table (`SSTR`,
-//! `SGEO`), split at admin 8 boundaries and the length cap: postal towns need the addresses,
-//! which `build` does not read yet (step 2.4).
+//! of admin areas; for now only the coverage is reported.
+//!
+//! After the bands, so their memory is free: the addresses of `--addresses` merged per state
+//! and province ([`addr::merge`], step 2.4), then the street table (`SSTR`, `SGEO`), split
+//! where the postal town of its addresses changes, at admin 8 boundaries where it has none,
+//! and at the length cap. The addresses are placed on it and written as `ASTR`, `ASUF`,
+//! `AUNI`, `ALSE`, `ARNG` and `APCD` ([`addr::store`]).
 //!
 //! Search (`SENT`, `STWN`, `SFST`, `SPST`) takes its streets from the table before it is
-//! dropped, its places, POIs and labels from the bands, and its postcodes from the
-//! `postcodes.tsv` files `addr-spike` writes (`--postcodes`), until step 2.4.
+//! dropped, its places, POIs and labels from the bands, and its postcodes and the streets
+//! known only from their addresses from the merge.
 
 pub mod inspect;
 
@@ -34,9 +38,10 @@ use omp_core::whitelist::Whitelist;
 use rayon::prelude::*;
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
-use crate::addr::osm::read_streets;
+use crate::addr::{self, Input, SourceOpts, merge, postcodes, store};
 use crate::admin::{self, Admin, encode as admin_encode};
 use crate::fetch::manifest::{FileEntry, Manifest};
+use crate::fetch::regions::Subdivision;
 use crate::measure::compress;
 use crate::measure::osm;
 use crate::measure::peak_rss_mib;
@@ -88,10 +93,28 @@ pub struct BuildArgs {
     #[arg(long)]
     route_regions: Option<PathBuf>,
 
-    /// Postcode points from `addr-spike` (`postcodes.tsv` files, or directories holding them
-    /// one level down, as `--each` writes them); none if not given.
+    /// States or provinces whose addresses to merge, as ISO codes (`US-OH`, `CA-QC`), or
+    /// `all` for every US state and Canadian province; none if not given. Needs their files
+    /// from `fetch` and `<inputs>/poly/<ISO>.poly`.
+    #[arg(long = "addresses")]
+    addresses: Vec<String>,
+
+    /// Address sources to read.
+    #[arg(
+        long,
+        value_enum,
+        value_delimiter = ',',
+        default_value = "osm,openaddresses,nar,tiger"
+    )]
+    address_sources: Vec<Input>,
+
+    /// Skip address files whose license name contains this text, ignoring case.
     #[arg(long)]
-    postcodes: Vec<PathBuf>,
+    exclude_license: Vec<String>,
+
+    /// Uncompressed KiB per address block; the first is written, the others only measured.
+    #[arg(long, hide = true, value_delimiter = ',', default_value = "16")]
+    address_block_kib: Vec<usize>,
 
     /// Uncompressed KiB per `SENT` block; the first is written, the others only measured.
     #[arg(long, hide = true, value_delimiter = ',', default_value = "16")]
@@ -301,6 +324,29 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     }
     let clip = args.clip_poly.as_deref().map(Poly::read).transpose()?;
 
+    let mut subs: Vec<Subdivision> = Vec::new();
+    for s in &args.addresses {
+        if s.eq_ignore_ascii_case("all") {
+            subs.extend(Subdivision::all());
+            continue;
+        }
+        subs.push(
+            Subdivision::from_iso(&s.to_uppercase())
+                .with_context(|| format!("unknown subdivision {s:?}; use e.g. US-OH or CA-QC"))?,
+        );
+    }
+    subs.dedup();
+    let address_opts = merge::Options {
+        subdivisions: subs,
+        sources: SourceOpts {
+            sources: args.address_sources.clone(),
+            exclude_license: args.exclude_license.clone(),
+        },
+        inputs: manifest_dir.to_owned(),
+        attach_m: merge::ATTACH_M,
+        dedup_m: merge::DEDUP_M,
+    };
+
     let regions = load_regions(
         &args
             .route_regions
@@ -313,17 +359,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let admin = admin::load(&args.input)?;
     let mut chains = ChainStats::default();
     log_stage("admin", &mut t);
-    let postcodes = crate::addr::postcodes::read(&args.postcodes)?;
     let mut search = search::Builder::new();
-    let street_sections = {
-        let ways = read_streets(&args.input)?;
-        let table = street::Table::build(&ways, &admin, &[], &[]);
-        drop(ways);
-        street::print_stats(&table.stats);
-        search.add_streets(&table, &admin);
-        street_encode::sections(&table, street_encode::BLOCK)?
-    };
-    log_stage("streets", &mut t);
     let mut collected = search::Collector::new(&wl);
     let store_path = temp.join(format!("{file_name}-build.v2"));
     let mut store = Store::create(&store_path)?;
@@ -372,7 +408,73 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         drop(data);
         log_stage("tiles", &mut t);
     }
-    let index = search.finish(&admin, &wl, collected, &args.input, &postcodes)?;
+
+    // Addresses, the street table they vote the postal towns of, and the address sections.
+    let (ways, merged) = if address_opts.subdivisions.is_empty() {
+        (addr::osm::read_streets(&args.input)?, None)
+    } else {
+        let osm = addr::osm::read(&args.input)?;
+        log_stage("addresses read", &mut t);
+        let (m, ways) = merge::merge(&address_opts, &admin, osm, &args.input)?;
+        log_stage("addresses merged", &mut t);
+        (ways, Some(m))
+    };
+    let mut table = Some(match &merged {
+        Some(m) => street::Table::build(&ways, &admin, &m.votes, &m.cities.list),
+        None => street::Table::build(&ways, &admin, &[], &[]),
+    });
+    drop(ways);
+    let street_sections = {
+        let table = table.as_ref().unwrap();
+        street::print_stats(&table.stats);
+        search.add_streets(table, &admin);
+        street_encode::sections(table, street_encode::BLOCK)?
+    };
+    log_stage("streets", &mut t);
+    let address_block = args
+        .address_block_kib
+        .first()
+        .map_or(store::BLOCK, |k| k << 10);
+    let mut address_rows = Vec::new();
+    let (address_sections, postcodes, address_streets) = match merged {
+        Some(mut m) => {
+            m.votes = Vec::new();
+            let attached = std::mem::take(&mut m.attached);
+            let (inp, dropped) = store::place(table.as_ref().unwrap(), attached, &m);
+            // The table and the attached records are not needed once placed.
+            table = None;
+            let (secs, mut sizes) = store::sections(&inp, address_block)?;
+            sizes.ranges_dropped = dropped;
+            print_address_sizes(&sizes);
+            for &kib in args.address_block_kib.iter().skip(1) {
+                print_address_sizes(&store::sections(&inp, kib << 10)?.1);
+            }
+            drop(inp);
+            let streets = merge::address_streets(&m, &admin);
+            let pcs = postcodes::combine(std::mem::take(&mut m.postcodes));
+            for f in &m.files {
+                match manifest.files.iter().find(|e| e.path == *f) {
+                    Some(e) => sources.push(source(e)),
+                    None => eprintln!("  warning: {f} is not in the manifest"),
+                }
+            }
+            print_address_rows(&m.rows, &streets, pcs.len());
+            address_rows = std::mem::take(&mut m.rows);
+            (Some((secs, sizes)), pcs, streets)
+        }
+        None => (None, Vec::new(), Vec::new()),
+    };
+    drop(table);
+    log_stage("addresses", &mut t);
+    let index = search.finish(
+        &admin,
+        &wl,
+        collected,
+        &args.input,
+        &postcodes,
+        &address_streets,
+    )?;
+    drop(address_streets);
     search::print_stats(&index.stats);
     let block_kib = args
         .search_block_kib
@@ -404,6 +506,20 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     settings.insert("search_stop_min".into(), search::STOP_MIN.into());
     settings.insert("search_block_kib".into(), (block_kib >> 10).into());
     settings.insert("postcodes".into(), postcodes.len().into());
+    if let Some((_, sizes)) = &address_sections {
+        settings.insert("addresses".into(), (sizes.addresses + sizes.points).into());
+        settings.insert("address_block_kib".into(), (address_block >> 10).into());
+        settings.insert("attach_m".into(), merge::ATTACH_M.into());
+        settings.insert("dedup_m".into(), merge::DEDUP_M.into());
+        let isos: Vec<String> = address_rows.iter().map(|r| r.iso.clone()).collect();
+        settings.insert("address_subdivisions".into(), isos.join(",").into());
+        if !args.exclude_license.is_empty() {
+            settings.insert(
+                "exclude_license".into(),
+                args.exclude_license.join(",").into(),
+            );
+        }
+    }
     settings.insert("input".into(), file_label(&args.input).into());
     if let Some(z) = &water_zip {
         settings.insert("water".into(), file_label(z).into());
@@ -503,6 +619,15 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     sections.push(w.section(search_encode::SFST, &sfst)?);
     sections.push(w.section(search_encode::SPST, &spst)?);
     drop((sent, stwn, sfst, spst));
+    let address_sizes = match address_sections {
+        Some((secs, sizes)) => {
+            for (id, bytes) in secs.list() {
+                sections.push(w.section(id, &bytes)?);
+            }
+            Some(sizes)
+        }
+        None => None,
+    };
     drop(admin);
     drop(store_file);
     let _ = std::fs::remove_file(&store_path);
@@ -574,6 +699,9 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     chains.print();
     street::print_sizes(&street_sizes);
     print_search_sizes(&search_sizes);
+    if let Some(s) = &address_sizes {
+        print_address_sizes(s);
+    }
     eprintln!(
         "wrote {} in {} chunk(s), {:.1} MiB (tiles {} B, TIDX {} B, TDIC {} dictionaries); \
          {:.0} s, peak RSS {:.0} MiB, temp store {:.1} MiB",
@@ -797,6 +925,65 @@ fn print_search_sizes(s: &search_encode::Sizes) {
         mib(s.sfst),
         mib(s.spst),
         (s.sent + s.stwn + s.sfst + s.spst) as f64 / s.entries.max(1) as f64
+    );
+}
+
+fn print_address_sizes(s: &store::Sizes) {
+    eprintln!(
+        "  addresses: {} KiB blocks: {} on {} streets, {} unattached, {} ranges ({} dropped), \
+         {} codes, {} exceptions; ASTR {:.2} MiB ({:.2} raw, {} blocks, {:.0} µs to decode \
+         one), ASUF {:.2}, AUNI {:.2}, ALSE {:.2} ({} blocks), ARNG {:.2}, APCD {:.2}; {:.2} \
+         MiB, {:.2} bytes per address",
+        s.block_kib,
+        s.addresses,
+        s.streets_with_addresses,
+        s.points,
+        s.ranges,
+        s.ranges_dropped,
+        s.codes,
+        s.exceptions,
+        mib(s.astr),
+        mib(s.astr_raw),
+        s.astr_blocks,
+        s.decode_us_per_block,
+        mib(s.asuf),
+        mib(s.auni),
+        mib(s.alse),
+        s.alse_blocks,
+        mib(s.arng),
+        mib(s.apcd),
+        mib(s.total()),
+        (s.total() - s.arng) as f64 / (s.addresses + s.points).max(1) as f64
+    );
+}
+
+/// Totals of the per-subdivision merge lines.
+fn print_address_rows(rows: &[merge::SubRow], streets: &[search::AddressStreet], postcodes: usize) {
+    let sum = |f: &dyn Fn(&merge::SubRow) -> u64| rows.iter().map(f).sum::<u64>();
+    let (records, addresses, attached) = (
+        sum(&|r| r.records),
+        sum(&|r| r.addresses),
+        sum(&|r| r.attached),
+    );
+    let by: Vec<u64> = (0..4).map(|k| sum(&|r| r.by[k])).collect();
+    eprintln!(
+        "  addresses: {} subdivisions, {records} records ({} strict, {} loose, {} alias, {} \
+         fuzzy, {} unattached) → {addresses} addresses, {attached} attached ({:.2}%), {} \
+         approximate, {} units, {} of {} ranges kept; {} streets known only from {} \
+         addresses, {postcodes} postcodes",
+        rows.len(),
+        by[0],
+        by[1],
+        by[2],
+        by[3],
+        sum(&|r| r.unattached_records),
+        100.0 * attached as f64 / addresses.max(1) as f64,
+        sum(&|r| r.approximate),
+        sum(&|r| r.units),
+        sum(&|r| r.fallback_ranges),
+        sum(&|r| r.ranges),
+        streets.len(),
+        streets.iter().map(|s| s.addresses).sum::<u64>(),
     );
 }
 

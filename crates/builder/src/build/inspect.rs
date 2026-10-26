@@ -95,6 +95,7 @@ fn search(pack: &Pack, schema: Option<&Schema>, query: &str) -> Result<()> {
                 Kind::Poi => layer_class("pois", e.class),
                 Kind::Postcode => ["numeric", "canadian"][usize::from(e.class.min(1))].into(),
                 Kind::Feature => layer_class("labels", e.class),
+                Kind::AddressStreet => "from addresses".into(),
             };
             let (lat, lon) = crate::measure::geom::unproject(e.p);
             let town = match e.town {

@@ -11,7 +11,7 @@ Status of each part:
 | Container: header, section table, chunking, checksums | **Specified.** Reader and writer in `omp-core::pack`, with round-trip tests. |
 | Metadata and attribution (`META`), schema (`SCHM`) | **Specified.** In `omp-core::meta` and `omp-core::schema`. |
 | Tiles (`TIDX`, `TDIC`, `TDAT`) | **Specified** (encoding V4 from phase 0). Codec in `omp-core::tile`, reader and writer in `omp-core::tiles`, with round-trip tests. |
-| Addresses (`ASTR`, `AIDX`, `ASUF`, `AUNI`, `ALSE`, `ARNG`) | **Specified** (encoding A3 from phase 0). |
+| Addresses (`ASTR`, `ASUF`, `AUNI`, `ALSE`, `ARNG`, `APCD`) | *Provisional* (encoding A3 from phase 0, blocked for random access in phase 2 step 2.4). Written by `build`; finalized with the search sections in step 2.5. |
 | Routing (`RCH*`) | *Provisional*, finalized in Phase 3. |
 | Admin areas (`SADM`, `SAPL`) | *Provisional* (phase 2 step 2.1). Written by `build`; finalized with the search sections in step 2.5. |
 | Streets (`SSTR`, `SGEO`) | *Provisional* (phase 2 step 2.2). Written by `build`; finalized with the search sections in step 2.5. |
@@ -236,63 +236,79 @@ block      = (key_delta:varint  layer_mask:u16  layer_len:varint*)*        ; `ti
 
 ## Addresses
 
-Addresses are stored per **street**, as in roadmap §4 and decision 9 (A3). A street is a set of connected OSM ways that share a normalized name. Its **offset** coordinate runs along the street's stored geometry in metres, as defined under [`SGEO`](#sgeo-street-geometry-contiguous). Street names and geometry are in the [street table](#streets--provisional), which search, addresses and "what's here" share. Addresses refer to streets by **street ID**, the street's index in that table.
+Addresses are stored per **street**, as in roadmap §4 and decision 9 (A3). A street is a record of the [street table](#streets--provisional), which search, addresses and "what's here" share, and addresses refer to it by **street ID**. An address's **offset** runs along the street's stored geometry, as defined under [`SGEO`](#sgeo-street-geometry-contiguous), in steps of **5 m**. Addresses that match no street within 200 m are stored on their own with their position and street name (`ALSE`).
 
-The phase 0 sizes for North America: 151.5M addresses, 315 MiB (2.18 bytes each), plus 50 MiB of US TIGER ranges.
-
-### `ASTR`: street runs (spanning)
-
-Records are **zstd blocks** (level 19, no dictionary). Each block holds the runs of consecutive streets, about 32 KiB uncompressed (the block size barely affects size: 4 KiB blocks are 3.6% larger, so Phase 2 may lower it). A street never spans two blocks. Within a block:
+`build --addresses` writes six sections (phase 2 step 2.4). Each is a run of zstd blocks (level 19) behind an index, in the same layout as the [street sections](#streets--provisional):
 
 ```
-run   = street_delta:varint  count:varint  entry*        ; street_delta from the previous run's street ID
+section = count:u32  nblocks:u32  (first:u32  offset:u32  length:u32)*  block*
+```
+
+`offset` is from the start of the section. What `count` and `first` mean depends on the section. Blocks hold about 16 KiB uncompressed. 4 KiB blocks would make the sections 5.1% larger (North America) and save about 0.3 ms per USB 2 read, which the 1 s cold-lookup target does not need.
+
+The sizes for North America are in the [size table](size-table.md#phase-2-step-24-addresses).
+
+### `ASTR`: street runs (contiguous)
+
+`count` is the number of addresses; `first` is the first street ID in the block. A street's addresses are one run, and a run never spans two blocks.
+
+```
+block = run*
+run   = street_delta:varint  count:varint  postcode:varint  entry*
 entry = (number_delta << 3 | left << 2 | osm << 1 | approx):varint  offset_delta:zvarint
 ```
 
-- Entries are sorted by house number, then suffix, then offset. `number_delta` and `offset_delta` start from 0 for each street.
-- Offsets are in units of **5 m** along the street.
+- `street_delta` is from the previous run's street, or from the block's `first` for its first run (so that one is 0).
+- `postcode` is the street's postcode: the commonest among its addresses, the lowest on a tie, as an index + 1 into `APCD`; 0 for none. An address shows the street's postcode unless `ASUF` gives it another.
+- Entries are sorted by house number, then suffix (by bytes), then offset. `number_delta` and `offset_delta` start from 0 for each street.
 - `left`: the address is on the left side when walking in the offset direction. `osm`: it comes from OSM, which wins in the dedup and affects the attribution shown. `approx`: its position is approximate (an NAR blockface-only point).
-- Each street's first `street_delta` in a block is from the last street of the previous block, or from 0 in the first block.
+- An entry's **ordinal** is its position in its `ASTR` block, from 0.
 
-### `AIDX`: block index (contiguous)
+### `ASUF` and `AUNI`: suffixes, postcode exceptions and units (contiguous)
 
-```
-AIDX  = nblocks:u32  (first_street:u32  offset:u64  length:u32)*
-```
-
-The virtual offset (in `ASTR`) and compressed length of each block, and the first street ID in it. To look up a street, binary-search `first_street` and decompress that one block.
-
-### `ASUF` and `AUNI`: suffixes and units (contiguous)
-
-Each is zstd-compressed (one frame) and indexed by **entry ordinal**, the position of an entry in the street runs counted across all of `ASTR`:
+Block *k* of each holds the entries of `ASTR` block *k*, by ordinal, and has the same `first`. Both have one block per `ASTR` block, empty ones included.
 
 ```
-ASUF  = (ordinal_delta:varint  suffix:str)*                     ; "A", "1/2", "-125", …
-AUNI  = (ordinal_delta:varint  nunits:varint  unit:str*)*       ; "Apt 2", "Unit 101", …
+ASUF block = nsuffixes:varint  (ordinal_delta:varint  suffix:str)*  ncodes:varint  (ordinal_delta:varint  postcode:varint)*
+AUNI block = (ordinal_delta:varint  nunits:varint  unit:str*)*
 ```
 
-Phase 2 may split these into blocks aligned with `ASTR` blocks if lookups need it. At 0.4's sizes (units 0.4–1.1 MiB per region) one frame per pack is workable, but a continent's 32M units are not.
+- Ordinal deltas run from 0 within each list of each block.
+- `suffix`: "A", "1/2", "-125", … `postcode` (an index + 1 into `APCD`): the address's postcode, where it differs from its street's.
+- `unit`: "Apt 2", "Unit 101", …, in natural order ("Apt 2" before "Apt 10").
+- `count` is the number of suffixes in `ASUF` and of units in `AUNI`.
 
 ### `ALSE`: unattached addresses (contiguous)
 
-Addresses that matched no OSM street within 200 m (11% in North America). Stored with their own position and street name, sorted along a Morton curve, zstd-compressed:
+Addresses that matched no OSM street within 200 m, with their own position and street name. `count` is the number of addresses. Blocks hold whole **z14 cells**; `first` is the Morton code (x bits even, y bits odd) of the block's first cell, at z14 (`(x >> 18, y >> 18)` of world coordinates). Addresses are sorted by cell, then along a Morton curve of their point, then by number. To find the addresses near a point, binary-search `first` for each z14 cell around it.
 
 ```
-ALSE  = nnames:varint  name:str*  point*
-point = dx:zvarint  dy:zvarint  name:varint  (number << 2 | osm << 1 | approx):varint  suffix:str  nunits:varint  unit:str*
+block = nnames:varint  name:str*  point*
+point = dx:zvarint  dy:zvarint  name:varint  (number << 2 | osm << 1 | approx):varint
+        suffix:str  postcode:varint  nunits:varint  unit:str*
 ```
 
-`dx`, `dy` are deltas in units of 128 world units (about 1 m at the equator and 0.7 m at 45°), from a cursor that starts at (0, 0). `name` indexes the name table.
+- `dx`, `dy` are deltas in units of 2⁷ world units (about 1 m at the equator and 0.7 m at 45°), from a cursor that starts at (0, 0) in each block.
+- `name` indexes the block's name table (sorted by bytes), which holds the street names as the source spells them.
+- `postcode` is an index + 1 into `APCD`, or 0.
 
 ### `ARNG`: interpolation ranges (contiguous)
 
-TIGER ranges with no point address nearby, and OSM `addr:interpolation` ranges (decision 11). zstd-compressed:
+TIGER ranges with no point address in them, and OSM `addr:interpolation` ranges (decision 11), on the street nearest their middle. `count` is the number of ranges; `first` the first street ID in the block. A street's ranges never span two blocks.
 
 ```
 range = street_delta:varint  start_delta:zvarint  length:zvarint  from:varint  to_minus_from:zvarint  (parity << 1 | left):varint
 ```
 
-Sorted by street, then start. `start` and `length` are offsets in 5 m units along the street. `start_delta` resets to 0 at each new street. `parity` is 0 for all numbers, 1 for odd and 2 for even.
+Sorted by street, then start. `street_delta` is as in `ASTR`. `start` and `length` are offsets in 5 m units along the street; `start_delta` resets to 0 at each new street. `from` is the number at `start`, `to` the one at `start + length` (a range may run against the offset direction). `parity` is 0 for all numbers, 1 for odd and 2 for even. `left` is the side, as in `ASTR`.
+
+### `APCD`: postcodes (contiguous)
+
+The postcodes the other sections refer to, sorted by bytes, in display form ("45201", "K7L 3N6"). `count` is the number of codes; `first` is the index of the block's first code.
+
+```
+block = code:str*
+```
 
 ## Routing — *provisional*
 
@@ -403,13 +419,14 @@ entry   = (class << 3 | kind):varint  importance:u8  name:str  dx:zvarint  dy:zv
   | 3 | POI (`pois` layer) | class in the `pois` layer | 0 |
   | 4 | Postcode | 0 five digits (US, Mexico), 1 Canadian | metres from the point holding 90% of its addresses |
   | 5 | Map label (`labels` layer: lakes, rivers, parks, protected areas, forests) | class in the `labels` layer | 0 |
+  | 6 | Street known only from unattached addresses (`ALSE`), with no OSM street of its key within about 1 km of them | 0 | metres from the point holding 90% of its addresses |
 
   A place node and an admin area are one entry when the node lies in an area of a matching level (country 2; state 3–4; city, town, village, hamlet 5–8; suburb, neighbourhood, locality 7–10) whose name has the same key: the place entry refers to the area, and the area has no entry of its own.
-- `importance` (0–255) ranks entries before distance is known: places by class and population, admin areas by level, streets by road class and length, POIs by class, labels by the zoom they first show at, postcodes at 110. The builder's `search::*_importance` functions are the reference; step 2.6 tunes them.
+- `importance` (0–255) ranks entries before distance is known: places by class and population, admin areas by level, streets by road class and length, POIs by class, labels by the zoom they first show at, postcodes at 110, streets known only from addresses at 80. The builder's `search::*_importance` functions are the reference; step 2.6 tunes them.
 - `name` is the name shown, as on the map (decision 6). For a postcode it is the display form ("45201", "K7L 3N6").
-- `dx`, `dy`: the entry's point in units of 2⁶ world units, as deltas from a cursor that starts at (0, 0) in each block: a street's middle (half its length along its parts), a place or POI node (an area POI's centroid), a label's polylabel point, an admin area's label point, a postcode's median address.
+- `dx`, `dy`: the entry's point in units of 2⁶ world units, as deltas from a cursor that starts at (0, 0) in each block: a street's middle (half its length along its parts), a place or POI node (an area POI's centroid), a label's polylabel point, an admin area's label point, a postcode's or an address-only street's median address (one entry per street key and deepest admin area).
 - `admin`: the admin ID + 1 of the deepest area holding the point, or 0; for an admin area or a place that stands for one, that area's parent. Its parents give the rest of the chain.
-- `town`: the index + 1 into `STWN` of the town shown with the entry (decision 4), or 0. A street's is its `SSTR` town; POIs, places smaller than a village and postcodes take theirs from the decision 4 fallbacks; admin areas, larger places and labels have none.
+- `town`: the index + 1 into `STWN` of the town shown with the entry (decision 4), or 0. A street's is its `SSTR` town; an address-only street's is the postal town most of its addresses give; POIs, places smaller than a village, postcodes and address-only streets without one take theirs from the decision 4 fallbacks; admin areas, larger places and labels have none.
 - `alt`: searchable names that are not shown, sorted: `name:en`, `name:fr`, `alt_name`, `short_name`, `official_name`, `old_name` (decision 6), `brand` for POIs, a street's `SSTR` alternate names and refs. Names whose tokens are the name's are left out.
 
 ### `STWN`: towns (contiguous)
