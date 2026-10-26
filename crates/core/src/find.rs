@@ -834,8 +834,7 @@ impl<'a> Run<'a> {
 
     /// The readings of `parsed`: a state at the end or not, a locality split, a number or
     /// not. In the `unfinished` pass, those of the words before the last comma: what is
-    /// being typed after it may not say anything yet ("…, Buffalo, New ", "…, Clearfield,
-    /// K").
+    /// being typed after it may not say anything yet ("…, Buffalo, New ", "…, Dayton, O").
     fn readings(&self, parsed: &Parsed) -> Vec<Reading> {
         if !self.unfinished {
             return self.readings_of(parsed, &parsed.words, parsed.prefix);
