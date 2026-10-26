@@ -1,6 +1,7 @@
-//! The window: the map view, input, the controls over the map (scale bar, zoom buttons,
-//! cursor coordinates, credit line, the Layers and Menu buttons), its dialogs (pack picker,
-//! About this map, Verify pack, errors) and the debug overlay (F3, with tile outlines).
+//! The window: the map view, input, the controls over the map (search box, scale bar, zoom
+//! buttons, cursor coordinates, credit line, the Layers and Menu buttons), its dialogs (pack
+//! picker, About this map, Verify pack, errors) and the debug overlay (F3, with tile
+//! outlines).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use eframe::egui_wgpu::{self, wgpu};
 
-use crate::bench::{Bench, FrameSample, Poll, ReportContext};
+use crate::bench::{Bench, FrameSample, Poll, ReportContext, SearchContext};
 use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
 use crate::config::{self, Config, Location, View};
@@ -22,6 +23,7 @@ use crate::packs::{self, Opened};
 use crate::pool::Pool;
 use crate::render::{self, GpuMesh, MapCallback, Renderer};
 use crate::scale::{self, Units};
+use crate::search::{self, SearchUi, Status};
 use crate::style::{Style, StyleFile};
 use crate::tiles::{self, Cover, Known, Resolved, TileId};
 use crate::verify::{Outcome, Verify};
@@ -107,6 +109,7 @@ struct MapState {
     units: Units,
     /// A tile failed to load and "Verify pack" was suggested.
     error_suggested: bool,
+    search: SearchUi,
 }
 
 /// What the last frame showed, for the overlay.
@@ -261,6 +264,7 @@ impl App {
         let loader = start_loader(&opened, &style, pool, ctx);
         self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
         let units = packs::default_units(opened.meta.as_ref().ok());
+        let search = SearchUi::start(opened.first_chunk.clone(), &opened.schema, ctx);
         self.map = Some(MapState {
             opened,
             style,
@@ -276,6 +280,7 @@ impl App {
             hidden_for: None,
             units,
             error_suggested: false,
+            search,
         });
         self.first_full = None;
         if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
@@ -447,6 +452,7 @@ impl MapState {
         if resp.dragged() {
             let d = resp.drag_delta();
             cam.pan([f64::from(d.x), f64::from(d.y)]);
+            self.motion.stop_flying();
             self.motion.velocity = [0.0, 0.0];
         }
         if resp.drag_stopped() {
@@ -474,6 +480,7 @@ impl MapState {
                         }
                         // Pinch.
                         egui::Event::Zoom(f) if *f > 0.0 => {
+                            self.motion.stop_flying();
                             cam.zoom_around(f64::from(*f).log2(), anchor);
                         }
                         _ => {}
@@ -489,6 +496,7 @@ impl MapState {
                 let dy = key(egui::Key::ArrowUp) - key(egui::Key::ArrowDown);
                 if dx != 0.0 || dy != 0.0 {
                     cam.pan([dx * KEY_PAN * dt, dy * KEY_PAN * dt]);
+                    self.motion.stop_flying();
                     self.motion.velocity = [0.0, 0.0];
                 }
                 if i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals) {
@@ -779,6 +787,9 @@ impl eframe::App for App {
                     &layers,
                     outlines,
                 );
+                if let Some(h) = &m.search.session.marker {
+                    search::draw_marker(&painter, rect.min, &m.camera, h);
+                }
                 if m.view.detailed && self.first_full.is_none() {
                     self.first_full = Some(self.started.elapsed());
                 }
@@ -805,6 +816,14 @@ impl eframe::App for App {
             self.frames.pop_front();
         }
 
+        if let Some(path) = self.bench.as_mut().and_then(Bench::take_shot) {
+            ctx.request_screenshot(move |img| {
+                let size = img.size.map(|v| v as u32);
+                if let Err(e) = crate::snapshot::write_png(&path, size, img.as_raw()) {
+                    eprintln!("could not write {}: {e}", path.display());
+                }
+            });
+        }
         if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
             let sample = FrameSample {
                 interval,
@@ -814,11 +833,17 @@ impl eframe::App for App {
                 labels: m.view.label_time,
                 bytes_read: m.opened.reader.bytes_read(),
             };
+            let st = m.search.stats();
             let rc = ReportContext {
                 pack: m.opened.first_chunk.display().to_string(),
                 adapter: self.adapter.clone(),
                 pixels_per_point: ctx.pixels_per_point(),
                 cache_budget: m.cache.budget,
+                search: (m.search.status() == Status::Ready).then(|| SearchContext {
+                    open_ms: st.open.map(|d| d.as_secs_f64() * 1e3),
+                    heap_bytes: st.heap_bytes,
+                    bytes_read: st.bytes_read,
+                }),
             };
             if let Some(report) = b.end_frame(sample, &mut m.camera, &rc) {
                 b.start_idle(report);
@@ -939,6 +964,7 @@ impl App {
             if let Some(e) = &s.last_error {
                 lines.push(format!("last error: {e}"));
             }
+            lines.extend(m.search.overlay_lines());
         }
         if let Some(u) = crate::memory::usage() {
             lines.push(format!(
@@ -956,8 +982,9 @@ impl App {
         if !self.adapter.is_empty() {
             lines.push(self.adapter.clone());
         }
+        // Below the search box.
         egui::Area::new(egui::Id::unique("debug-overlay"))
-            .fixed_pos(map_rect.min + Vec2::new(8.0, 8.0))
+            .fixed_pos(map_rect.min + Vec2::new(8.0, 52.0))
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -1029,11 +1056,35 @@ impl App {
         self.picker = open;
     }
 
-    /// The buttons and readouts over the map: Layers and Menu at the top right; the scale
-    /// bar and the cursor's coordinates at the bottom left; the zoom buttons and the credit
-    /// line at the bottom right.
+    /// The buttons and readouts over the map: the search box at the top left; Layers and
+    /// Menu at the top right; the scale bar and the cursor's coordinates at the bottom left;
+    /// the zoom buttons and the credit line at the bottom right.
     fn controls(&mut self, ctx: &egui::Context, map_rect: Rect) {
         let Some(m) = &mut self.map else { return };
+        let units = self.cfg.units.unwrap_or(m.units);
+
+        // Top left: search. The bench types into it as a user would, and jumps to what it
+        // picks itself.
+        let available = matches!(m.search.status(), Status::Opening | Status::Ready);
+        let key = self.bench.as_mut().and_then(|b| b.search_key(available));
+        let out = m.search.ui(
+            ctx,
+            map_rect,
+            &m.camera,
+            units,
+            &mut self.cfg.recent_searches,
+            key,
+        );
+        if let Some(b) = &mut self.bench {
+            for t in &out.taken {
+                let view = t.first.as_ref().map(|h| search::view_for(h, m.camera.size));
+                b.search_answer(t, view);
+            }
+        } else if let Some(h) = out.fly {
+            let (c, z) = search::view_for(&h, m.camera.size);
+            m.motion.fly_to(&m.camera, c, z);
+        }
+
         let panel = egui::Frame::popup(&ctx.global_style())
             .inner_margin(egui::Margin::symmetric(6, 4))
             .fill(Color32::from_white_alpha(215));
@@ -1085,7 +1136,6 @@ impl App {
             });
 
         // Bottom left: scale bar and coordinates.
-        let units = self.cfg.units.unwrap_or(m.units);
         let mpp = scale::metres_per_point(m.camera.lonlat()[1], m.camera.scale());
         let cursor = self.cursor;
         egui::Area::new(egui::Id::unique("map-scale"))
@@ -1102,11 +1152,10 @@ impl App {
                 });
             });
 
-        // Bottom right: zoom buttons above the credit line.
-        let credit = match &m.opened.meta {
-            Ok(meta) if !meta.attribution.is_empty() => meta.attribution.clone(),
-            _ => "© OpenStreetMap contributors".into(),
-        };
+        // Bottom right: zoom buttons above the credit line. Only OpenStreetMap's credit stays
+        // on the map, as its licence asks; the address sources' credits, hundreds for a large
+        // pack, are in About this map, which the line opens.
+        let credit = "© OpenStreetMap contributors";
         let credit_rect = egui::Area::new(egui::Id::unique("map-credit"))
             .fixed_pos(map_rect.right_bottom())
             .pivot(Align2::RIGHT_BOTTOM)

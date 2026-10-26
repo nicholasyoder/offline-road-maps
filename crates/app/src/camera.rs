@@ -1,5 +1,6 @@
 //! Web Mercator camera, north up and without rotation (decision 7), and the motion that
-//! moves it: inertia after a drag, and animated zoom around a point.
+//! moves it: inertia after a drag, animated zoom around a point, and flights to a search
+//! result.
 //!
 //! World coordinates are Web Mercator scaled to 0‥1 in both axes, y down, as in tile
 //! numbering. Screen coordinates are egui points from the map's top-left corner.
@@ -142,6 +143,71 @@ pub struct Motion {
     /// Zoom still to apply, and the screen point it is anchored at.
     zoom_left: f64,
     anchor: Vec2,
+    fly: Option<Fly>,
+}
+
+/// A flight to a view: out, across and in, with the centre moving at a steady speed on
+/// screen.
+#[derive(Clone, Debug)]
+struct Fly {
+    from: (Vec2, f64),
+    to: (Vec2, f64),
+    /// How far below the straight line from one zoom to the other the middle dips, so both
+    /// ends fit on screen there.
+    dip: f64,
+    seconds: f64,
+    t: f64,
+    /// The share of the way across at each of `FLY_SAMPLES` + 1 even steps of the path.
+    across: Vec<f64>,
+}
+
+const FLY_SAMPLES: usize = 64;
+
+impl Fly {
+    fn new(cam: &Camera, to: Vec2, zoom: f64) -> Self {
+        let from = (cam.center, cam.zoom);
+        let d = (to[0] - from.0[0]).hypot(to[1] - from.0[1]);
+        let side = cam.size[0].min(cam.size[1]).max(1.0);
+        let fit = (side / (d.max(1e-12) * TILE_PX)).log2() - 0.5;
+        let dip = ((from.1 + zoom) / 2.0 - fit).max(0.0);
+        let mut f = Self {
+            from,
+            to: (to, zoom),
+            dip,
+            seconds: (0.8 + 0.1 * (2.0 * dip + (zoom - from.1).abs())).min(2.5),
+            t: 0.0,
+            across: Vec::with_capacity(FLY_SAMPLES + 1),
+        };
+        // The centre moves 2^-zoom world units per step of the path for a steady speed
+        // on screen.
+        let mut sum = 0.0;
+        f.across.push(0.0);
+        for i in 0..FLY_SAMPLES {
+            let s = (i as f64 + 0.5) / FLY_SAMPLES as f64;
+            sum += (-f.zoom_at(s)).exp2();
+            f.across.push(sum);
+        }
+        for a in &mut f.across {
+            *a /= sum;
+        }
+        f
+    }
+
+    fn zoom_at(&self, s: f64) -> f64 {
+        self.from.1 + (self.to.1 - self.from.1) * s - self.dip * 4.0 * s * (1.0 - s)
+    }
+
+    /// The view at path position `s` (0‥1).
+    fn at(&self, s: f64) -> (Vec2, f64) {
+        let x = s * FLY_SAMPLES as f64;
+        let i = (x as usize).min(FLY_SAMPLES - 1);
+        let u = self.across[i] + (self.across[i + 1] - self.across[i]) * (x - i as f64);
+        let (a, b) = (self.from.0, self.to.0);
+        (
+            [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u],
+            self.zoom_at(s),
+        )
+    }
 }
 
 /// Inertia slows by this factor per second.
@@ -152,16 +218,41 @@ const ZOOM_RATE: f64 = 14.0;
 impl Motion {
     /// Adds `dz` to the animated zoom around `anchor`.
     pub fn zoom(&mut self, dz: f64, anchor: Vec2) {
+        self.fly = None;
         self.zoom_left += dz;
         self.anchor = anchor;
     }
 
+    /// Flies the camera to `center` at `zoom`, replacing any other motion.
+    pub fn fly_to(&mut self, cam: &Camera, center: Vec2, zoom: f64) {
+        *self = Self {
+            fly: Some(Fly::new(cam, center, zoom.clamp(MIN_ZOOM, MAX_ZOOM))),
+            ..Self::default()
+        };
+    }
+
+    /// Ends a flight where it is, as a drag or a key does.
+    pub fn stop_flying(&mut self) {
+        self.fly = None;
+    }
+
     pub fn moving(&self) -> bool {
-        self.velocity != [0.0, 0.0] || self.zoom_left != 0.0
+        self.velocity != [0.0, 0.0] || self.zoom_left != 0.0 || self.fly.is_some()
     }
 
     /// Advances by `dt` seconds.
     pub fn step(&mut self, cam: &mut Camera, dt: f64) {
+        if let Some(f) = &mut self.fly {
+            f.t += dt;
+            let x = (f.t / f.seconds).min(1.0);
+            let (c, z) = f.at(x * x * (3.0 - 2.0 * x));
+            cam.center = c;
+            cam.zoom = z;
+            cam.clamp();
+            if x >= 1.0 {
+                self.fly = None;
+            }
+        }
         if self.zoom_left != 0.0 {
             let dz = if self.zoom_left.abs() < 0.002 {
                 self.zoom_left
@@ -240,6 +331,30 @@ mod tests {
         c.fit_bounds();
         let [x0, y0, x1, y1] = c.visible();
         assert!(x0 <= 0.1 + 1e-9 && x1 >= 0.3 - 1e-9 && y0 <= 0.2 + 1e-9 && y1 >= 0.3 - 1e-9);
+    }
+
+    #[test]
+    fn flight_ends_at_target_and_dips_on_long_ones() {
+        let mut c = Camera::new([0.0, 0.0, 1.0, 1.0]);
+        c.size = [1000.0, 800.0];
+        c.center = [0.2, 0.3];
+        c.zoom = 12.0;
+        let mut m = Motion::default();
+        m.fly_to(&c, [0.25, 0.35], 15.0);
+        let mut lowest = c.zoom;
+        for _ in 0..600 {
+            m.step(&mut c, 1.0 / 60.0);
+            lowest = lowest.min(c.zoom);
+        }
+        assert!(!m.moving());
+        assert!(close(c.center[0], 0.25) && close(c.center[1], 0.35) && close(c.zoom, 15.0));
+        // Both ends 0.07 apart fit in 800 points around z3.5.
+        assert!(lowest < 5.0, "{lowest}");
+        // A drag ends it.
+        m.fly_to(&c, [0.2, 0.3], 12.0);
+        m.step(&mut c, 0.1);
+        m.stop_flying();
+        assert!(!m.moving());
     }
 
     #[test]

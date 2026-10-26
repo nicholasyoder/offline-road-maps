@@ -18,6 +18,8 @@ cargo run --release -p omp-app -- --pack $OMP_WORK/packs/ohio
 
 Controls: drag to pan, scroll or double-click to zoom, arrow keys to pan, `+`/`-` to zoom, F3 for the debug overlay.
 
+Search: Ctrl+F or `/` goes to the search box at the top left. Suggestions show as you type; the arrow keys move through them, Enter or a click picks one and flies there with a marker, and Enter with none selected lists every result. In the box, Escape closes the suggestions, then leaves the box; on the map it closes the results list, then removes the marker (the × next to the box clears everything). A pack built before search (format 0.3 or older) opens with the box disabled.
+
 The style comes from `--style <file>`, else `style.toml` next to the executable, else the built-in [crates/app/data/style.toml](crates/app/data/style.toml). A debug build (`cargo run -p omp-app -- --style crates/app/data/style.toml ...`) reloads the style when the file changes.
 
 Other modes:
@@ -26,7 +28,8 @@ Other modes:
 # Draw one view to a PNG, without a window
 cargo run --release -p omp-app -- --render --pack $OMP_WORK/packs/ohio --center 39.96,-83.0 --zoom 12 out.png
 
-# Fly a scripted path and write a JSON performance report
+# Fly a scripted path and write a JSON performance report (the flights end with typed
+# searches; OMP_BENCH_SHOTS=<dir> also saves screenshots of their suggestions and results)
 cargo run --release -p omp-app -- --bench crates/app/bench/ohio.toml --pack $OMP_WORK/packs/ohio
 ```
 

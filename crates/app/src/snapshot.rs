@@ -240,7 +240,7 @@ impl Snapshot {
     }
 }
 
-fn write_png(path: &Path, [w, h]: [u32; 2], rgba: &[u8]) -> std::io::Result<()> {
+pub fn write_png(path: &Path, [w, h]: [u32; 2], rgba: &[u8]) -> std::io::Result<()> {
     let file = std::fs::File::create(path)?;
     let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
     // The map is opaque.

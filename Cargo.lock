@@ -2279,6 +2279,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "eframe",
+ "egui",
  "harfrust",
  "log",
  "lyon_tessellation",

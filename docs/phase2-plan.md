@@ -40,7 +40,7 @@ The roadmap's items are "search suggestions as you type, ranking by importance a
 | 2.4 Address store in `build` | **Done** 2026-10-26 | `build --addresses`: `ASTR` `ASUF` `AUNI` `ALSE` `ARNG` `APCD`; North America 151.2M addresses (−0.17%), 89.9% attached (was 88.9%) with alias and fuzzy attach, 392 MiB. Build 51 min, 49.5 GiB. |
 | 2.5 Spatial grid and core readers | **Done** 2026-10-26 | Readers in `omp-core` (`search`, `addr`, `street`, `admin`, `grid`); `SGRD` at z14 (North America 7.8 MiB); format 0.4 specifies every search and address section. Ohio and Quebec read and cross-checked by `inspect --readers`; lookups under 1 ms p95 warm. |
 | 2.6 Query parsing, matching and ranking (`omp-core`) | **Done** 2026-10-26 | `omp_core::find` + `query` + `fuzzy` + `here`; `omp-builder search` / `here`. Query set: 1,000 random addresses (Ohio, Quebec, Ontario) and 241 hand-written queries. Ohio / Quebec: addresses 99.4 / 97.3% first, hand-written 98.9 / 98.7% first and 100% top 5, "what's here" 100%; warm p95 17.0 / 15.3 ms. No format change. |
-| 2.7 Search UI | Not started | |
+| 2.7 Search UI | **Done** 2026-10-26 | Search box, suggestions, results panel, fly-to and marker (`app/src/search.rs`); queries on one worker, stale answers dropped. North America rebuilt to format 0.4 (53 min, 49.4 GiB). Bench keystroke latency p95 53 ms Ohio, 89 ms North America, warm; RSS peak 193 / 239 MiB. The on-map credit is now OpenStreetMap's only. |
 | 2.8 "What's here" | Not started | |
 | 2.9 Performance, accuracy and hardware checks | Not started | |
 
@@ -286,6 +286,29 @@ The search engine itself, in `omp-core`, so it is tested without the app.
 - Add searches to the bench: a scripted set of typed queries (one character at a time) with latency per keystroke in the JSON, for criteria 3 and 4.
 
 **Done when:** on the Ohio and North America packs, typing gives suggestions, picking one flies there with a marker, approximate results are marked, and the bench reports keystroke latency.
+
+> **Done 2026-10-26** (the commit that adds `crates/app/src/search.rs`).
+> - **Code** (`omp-app`). `search.rs`: a `Worker` thread opens the pack's search readers when the pack opens (start-up does not wait; a 0.3 pack gives `Missing`) and runs `omp_core::find`; a new query replaces the one waiting, and `Session` drops answers to anything but the latest query (counted in the overlay). The box sits at the top left (not a top bar: the map has none; Layers and Menu float at the top right the same way). Ctrl+F or a typed `/` focus it; up to 8 suggestions show the kind icon, name, an "approximate" or "number not found" tag, the town and postcode (and units), and the distance from the view centre in the scale bar's units. Arrows, Enter (the selection, else a 50-result search that flies to the first and opens the results panel when there is more than one), Escape (closes the suggestions, then leaves the box; on the map closes the results, then removes the marker) and the × clear button. Enter keeps the last word a prefix, as the suggestions do ("Colum" + Enter is Columbus, not Clum Airport). Picking flies the camera (`camera.rs`, `Motion::fly_to`: out, across at a steady speed on screen, and in; a drag, wheel or key stops it) to z17 for an address, else to fit the hit's radius in 40% of the window, and leaves a pin with name, town, postcode and "Approximate" or "Number not found". The last 8 searches are in `config.toml` (`recent_searches`) and listed when the box is empty. A pack without search shows the box disabled, "No search in this map", with the reason on hover. The F3 overlay shows the open time, the readers' bytes held and read, stale answers dropped and the last query's find and display times.
+> - **Kind icons** are glyphs of egui's monochrome emoji fonts, enabled through a direct `egui` dependency (feature `monochrome_emoji_fonts`): +0.74 MB, binary 14.0 MB.
+> - **Focus:** egui applies a text field's focus filter only from its second focused frame, so Escape or an arrow straight after Ctrl+F would take the focus away (and Escape then acted on the map). `SearchUi` handles both (`move_focus(None)`, and an Escape that took the focus is treated as the box's). A headless egui test drives the keys (`search::tests::keyboard`); no window automation tool was available, so the keys were not tried by hand.
+> - **Credit line:** only "© OpenStreetMap contributors" stays on the map (ODbL); the pack's whole attribution, which lists dozens of address sources (hundreds on North America) and covered the bottom right of the map since 2.4, is in About this map, which the line and Menu open (owner's request).
+> - **Bench:** a step's `search` is typed one character at a time (`keystroke_ms`, default 150, from the keystroke, each waiting for its answer), then Enter, then a jump to the first result and a wait for detail. The JSON has per-step `search` (keystroke latency and `find` time, Enter, the top result, timeouts) and a run-level `search` (open time, first keystroke, every keystroke's latency, reader bytes). `OMP_BENCH_SHOTS=<dir>` saves screenshots of the suggestions and of the result. Both flights end with 8 searches.
+> - **North America rebuilt** to format 0.4 with the grid (`build --addresses all --bands 3`, 53.0 min, peak RSS 49.4 GiB, 7,210.5 MiB; log `$OMP_WORK/measure/ui27/build-na.log`); the 0.3 pack is kept as `packs/north-america-0.3`.
+> - **Bench** on the dev machine, packs in the page cache (`$OMP_WORK/measure/ui27/bench-*.json`):
+>
+>   | | Ohio | North America |
+>   |---|---:|---:|
+>   | Search readers open (background) | 6 ms | 20 ms |
+>   | Keystrokes: p50 / p95 / max (ms) | 9.8 / **53.3** / 227 | 24.5 / **89.5** / 140 |
+>   | Enter: max (ms) | 22.6 | 114 |
+>   | Readers hold / read (MiB) | 27.1 / 127 | 43.0 / 273 |
+>   | RSS before the searches / peak (MiB) | 127 / **193** | 167 / **239** |
+>   | Idle CPU after the flight | 0.40% | 0.40% |
+>
+>   Latency is from the keystroke to the frame showing its suggestions, nearly all of it `find`. The slowest North America query is the address "1100 E 9th St, Cleveland, OH" (p95 138 ms); Ohio's 227 ms max is one keystroke of "333 W Broad St". Every Ohio search finds the expected result first, approximate address included. RSS grows by about 1.5 times what the readers hold (Ohio +66 MiB, North America +67), presumably freed query buffers kept by the allocator; under the 300 MB of criterion 4.
+> - **Left open, for 2.9:**
+>   - North America results that are wrong first: "45201" gives 05201 Bennington, VT (a fuzzy postcode; 45201 is a Cincinnati PO-box code with no addresses, so not in `APCD`), and "Tim Hortons Kingston" gives a McDonald's in Kingston (most Tim Hortons are cafés, which are not searched, decision 7; a fuzzy brand match should not win). Street records of one street are not always grouped: "Rue Sainte-Catherine Ouest" shows three times. The query set on North America will measure these.
+>   - Keystroke p95 on North America (89.5 ms warm) leaves little room under 100 ms; the E6430 target (250 ms) and the cold first query are 2.9's.
 
 ## 2.8 "What's here"
 

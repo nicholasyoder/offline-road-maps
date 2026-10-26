@@ -22,6 +22,7 @@ mod packs;
 mod pool;
 mod render;
 mod scale;
+mod search;
 mod shapes;
 mod snapshot;
 mod style;

@@ -8,6 +8,13 @@
 //! seconds. Steps run on wall time, so a slow machine draws fewer frames of the same path.
 //! After the last step the app is left alone without redrawing: [`SETTLE`] for the last
 //! tiles and frames, then [`IDLE`] to measure its idle CPU use.
+//!
+//! A step with `search` types it into the search box one character at a time, after the
+//! move: each keystroke waits for its suggestions (or [`SEARCH_TIMEOUT`]) and at least
+//! `keystroke_ms` after the previous one, and its latency is the time from the keystroke to
+//! the frame that shows them. Then it presses Enter, jumps to the first result as picking
+//! it does, and waits for that view to be detailed. With `OMP_BENCH_SHOTS=<dir>`, the window
+//! is saved there as a PNG with the suggestions open and again at the result.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -16,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::{Camera, Vec2, lonlat_to_world};
 use crate::loader::Done;
+use crate::search::{BenchKey, Taken};
 
 /// Longest wait for a view to become fully detailed.
 const DETAIL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -24,6 +32,12 @@ const DETAIL_TIMEOUT: Duration = Duration::from_secs(20);
 pub const SETTLE: Duration = Duration::from_secs(2);
 /// How long idle CPU is measured.
 pub const IDLE: Duration = Duration::from_secs(10);
+/// Longest wait for a search answer.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Default time between keystrokes.
+const KEYSTROKE_MS: f64 = 150.0;
+/// With `OMP_BENCH_SHOTS`, the least time from the last keystroke to Enter.
+const SHOT_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,6 +69,10 @@ pub struct Step {
     pub wait: Option<bool>,
     #[serde(default)]
     pub hold: f64,
+    /// Typed into the search box after the move, then Enter (see the module notes).
+    pub search: Option<String>,
+    /// Least time from one keystroke to the next.
+    pub keystroke_ms: Option<f64>,
 }
 
 impl Flight {
@@ -72,6 +90,8 @@ impl Flight {
 enum Phase {
     Move,
     Wait,
+    /// Typing the step's search.
+    Type,
     Hold,
 }
 
@@ -100,6 +120,27 @@ struct StepLog {
     tiles: usize,
     bytes_read_start: u64,
     rss_end: Option<u64>,
+    search: SearchLog,
+}
+
+#[derive(Default)]
+struct SearchLog {
+    /// Characters typed so far.
+    typed: usize,
+    /// The last keystroke (or Enter), and whether its answer is still awaited.
+    key_at: Option<Instant>,
+    awaiting: bool,
+    entered: bool,
+    latency: Vec<f64>,
+    find: Vec<f64>,
+    enter_ms: Option<f64>,
+    top: Option<String>,
+    /// The first result's view, to jump to after Enter.
+    jump: Option<(Vec2, f64)>,
+    pick_detail_ms: Option<f64>,
+    timed_out: bool,
+    /// The pack has no search.
+    skipped: bool,
 }
 
 #[derive(Default)]
@@ -127,6 +168,9 @@ pub struct Bench {
     intervals: Vec<f64>,
     cpu: Vec<f64>,
     labels: Vec<f64>,
+    /// Every keystroke's latency, and the first one's.
+    keystrokes: Vec<f64>,
+    first_keystroke_ms: Option<f64>,
     startup_ms: Option<f64>,
     cache_peak: usize,
     bytes_read_start: u64,
@@ -136,6 +180,9 @@ pub struct Bench {
     /// When idle CPU began to be measured, with the CPU time then, and the frames since.
     measure: Option<(Instant, Option<Duration>, usize)>,
     done: bool,
+    /// `OMP_BENCH_SHOTS`, and a screenshot to take there.
+    shots: Option<PathBuf>,
+    shot: Option<String>,
 }
 
 /// Where the bench is, after a frame.
@@ -168,6 +215,8 @@ impl Bench {
             intervals: Vec::new(),
             cpu: Vec::new(),
             labels: Vec::new(),
+            keystrokes: Vec::new(),
+            first_keystroke_ms: None,
             startup_ms: None,
             cache_peak: 0,
             bytes_read_start: 0,
@@ -175,6 +224,8 @@ impl Bench {
             idle: None,
             measure: None,
             done: false,
+            shots: std::env::var_os("OMP_BENCH_SHOTS").map(PathBuf::from),
+            shot: None,
         }
     }
 
@@ -227,6 +278,99 @@ impl Bench {
         }
     }
 
+    /// The search step's next keystroke, when it is time for it. `available` is false for
+    /// a pack without search, whose search steps are skipped.
+    pub fn search_key(&mut self, available: bool) -> Option<BenchKey> {
+        if self.phase != Phase::Type {
+            return None;
+        }
+        let step = &self.flight.steps[self.step];
+        let text = step.search.as_deref()?;
+        let gap = Duration::from_secs_f64(step.keystroke_ms.unwrap_or(KEYSTROKE_MS) / 1e3);
+        let log = &mut self.logs[self.step].search;
+        if !available {
+            log.skipped = true;
+            log.entered = true;
+            self.shot("no-search");
+            return None;
+        }
+        let now = Instant::now();
+        if log.awaiting {
+            if log.key_at.is_some_and(|t| now - t < SEARCH_TIMEOUT) {
+                return None;
+            }
+            log.timed_out = true;
+            log.awaiting = false;
+        }
+        if log.entered {
+            return None;
+        }
+        let n = text.chars().count();
+        if log.typed < n {
+            if log.key_at.is_some_and(|t| now - t < gap) {
+                return None;
+            }
+            log.typed += 1;
+            log.key_at = Some(now);
+            log.awaiting = true;
+            return Some(BenchKey::Type(text.chars().take(log.typed).collect()));
+        }
+        // A screenshot of the suggestions is saved a few frames after it is asked for.
+        if self.shots.is_some() && log.key_at.is_some_and(|t| now - t < SHOT_WAIT) {
+            return None;
+        }
+        log.entered = true;
+        log.key_at = Some(now);
+        log.awaiting = true;
+        Some(BenchKey::Enter)
+    }
+
+    /// An answer the search box took; `view` is where its first result would fly to.
+    pub fn search_answer(&mut self, t: &Taken, view: Option<(Vec2, f64)>) {
+        if self.phase != Phase::Type {
+            return;
+        }
+        let log = &mut self.logs[self.step].search;
+        if !log.awaiting {
+            return;
+        }
+        log.awaiting = false;
+        let latency = ms(t.latency);
+        if t.submit {
+            log.enter_ms = Some(latency);
+            log.top = t.first.as_ref().map(|h| match h.context.as_str() {
+                "" => h.name.clone(),
+                c => format!("{}, {c}", h.name),
+            });
+            log.jump = view;
+        } else {
+            log.latency.push(latency);
+            log.find.push(ms(t.find));
+            let last = log.typed
+                == self.flight.steps[self.step]
+                    .search
+                    .as_ref()
+                    .map_or(0, |q| q.chars().count());
+            self.keystrokes.push(latency);
+            self.first_keystroke_ms.get_or_insert(latency);
+            if last {
+                self.shot("suggestions");
+            }
+        }
+    }
+
+    /// Where to save a screenshot of this frame, if one is due.
+    pub fn take_shot(&mut self) -> Option<PathBuf> {
+        let name = self.shot.take()?;
+        Some(self.shots.as_ref()?.join(format!("{name}.png")))
+    }
+
+    fn shot(&mut self, what: &str) {
+        if self.shots.is_some() {
+            self.shot = Some(format!("{}-{:02}-{what}", self.flight.name, self.step + 1));
+        }
+    }
+
     /// Records a frame and moves the camera for the next one. Returns the report once the
     /// flight is over.
     pub fn end_frame(
@@ -266,6 +410,8 @@ impl Bench {
             }
             self.phase = if step.wait.unwrap_or(step.seconds <= 0.0) {
                 Phase::Wait
+            } else if step.search.is_some() {
+                Phase::Type
             } else {
                 Phase::Hold
             };
@@ -273,14 +419,41 @@ impl Bench {
             return None;
         }
         if self.phase == Phase::Wait {
+            let picked = log.search.entered;
             if f.detailed {
-                log.detail_ms = Some(t * 1e3);
+                if picked {
+                    log.search.pick_detail_ms = Some(t * 1e3);
+                    self.shot("picked");
+                } else {
+                    log.detail_ms = Some(t * 1e3);
+                }
             } else if t < DETAIL_TIMEOUT.as_secs_f64() {
                 return None;
             } else {
                 log.timed_out = true;
             }
-            self.phase = Phase::Hold;
+            self.phase = if step.search.is_some() && !picked {
+                Phase::Type
+            } else {
+                Phase::Hold
+            };
+            self.phase_start = now;
+            return None;
+        }
+        if self.phase == Phase::Type {
+            let s = &mut log.search;
+            if !s.entered || s.awaiting {
+                return None;
+            }
+            self.phase = match s.jump.take() {
+                Some((c, z)) => {
+                    cam.center = c;
+                    cam.zoom = z;
+                    cam.clamp();
+                    Phase::Wait
+                }
+                None => Phase::Hold,
+            };
             self.phase_start = now;
             return None;
         }
@@ -361,6 +534,17 @@ impl Bench {
                 tiles: l.tiles,
                 bytes_read: ends[i].saturating_sub(l.bytes_read_start),
                 rss_end: l.rss_end,
+                search: s.search.clone().map(|query| SearchStepReport {
+                    query,
+                    keystrokes: l.search.latency.len(),
+                    latency_ms: Summary::of(&mut l.search.latency),
+                    find_ms: Summary::of(&mut l.search.find),
+                    enter_ms: l.search.enter_ms,
+                    top: l.search.top.clone(),
+                    pick_detail_ms: l.search.pick_detail_ms,
+                    timed_out: l.search.timed_out,
+                    skipped: l.search.skipped,
+                }),
             })
             .collect::<Vec<_>>();
         Report {
@@ -395,6 +579,16 @@ impl Bench {
             tile_slabs_peak: None,
             cache_budget: ctx.cache_budget,
             cache_peak: self.cache_peak,
+            search: ctx
+                .search
+                .filter(|_| !self.keystrokes.is_empty())
+                .map(|c| SearchReport {
+                    open_ms: c.open_ms,
+                    first_keystroke_ms: self.first_keystroke_ms,
+                    latency_ms: Summary::of(&mut self.keystrokes),
+                    heap_bytes: c.heap_bytes,
+                    bytes_read: c.bytes_read,
+                }),
             steps,
         }
     }
@@ -406,6 +600,15 @@ pub struct ReportContext {
     pub adapter: String,
     pub pixels_per_point: f32,
     pub cache_budget: usize,
+    /// The search readers, when the pack has search.
+    pub search: Option<SearchContext>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SearchContext {
+    pub open_ms: Option<f64>,
+    pub heap_bytes: usize,
+    pub bytes_read: u64,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -472,7 +675,42 @@ pub struct Report {
     pub tile_slabs_peak: Option<u64>,
     pub cache_budget: usize,
     pub cache_peak: usize,
+    /// Over every search step, when there are any and the pack has search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchReport>,
     pub steps: Vec<StepReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SearchReport {
+    /// From the pack opening to the search readers being ready.
+    pub open_ms: Option<f64>,
+    /// The first keystroke's latency, which may wait for the readers to open.
+    pub first_keystroke_ms: Option<f64>,
+    /// Every keystroke's latency, from the keystroke to the frame showing its suggestions.
+    pub latency_ms: Summary,
+    /// What the search readers hold at the end, and have read.
+    pub heap_bytes: usize,
+    pub bytes_read: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SearchStepReport {
+    pub query: String,
+    /// Keystrokes answered (the query's length, unless one timed out).
+    pub keystrokes: usize,
+    pub latency_ms: Summary,
+    /// Time in `find`, part of the latency.
+    pub find_ms: Summary,
+    /// Enter: from the key to the results.
+    pub enter_ms: Option<f64>,
+    /// The first result, as "name, context".
+    pub top: Option<String>,
+    /// After jumping to the first result, until that view was fully detailed.
+    pub pick_detail_ms: Option<f64>,
+    pub timed_out: bool,
+    /// The pack has no search.
+    pub skipped: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -506,6 +744,8 @@ pub struct StepReport {
     pub bytes_read: u64,
     /// RSS when the step ended.
     pub rss_end: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchStepReport>,
 }
 
 impl Report {
@@ -547,6 +787,20 @@ impl Report {
                 .map_or("-".into(), |v| format!("{v:.2}")),
             self.idle_frames,
         );
+        if let Some(sr) = &self.search {
+            s += &format!(
+                "search: opened in {} ms, first keystroke {} ms; {} keystrokes, latency p50 {:.1} / p95 {:.1} / max {:.1} ms; readers hold {:.1} MiB, {:.1} MiB read\n",
+                sr.open_ms.map_or("-".into(), |v| format!("{v:.0}")),
+                sr.first_keystroke_ms
+                    .map_or("-".into(), |v| format!("{v:.1}")),
+                sr.latency_ms.count,
+                sr.latency_ms.p50,
+                sr.latency_ms.p95,
+                sr.latency_ms.max,
+                mib(sr.heap_bytes as u64),
+                mib(sr.bytes_read),
+            );
+        }
         for st in &self.steps {
             let detail = match (st.detail_ms, st.timed_out) {
                 (Some(d), _) => format!(", detailed in {d:.0} ms"),
@@ -560,6 +814,22 @@ impl Report {
                 "  {:<28} {:>5} frames, p95 {:>6.2} ms, {:>4} tiles{detail}{rss}\n",
                 st.label, st.frames, st.interval_ms.p95, st.tiles
             );
+            if let Some(q) = &st.search {
+                s += &match (q.skipped, &q.top) {
+                    (true, _) => "    search skipped: the pack has no search\n".to_string(),
+                    (false, top) => format!(
+                        "    \"{}\": {} keystrokes, p95 {:.1} / max {:.1} ms (find p95 {:.1}), Enter {} ms → {}{}\n",
+                        q.query,
+                        q.keystrokes,
+                        q.latency_ms.p95,
+                        q.latency_ms.max,
+                        q.find_ms.p95,
+                        q.enter_ms.map_or("-".into(), |v| format!("{v:.1}")),
+                        top.as_deref().unwrap_or("nothing"),
+                        if q.timed_out { " (timed out)" } else { "" },
+                    ),
+                };
+            }
         }
         s
     }
@@ -626,6 +896,7 @@ mod tests {
             adapter: "a".into(),
             pixels_per_point: 1.0,
             cache_budget: 100,
+            search: None,
         };
         // Move → wait; two frames not detailed, then detailed → hold → next step.
         for d in [false, false, false, true, true] {
@@ -641,6 +912,78 @@ mod tests {
         assert!(r.steps[0].detail_ms.is_some() && !r.steps[0].timed_out);
         assert_eq!(r.frames, 7);
         assert!(b.end_frame(sample(true), &mut cam, &ctx).is_none());
+        serde_json::to_string(&r).unwrap();
+    }
+
+    #[test]
+    fn search_step_types_then_jumps_to_the_result() {
+        let flight: Flight = toml::from_str(
+            r#"
+            name = "t"
+            [[step]]
+            lat = 40.0
+            lon = -83.0
+            zoom = 8
+            search = "Ohi"
+            keystroke_ms = 0
+            "#,
+        )
+        .unwrap();
+        let mut b = Bench::new(flight, "t.toml".into(), "t.json".into(), Instant::now());
+        let mut cam = Camera::new([0.0, 0.0, 1.0, 1.0]);
+        b.start(&mut cam, 0);
+        let ctx = ReportContext {
+            pack: "p".into(),
+            adapter: "a".into(),
+            pixels_per_point: 1.0,
+            cache_budget: 100,
+            search: Some(SearchContext {
+                open_ms: Some(5.0),
+                heap_bytes: 1,
+                bytes_read: 2,
+            }),
+        };
+        // Move, then wait for detail, then type.
+        assert!(b.search_key(true).is_none());
+        b.end_frame(sample(true), &mut cam, &ctx);
+        b.end_frame(sample(true), &mut cam, &ctx);
+        assert_eq!(b.phase, Phase::Type);
+        let taken = |submit| Taken {
+            submit,
+            latency: Duration::from_millis(12),
+            find: Duration::from_millis(9),
+            hits: 1,
+            first: None,
+        };
+        let mut typed = Vec::new();
+        for _ in 0..3 {
+            let Some(BenchKey::Type(t)) = b.search_key(true) else {
+                panic!("expected a keystroke")
+            };
+            // Nothing more until it is answered.
+            assert!(b.search_key(true).is_none());
+            b.search_answer(&taken(false), None);
+            assert!(b.end_frame(sample(true), &mut cam, &ctx).is_none());
+            typed.push(t);
+        }
+        assert_eq!(typed, ["O", "Oh", "Ohi"]);
+        assert_eq!(b.search_key(true), Some(BenchKey::Enter));
+        b.search_answer(&taken(true), Some(([0.25, 0.375], 11.0)));
+        b.end_frame(sample(true), &mut cam, &ctx);
+        assert_eq!(
+            (cam.center, cam.zoom, b.phase),
+            ([0.25, 0.375], 11.0, Phase::Wait)
+        );
+        b.end_frame(sample(true), &mut cam, &ctx);
+        let r = b.end_frame(sample(true), &mut cam, &ctx).unwrap();
+        let q = r.steps[0].search.as_ref().unwrap();
+        assert_eq!((q.keystrokes, q.enter_ms), (3, Some(12.0)));
+        assert!(q.pick_detail_ms.is_some() && !q.skipped);
+        let sr = r.search.as_ref().unwrap();
+        assert_eq!(
+            (sr.latency_ms.count, sr.first_keystroke_ms),
+            (3, Some(12.0))
+        );
         serde_json::to_string(&r).unwrap();
     }
 }

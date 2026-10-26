@@ -136,3 +136,47 @@ label = "Anchorage z11"
 lat = 61.2181
 lon = -149.9003
 zoom = 11
+
+# Searches (phase2-plan.md 2.7): each typed one character at a time from the view the
+# previous step left, then Enter, which jumps to the first result. Skipped on packs
+# without search.
+
+[[step]]
+label = "search: address"
+search = "1100 E 9th St, Cleveland, OH"
+hold = 0.5
+
+[[step]]
+label = "search: city and state"
+search = "Springfield, IL"
+hold = 0.5
+
+[[step]]
+label = "search: brand and town"
+search = "Tim Hortons Kingston"
+hold = 0.5
+
+[[step]]
+label = "search: French"
+search = "Rue Sainte-Catherine, Montréal"
+hold = 0.5
+
+[[step]]
+label = "search: feature"
+search = "Lac Saint-Jean"
+hold = 0.5
+
+[[step]]
+label = "search: postcode"
+search = "45201"
+hold = 0.5
+
+[[step]]
+label = "search: shared name"
+search = "London ON"
+hold = 0.5
+
+[[step]]
+label = "search: street"
+search = "Broadway, New York"
+hold = 0.5

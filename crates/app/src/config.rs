@@ -29,6 +29,8 @@ pub struct Config {
     /// The scale bar's units; unset, they follow the pack.
     pub units: Option<Units>,
     pub layers: Layers,
+    /// The last few searches, newest first, offered when the search box is empty.
+    pub recent_searches: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -176,6 +178,7 @@ mod tests {
                 food: false,
                 ..Layers::default()
             },
+            recent_searches: vec!["123 Main St, Columbus".into(), "45201".into()],
         };
         assert_eq!(cfg.pack.as_deref(), Some(Path::new("maps/ohio")));
         loc.save(&cfg).unwrap();
