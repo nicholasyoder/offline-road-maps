@@ -116,6 +116,23 @@ The admin table (`SADM`) and the admin polygons simplified to 50 m (`SAPL`), fro
 
 The North America total moves from about 9,970 to **about 9,984 MiB**. Reading the areas takes 2 min and 1.7 GiB on North America (three passes over the PBF), 3 s on Ohio.
 
+### Phase 2 step 2.2: streets
+
+The street table (`SSTR`) and street geometry simplified to 2 m (`SGEO`), 32 KiB blocks, from `build` (Ohio, Quebec) and `omp-builder streets` (North America), in `$OMP_WORK/measure/streets/`. These are built without addresses, so streets split only at admin 8 boundaries and at 20 km. Splitting by postal town as well (`addr-spike`) gives 1% fewer streets in Ohio (250,462) and 0.6% fewer in Quebec (135,367): the postal town joins pieces across town boundaries more often than it splits them.
+
+| | Ohio | Quebec | North America |
+|---|---:|---:|---:|
+| Street ways / vertices | 0.40M / 5.5M | 0.29M / 3.8M | 16.2M / 206M |
+| Streets | 253,216 | 136,176 | 10.0M |
+| — with several parts | 12,758 | 9,372 | 0.51M |
+| Stored points (2 m) | 1.96M | 1.60M | 90.8M |
+| `SSTR` (MiB) | 2.37 | 1.36 | 90.9 |
+| `SGEO` (MiB) | 5.29 | 4.41 | 240.7 |
+| **Streets total (MiB)** | **7.7** | **5.8** | **331.6** |
+| Bytes per street (`SSTR` + `SGEO`) | 9.8 + 21.9 | 10.5 + 34.0 | 9.5 + 25.2 |
+
+Block size hardly matters: at 16 KiB blocks North America is 95.6 + 241.5 MiB, at 64 KiB 87.4 + 240.3. The geometry is 241 MiB, below the 250–500 MiB guessed in the plan. The street names in `SSTR` overlap with the search entries of step 2.3, so part of phase 0's 253 MiB for search is now counted here. The North America total moves from about 9,984 to **about 10,316 MiB**. `omp-builder streets` takes 6.4 min and 20 GiB on North America (3 min to read the ways, 39 s to build the table).
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

@@ -8,6 +8,7 @@ mod build;
 mod fetch;
 mod measure;
 mod report;
+mod street;
 
 /// Builds offline map packs from OSM and address sources.
 #[derive(Parser)]
@@ -37,6 +38,8 @@ enum Command {
     Measure(measure::MeasureArgs),
     /// Read a PBF's admin areas and places and report counts, chains and section sizes.
     Admin(admin::AdminArgs),
+    /// Read a PBF's streets and report the street table's counts and section sizes.
+    Streets(street::StreetsArgs),
     /// Phase 0 spike: merge address sources onto OSM streets and measure coverage and size.
     AddrSpike(addr::AddrArgs),
     /// Print Markdown size tables from `measure` or `addr-spike` JSON files.
@@ -64,6 +67,7 @@ fn main() -> anyhow::Result<()> {
         Command::Verify(args) => build::inspect::verify(args)?,
         Command::Measure(args) => measure::run(args, &dir)?,
         Command::Admin(args) => admin::run(args)?,
+        Command::Streets(args) => street::run(args)?,
         Command::AddrSpike(args) => addr::run(args, &dir)?,
         Command::Report(args) => report::run(args)?,
     }

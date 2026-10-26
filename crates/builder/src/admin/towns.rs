@@ -1,10 +1,13 @@
 //! The town shown for a street, place or POI (decision 4): the postal town its addresses
 //! give, else the admin 8 city, town or village it lies in, else the nearest place node.
 
+use std::collections::HashMap;
+
 use omp_core::normalize::tokens;
 use serde::Serialize;
 
 use super::Admin;
+use crate::addr::streets::cell;
 use crate::measure::geom::P;
 
 /// How far a place node may be from a street and still name its town.
@@ -22,6 +25,135 @@ pub enum Source {
     /// The nearest `place=city|town|village` node, else a hamlet.
     Place,
     None,
+}
+
+/// The fallbacks, in the order tried for a street with no postal town (decision 4, revised
+/// in 2.1). Tried on the streets that have one, as if they had none, this order names their
+/// postal town for 93.8% of North America's streets; the area first, then the nearest
+/// place (the plan's first order) for 59.4%.
+pub const FALLBACK: [Method; 5] = [
+    Method::LocalNeighbours,
+    Method::Area,
+    Method::Neighbours,
+    Method::MajorPlace,
+    Method::AnyPlace,
+];
+
+/// One way to name a street's town without its own addresses.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Method {
+    /// The admin 8 city, town or village it lies in.
+    Area,
+    /// The postal town most streets within about 1 km give, counting only streets in the
+    /// same municipality or township (the deepest level 7 or 8 area).
+    LocalNeighbours,
+    /// The postal town most streets within about 1 km give.
+    Neighbours,
+    /// The nearest city, town or village node.
+    MajorPlace,
+    /// The nearest place node, hamlets included.
+    AnyPlace,
+}
+
+impl Method {
+    pub fn source(self) -> Source {
+        match self {
+            Method::Area => Source::Admin,
+            Method::LocalNeighbours | Method::Neighbours => Source::Neighbours,
+            Method::MajorPlace | Method::AnyPlace => Source::Place,
+        }
+    }
+}
+
+/// A street for the fallbacks: its middle point, admin chain and postal town (display
+/// name and [`key`]), if its addresses give one.
+pub struct Located {
+    pub p: P,
+    pub chain: Vec<u32>,
+    pub postal: Option<(String, String)>,
+}
+
+/// The fallbacks over a set of streets, whose postal towns are each other's neighbours.
+pub struct Fallbacks<'a> {
+    admin: &'a Admin,
+    rows: &'a [Located],
+    /// Streets with a postal town, by the ~1 km grid of [`cell`].
+    near: HashMap<(i32, i32), Vec<usize>>,
+    /// The deepest level 7 or 8 area of each street.
+    local: Vec<Option<u32>>,
+}
+
+impl<'a> Fallbacks<'a> {
+    pub fn new(admin: &'a Admin, rows: &'a [Located]) -> Self {
+        let mut near: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (i, s) in rows.iter().enumerate() {
+            if s.postal.is_some() {
+                near.entry(cell(s.p)).or_default().push(i);
+            }
+        }
+        let local = rows
+            .iter()
+            .map(|s| {
+                s.chain
+                    .iter()
+                    .copied()
+                    .filter(|&a| matches!(admin.areas[a as usize].level, 7 | 8))
+                    .max_by_key(|&a| admin.areas[a as usize].level)
+            })
+            .collect();
+        Self {
+            admin,
+            rows,
+            near,
+            local,
+        }
+    }
+
+    fn neighbours(&self, i: usize, same_area: bool) -> Option<(String, String)> {
+        if same_area && self.local[i].is_none() {
+            return None;
+        }
+        let (cx, cy) = cell(self.rows[i].p);
+        let mut counts: HashMap<&str, (u32, &str)> = HashMap::new();
+        for x in cx - 1..=cx + 1 {
+            for y in cy - 1..=cy + 1 {
+                for &j in self.near.get(&(x, y)).into_iter().flatten() {
+                    if j == i || (same_area && self.local[j] != self.local[i]) {
+                        continue;
+                    }
+                    if let Some((name, k)) = &self.rows[j].postal {
+                        counts.entry(k).or_insert((0, name)).0 += 1;
+                    }
+                }
+            }
+        }
+        counts
+            .into_iter()
+            .max_by(|a, b| a.1.0.cmp(&b.1.0).then(b.0.cmp(a.0)))
+            .map(|(k, (_, name))| (name.to_owned(), k.to_owned()))
+    }
+
+    /// The town `m` names for street `i`, as display name and key.
+    pub fn answer(&self, i: usize, m: Method) -> Option<(String, String)> {
+        let s = &self.rows[i];
+        let name = match m {
+            Method::Area => area_town(self.admin, &s.chain),
+            Method::LocalNeighbours => return self.neighbours(i, true),
+            Method::Neighbours => return self.neighbours(i, false),
+            Method::MajorPlace => place_town(self.admin, s.p, true),
+            Method::AnyPlace => place_town(self.admin, s.p, false),
+        }?;
+        let k = key(&name);
+        Some((name, k))
+    }
+
+    /// The first method in `order` that answers, and its answer.
+    pub fn first(&self, i: usize, order: &[Method]) -> Option<(Method, (String, String))> {
+        order
+            .iter()
+            .find_map(|&m| self.answer(i, m).map(|a| (m, a)))
+    }
 }
 
 /// Matching key of a town name: folded tokens, so "SAINT-THÉOPHILE" meets "Saint-Théophile".

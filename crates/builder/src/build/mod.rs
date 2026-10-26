@@ -7,7 +7,9 @@
 //! all of it, then tiles are compressed and written in zoom, then Hilbert order.
 //!
 //! Admin areas are read first (`SADM`, `SAPL`), and every place and POI is given its chain
-//! of admin areas; for now only the coverage is reported.
+//! of admin areas; for now only the coverage is reported. Then the street table (`SSTR`,
+//! `SGEO`), split at admin 8 boundaries and the length cap: postal towns need the addresses,
+//! which `build` does not read yet (step 2.4).
 
 pub mod inspect;
 
@@ -28,6 +30,7 @@ use omp_core::whitelist::Whitelist;
 use rayon::prelude::*;
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
+use crate::addr::osm::read_streets;
 use crate::admin::{self, Admin, encode as admin_encode};
 use crate::fetch::manifest::{FileEntry, Manifest};
 use crate::measure::compress;
@@ -36,6 +39,7 @@ use crate::measure::peak_rss_mib;
 use crate::measure::poly::Poly;
 use crate::measure::tiles::{self, Band, Entry, Store};
 use crate::measure::water;
+use crate::street::{self, encode as street_encode};
 
 /// Tiles compressed in parallel before they are written in order.
 const BATCH_TILES: usize = 16_384;
@@ -295,6 +299,14 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let admin = admin::load(&args.input)?;
     let mut chains = ChainStats::default();
     log_stage("admin", &mut t);
+    let street_sections = {
+        let ways = read_streets(&args.input)?;
+        let table = street::Table::build(&ways, &admin, &[], &[]);
+        drop(ways);
+        street::print_stats(&table.stats);
+        street_encode::sections(&table, street_encode::BLOCK)?
+    };
+    log_stage("streets", &mut t);
     let store_path = temp.join(format!("{file_name}-build.v2"));
     let mut store = Store::create(&store_path)?;
     let mut cut = tiles::Stats::default();
@@ -355,6 +367,8 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     settings.insert("zstd_level".into(), args.zstd_level.into());
     settings.insert("max_zoom".into(), tiles::MAX_ZOOM.into());
     settings.insert("admin_tolerance_m".into(), admin::PACK_TOLERANCE_M.into());
+    settings.insert("street_tolerance_m".into(), street::SIMPLIFY_M.into());
+    settings.insert("street_max_m".into(), street::STREET_MAX_M.into());
     settings.insert("input".into(), file_label(&args.input).into());
     if let Some(z) = &water_zip {
         settings.insert("water".into(), file_label(z).into());
@@ -439,6 +453,10 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let (sadm, sapl, admin_sizes) = admin_encode::sections(&admin)?;
     sections.push(w.section(admin_encode::SADM, &sadm)?);
     sections.push(w.section(admin_encode::SAPL, &sapl)?);
+    let (sstr, sgeo, street_sizes) = street_sections;
+    sections.push(w.section(street_encode::SSTR, &sstr)?);
+    sections.push(w.section(street_encode::SGEO, &sgeo)?);
+    drop((sstr, sgeo));
     drop(admin);
     drop(store_file);
     let _ = std::fs::remove_file(&store_path);
@@ -508,6 +526,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         admin_sizes.sapl_blocks
     );
     chains.print();
+    street::print_sizes(&street_sizes);
     eprintln!(
         "wrote {} in {} chunk(s), {:.1} MiB (tiles {} B, TIDX {} B, TDIC {} dictionaries); \
          {:.0} s, peak RSS {:.0} MiB, temp store {:.1} MiB",

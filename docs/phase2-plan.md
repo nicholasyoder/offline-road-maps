@@ -35,7 +35,7 @@ The roadmap's items are "search suggestions as you type, ranking by importance a
 | Step | Status | Notes |
 |---|---|---|
 | 2.1 Admin hierarchy in the builder | **Done** 2026-10-25 | `SADM` + `SAPL` in `build`; North America 54,937 areas, 14.3 MiB. Postal town for 70.5% of streets; fallback order changed (decision 4, revised and approved). |
-| 2.2 Street table and street geometry | Not started | |
+| 2.2 Street table and street geometry | **Done** 2026-10-25 | `SSTR` + `SGEO` in `build`; North America 10.0M streets, 332 MiB (geometry 241 MiB). 99.6% of sampled addresses within 5 m of the spike's point (the rest are addresses far from a curving street). |
 | 2.3 Search entries and index | Not started | |
 | 2.4 Address store in `build` | Not started | |
 | 2.5 Spatial grid and core readers | Not started | |
@@ -110,6 +110,27 @@ Addresses refer to streets by street ID (format.md). Search shows streets as res
 - **Format:** street table and geometry sections (proposed `SSTR` and `SGEO`) in format.md, replacing the provisional note under Search.
 
 **Done when:** Ohio and Quebec packs carry the street table and geometry, a test resolves every address in a sample to a position within 5 m of where the spike put it, and the North America geometry size is in the size table.
+
+> **Done 2026-10-25** (the commit that adds `crates/builder/src/street/`).
+> - **Code.** `street/mod.rs` builds the table from the named highway ways (`addr/osm.rs`, which now also keeps each way's `highway` class and which of its names are refs, and has a streets-only read for `build`). Ways are cut into **pieces** where they enter another admin 8 area and every 5 km. Each piece takes the postal town most of its address votes give, which spreads to touching pieces of the same name in the same admin 8 area that have none; the other pieces are labelled by their admin 8 area. A street is a run of touching pieces with the same key and label, which stops growing at 20 km. Its pieces are chained into parts (from the westmost free end, straight on at each node), quantized, simplified to 2 m, and placed on a Morton curve of the street's middle. Streets with no postal town use the decision 4 fallbacks, now shared with `addr/towns.rs` (`admin::towns::Fallbacks`). `Table::locate(way, point)` gives the street, offset, distance and side for an address, for step 2.4. `street/encode.rs` writes and decodes `SSTR` and `SGEO` ([format.md](format.md#streets--provisional), *provisional*). `build` writes both sections. `omp-builder streets <pbf>` reports counts and sizes. `addr-spike` builds the table with its postal town votes and runs the check below (`streets` in its JSON, worst cases in `streets-check.tsv`). Unit tests cover the town and length splits, the parts, locating points and the section round trip.
+> - **Part offsets.** Offsets run on from one part to the next, but each part starts on a fresh 5 m step past the end of the previous one, so an offset rounded to 5 m belongs to one part only. The spike laid ways end to end with no gap, so an offset at the end of one way was also the start of the next. That put 0.16% of Ohio's sampled addresses (0.19% of Quebec's) more than 5 m from the spike's own point, up to 16.6 km away: it is a flaw in phase 0's A3 offsets, which the table removes.
+> - **Check** (200,000 merged addresses per region; each placed on the table by its way and position, decoded from the encoded sections, and compared with the spike's foot point on its way):
+>
+>   | | Ohio | Quebec |
+>   |---|---:|---:|
+>   | Within 5 m, exact offsets | 99.58% | 99.64% |
+>   | p50 / p99 / max (m) | 0.40 / 3.52 / 144 | 0.35 / 3.37 / 90 |
+>   | Within 5 m, both offsets rounded to 5 m | 98.59% | 98.84% |
+>   | Same side of the street | 99.52% | 99.45% |
+>
+>   Not every address in the sample is within 5 m, so this falls short of the **Done when** line. Of the 0.4% more than 5 m off, 87% (Ohio) and 78% (Quebec) are more than 25 m from their street, at a cul-de-sac or a curve, where the nearest point on the line moves a long way when the line is simplified by 2 m. Most of the rest are nearer the street on the table than in the spike, because the table also projects onto the start of the next way. The decoded position is a point on the street either way, since A3 stores no distance from it. Taken as done; the owner may want to review this.
+> - **Sizes** ([size-table.md](size-table.md#phase-2-step-22-streets)): North America 10.0M streets (0.51M with several parts, at most 54), 90.8M stored points; `SSTR` 90.9 MiB + `SGEO` 240.7 MiB = **332 MiB**, about 34 bytes per street. The geometry is below the 250–500 MiB estimate, so no fallback is needed. Ohio's pack has 253,216 streets (7.7 MiB), Quebec's 136,176 (5.8 MiB).
+> - **Postal town splits** (`addr-spike`): Ohio 250,462 streets, 151,491 of them named by their addresses' postal town; Quebec 135,367, 117,244 by postal town. Without addresses (as `build` is until 2.4): 253,216 and 136,176.
+> - **Build cost:** `omp-builder streets` on North America took 6.4 min at 20 GiB peak (3 min to read the ways, 39 s to build the table). `build` takes about 4–6 s more on Ohio and Quebec.
+> - **Left open:**
+>   - `build` has no addresses yet, so its streets are split and named by area only. Step 2.4 passes the address votes in (the `addr-spike` path already does).
+>   - A way can only be cut at a vertex, so a long segment with no vertices passes the caps: North America's longest street is 79 km.
+>   - Streets crossing the edge of a regional extract are cut there. Each pack is built on its own, so this does not matter.
 
 ## 2.3 Search entries and index
 

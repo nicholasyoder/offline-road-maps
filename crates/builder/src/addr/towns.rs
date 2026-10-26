@@ -10,52 +10,13 @@ use anyhow::Result;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use super::streets::{Streets, cell};
+use super::streets::Streets;
 use crate::admin::Admin;
-use crate::admin::towns::{self, Source};
+use crate::admin::towns::{self, FALLBACK, Fallbacks, Located, Method, Source};
 use crate::measure::geom::{self, P};
 
 /// Rows of each kind written to `towns.tsv`.
 const SAMPLES: usize = 200;
-
-/// The fallbacks, in the order tried for a street with no postal town. Tried on the
-/// streets that have one, as if they had none, this order names their postal town for
-/// 95.9% in Ohio and 98.1% in Quebec; the area first, then the nearest place (the plan's
-/// first order) for 70.8% and 96.6%.
-pub const FALLBACK: [Method; 5] = [
-    Method::LocalNeighbours,
-    Method::Area,
-    Method::Neighbours,
-    Method::MajorPlace,
-    Method::AnyPlace,
-];
-
-/// One way to name a street's town without its own addresses.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Method {
-    /// The admin 8 city, town or village it lies in.
-    Area,
-    /// The postal town most streets within about 1 km give, counting only streets in the
-    /// same municipality or township (the deepest level 7 or 8 area).
-    LocalNeighbours,
-    /// The postal town most streets within about 1 km give.
-    Neighbours,
-    /// The nearest city, town or village node.
-    MajorPlace,
-    /// The nearest place node, hamlets included.
-    AnyPlace,
-}
-
-impl Method {
-    fn source(self) -> Source {
-        match self {
-            Method::Area => Source::Admin,
-            Method::LocalNeighbours | Method::Neighbours => Source::Neighbours,
-            Method::MajorPlace | Method::AnyPlace => Source::Place,
-        }
-    }
-}
 
 #[derive(Serialize, Default)]
 pub struct TownReport {
@@ -92,16 +53,6 @@ pub struct TownReport {
 /// postal town.
 type Test = (String, bool, bool);
 
-/// One street's result.
-struct StreetTown {
-    comp: u32,
-    p: P,
-    chain: Vec<u32>,
-    in_region: bool,
-    /// Display name and key of the postal town.
-    postal: Option<(String, String)>,
-}
-
 /// `votes`: `(way, city)` for each attached address record that names a city, indexing
 /// `cities`. `points`: the deduplicated addresses. `region`: count only the streets in the
 /// state or province with this ISO code; streets across the border still count as
@@ -124,7 +75,7 @@ pub fn measure(
     let primary: Vec<u32> = (0..streets.comps.len() as u32)
         .filter(|&c| streets.is_primary(c))
         .collect();
-    let rows: Vec<StreetTown> = primary
+    let found: Vec<(Located, bool)> = primary
         .par_iter()
         .map(|&c| {
             let comp = &streets.comps[c as usize];
@@ -148,71 +99,12 @@ pub fn measure(
                     .at_level(&chain, 4)
                     .is_some_and(|a| admin.areas[a as usize].iso.as_deref() == Some(iso))
             });
-            StreetTown {
-                comp: c,
-                p,
-                chain,
-                in_region,
-                postal,
-            }
+            (Located { p, chain, postal }, in_region)
         })
         .collect();
-
-    // Postal towns by the spike's ~1 km grid, for the neighbours fallback.
-    let mut near: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-    for (i, s) in rows.iter().enumerate() {
-        if s.postal.is_some() {
-            near.entry(cell(s.p)).or_default().push(i);
-        }
-    }
-    // The deepest level 7 or 8 area of each street.
-    let local: Vec<Option<u32>> = rows
-        .iter()
-        .map(|s| {
-            s.chain
-                .iter()
-                .copied()
-                .filter(|&a| matches!(admin.areas[a as usize].level, 7 | 8))
-                .max_by_key(|&a| admin.areas[a as usize].level)
-        })
-        .collect();
-    let neighbours = |i: usize, same_area: bool| -> Option<(String, String)> {
-        if same_area && local[i].is_none() {
-            return None;
-        }
-        let (cx, cy) = cell(rows[i].p);
-        let mut counts: HashMap<&str, (u32, &str)> = HashMap::new();
-        for x in cx - 1..=cx + 1 {
-            for y in cy - 1..=cy + 1 {
-                for &j in near.get(&(x, y)).into_iter().flatten() {
-                    if j == i || (same_area && local[j] != local[i]) {
-                        continue;
-                    }
-                    if let Some((name, k)) = &rows[j].postal {
-                        counts.entry(k).or_insert((0, name)).0 += 1;
-                    }
-                }
-            }
-        }
-        counts
-            .into_iter()
-            .max_by(|a, b| a.1.0.cmp(&b.1.0).then(b.0.cmp(a.0)))
-            .map(|(k, (_, name))| (name.to_owned(), k.to_owned()))
-    };
-    let answer = |i: usize, m: Method| -> Option<(String, String)> {
-        let s = &rows[i];
-        let name = match m {
-            Method::Area => towns::area_town(admin, &s.chain),
-            Method::LocalNeighbours => return neighbours(i, true),
-            Method::Neighbours => return neighbours(i, false),
-            Method::MajorPlace => towns::place_town(admin, s.p, true),
-            Method::AnyPlace => towns::place_town(admin, s.p, false),
-        }?;
-        let k = towns::key(&name);
-        Some((name, k))
-    };
-    let first =
-        |i: usize, order: &[Method]| order.iter().find_map(|&m| answer(i, m).map(|a| (m, a)));
+    let (rows, in_region): (Vec<Located>, Vec<bool>) = found.into_iter().unzip();
+    let fb = Fallbacks::new(admin, &rows);
+    let first = |i: usize, order: &[Method]| fb.first(i, order);
 
     // Each street's town; and the hold-out test on streets with a postal town.
     let plan_order = [Method::Area, Method::AnyPlace];
@@ -232,7 +124,7 @@ pub fn measure(
         .into_par_iter()
         .map(|i| {
             let s = &rows[i];
-            if !s.in_region {
+            if !in_region[i] {
                 return (Source::None, Vec::new());
             }
             let Some((_, postal)) = &s.postal else {
@@ -247,7 +139,12 @@ pub fn measure(
                 Method::AnyPlace,
             ]
             .into_iter()
-            .map(|m| (format!("{m:?}").to_lowercase(), answer(i, m).map(|a| a.1)))
+            .map(|m| {
+                (
+                    format!("{m:?}").to_lowercase(),
+                    fb.answer(i, m).map(|a| a.1),
+                )
+            })
             .collect();
             tests.push((
                 "fallback_order".into(),
@@ -271,8 +168,8 @@ pub fn measure(
         .collect();
 
     let mut r = TownReport {
-        streets: rows.iter().filter(|s| s.in_region).count() as u64,
-        outside_region: rows.iter().filter(|s| !s.in_region).count() as u64,
+        streets: in_region.iter().filter(|&&r| r).count() as u64,
+        outside_region: in_region.iter().filter(|&&r| !r).count() as u64,
         addresses: points.len() as u64,
         ..Default::default()
     };
@@ -280,11 +177,12 @@ pub fn measure(
         .par_iter()
         .filter(|&&p| !admin.chain(p).iter().any(|&a| admin.towns[a as usize]))
         .count() as u64;
-    let name_of = |s: &StreetTown| {
-        let w = streets.comps[s.comp as usize].ways[0];
-        streets.ways[w as usize].name.clone()
+    let name_of = |i: usize| {
+        streets
+            .name(streets.comps[primary[i] as usize].ways[0])
+            .to_owned()
     };
-    let chain_names = |s: &StreetTown| {
+    let chain_names = |s: &Located| {
         s.chain
             .iter()
             .map(|&a| admin.areas[a as usize].name.as_str())
@@ -298,7 +196,7 @@ pub fn measure(
     let mut differs_area: Vec<String> = Vec::new();
     let mut fallback_misses: Vec<String> = Vec::new();
     for (i, (s, (source, tests))) in rows.iter().zip(&results).enumerate() {
-        if !s.in_region {
+        if !in_region[i] {
             continue;
         }
         *r.by_source.entry(*source).or_default() += 1;
@@ -310,7 +208,7 @@ pub fn measure(
                 let (m, (town, _)) = first(i, &FALLBACK).unwrap();
                 fallback_misses.push(format!(
                     "fallback_{m:?}\t{}\t{}\t{town}\t{}\t{}",
-                    name_of(s),
+                    name_of(i),
                     lat_lon(s.p),
                     s.postal.as_ref().unwrap().0,
                     chain_names(s)
@@ -341,7 +239,7 @@ pub fn measure(
                 r.postal_differs_from_area += 1;
                 differs_area.push(format!(
                     "postal_vs_area\t{}\t{}\t{postal}\t{area}\t{}",
-                    name_of(s),
+                    name_of(i),
                     lat_lon(s.p),
                     chain_names(s)
                 ));

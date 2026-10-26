@@ -4,8 +4,9 @@
 //! address for the encodings A1–A4.
 
 mod encode;
-mod osm;
+pub mod osm;
 mod sources;
+mod street_check;
 pub mod streets;
 mod tiger;
 mod towns;
@@ -380,6 +381,7 @@ struct Report {
     ranges: Vec<RangeRow>,
     encoding: encode::EncodingReport,
     towns: towns::TownReport,
+    streets: street_check::StreetReport,
 }
 
 struct Stages {
@@ -1208,6 +1210,9 @@ fn run_one(
     )?;
     drop((votes, points));
     stages.done("towns");
+    let street_report =
+        street_check::run(admin, &streets, &recs, &reps, &cities.list, &samples_dir)?;
+    stages.done("streets");
 
     write_samples(
         &samples_dir,
@@ -1268,6 +1273,7 @@ fn run_one(
         ranges: range_rows.into_values().collect(),
         encoding,
         towns: town_report,
+        streets: street_report,
     };
     if let Some(dir) = json.parent() {
         std::fs::create_dir_all(dir)?;
@@ -1466,7 +1472,7 @@ fn write_samples(
                 src.as_str(),
                 number(r),
                 street(r),
-                streets.ways[comp.ways[0] as usize].name,
+                streets.name(comp.ways[0]),
                 a.dist_m,
                 osm_url(r.p)
             );
@@ -1509,8 +1515,8 @@ fn write_samples(
         let (way, dist) = match r.att {
             Some(a) => {
                 let comp = &streets.comps[a.comp as usize];
-                let name = &streets.ways[comp.ways[0] as usize].name;
-                (name.clone(), format!("{:.0}", a.dist_m))
+                let name = streets.name(comp.ways[0]);
+                (name.to_owned(), format!("{:.0}", a.dist_m))
             }
             None => ("-".into(), "-".into()),
         };

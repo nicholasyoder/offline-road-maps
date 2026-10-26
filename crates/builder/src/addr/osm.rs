@@ -23,8 +23,41 @@ pub struct StreetWay {
     pub id: i64,
     /// `name` first, then alternates and each `ref`.
     pub names: Vec<String>,
+    /// How many of `names` are names; the rest are refs.
+    pub nnames: usize,
+    /// Index of its `highway` value in [`HIGHWAYS`].
+    pub class: u8,
     pub refs: Vec<i64>,
     pub coords: Vec<P>,
+}
+
+/// `highway` values of streets, roughly by importance; anything else is `HIGHWAYS.len()`.
+pub const HIGHWAYS: &[&str] = &[
+    "motorway",
+    "trunk",
+    "primary",
+    "secondary",
+    "tertiary",
+    "motorway_link",
+    "trunk_link",
+    "primary_link",
+    "secondary_link",
+    "tertiary_link",
+    "unclassified",
+    "residential",
+    "living_street",
+    "busway",
+    "road",
+    "service",
+    "pedestrian",
+    "track",
+];
+
+pub fn highway_class(v: &str) -> u8 {
+    HIGHWAYS
+        .iter()
+        .position(|h| *h == v)
+        .unwrap_or(HIGHWAYS.len()) as u8
 }
 
 #[derive(Default, Serialize)]
@@ -185,7 +218,8 @@ struct NodeBlock {
     stats: OsmStats,
 }
 
-fn ways_block(block: &PrimitiveBlock, out: &mut WayBlock) {
+/// `addresses`: also collect addressed ways and interpolation lines, not only streets.
+fn ways_block(block: &PrimitiveBlock, out: &mut WayBlock, addresses: bool) {
     let mut tags = Vec::new();
     for el in block.elements() {
         match el {
@@ -195,23 +229,31 @@ fn ways_block(block: &PrimitiveBlock, out: &mut WayBlock) {
                 if let Some(h) = get(&tags, "highway")
                     && !NOT_STREETS.contains(&h)
                 {
-                    let mut names: Vec<String> = NAME_KEYS
-                        .iter()
-                        .filter_map(|k| get(&tags, k))
-                        .flat_map(|v| v.split(';'))
-                        .chain(get(&tags, "ref").into_iter().flat_map(|v| v.split(';')))
-                        .map(|s| s.trim().to_owned())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    names.dedup();
+                    let split = |vs: &mut dyn Iterator<Item = &str>| {
+                        let mut v: Vec<String> = vs
+                            .flat_map(|v| v.split(';'))
+                            .map(|s| s.trim().to_owned())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        v.dedup();
+                        v
+                    };
+                    let mut names = split(&mut NAME_KEYS.iter().filter_map(|k| get(&tags, k)));
+                    let nnames = names.len();
+                    names.extend(split(&mut get(&tags, "ref").into_iter()));
                     if !names.is_empty() {
                         out.streets.push(StreetWay {
                             id: w.id(),
                             names,
+                            nnames,
+                            class: highway_class(h),
                             refs: w.refs().collect(),
                             coords: Vec::new(),
                         });
                     }
+                }
+                if !addresses {
+                    continue;
                 }
                 if let Some(kind) = get(&tags, "addr:interpolation") {
                     let (step, parity) = match kind {
@@ -245,12 +287,13 @@ fn nodes_block(
     out: &mut NodeBlock,
     locs: &RankedLocations,
     endpoints: &HashSet<i64>,
+    addresses: bool,
 ) {
     let mut tags = Vec::new();
     let visit = |out: &mut NodeBlock, id: i64, lat: i32, lon: i32, tags: &[(&str, &str)]| {
         let p = geom::project_e7(lat, lon);
         locs.set(id, p);
-        if tags.is_empty() {
+        if tags.is_empty() || !addresses {
             return;
         }
         if endpoints.contains(&id)
@@ -386,11 +429,22 @@ pub fn split(
 }
 
 pub fn read(path: &Path) -> Result<OsmAddresses> {
+    read_with(path, true)
+}
+
+/// Only the street ways, with their coordinates (for `build`, until it merges addresses).
+pub fn read_streets(path: &Path) -> Result<Vec<StreetWay>> {
+    Ok(read_with(path, false)?.streets)
+}
+
+fn read_with(path: &Path, addresses: bool) -> Result<OsmAddresses> {
     let mut stats = OsmStats::default();
     let mut streets = Vec::new();
     let mut addr_ways = Vec::new();
     let mut interps = Vec::new();
-    for mut b in pass(path, WayBlock::default, ways_block)? {
+    for mut b in pass(path, WayBlock::default, |block, out| {
+        ways_block(block, out, addresses)
+    })? {
         merge(&mut stats, &b.stats);
         streets.append(&mut b.streets);
         addr_ways.append(&mut b.addr_ways);
@@ -415,7 +469,7 @@ pub fn read(path: &Path) -> Result<OsmAddresses> {
     let mut raws = Vec::new();
     let mut endpoints: HashMap<i64, (String, String)> = HashMap::new();
     for mut b in pass(path, NodeBlock::default, |block, out| {
-        nodes_block(block, out, &locs, &endpoint_ids)
+        nodes_block(block, out, &locs, &endpoint_ids, addresses)
     })? {
         merge(&mut stats, &b.stats);
         raws.append(&mut b.raws);

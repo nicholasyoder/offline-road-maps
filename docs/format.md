@@ -14,6 +14,7 @@ Status of each part:
 | Addresses (`ASTR`, `AIDX`, `ASUF`, `AUNI`, `ALSE`, `ARNG`) | **Specified** (encoding A3 from phase 0). |
 | Routing (`RCH*`) | *Provisional*, finalized in Phase 3. |
 | Admin areas (`SADM`, `SAPL`) | *Provisional* (phase 2 step 2.1). Written by `build`; finalized with the search sections in step 2.5. |
+| Streets (`SSTR`, `SGEO`) | *Provisional* (phase 2 step 2.2). Written by `build`; finalized with the search sections in step 2.5. |
 | Search (`SFST`, `SPST`, `SENT`) | *Provisional*, finalized in Phase 2. |
 | Label data in tiles (`labels` layer, `routes` prop) | **Specified** (phase 1 step 1.3, whitelist v2). |
 | Style (`STYL`) | **Not used:** the style lives in the app (phase 1 decision 8). |
@@ -235,7 +236,7 @@ block      = (key_delta:varint  layer_mask:u16  layer_len:varint*)*        ; `ti
 
 ## Addresses
 
-Addresses are stored per **street**, as in roadmap §4 and decision 9 (A3). A street is a set of connected OSM ways that share a normalized name. Its **offset** coordinate runs along the street in metres, from a fixed starting end. Street names and geometry belong to the search section, which is shared. Addresses refer to streets by **street ID**, a dense index into the search section's street table.
+Addresses are stored per **street**, as in roadmap §4 and decision 9 (A3). A street is a set of connected OSM ways that share a normalized name. Its **offset** coordinate runs along the street's stored geometry in metres, as defined under [`SGEO`](#sgeo-street-geometry-contiguous). Street names and geometry are in the [street table](#streets--provisional), which search, addresses and "what's here" share. Addresses refer to streets by **street ID**, the street's index in that table.
 
 The phase 0 sizes for North America: 151.5M addresses, 315 MiB (2.18 bytes each), plus 50 MiB of US TIGER ranges.
 
@@ -336,14 +337,52 @@ polygon = nrings:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
 
 `offset` is from the start of `SAPL`. Points are in units of 2⁶ world units, as deltas from a cursor that starts at (0, 0) for each polygon and runs on across its rings. Rings are not closed (the last point is not repeated); a point is inside if it is inside an odd number of rings.
 
+## Streets — *provisional*
+
+One record per street (phase 2 step 2.2): connected named OSM ways whose `name` has the same normalized key, split where the postal town of their addresses changes, where they cross a city boundary (admin level 8) without addresses, and at about 20 km. A **street ID** is the street's position in the table; streets are ordered along a Morton curve of their middle points. North America has 10.0M streets (see the [size table](size-table.md#phase-2-step-22-streets)).
+
+Both sections are zstd blocks (level 19) of consecutive streets, about 32 KiB uncompressed each, with an index in front:
+
+```
+section = count:u32  nblocks:u32  (first_street:u32  offset:u32  length:u32)*  block*
+```
+
+`count` is the number of streets; `offset` is from the start of the section. To read street `s`, binary-search `first_street` and decompress that block. A street never spans two blocks.
+
+### `SSTR`: street table (contiguous)
+
+```
+block  = street*
+street = flags:varint  name:str  town:str  admin:varint  length:varint
+         nalt:varint  alt:str*  nref:varint  ref:str*
+```
+
+- `flags`: bits 0–4 the road class, the most important `highway` of its ways (0 `motorway`, 1 `trunk`, 2 `primary`, 3 `secondary`, 4 `tertiary`, 5–9 their `_link`s in the same order, 10 `unclassified`, 11 `residential`, 12 `living_street`, 13 `busway`, 14 `road`, 15 `service`, 16 `pedestrian`, 17 `track`, 18 other). Bits 5–7: where `town` comes from: 0 the street's addresses, 1 the admin 8 town it lies in, 2 neighbouring streets, 3 the nearest place node, 4 none (`town` empty).
+- `name`: the commonest `name` of its ways, by length (a way with no `name` is named by its first alternate or `ref`). `town`: the postal town shown with it (decision 4).
+- `admin`: the admin ID + 1 of the deepest area holding the street's middle point, or 0; its parents give the rest of the chain.
+- `length`: metres, rounded (the end of its last part, below).
+- `alt`: the ways' other names (`name` variants, `alt_name`, `official_name`, `old_name`, `short_name`, `loc_name`, `name:en`, `name:fr`) whose normalized key differs from `name`'s, sorted. `ref`: the ways' `ref` values, sorted.
+
+### `SGEO`: street geometry (contiguous)
+
+```
+block  = street*
+street = nparts:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
+```
+
+- Points are in units of 2⁶ world units (about 0.6 m at the equator), as deltas from a cursor that starts at (0, 0) at the start of each block and runs on across its streets and parts. A stored point `q` is the world point `q << 6`.
+- Each **part** is a chain of the street's ways, simplified to 2 m. A street whose ways branch (a loop with spurs, a T, two carriageways) has several parts. A part has at least one point.
+- **Offsets.** A segment's length in metres is its length in world units (of the stored points) times the metres per world unit at the street's first stored point, `40,075,016.686 / 2³² × cos(latitude)`. Part 0 starts at offset 0 and each point's offset is the previous one's plus the segment length. Part k + 1 starts at `5 × (⌈e / 5⌉ + 1)`, where `e` is the offset of part k's last point. Because each part starts on a fresh 5 m step, an address offset rounded to 5 m (`ASTR`, `ARNG`) belongs to one part only.
+- **Decoding an offset:** take the last part whose first offset is at most the offset, and the point at that offset along it, clamped to its ends.
+
 ## Search — *provisional*
 
 Phase 2. The phase 0 spike measured an `fst` of normalized tokens, postings lists, and an entries table (at most 253 MiB for North America):
 - `SFST`: an `fst` map from token to postings offset.
 - `SPST`: postings lists (delta-coded entry IDs).
-- `SENT`: entries: places, streets (the street table that addresses refer to), POIs, each with a name, kind, position and admin context.
+- `SENT`: entries: places, streets (referring to the [street table](#streets--provisional)), POIs, each with a name, kind, position and admin context.
 
-Ranking data and the street table's exact form are open; the admin hierarchy is in [`SADM` and `SAPL`](#admin-areas--provisional).
+Ranking data is open; the admin hierarchy is in [`SADM` and `SAPL`](#admin-areas--provisional).
 
 ## Style
 

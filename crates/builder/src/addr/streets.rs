@@ -58,9 +58,6 @@ impl Keys {
 }
 
 pub struct Way {
-    pub id: i64,
-    pub name: String,
-    pub coords: Vec<P>,
     /// Metres from the start to each vertex.
     pub cum: Vec<f64>,
     /// Strict keys of every name and ref.
@@ -85,6 +82,8 @@ pub struct Hit {
 }
 
 pub struct Streets {
+    /// The ways as read, with their names, nodes and coordinates.
+    pub raw: Vec<StreetWay>,
     pub ways: Vec<Way>,
     strict: HashMap<(u32, i32, i32), Vec<u32>>,
     loose: HashMap<(u32, i32, i32), Vec<u32>>,
@@ -119,8 +118,7 @@ fn find(parent: &mut [u32], mut i: u32) -> u32 {
 impl Streets {
     pub fn build(raw: Vec<StreetWay>, keys: &mut Keys) -> Self {
         let mut ways = Vec::with_capacity(raw.len());
-        let mut way_refs = Vec::with_capacity(raw.len());
-        for s in raw {
+        for s in &raw {
             let ks = keys.intern_names(&s.names);
             let mut ks_sorted = ks.clone();
             ks_sorted.sort_unstable();
@@ -133,14 +131,10 @@ impl Streets {
                 cum.push(cum[cum.len() - 1] + d * mpu);
             }
             ways.push(Way {
-                id: s.id,
-                name: s.names[0].clone(),
-                coords: s.coords,
                 cum,
                 primary: ks[0],
                 keys: ks_sorted,
             });
-            way_refs.push(s.refs);
         }
 
         let mut strict: HashMap<(u32, i32, i32), Vec<u32>> = HashMap::new();
@@ -149,7 +143,7 @@ impl Streets {
         let mut cells = Vec::new();
         for (wi, w) in ways.iter().enumerate() {
             cells.clear();
-            for s in w.coords.windows(2) {
+            for s in raw[wi].coords.windows(2) {
                 let (a, b) = (cell(s[0]), cell(s[1]));
                 for x in a.0.min(b.0)..=a.0.max(b.0) {
                     for y in a.1.min(b.1)..=a.1.max(b.1) {
@@ -189,7 +183,7 @@ impl Streets {
         let mut parent: Vec<u32> = (0..entries.len() as u32).collect();
         let mut by_node: HashMap<(u32, i64), u32> = HashMap::new();
         for (ei, &(w, k)) in entries.iter().enumerate() {
-            for &n in &way_refs[w as usize] {
+            for &n in &raw[w as usize].refs {
                 match by_node.get(&(k, n)) {
                     Some(&other) => {
                         let (a, b) = (find(&mut parent, ei as u32), find(&mut parent, other));
@@ -213,8 +207,8 @@ impl Streets {
             .map(|es| {
                 let key = entries[es[0] as usize].1;
                 let mut ws: Vec<u32> = es.iter().map(|&e| entries[e as usize].0).collect();
-                ws.sort_unstable_by_key(|&w| ways[w as usize].id);
-                let start = ways[ws[0] as usize].coords[0];
+                ws.sort_unstable_by_key(|&w| raw[w as usize].id);
+                let start = raw[ws[0] as usize].coords[0];
                 let length_m = ws
                     .iter()
                     .map(|&w| *ways[w as usize].cum.last().unwrap())
@@ -229,7 +223,7 @@ impl Streets {
                 )
             })
             .collect();
-        comps.sort_unstable_by_key(|(m, c)| (*m, c.key, ways[c.ways[0] as usize].id));
+        comps.sort_unstable_by_key(|(m, c)| (*m, c.key, raw[c.ways[0] as usize].id));
         let comps: Vec<Comp> = comps.into_iter().map(|(_, c)| c).collect();
         let mut entry = HashMap::new();
         for (ci, c) in comps.iter().enumerate() {
@@ -240,6 +234,7 @@ impl Streets {
             }
         }
         Self {
+            raw,
             ways,
             strict,
             loose,
@@ -252,10 +247,11 @@ impl Streets {
     /// Distance, offset along the way and side of `p` relative to way `w`.
     pub fn project(&self, w: u32, p: P) -> Hit {
         let way = &self.ways[w as usize];
+        let coords = &self.raw[w as usize].coords;
         let mpu = geom::metres_per_unit(p);
         let (px, py) = (f64::from(p[0]), f64::from(p[1]));
         let mut best = (f64::INFINITY, 0.0, false);
-        for (i, s) in way.coords.windows(2).enumerate() {
+        for (i, s) in coords.windows(2).enumerate() {
             let (ax, ay) = (f64::from(s[0][0]), f64::from(s[0][1]));
             let (dx, dy) = (f64::from(s[1][0]) - ax, f64::from(s[1][1]) - ay);
             let len2 = dx * dx + dy * dy;
@@ -307,19 +303,39 @@ impl Streets {
             .map(|&(c, base)| (c, base + hit.along_m))
     }
 
+    /// The point `m` metres along way `w`.
+    pub fn point_on_way(&self, w: u32, m: f64) -> P {
+        let way = &self.ways[w as usize];
+        let coords = &self.raw[w as usize].coords;
+        let i = way
+            .cum
+            .partition_point(|&d| d < m)
+            .clamp(1, coords.len() - 1);
+        let (a, b) = (coords[i - 1], coords[i]);
+        let seg = way.cum[i] - way.cum[i - 1];
+        let t = if seg > 0.0 {
+            ((m - way.cum[i - 1]) / seg).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let lerp = |a: u32, b: u32| (f64::from(a) + (f64::from(b) - f64::from(a)) * t) as u32;
+        [lerp(a[0], b[0]), lerp(a[1], b[1])]
+    }
+
     /// The point `m` metres along component `c`, its ways laid end to end.
     pub fn point_along(&self, c: u32, m: f64) -> P {
         let comp = &self.comps[c as usize];
         let mut left = m;
         for &w in &comp.ways {
             let way = &self.ways[w as usize];
+            let coords = &self.raw[w as usize].coords;
             let len = *way.cum.last().unwrap();
             if left <= len {
                 let i = way
                     .cum
                     .partition_point(|&d| d < left)
-                    .clamp(1, way.coords.len() - 1);
-                let (a, b) = (way.coords[i - 1], way.coords[i]);
+                    .clamp(1, coords.len() - 1);
+                let (a, b) = (coords[i - 1], coords[i]);
                 let seg = way.cum[i] - way.cum[i - 1];
                 let t = if seg > 0.0 {
                     (left - way.cum[i - 1]) / seg
@@ -332,8 +348,13 @@ impl Streets {
             }
             left -= len;
         }
-        let last = &self.ways[*comp.ways.last().unwrap() as usize];
+        let last = &self.raw[*comp.ways.last().unwrap() as usize];
         *last.coords.last().unwrap()
+    }
+
+    /// The `name` of way `w` (or its first alternate or ref).
+    pub fn name(&self, w: u32) -> &str {
+        &self.raw[w as usize].names[0]
     }
 
     /// Whether component `c` is a street under its ways' own name, not under an alternate
@@ -354,7 +375,7 @@ impl Streets {
                 for &w in self.any.get(&(x, y)).into_iter().flatten() {
                     let h = self.project(w, p);
                     if h.dist_m <= radius_m {
-                        found.push((self.ways[w as usize].name.clone(), h.dist_m));
+                        found.push((self.name(w).to_owned(), h.dist_m));
                     }
                 }
             }
