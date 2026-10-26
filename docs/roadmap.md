@@ -1,4 +1,4 @@
-# Offline Maps: Roadmap
+# Offline Road Maps: Roadmap
 
 *Draft 2. Updated 2026-10-23 with the project owner's answers to the scoping questions.*
 

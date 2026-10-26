@@ -1,6 +1,6 @@
 # Offline Road Maps
 
-An offline road map app for North America, in Rust:
+An offline road map app for North America, in Rust. The `omp` prefix on crates, environment variables and `.omp` pack files is short for Offline MaPs.
 
 - `omp-core`: the pack format, shared by the builder and the app
 - `omp-builder`: builds map packs from OSM and address data
