@@ -36,6 +36,8 @@ struct OaProps {
     street: Value,
     #[serde(default)]
     unit: Value,
+    #[serde(default)]
+    city: Value,
 }
 
 fn text(v: &Value) -> String {
@@ -84,6 +86,7 @@ pub fn openaddresses(files: &[(u32, std::path::PathBuf)]) -> Result<(Vec<Raw>, S
                     number: text(&feat.properties.number),
                     street: text(&feat.properties.street),
                     unit: text(&feat.properties.unit),
+                    city: text(&feat.properties.city),
                     p,
                 });
             }
@@ -271,7 +274,7 @@ pub fn nar(zip: &Path, codes: &[&str], file: u32) -> Result<(Vec<Raw>, NarStats)
         .map(|name| {
             with_entry(zip, name, |r| {
                 let mut rdr = csv_reader(r);
-                let [guid, apt, no, suffix, street, ty, dir] = columns(
+                let [guid, apt, no, suffix, street, ty, dir, mun] = columns(
                     rdr.headers()?,
                     [
                         "LOC_GUID",
@@ -281,6 +284,7 @@ pub fn nar(zip: &Path, codes: &[&str], file: u32) -> Result<(Vec<Raw>, NarStats)
                         "OFFICIAL_STREET_NAME",
                         "OFFICIAL_STREET_TYPE",
                         "OFFICIAL_STREET_DIR",
+                        "MAIL_MUN_NAME",
                     ],
                     name,
                 )?;
@@ -314,6 +318,7 @@ pub fn nar(zip: &Path, codes: &[&str], file: u32) -> Result<(Vec<Raw>, NarStats)
                         number: civic(&rec[no], &rec[suffix]),
                         street: compose_street(&rec[street], &rec[ty], &rec[dir], quebec),
                         unit: rec[apt].trim().to_owned(),
+                        city: rec[mun].trim().to_owned(),
                         p,
                     });
                 }
@@ -347,6 +352,7 @@ pub fn oda(zip: &Path, abbr: &str, code: &str, file: u32) -> Result<(Vec<Raw>, S
             str_type,
             str_dir,
             unit,
+            city,
             pruid,
         ] = columns(
             rdr.headers()?,
@@ -359,6 +365,7 @@ pub fn oda(zip: &Path, abbr: &str, code: &str, file: u32) -> Result<(Vec<Raw>, S
                 "str_type",
                 "str_dir",
                 "unit",
+                "city",
                 "pruid",
             ],
             &name,
@@ -388,6 +395,7 @@ pub fn oda(zip: &Path, abbr: &str, code: &str, file: u32) -> Result<(Vec<Raw>, S
                     full.to_owned()
                 },
                 unit: rec[unit].trim().to_owned(),
+                city: rec[city].trim().to_owned(),
                 p,
             });
         }

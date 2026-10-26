@@ -65,6 +65,8 @@ pub struct Way {
     pub cum: Vec<f64>,
     /// Strict keys of every name and ref.
     pub keys: Vec<u32>,
+    /// Strict key of `name`.
+    pub primary: u32,
 }
 
 /// A run of ways that share a key and touch: one street record in the address store.
@@ -135,6 +137,7 @@ impl Streets {
                 name: s.names[0].clone(),
                 coords: s.coords,
                 cum,
+                primary: ks[0],
                 keys: ks_sorted,
             });
             way_refs.push(s.refs);
@@ -302,6 +305,44 @@ impl Streets {
         self.entry
             .get(&(hit.way, key))
             .map(|&(c, base)| (c, base + hit.along_m))
+    }
+
+    /// The point `m` metres along component `c`, its ways laid end to end.
+    pub fn point_along(&self, c: u32, m: f64) -> P {
+        let comp = &self.comps[c as usize];
+        let mut left = m;
+        for &w in &comp.ways {
+            let way = &self.ways[w as usize];
+            let len = *way.cum.last().unwrap();
+            if left <= len {
+                let i = way
+                    .cum
+                    .partition_point(|&d| d < left)
+                    .clamp(1, way.coords.len() - 1);
+                let (a, b) = (way.coords[i - 1], way.coords[i]);
+                let seg = way.cum[i] - way.cum[i - 1];
+                let t = if seg > 0.0 {
+                    (left - way.cum[i - 1]) / seg
+                } else {
+                    0.0
+                };
+                let lerp =
+                    |a: u32, b: u32| (f64::from(a) + (f64::from(b) - f64::from(a)) * t) as u32;
+                return [lerp(a[0], b[0]), lerp(a[1], b[1])];
+            }
+            left -= len;
+        }
+        let last = &self.ways[*comp.ways.last().unwrap() as usize];
+        *last.coords.last().unwrap()
+    }
+
+    /// Whether component `c` is a street under its ways' own name, not under an alternate
+    /// name or a ref only.
+    pub fn is_primary(&self, c: u32) -> bool {
+        let comp = &self.comps[c as usize];
+        comp.ways
+            .iter()
+            .any(|&w| self.ways[w as usize].primary == comp.key)
     }
 
     /// Distinct way names within `radius_m` of `p`, nearest first (for samples).

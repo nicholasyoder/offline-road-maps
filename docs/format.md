@@ -13,6 +13,7 @@ Status of each part:
 | Tiles (`TIDX`, `TDIC`, `TDAT`) | **Specified** (encoding V4 from phase 0). Codec in `omp-core::tile`, reader and writer in `omp-core::tiles`, with round-trip tests. |
 | Addresses (`ASTR`, `AIDX`, `ASUF`, `AUNI`, `ALSE`, `ARNG`) | **Specified** (encoding A3 from phase 0). |
 | Routing (`RCH*`) | *Provisional*, finalized in Phase 3. |
+| Admin areas (`SADM`, `SAPL`) | *Provisional* (phase 2 step 2.1). Written by `build`; finalized with the search sections in step 2.5. |
 | Search (`SFST`, `SPST`, `SENT`) | *Provisional*, finalized in Phase 2. |
 | Label data in tiles (`labels` layer, `routes` prop) | **Specified** (phase 1 step 1.3, whitelist v2). |
 | Style (`STYL`) | **Not used:** the style lives in the app (phase 1 decision 8). |
@@ -301,6 +302,40 @@ Phase 3 builds its own contraction hierarchy. The size table reserves about 3.2 
 - `RGEO`: road geometry for drawing the route and turn-by-turn, possibly shared with the z14 roads tiles.
 - Turn restrictions, and the mapping from tiles to the graph for snapping.
 
+## Admin areas — *provisional*
+
+Admin areas from OSM `boundary=administrative` relations, levels 2–10, for the "where" of search results and "what's here" (phase 2 step 2.1). Areas are ordered by admin level, then along a Morton curve of their label point; an area's **admin ID** is its position. North America has 54,937 areas: 1.7 MiB of `SADM` and 12.5 MiB of `SAPL`.
+
+### `SADM`: admin table (contiguous)
+
+One zstd frame:
+
+```
+SADM  = count:varint  area*
+area  = level:u8  parent:varint  flags:varint  name:str  abbr:str  population:varint
+        label_x:u32  label_y:u32  min_x:u32  min_y:u32  max_x:u32  max_y:u32
+        osm_id:varint  nalt:varint  (key:str  value:str)*
+```
+
+- `level` is the OSM `admin_level` (2 country, 4 state or province, 5 Quebec region, 6 county or MRC, 7 US civil township, 8 city, town, village or municipality, 9–10 boroughs and neighbourhoods).
+- `parent` is the admin ID + 1 of the deepest area of a lower level that holds the label point, or 0 for none (a state in a regional pack, whose country is cut off by the extract).
+- `flags`: bit 0 **town**, a level 8 area that is a city, town or village rather than a township (by `border_type`, `place` and the name); bit 1 **broken**, some member ways were missing or did not close, so the polygon is partial.
+- `abbr` is the part of `ISO3166-2` after the dash (`OH`, `QC`), or the `ISO3166-1` code of a country; empty if neither.
+- The label point is the relation's `label` node, else its `admin_centre` node if inside, else a pole of inaccessibility. The bounding box is in world coordinates.
+- Alternative names are `name:en`, `name:fr`, `alt_name`, `short_name`, `official_name` and `old_name` (decision 6), sorted by key.
+
+### `SAPL`: admin polygons (contiguous)
+
+Polygons simplified to 50 m, in zstd blocks of consecutive areas (about 64 KiB uncompressed each):
+
+```
+SAPL  = nblocks:u32  (first_area:u32  offset:u32  length:u32)*  block*
+block = zstd(polygon*)                                    ; one per area, first_area onwards
+polygon = nrings:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
+```
+
+`offset` is from the start of `SAPL`. Points are in units of 2⁶ world units, as deltas from a cursor that starts at (0, 0) for each polygon and runs on across its rings. Rings are not closed (the last point is not repeated); a point is inside if it is inside an odd number of rings.
+
 ## Search — *provisional*
 
 Phase 2. The phase 0 spike measured an `fst` of normalized tokens, postings lists, and an entries table (at most 253 MiB for North America):
@@ -308,7 +343,7 @@ Phase 2. The phase 0 spike measured an `fst` of normalized tokens, postings list
 - `SPST`: postings lists (delta-coded entry IDs).
 - `SENT`: entries: places, streets (the street table that addresses refer to), POIs, each with a name, kind, position and admin context.
 
-The admin hierarchy, ranking data and the street table's exact form are open.
+Ranking data and the street table's exact form are open; the admin hierarchy is in [`SADM` and `SAPL`](#admin-areas--provisional).
 
 ## Style
 

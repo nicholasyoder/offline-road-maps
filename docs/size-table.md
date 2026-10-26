@@ -101,6 +101,21 @@ Left out: 40.1M ocean tiles, 5.6M protected-area tiles, 0.24M lake tiles and 0.1
 
 Of the 1,812 MiB, the caps account for about 1,650 and the frame wrappers for about 170. Quebec's pack went from 743.5 to 540.8 MiB, Ohio's from 116.1 to 97.2, Delaware's from 8.1 to 7.0. The North America total becomes **about 9,970 MiB (9.7 GiB, 10.5 GB)**, 0.45× CoMaps.
 
+### Phase 2 step 2.1: admin areas
+
+The admin table (`SADM`) and the admin polygons simplified to 50 m (`SAPL`), from `omp-builder admin` and `build` (`$OMP_WORK/measure/admin/`). Admin levels 2–10; the regional extracts have no country (its members are cut off).
+
+| | Ohio | Quebec | North America |
+|---|---:|---:|---:|
+| Admin areas | 2,407 | 1,549 | 54,937 |
+| — at level 8 (cities, towns, villages, municipalities) | 961 | 1,252 | 32,881 |
+| Polygon vertices, 5 m (builder) / 50 m (pack) | 0.20M / 0.09M | 0.98M / 0.27M | 11.4M / 3.8M |
+| `SADM` (MiB) | 0.07 | 0.05 | 1.74 |
+| `SAPL` (MiB) | 0.29 | 0.91 | 12.52 |
+| **Admin total (MiB)** | **0.37** | **0.97** | **14.3** |
+
+The North America total moves from about 9,970 to **about 9,984 MiB**. Reading the areas takes 2 min and 1.7 GiB on North America (three passes over the PBF), 3 s on Ohio.
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

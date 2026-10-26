@@ -34,7 +34,7 @@ The roadmap's items are "search suggestions as you type, ranking by importance a
 
 | Step | Status | Notes |
 |---|---|---|
-| 2.1 Admin hierarchy in the builder | Not started | |
+| 2.1 Admin hierarchy in the builder | **Done** 2026-10-25 | `SADM` + `SAPL` in `build`; North America 54,937 areas, 14.3 MiB. Postal town for 70.5% of streets; fallback order changed (decision 4, revised, needs the owner's OK). |
 | 2.2 Street table and street geometry | Not started | |
 | 2.3 Search entries and index | Not started | |
 | 2.4 Address store in `build` | Not started | |
@@ -60,7 +60,7 @@ As in [phase 1](phase1-plan.md#environment-notes): builder data in `$OMP_WORK`, 
 
 Every search entry and every address needs "where": the town, county, state or province, and country. OSM has this as `boundary=administrative` relations, which the `boundaries` layer already reads for lines.
 
-- **Assemble admin areas** as polygons from relations at admin levels 2 (country), 4 (state, province), 6 (county, census division or MRC), 8 (city, town, township, municipality) and, where they exist, 9–10 (boroughs, neighbourhoods; display only). Reuse the ring assembly from `measure/geom.rs`. Keep `name`, `admin_level`, `ISO3166-2` where present (to get `OH`, `QC`, `ON` for display and queries), `population` and the `label` or `admin_centre` member.
+- **Assemble admin areas** as polygons from relations at admin levels 2 (country), 4 (state, province), 6 (county, census division or MRC), 7 (US civil township; added in 2.1, Ohio has 1,311), 8 (city, town, township, municipality) and, where they exist, 3, 5 (Quebec's regions) and 9–10 (boroughs, neighbourhoods; display only). Reuse the ring assembly from `measure/geom.rs`. Keep `name`, `admin_level`, `ISO3166-2` where present (to get `OH`, `QC`, `ON` for display and queries), `population` and the `label` or `admin_centre` member.
 - **The town shown is the postal town** (decision 4), the one written on an envelope. Admin areas often differ from it: much of the US is unincorporated, a Butler County, Ohio address may lie in a township that nobody writes, and 14% of NAR addresses have a mailing municipality that is not their legal one. The address sources carry the postal town: NAR `MAIL_MUN_NAME` (essentially 100%), OpenAddresses `city` (82% of Ohio's records, 91–100% in the large county sources, but often blank in rural ones: Adams 74% blank, Stark 55%) and OSM `addr:city`. TIGER has none.
   - Each street record (2.2) takes the postal town most of its addresses use.
   - Streets with no postal town (no address points, or only blank ones), places and POIs fall back to the admin 8 name when it is a city, town or village, otherwise the nearest `place=city|town|village|hamlet` node's name.
@@ -71,6 +71,31 @@ Every search entry and every address needs "where": the town, county, state or p
 - **Store** for the app: the admin table (names, levels, abbreviations, parent, label point), and polygons simplified to about 50 m for "what's here" and for query filters ("Springfield, IL" means inside Illinois). Measure the size on North America; at about 50k areas this should be tens of MiB.
 
 **Done when:** Ohio and Quebec have an admin table and polygons, every street and place has a chain, the Ohio unincorporated numbers are recorded, and the North America size is measured.
+
+> **Done 2026-10-25** (the commit that adds `crates/builder/src/admin/`).
+> - **Code.** `admin/read.rs` reads `boundary=administrative` relations (levels 2–10), their member ways and nodes, label and admin-centre nodes, and named `place=city|town|village|hamlet` nodes, in three PBF passes of its own. `admin/index.rs` is a z12 grid for point in polygon (boundary cells keep their edges and their centre's side; inside cells are whole), tested against a brute-force test. `admin/mod.rs` orders areas by level and Morton code, finds each one's parent and label point, and flags level 8 **towns** (not townships, by `border_type`, `place` and name). `admin/encode.rs` writes `SADM` and `SAPL` (format.md, *provisional*), with a decode test. `build` writes both sections and gives every place and POI its chain (coverage printed). `omp-builder admin <pbf> --json … [--at lat,lon]` reports counts and sizes and prints chains. `addr-spike` reads each source's town (OpenAddresses `city`, NAR `MAIL_MUN_NAME`, ODA `city`, OSM `addr:city`) and reports the town per street (`addr/towns.rs`, `towns` in its JSON, samples in `towns.tsv`).
+> - **Size** ([size-table.md](size-table.md#phase-2-step-21-admin-areas)): North America 54,937 areas (32,881 at level 8), `SADM` 1.74 MiB + `SAPL` 12.52 MiB = **14.3 MiB**, within the "tens of MiB" estimate. Ohio 0.37 MiB, Quebec 0.97 MiB. Reading takes 2 min and 1.7 GiB on North America.
+> - **Chains.** Ohio and Quebec packs (`$OMP_WORK/measure/admin/`): every street in the state or province has a chain (`without_chain` 0). In Ohio's pack, 42 of 6,747 places and 119 of 86,136 POIs are in no area, presumably at the extract's edge beyond the state, where it has no boundaries (not checked one by one). Montréal and Québec keep level 8 under their boroughs (levels 9–10); no Quebec street is in a borough without its city. Regional extracts have no country (the level 2 relation is cut off), so `parent` stops at the state there; the North America pack has all 7 countries.
+> - **The town per street** (`addr-spike`, `$OMP_WORK/measure/towns/`, North America table in `na-table.md`). A street takes the postal town most of its address records give, after matching the source's spelling to an admin area or nearby place ("BRUNSWICK CITY" and "Brunswick" are one town; "SAINT-THÉOPHILE" shows as "Saint-Théophile").
+>
+>   | | Ohio | Quebec | North America |
+>   |---|---:|---:|---:|
+>   | Streets | 223,218 | 124,805 | 8,071,213 |
+>   | Postal town from addresses | 64.0% | 90.4% | 70.5% |
+>   | Fallback: neighbours / area / place / none | 23.6 / 0.5 / 12.0 / 0% | 7.1 / 2.3 / 0.1 / 0.1% | 19.7 / 1.4 / 8.3 / 0.1% |
+>   | Hold-out: fallback order names the postal town | 95.9% | 98.2% | 93.8% |
+>   | Hold-out: the plan's order (area, then nearest place) | 70.8% | 96.8% | 59.4% |
+>   | Postal town ≠ the town area it lies in | 9.6% | 2.5% | 11.8% |
+>   | Streets / addresses in no city, town or village area | 42.1% / 37.2% | 1.2% / 0.7% | 48.4% / 41.6% |
+>
+>   **Ohio's unincorporated numbers:** 94,037 of 223,218 streets (42.1%) and 1,842,916 of 4,946,534 addresses (37.2%) are in no city or village, only a township (level 7) or county. 37,068 of those streets have a postal town from their addresses. Where a street lies in a town area, its addresses name another town 9.6% of the time, mostly real postal towns (Ottawa Hills streets are "Toledo", Brooklyn's are "Cleveland").
+> - **The fallback order changed** (decision 4, revised). The hold-out test hides the postal town of each street that has one and asks each fallback for it. The plan's order (the admin 8 town, else the nearest place) gets 59.4% right across North America: nearest place nodes are often hamlets and subdivisions ("Young Subdivision") rather than the postal town (39.6% right in Ohio). The order now used is: the postal town most streets within about 1 km give, **counting only streets in the same municipality or township**; then the admin 8 town; then the same neighbours anywhere; then the nearest city, town or village; then the nearest place of any kind. It gets 93.8% right. Neighbours anywhere first was better in Ohio (91.5%) but worse in Quebec (94.7%); the area first, the reverse (89.0% and 97.3%).
+> - **Build cost:** `addr-spike --each` with towns took 23.4 min and 34 GiB on North America (phase 0: 18.7 min, 28.7 GiB); the admin read is 2 min of that.
+> - **Left open:**
+>   - The **town flag** is wrong in a few states, where the postal town differs from the "town" area for most streets: New York (98%; NY's towns are level 7 and its level 8 areas are not the postal towns), Wisconsin (59%, "Town of …" at level 8), New Brunswick (100%), Alberta (85%), Manitoba (77%), Yukon and Hawaii. Area-based fallbacks there are rare (under 3% of streets except Wisconsin's 17%), but "what's here" (2.8) shows the area too. Fix per state in 2.2 or 2.8, checking the `towns.tsv` samples.
+>   - **Puerto Rico and the Virgin Islands** got no streets: their level 4 areas do not carry `US-PR` / `US-VI`. Not in the address sources' scope either.
+>   - 8.3% of North America's streets still fall back to a place node (12.0% in Ohio), rural streets with no addressed neighbour within 1 km; how often that is right is not measured (the hold-out only covers streets that have neighbours).
+>   - The North America pack was not rebuilt: its size is from `omp-builder admin`, which runs the same encoder as `build`.
 
 ## 2.2 Street table and street geometry
 
@@ -195,6 +220,7 @@ Settled while planning (2026-10-25), from phase 0 and 1 data:
 
 Settled by the owner (2026-10-25):
 4. **The town shown is the postal town** (2.1), taken per street from its addresses (NAR, OpenAddresses, OSM `addr:city`). Where the data has none: the admin 8 name when it is a city, town or village, otherwise the nearest place node's name. Admin names are search aliases. This is the town shown in search results and "what's here".
+   - *Revised in 2.1 (2026-10-25), from measurement; needs the owner's OK:* where the data has none, the postal town of the neighbouring streets in the same municipality or township comes first, then the admin 8 town, then neighbours anywhere, then the nearest city, town or village, then any place node. On streets whose postal town is known, this order names it 93.8% of the time in North America, the original order 59.4% (see 2.1's Done note).
 5. **Postcodes** (2.3): searchable, as a point at the centroid of their addresses. They are shown with addresses only if storing one per street turns out small.
 6. **Alternative names** (2.3): `name:en`, `name:fr`, `alt_name`, `short_name`, `official_name`, `old_name` and `brand` are searchable; only `name` is displayed.
 7. **No search-only POIs.** Search covers the POIs that are on the map. A larger POI set is left for later, once the final pack sizes are known, and would be added to the map and search together ([roadmap](roadmap.md#later-or-optional)).

@@ -5,6 +5,9 @@
 //! tiles. `--bands n` cuts the pyramid in `n` passes, freeing the features in between, and
 //! every band appends its V2 payloads to one temp store. Dictionaries are trained once from
 //! all of it, then tiles are compressed and written in zoom, then Hilbert order.
+//!
+//! Admin areas are read first (`SADM`, `SAPL`), and every place and POI is given its chain
+//! of admin areas; for now only the coverage is reported.
 
 pub mod inspect;
 
@@ -25,6 +28,7 @@ use omp_core::whitelist::Whitelist;
 use rayon::prelude::*;
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
+use crate::admin::{self, Admin, encode as admin_encode};
 use crate::fetch::manifest::{FileEntry, Manifest};
 use crate::measure::compress;
 use crate::measure::osm;
@@ -287,9 +291,12 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     )?;
 
     eprintln!("build {name}: {}", args.input.display());
+    let mut t = Instant::now();
+    let admin = admin::load(&args.input)?;
+    let mut chains = ChainStats::default();
+    log_stage("admin", &mut t);
     let store_path = temp.join(format!("{file_name}-build.v2"));
     let mut store = Store::create(&store_path)?;
-    let mut t = Instant::now();
     let mut cut = tiles::Stats::default();
     for k in 0..args.bands {
         let band = Band { k, n: args.bands };
@@ -323,6 +330,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
             }));
             log_stage("water", &mut t);
         }
+        chains.add(&data.features, &wl, &admin);
         cut.merge(tiles::cut_pyramid(
             &data.features,
             &wl,
@@ -346,6 +354,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     settings.insert("encoding".into(), "V4".into());
     settings.insert("zstd_level".into(), args.zstd_level.into());
     settings.insert("max_zoom".into(), tiles::MAX_ZOOM.into());
+    settings.insert("admin_tolerance_m".into(), admin::PACK_TOLERANCE_M.into());
     settings.insert("input".into(), file_label(&args.input).into());
     if let Some(z) = &water_zip {
         settings.insert("water".into(), file_label(z).into());
@@ -427,6 +436,10 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     }
     let (tdat, tidx) = tw.finish()?;
     sections.extend([tdat, tidx]);
+    let (sadm, sapl, admin_sizes) = admin_encode::sections(&admin)?;
+    sections.push(w.section(admin_encode::SADM, &sadm)?);
+    sections.push(w.section(admin_encode::SAPL, &sapl)?);
+    drop(admin);
     drop(store_file);
     let _ = std::fs::remove_file(&store_path);
     log_stage("compress", &mut t);
@@ -488,6 +501,14 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     );
     print_left_out(&cut, &wl);
     eprintln!(
+        "  admin: {} areas, SADM {:.2} MiB, SAPL {:.2} MiB ({} blocks)",
+        admin_sizes.areas,
+        mib(admin_sizes.sadm),
+        mib(admin_sizes.sapl),
+        admin_sizes.sapl_blocks
+    );
+    chains.print();
+    eprintln!(
         "wrote {} in {} chunk(s), {:.1} MiB (tiles {} B, TIDX {} B, TDIC {} dictionaries); \
          {:.0} s, peak RSS {:.0} MiB, temp store {:.1} MiB",
         args.out.join(format!("{file_name}.omp.000")).display(),
@@ -501,6 +522,70 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         mib(store_bytes)
     );
     Ok(())
+}
+
+/// Admin chains of places and POIs, per layer: `[features, in no area, without a level 4
+/// area, without level 6, without level 8, in a city, town or village]`.
+#[derive(Default)]
+struct ChainStats {
+    seen: std::collections::HashSet<(u8, i64)>,
+    layers: std::collections::BTreeMap<String, [u64; 6]>,
+}
+
+impl ChainStats {
+    /// Counts the point features of the `places` and `pois` layers, each once over all bands.
+    fn add(&mut self, features: &[osm::Feature], wl: &Whitelist, admin: &Admin) {
+        let layers: Vec<u8> = ["places", "pois"]
+            .iter()
+            .filter_map(|l| wl.layer_index(l).map(|i| i as u8))
+            .collect();
+        let points: Vec<(u8, crate::measure::geom::P)> = features
+            .iter()
+            .filter(|f| layers.contains(&f.layer) && self.seen.insert((f.layer, f.id)))
+            .filter_map(|f| match f.geom {
+                crate::measure::geom::Geometry::Point(p) => Some((f.layer, p)),
+                _ => None,
+            })
+            .collect();
+        let counted: Vec<(u8, [u64; 6])> = points
+            .par_iter()
+            .map(|&(layer, p)| {
+                let chain = admin.chain(p);
+                let missing = |l| u64::from(admin.at_level(&chain, l).is_none());
+                let town = chain.iter().any(|&a| admin.towns[a as usize]);
+                (
+                    layer,
+                    [
+                        1,
+                        u64::from(chain.is_empty()),
+                        missing(4),
+                        missing(6),
+                        missing(8),
+                        u64::from(town),
+                    ],
+                )
+            })
+            .collect();
+        for (layer, c) in counted {
+            let row = self
+                .layers
+                .entry(wl.layers[layer as usize].name.clone())
+                .or_default();
+            for (r, v) in row.iter_mut().zip(c) {
+                *r += v;
+            }
+        }
+    }
+
+    fn print(&self) {
+        for (layer, c) in &self.layers {
+            eprintln!(
+                "  admin chains, {layer}: {} features, {} in no area, {} without level 4, \
+                 {} without level 6, {} without level 8, {} in a city, town or village",
+                c[0], c[1], c[2], c[3], c[4], c[5]
+            );
+        }
+    }
 }
 
 /// Tiles left out (one polygon covering them), per zoom and per class.

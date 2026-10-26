@@ -6,8 +6,9 @@
 mod encode;
 mod osm;
 mod sources;
-mod streets;
+pub mod streets;
 mod tiger;
+mod towns;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -20,6 +21,7 @@ use omp_core::normalize::{HouseNumber, house_number};
 use rayon::prelude::*;
 use serde::Serialize;
 
+use crate::admin::{self, Admin};
 use crate::fetch::manifest::Manifest;
 use crate::fetch::regions::Subdivision;
 use crate::measure::geom::{self, P};
@@ -145,6 +147,9 @@ pub struct Raw {
     pub number: String,
     pub street: String,
     pub unit: String,
+    /// The postal town the source gives (OpenAddresses `city`, NAR `MAIL_MUN_NAME`, ODA
+    /// `city`, OSM `addr:city`); empty if none.
+    pub city: String,
     pub p: P,
 }
 
@@ -180,6 +185,7 @@ const SGC: &[(&str, &str)] = &[
 #[derive(Clone, Copy)]
 struct Att {
     comp: u32,
+    way: u32,
     /// Attached by the exact key, not the loose one.
     strict: bool,
     offset_m: f64,
@@ -195,6 +201,7 @@ struct Rec {
     street: u32,
     key: u32,
     unit: u32,
+    city: u32,
     p: P,
     att: Option<Att>,
 }
@@ -258,6 +265,8 @@ struct SourceRow {
     /// No street name at all.
     no_street: u64,
     with_unit: u64,
+    /// Records that name a postal town.
+    with_city: u64,
     kinds: BTreeMap<&'static str, u64>,
 }
 
@@ -370,6 +379,7 @@ struct Report {
     tiger: Option<tiger::TigerStats>,
     ranges: Vec<RangeRow>,
     encoding: encode::EncodingReport,
+    towns: towns::TownReport,
 }
 
 struct Stages {
@@ -600,6 +610,8 @@ pub fn run(args: AddrArgs, work_dir: &Path) -> Result<()> {
         .clone()
         .unwrap_or_else(|| work_dir.join("inputs"));
     let read_osm = args.sources.contains(&Input::Osm);
+    let admin = admin::load(&args.input)?;
+    stages.done("admin");
 
     if !args.each {
         let region = args.region.clone().unwrap_or_else(|| {
@@ -622,7 +634,7 @@ pub fn run(args: AddrArgs, work_dir: &Path) -> Result<()> {
             start,
             stages,
         };
-        return run_one(&args, &inputs, run, osm);
+        return run_one(&args, &inputs, run, osm, &admin);
     }
 
     let polys: Vec<poly::Poly> = subs
@@ -665,7 +677,7 @@ pub fn run(args: AddrArgs, work_dir: &Path) -> Result<()> {
             start: Instant::now(),
             stages: Stages::new(),
         };
-        run_one(&args, &inputs, run, parts[i].take())?;
+        run_one(&args, &inputs, run, parts[i].take(), &admin)?;
     }
     Ok(())
 }
@@ -696,7 +708,13 @@ struct Run<'a> {
 }
 
 /// Merges the address sources of `run.subs` with the OSM records already read.
-fn run_one(args: &AddrArgs, inputs: &Path, run: Run, osm: Option<osm::OsmAddresses>) -> Result<()> {
+fn run_one(
+    args: &AddrArgs,
+    inputs: &Path,
+    run: Run,
+    osm: Option<osm::OsmAddresses>,
+    admin: &Admin,
+) -> Result<()> {
     let Run {
         region,
         subs,
@@ -777,6 +795,7 @@ fn run_one(args: &AddrArgs, inputs: &Path, run: Run, osm: Option<osm::OsmAddress
     let mut street_names = Interner::new();
     let mut suffixes = Interner::new();
     let mut units = Interner::new();
+    let mut cities = Interner::new();
     let mut source_rows: BTreeMap<Src, SourceRow> = BTreeMap::new();
     let mut exceptions: Vec<(Src, String, String, P)> = Vec::new();
     let mut recs: Vec<Rec> = Vec::with_capacity(raws.len());
@@ -789,6 +808,7 @@ fn run_one(args: &AddrArgs, inputs: &Path, run: Run, osm: Option<osm::OsmAddress
             zero_number: 0,
             no_street: 0,
             with_unit: 0,
+            with_city: 0,
             kinds: BTreeMap::new(),
         });
         row.records += 1;
@@ -814,6 +834,9 @@ fn run_one(args: &AddrArgs, inputs: &Path, run: Run, osm: Option<osm::OsmAddress
         if !r.unit.is_empty() {
             row.with_unit += 1;
         }
+        if !r.city.is_empty() {
+            row.with_city += 1;
+        }
         recs.push(Rec {
             src: r.src,
             file: r.file,
@@ -822,6 +845,7 @@ fn run_one(args: &AddrArgs, inputs: &Path, run: Run, osm: Option<osm::OsmAddress
             street: street_names.intern(&r.street),
             key: NONE,
             unit: units.intern(&r.unit),
+            city: cities.intern(&r.city),
             p: r.p,
             att: None,
         });
@@ -865,6 +889,7 @@ fn run_one(args: &AddrArgs, inputs: &Path, run: Run, osm: Option<osm::OsmAddress
             let att = pick.and_then(|(h, k, strict)| {
                 streets.locate(&h, k).map(|(comp, offset_m)| Att {
                     comp,
+                    way: h.way,
                     strict,
                     offset_m,
                     dist_m: h.dist_m,
@@ -1162,6 +1187,28 @@ fn run_one(args: &AddrArgs, inputs: &Path, run: Run, osm: Option<osm::OsmAddress
     )?;
     stages.done("encode");
 
+    let votes: Vec<(u32, u32)> = recs
+        .iter()
+        .filter(|r| r.city != 0)
+        .filter_map(|r| r.att.map(|a| (a.way, r.city)))
+        .collect();
+    let points: Vec<P> = reps.iter().map(|&r| recs[r as usize].p).collect();
+    let iso = match subs {
+        [one] => Some(one.iso()),
+        _ => None,
+    };
+    let town_report = towns::measure(
+        admin,
+        &streets,
+        iso.as_deref(),
+        &votes,
+        &cities.list,
+        &points,
+        &samples_dir,
+    )?;
+    drop((votes, points));
+    stages.done("towns");
+
     write_samples(
         &samples_dir,
         &recs,
@@ -1220,6 +1267,7 @@ fn run_one(args: &AddrArgs, inputs: &Path, run: Run, osm: Option<osm::OsmAddress
         tiger: tiger_stats,
         ranges: range_rows.into_values().collect(),
         encoding,
+        towns: town_report,
     };
     if let Some(dir) = json.parent() {
         std::fs::create_dir_all(dir)?;
