@@ -8,6 +8,7 @@
 
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::addr::{self, Address, Addresses, Loose, Range};
 use crate::admin::Admin;
@@ -26,7 +27,7 @@ pub const SPST: [u8; 4] = *b"SPST";
 /// `SENT` points are in units of 2^6 world units.
 pub const SHIFT: u32 = 6;
 /// Decoded entry blocks kept, in bytes.
-const CACHE_BYTES: usize = 4 << 20;
+const CACHE_BYTES: usize = 12 << 20;
 /// The first minor version whose search sections this reader understands (format 0.4).
 pub const MIN_MINOR: u16 = 4;
 
@@ -128,6 +129,15 @@ fn decode_entries(raw: &[u8]) -> io::Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// The order of entry IDs as one number: importance bucket, highest first, then the Morton
+/// code of the stored point (whose low 12 bits are 0). IDs ascend with it.
+pub fn order_key(importance: u8, p: P) -> u64 {
+    (u64::from(15 - (importance >> 4)) << 52) | (geo::morton(p) >> 12)
+}
+
+/// A block's first key not yet read.
+const UNKNOWN: u64 = u64::MAX;
+
 /// Entries, towns and the token index.
 pub struct Index {
     pack: Arc<Pack>,
@@ -136,6 +146,8 @@ pub struct Index {
     towns: Vec<String>,
     fst: fst::Map<Vec<u8>>,
     entries: Cache<usize, Vec<Entry>>,
+    /// Per `SENT` block, the [`order_key`] of its first entry, filled as blocks are read.
+    first_keys: Vec<AtomicU64>,
 }
 
 impl Index {
@@ -156,6 +168,9 @@ impl Index {
         )?;
         let towns = strings(&mut Reader::new(&raw))?;
         let fst = fst::Map::new(pack.read_section(&sfst)?).map_err(|_| invalid("bad SFST"))?;
+        let first_keys = (0..sent.blocks())
+            .map(|_| AtomicU64::new(UNKNOWN))
+            .collect();
         Ok(Some(Self {
             pack,
             sent,
@@ -163,6 +178,7 @@ impl Index {
             towns,
             fst,
             entries: Cache::new(CACHE_BYTES),
+            first_keys,
         }))
     }
 
@@ -183,22 +199,121 @@ impl Index {
         &self.fst
     }
 
-    pub fn entry(&self, id: u32) -> io::Result<Entry> {
-        let block = self
-            .sent
-            .find(id)
-            .filter(|_| id < self.count())
-            .ok_or_else(|| invalid("no such entry"))?;
+    fn block(&self, block: usize) -> io::Result<Arc<Vec<Entry>>> {
         let entries = self.entries.get(block, || {
             let (raw, read) = self.sent.read(&self.pack, block)?;
             let v = decode_entries(&raw)?;
             let bytes = v.iter().map(Entry::heap_bytes).sum();
             Ok((v, bytes, read))
         })?;
-        entries
+        if let Some(e) = entries.first() {
+            self.first_keys[block].store(order_key(e.importance, e.p), Ordering::Relaxed);
+        }
+        Ok(entries)
+    }
+
+    pub fn entry(&self, id: u32) -> io::Result<Entry> {
+        let block = self
+            .sent
+            .find(id)
+            .filter(|_| id < self.count())
+            .ok_or_else(|| invalid("no such entry"))?;
+        self.block(block)?
             .get((id - self.sent.first(block)) as usize)
             .cloned()
             .ok_or_else(|| invalid("SENT block holds fewer entries"))
+    }
+
+    fn first_key(&self, block: usize) -> io::Result<u64> {
+        match self.first_keys[block].load(Ordering::Relaxed) {
+            UNKNOWN => {
+                self.block(block)?;
+                Ok(self.first_keys[block].load(Ordering::Relaxed))
+            }
+            k => Ok(k),
+        }
+    }
+
+    /// The first block whose first key is not below `key` (`pred` false), by binary search.
+    fn block_partition(&self, pred: impl Fn(u64) -> bool) -> io::Result<usize> {
+        let (mut lo, mut hi) = (0, self.sent.blocks());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if pred(self.first_key(mid)?) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        Ok(lo)
+    }
+
+    /// Entry ID intervals, half open and ascending, holding every entry whose point is in
+    /// one of `bboxes`, in every importance bucket. Entry IDs follow [`order_key`], so each
+    /// bucket's part of a bbox is a few ID intervals; they are found from the blocks' first
+    /// keys and are whole blocks, so they hold other entries too.
+    pub fn intervals(&self, bboxes: &[[u32; 4]]) -> io::Result<Vec<(u32, u32)>> {
+        let mut ranges: Vec<(u64, u64)> = bboxes
+            .iter()
+            .flat_map(|b| geo::morton_ranges(*b))
+            .map(|(lo, hi)| (lo >> 12, hi >> 12))
+            .collect();
+        ranges.sort_unstable();
+        let mut out = Vec::new();
+        let blocks = self.sent.blocks();
+        for bucket in 0..16u64 {
+            for &(lo, hi) in &ranges {
+                let (klo, khi) = ((bucket << 52) | lo, (bucket << 52) | hi);
+                let start = self.block_partition(|k| k < klo)?.saturating_sub(1);
+                let end = self.block_partition(|k| k <= khi)?;
+                if end > start {
+                    let to = if end < blocks {
+                        self.sent.first(end)
+                    } else {
+                        self.count()
+                    };
+                    out.push((self.sent.first(start), to));
+                }
+            }
+        }
+        out.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(out.len());
+        for (a, b) in out {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        Ok(merged)
+    }
+
+    /// The entries in `bboxes`, with their IDs, in ID order.
+    pub fn entries_in(&self, bboxes: &[[u32; 4]]) -> io::Result<Vec<(u32, Entry)>> {
+        let inside = |p: P| {
+            bboxes
+                .iter()
+                .any(|b| b[0] <= p[0] && p[0] <= b[2] && b[1] <= p[1] && p[1] <= b[3])
+        };
+        let mut out = Vec::new();
+        for (a, b) in self.intervals(bboxes)? {
+            let mut id = a;
+            while id < b {
+                let block = self.sent.find(id).ok_or_else(|| invalid("no such entry"))?;
+                let first = self.sent.first(block);
+                let entries = self.block(block)?;
+                for (i, e) in entries.iter().enumerate().skip((id - first) as usize) {
+                    let eid = first + i as u32;
+                    if eid >= b {
+                        break;
+                    }
+                    if inside(e.p) {
+                        out.push((eid, e.clone()));
+                    }
+                }
+                id = first + entries.len().max(1) as u32;
+            }
+        }
+        Ok(out)
     }
 
     /// The postings of `token`, or `None` if no entry holds it.
@@ -249,6 +364,7 @@ impl Index {
             + self.towns.iter().map(|t| 24 + t.capacity()).sum::<usize>()
             + self.fst.as_fst().as_bytes().len()
             + self.entries.held()
+            + self.first_keys.len() * 8
     }
 
     pub fn bytes_read(&self) -> u64 {
@@ -294,6 +410,9 @@ pub struct Search {
     pub streets: Streets,
     pub addresses: Option<Addresses>,
     pub grid: Grid,
+    /// The names and codes of states, provinces and countries, folded, with their area:
+    /// made on the first query (`find`).
+    pub(crate) states: std::sync::OnceLock<Vec<(String, u32)>>,
 }
 
 impl Search {
@@ -318,6 +437,7 @@ impl Search {
             streets,
             addresses,
             grid,
+            states: std::sync::OnceLock::new(),
         }))
     }
 
@@ -434,6 +554,10 @@ impl Search {
             + self.streets.heap_bytes()
             + self.addresses.as_ref().map_or(0, Addresses::heap_bytes)
             + self.grid.heap_bytes()
+            + self
+                .states
+                .get()
+                .map_or(0, |v| v.iter().map(|(n, _)| 32 + n.capacity()).sum())
     }
 
     /// Compressed bytes read from the pack into the caches so far.

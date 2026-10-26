@@ -427,7 +427,7 @@ entry   = (class << 3 | kind):varint  importance:u8  name:str  dx:zvarint  dy:zv
           admin:varint  town:varint  ref:varint  nalt:varint  alt:str*
 ```
 
-- **Entry IDs** are positions in this section. Entries are ordered by importance bucket (`importance >> 4`, highest first), then along a Morton curve of their point. So a postings list, which is in ID order, lists the most important candidates first, and nearby entries of one bucket share blocks.
+- **Entry IDs** are positions in this section. Entries are ordered by importance bucket (`importance >> 4`, highest first), then along a Morton curve of their point (the stored point, to 2⁶ units). So a postings list, which is in ID order, lists the most important candidates first, and nearby entries of one bucket share blocks. It also makes this section a spatial index: in each bucket, the entries in an aligned square of the Morton curve are one run of IDs, which a reader finds by binary search on the blocks' first entries; the search engine cuts postings lists to a town or the view that way (phase 2 step 2.6).
 - `kind` and `class`, and what `ref` means for each:
 
   | `kind` | Entry | `class` | `ref` |
@@ -441,7 +441,7 @@ entry   = (class << 3 | kind):varint  importance:u8  name:str  dx:zvarint  dy:zv
   | 6 | Street known only from unattached addresses (`ALSE`), with no OSM street of its key within about 1 km of them | 0 | metres from the point holding 90% of its addresses |
 
   A place node and an admin area are one entry when the node lies in an area of a matching level (country 2; state 3–4; city, town, village, hamlet 5–8; suburb, neighbourhood, locality 7–10) whose name has the same key: the place entry refers to the area, and the area has no entry of its own.
-- `importance` (0–255) ranks entries before distance is known: places by class and population, admin areas by level, streets by road class and length, POIs by class, labels by the zoom they first show at, postcodes at 110, streets known only from addresses at 80. The builder's `search::*_importance` functions are the reference; step 2.6 tunes them.
+- `importance` (0–255) ranks entries before distance is known: places by class and population, admin areas by level, streets by road class and length, POIs by class, labels by the zoom they first show at, postcodes at 110, streets known only from addresses at 80. The builder's `search::*_importance` functions are the reference. Step 2.6 left them as they are and does the rest of the ranking at query time (`omp_core::find`).
 - `name` is the name shown, as on the map (decision 6). For a postcode it is the display form ("45201", "K7L 3N6").
 - `dx`, `dy`: the entry's point in units of 2⁶ world units, as deltas from a cursor that starts at (0, 0) in each block: a street's middle (half its length along its parts), a place or POI node (an area POI's centroid), a label's polylabel point, an admin area's label point, a postcode's or an address-only street's median address (one entry per street key and deepest admin area).
 - `admin`: the admin ID + 1 of the deepest area holding the point, or 0; for an admin area or a place that stands for one, that area's parent. Its parents give the rest of the chain.

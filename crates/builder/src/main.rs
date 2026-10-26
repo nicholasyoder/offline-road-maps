@@ -6,6 +6,7 @@ mod addr;
 mod admin;
 mod build;
 mod fetch;
+mod find;
 mod measure;
 mod report;
 mod search;
@@ -35,6 +36,10 @@ enum Command {
     Inspect(build::inspect::InspectArgs),
     /// Check every section's checksum.
     Verify(build::inspect::VerifyArgs),
+    /// Search a pack as the app does, or run a query set (`--check`).
+    Search(find::SearchArgs),
+    /// What is at a point: the nearest address and street, entries close by, admin areas.
+    Here(find::HereArgs),
     /// Phase 0 spike: tile a PBF through the whitelist and report sizes per layer, zoom and encoding.
     Measure(measure::MeasureArgs),
     /// Read a PBF's admin areas and places and report counts, chains and section sizes.
@@ -66,6 +71,8 @@ fn main() -> anyhow::Result<()> {
         Command::Build(args) => build::run(args, &dir)?,
         Command::Inspect(args) => build::inspect::inspect(args)?,
         Command::Verify(args) => build::inspect::verify(args)?,
+        Command::Search(args) => find::search(args)?,
+        Command::Here(args) => find::here(args)?,
         Command::Measure(args) => measure::run(args, &dir)?,
         Command::Admin(args) => admin::run(args)?,
         Command::Streets(args) => street::run(args)?,

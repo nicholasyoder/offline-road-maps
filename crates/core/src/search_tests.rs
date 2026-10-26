@@ -857,3 +857,180 @@ fn packs_without_search_open_without_it() {
     assert!(s.locate(0, 101, "").unwrap().is_empty());
     assert!(s.addresses_near(at(0.0, 0.0), 50.0).unwrap().is_empty());
 }
+
+/// Search entries for the query engine, in the order format.md gives entry IDs.
+fn query_entries() -> Vec<Entry> {
+    let e = |kind, importance, name: &str, p, admin, town, reference| Entry {
+        kind,
+        class: 0,
+        importance,
+        name: name.into(),
+        p,
+        admin,
+        town,
+        reference,
+        alts: Vec::new(),
+    };
+    let mut main = e(
+        Kind::Street,
+        95,
+        "Main Street",
+        at(100.0, 0.0),
+        Some(2),
+        Some(0),
+        0,
+    );
+    main.alts = vec!["Old Main".into(), "OH 3".into()];
+    let mut v = vec![
+        // Places standing for areas 2 and 3.
+        e(
+            Kind::Place,
+            190,
+            "Columbus",
+            at(-500.0, 0.0),
+            Some(1),
+            None,
+            3,
+        ),
+        e(
+            Kind::Place,
+            130,
+            "Far Town",
+            at(30_000.0, 0.0),
+            Some(0),
+            None,
+            4,
+        ),
+        e(Kind::Admin, 170, "Franklin", at(0.0, 0.0), Some(0), None, 1),
+        main,
+        e(
+            Kind::Street,
+            95,
+            "High Street",
+            at(0.0, -200.0),
+            Some(2),
+            Some(0),
+            1,
+        ),
+        e(
+            Kind::Street,
+            85,
+            "Road 2",
+            at(2_950.0, 1_150.0),
+            Some(2),
+            Some(0),
+            5,
+        ),
+        e(
+            Kind::AddressStreet,
+            80,
+            "KUUP TUKIA",
+            at(-3_005.0, -3_000.0),
+            Some(1),
+            Some(0),
+            50,
+        ),
+        e(
+            Kind::Postcode,
+            110,
+            "43215",
+            at(10.0, 10.0),
+            Some(2),
+            Some(0),
+            800,
+        ),
+        e(
+            Kind::Poi,
+            85,
+            "Tim Hortons",
+            at(200.0, 50.0),
+            Some(2),
+            Some(0),
+            0,
+        ),
+        e(
+            Kind::Feature,
+            100,
+            "Mirror Lake",
+            at(-300.0, -300.0),
+            Some(2),
+            None,
+            0,
+        ),
+    ];
+    v.sort_by_key(|e| search::order_key(e.importance, e.p));
+    v
+}
+
+/// The query set of `crates/core/tests/search/fixture.tsv`, which CI runs: every query's
+/// first hit is the expected one.
+#[test]
+fn query_set_on_the_test_pack() {
+    use crate::find::{HitKind, Request};
+    let mut f = fixture();
+    f.entries = query_entries();
+    for per in [2, 1000] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Search::open(write_pack(dir.path(), &sections(&f, per)))
+            .unwrap()
+            .unwrap();
+        let kind = |h: &crate::find::Hit| match h.kind {
+            HitKind::Address => "address".to_owned(),
+            HitKind::Entry(k) => format!("{k:?}").to_lowercase(),
+        };
+        let set = include_str!("../tests/search/fixture.tsv");
+        for line in set.lines().filter(|l| !l.starts_with('#')) {
+            let c: Vec<&str> = line.split('\t').collect();
+            let hits = s.find(&Request::new(c[2])).unwrap();
+            if c[5] == "none" {
+                assert!(hits.is_empty(), "{:?} gave {hits:?}", c[2]);
+                continue;
+            }
+            let h = hits
+                .first()
+                .unwrap_or_else(|| panic!("{:?}: nothing", c[2]));
+            assert_eq!(kind(h), c[5], "{:?}: {h:?}", c[2]);
+            assert!(h.name.contains(c[6]), "{:?}: {h:?}", c[2]);
+        }
+
+        let first = |q: &str| s.find(&Request::new(q)).unwrap().remove(0);
+        let main = s.streets.geometry(0).unwrap();
+        assert_eq!(first("101 Main St").p, main.point_at(2.0 * STEP_M));
+        assert!(first("250 High St").approx, "interpolated");
+        assert!(first("105 Main St").approx, "an NAR blockface point");
+        assert_eq!(first("103 Main St").units, ["Apt 2", "Apt 10"]);
+        assert_eq!(first("103 Main St").postcode.as_deref(), Some("43215"));
+        assert!(first("999 Main St").number_missing);
+        assert_eq!(first("9B Kuup Tukia").units, ["Unit 1"]);
+        // Typing: the last word is a prefix.
+        let typed = Request {
+            prefix: true,
+            ..Request::new("Colu")
+        };
+        assert_eq!(s.find(&typed).unwrap()[0].name, "Columbus");
+        // Near the view: a street in Columbus with the view there, the limit kept.
+        let near = Request {
+            near: Some(at(2_900.0, 1_100.0)),
+            zoom: 14.0,
+            limit: 1,
+            ..Request::new("Road")
+        };
+        let hits = s.find(&near).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "Road 2");
+
+        // What's here: the address at a point, its street, the chain, nearby entries.
+        let p = main.point_at(2.0 * STEP_M);
+        let here = s.here(p, 100.0, 300.0).unwrap();
+        let a = here.address.unwrap();
+        assert_eq!(a.label, "101 Main Street");
+        assert_eq!((a.street, a.dist_m), (Some(0), 0.0));
+        assert_eq!(here.street.unwrap().0, 0);
+        assert_eq!(here.chain, [0, 1, 2]);
+        assert!(here.nearby.iter().any(|(_, e, _)| e.name == "Tim Hortons"));
+        // On High Street, with no point: a number from its range.
+        let high = s.streets.geometry(1).unwrap();
+        let on_range = s.here(high.point_at(150.0), 30.0, 10.0).unwrap();
+        assert!(on_range.address.unwrap().approx);
+    }
+}

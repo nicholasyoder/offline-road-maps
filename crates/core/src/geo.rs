@@ -49,6 +49,47 @@ pub fn morton(p: P) -> u64 {
     spread(p[0]) | (spread(p[1]) << 1)
 }
 
+/// Morton code ranges, inclusive and ascending, whose union covers `bbox` (`min_x, min_y,
+/// max_x, max_y`): at most nine aligned squares about the bbox's size, each one range.
+pub fn morton_ranges(bbox: [u32; 4]) -> Vec<(u64, u64)> {
+    let span = u64::from((bbox[2] - bbox[0]).max(bbox[3] - bbox[1])) + 1;
+    // Squares of side 2^shift, the smallest power of two under the span, so the bbox
+    // meets at most three in each direction.
+    let shift = (64 - span.leading_zeros()).saturating_sub(1).min(32);
+    if shift >= 31 {
+        return vec![(0, u64::MAX)];
+    }
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for y in bbox[1] >> shift..=bbox[3] >> shift {
+        for x in bbox[0] >> shift..=bbox[2] >> shift {
+            let lo = morton([x << shift, y << shift]);
+            out.push((lo, lo + ((1u64 << (2 * shift)) - 1)));
+        }
+    }
+    out.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(out.len());
+    for (lo, hi) in out {
+        match merged.last_mut() {
+            Some(last) if last.1.checked_add(1) == Some(lo) => last.1 = hi,
+            _ => merged.push((lo, hi)),
+        }
+    }
+    merged
+}
+
+/// A square bbox of half side `radius_m` around `p`, clamped to the world.
+pub fn bbox_around(p: P, radius_m: f64) -> [u32; 4] {
+    let r = (radius_m / metres_per_unit(p))
+        .ceil()
+        .min(f64::from(u32::MAX)) as u32;
+    [
+        p[0].saturating_sub(r),
+        p[1].saturating_sub(r),
+        p[0].saturating_add(r),
+        p[1].saturating_add(r),
+    ]
+}
+
 /// Whether `p` is inside an odd number of `rings` (each implicitly closed).
 pub fn rings_contain(rings: &[Vec<P>], p: P) -> bool {
     let (px, py) = (f64::from(p[0]), f64::from(p[1]));
@@ -84,6 +125,28 @@ mod tests {
         assert!((e - 0.009_330).abs() < 1e-5, "{e}");
         assert!((metres_per_unit(project(60.0, 0.0)) / e - 0.5).abs() < 1e-3);
         assert_eq!(morton([0b11, 0b01]), 0b0111);
+    }
+
+    #[test]
+    fn morton_ranges_cover_the_bbox() {
+        for bbox in [
+            [1000, 2000, 1500, 2100],
+            [0, 0, 0, 0],
+            [65_535, 65_535, 65_536, 65_536],
+            [123_456_789, 987_654_321, 123_999_999, 987_999_999],
+        ] {
+            let ranges = morton_ranges(bbox);
+            assert!(ranges.len() <= 9, "{bbox:?}: {ranges:?}");
+            assert!(ranges.windows(2).all(|w| w[0].1 < w[1].0));
+            let step = |a: u32, b: u32| ((b - a) / 7).max(1);
+            for x in (bbox[0]..=bbox[2]).step_by(step(bbox[0], bbox[2]) as usize) {
+                for y in (bbox[1]..=bbox[3]).step_by(step(bbox[1], bbox[3]) as usize) {
+                    let m = morton([x, y]);
+                    assert!(ranges.iter().any(|r| r.0 <= m && m <= r.1), "{x},{y}");
+                }
+            }
+        }
+        assert_eq!(morton_ranges([0, 0, u32::MAX, 9]), [(0, u64::MAX)]);
     }
 
     #[test]

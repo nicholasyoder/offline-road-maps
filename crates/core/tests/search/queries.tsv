@@ -1,0 +1,247 @@
+# Hand-written search queries (phase 2 step 2.6), run by
+# `omp-builder search <pack> --check crates/core/tests/search/queries.tsv`.
+# Columns, tab-separated: region (lines run on the pack of that name), category, query,
+# view centre (lat,lon or -), view zoom, accepted kinds (place, admin, street, poi,
+# postcode, feature, addrstreet, address, any; | between; none for "no results"),
+# a text the hit's name must contain (or -), and where it must be (lat,lon and metres, or -).
+ohio	places	Columbus	-	5	place|admin	Columbus	39.96,-83.00	10000
+ohio	places	Cleveland	-	5	place|admin	Cleveland	41.50,-81.69	10000
+ohio	places	Cincinnati	-	5	place|admin	Cincinnati	39.10,-84.51	10000
+ohio	places	Toledo	-	5	place|admin	Toledo	41.65,-83.54	10000
+ohio	places	Akron	-	5	place|admin	Akron	41.08,-81.52	8000
+ohio	places	Dayton	-	5	place|admin	Dayton	39.76,-84.19	8000
+ohio	places	Youngstown	-	5	place|admin	Youngstown	41.10,-80.65	8000
+ohio	places	Canton	-	5	place|admin	Canton	40.80,-81.38	8000
+ohio	places	Sandusky	-	5	place|admin	Sandusky	41.45,-82.71	6000
+ohio	places	Athens	-	5	place|admin	Athens	39.33,-82.10	6000
+ohio	places	Yellow Springs	-	5	place|admin	Yellow Springs	39.81,-83.89	4000
+ohio	places	Chillicothe	-	5	place|admin	Chillicothe	39.33,-82.98	6000
+ohio	places	Zanesville	-	5	place|admin	Zanesville	39.94,-82.01	6000
+ohio	places	Lima	-	5	place|admin	Lima	40.74,-84.11	6000
+ohio	places	Marietta	-	5	place|admin	Marietta	39.42,-81.45	6000
+ohio	places	Wooster	-	5	place|admin	Wooster	40.80,-81.94	6000
+ohio	places	Washington Court House	-	5	place|admin	Washington Court House	39.54,-83.44	5000
+ohio	places	Columbus Grove	-	5	place|admin	Columbus Grove	40.92,-84.06	4000
+ohio	places	Dublin	-	5	place|admin	Dublin	40.10,-83.11	6000
+ohio	places	Lancaster	-	5	place|admin	Lancaster	39.71,-82.60	6000
+ohio	places	Delaware, OH	-	5	place|admin	Delaware	40.30,-83.07	6000
+ohio	places	Ohio	-	5	place|admin	Ohio	40.2,-82.7	300000
+ohio	admin	Franklin County	-	5	admin	Franklin County	39.97,-83.0	30000
+ohio	admin	Cuyahoga County	-	5	admin	Cuyahoga	41.43,-81.67	30000
+ohio	shared	Springfield	-	5	place|admin	Springfield	39.92,-83.81	6000
+ohio	shared	London	-	5	place|admin	London	39.89,-83.45	5000
+ohio	shared	Springfield, OH	-	5	place|admin	Springfield	39.92,-83.81	6000
+ohio	shared	Columbus	41.5,-81.7	7	place|admin	Columbus	39.96,-83.00	10000
+ohio	abbrev	Mt Vernon	-	5	place|admin	Mount Vernon	40.39,-82.49	5000
+ohio	abbrev	Mount Vernon, Ohio	-	5	place|admin	Mount Vernon	40.39,-82.49	5000
+ohio	abbrev	Mt. Gilead	-	5	place|admin	Mount Gilead	40.55,-82.83	4000
+ohio	abbrev	St Marys	-	5	place|admin	Marys	40.54,-84.39	4000
+ohio	abbrev	Saint Clairsville	-	5	place|admin	Clairsville	40.08,-80.90	4000
+ohio	abbrev	St. Clairsville	-	5	place|admin	Clairsville	40.08,-80.90	4000
+ohio	pois	John Glenn Columbus International Airport	-	5	poi|feature	John Glenn	40.00,-82.89	4000
+ohio	pois	Cleveland Hopkins airport	-	5	poi|feature	Hopkins	41.41,-81.85	4000
+ohio	pois	Pro Football Hall of Fame	-	5	poi|feature	Hall of Fame	40.821,-81.398	1500
+ohio	pois	Ohio Caverns	-	5	poi|feature	Ohio Caverns	40.238,-83.696	1500
+ohio	pois	Riverside Methodist Hospital	-	5	poi|feature	Riverside	40.03,-83.03	2000
+ohio	pois	Cleveland Clinic	-	5	poi|feature	Cleveland Clinic	41.50,-81.62	3000
+ohio	pois	Dayton International Airport	-	5	poi	Airport	39.902,-84.219	4000
+ohio	pois	Nationwide Children's Hospital	-	5	poi|feature	Nationwide Children	39.952,-82.979	1500
+ohio	brands	McDonald's	39.96,-83.00	13	poi	McDonald	39.96,-83.00	6000
+ohio	brands	Bob Evans	39.96,-83.00	12	poi	Bob Evans	39.96,-83.00	20000
+ohio	brands	Speedway	39.76,-84.19	12	poi	Speedway	39.76,-84.19	15000
+ohio	brands	Holiday Inn	39.96,-83.00	11	poi	Holiday Inn	39.96,-83.00	25000
+ohio	brands	Waffle House	39.10,-84.51	11	poi	Waffle House	39.10,-84.51	40000
+ohio	brands	Wendys	39.96,-83.00	12	poi	Wendy	39.96,-83.00	10000
+ohio	streets	High St, Columbus	-	5	street	High Street	39.98,-83.00	16000
+ohio	streets	Broad St, Columbus	-	5	street	Broad Street	39.96,-83.00	10000
+ohio	streets	Euclid Ave, Cleveland	-	5	street	Euclid Avenue	41.50,-81.65	10000
+ohio	streets	Vine St, Cincinnati	-	5	street	Vine Street	39.12,-84.51	6000
+ohio	streets	Liberty St, Wooster	-	5	street	Liberty Street	40.799,-81.94	4000
+ohio	abbrev	N High St, Columbus	-	5	street	North High Street	39.99,-83.01	12000
+ohio	abbrev	North High Street Columbus	-	5	street	North High Street	39.99,-83.01	12000
+ohio	abbrev	E Broad St Columbus	-	5	street	East Broad Street	39.96,-82.95	10000
+ohio	abbrev	Dr Martin Luther King Jr Dr, Cleveland	-	5	street	Martin Luther King	41.50,-81.61	8000
+ohio	abbrev	W 25th St, Cleveland	-	5	street	West 25th Street	41.47,-81.70	6000
+ohio	abbrev	West Twenty-Fifth Street Cleveland	-	5	street	West 25th Street	41.47,-81.70	6000
+ohio	numbered	5th Ave, Columbus	-	5	street	5th Avenue	39.99,-83.00	6000
+ohio	numbered	Fifth Avenue Columbus	-	5	street	5th Avenue	39.99,-83.00	6000
+ohio	numbered	E 9th St Cleveland	-	5	street	East 9th Street	41.50,-81.69	4000
+ohio	routes	I-71	-	5	street	71	-	-
+ohio	routes	Interstate 270, Columbus	-	5	street	-	39.96,-83.00	25000
+ohio	routes	US 23	-	5	street	-	-	-
+ohio	routes	SR 161	-	5	street	-	-	-
+ohio	routes	State Route 161	-	5	street	-	-	-
+ohio	routes	Ohio Turnpike	-	5	street	Ohio Turnpike	-	-
+ohio	addresses	1100 E 9th St, Cleveland, OH	-	5	address	-	41.5086,-81.6954	400
+ohio	addresses	1100 East Ninth Street Cleveland	-	5	address	-	41.5086,-81.6954	400
+ohio	addresses	333 W Broad St, Columbus, OH	-	5	address	-	39.959,-83.007	400
+ohio	addresses	3400 Vine St, Cincinnati	-	5	address	-	39.145,-84.508	600
+ohio	addresses	411 Woody Hayes Dr, Columbus	-	5	address	-	40.0017,-83.0197	500
+ohio	units	1710 N High St Unit 3, Columbus, OH	-	5	address	1710	39.9972,-83.0074	60
+ohio	units	1710 North High Street #3 Columbus	-	5	address	1710	39.9972,-83.0074	60
+ohio	postcodes	43215	-	5	postcode	43215	39.97,-83.00	5000
+ohio	postcodes	44113	-	5	postcode	44113	41.48,-81.70	5000
+ohio	postcodes	45202	-	5	postcode	45202	39.10,-84.51	5000
+ohio	postcodes	43210	-	5	postcode	43210	40.00,-83.02	5000
+ohio	typos	Cincinatti	-	5	place|admin	Cincinnati	39.10,-84.51	10000
+ohio	typos	Colubmus	-	5	place|admin	Columbus	39.96,-83.00	10000
+ohio	typos	Clevland	-	5	place|admin	Cleveland	41.50,-81.69	10000
+ohio	typos	Daytn	-	5	place|admin	Dayton	39.76,-84.19	8000
+ohio	typos	Sanduskey	-	5	place|admin	Sandusky	41.45,-82.71	6000
+ohio	typos	Youngstwon	-	5	place|admin	Youngstown	41.10,-80.65	8000
+ohio	typos	Zanesvile	-	5	place|admin	Zanesville	39.94,-82.01	6000
+ohio	none	xqzzkw	-	5	none	-	-	-
+ohio	none	asdfghjkl qwerty	-	5	none	-	-	-
+ohio	none	Saskatoon	-	5	none	-	-	-
+ohio	none	Zzyzx Road	-	5	none	-	-	-
+quebec	places	Montréal	-	5	place|admin	Montréal	45.50,-73.57	15000
+quebec	accents	Montreal	-	5	place|admin	Montréal	45.50,-73.57	15000
+quebec	places	Québec	-	5	place|admin	Québec	-	-
+quebec	accents	Quebec City	-	5	place|admin	Québec	46.81,-71.21	15000
+quebec	places	Trois-Rivières	-	5	place|admin	Trois-Rivières	46.35,-72.55	10000
+quebec	accents	Trois Rivieres	-	5	place|admin	Trois-Rivières	46.35,-72.55	10000
+quebec	places	Sherbrooke	-	5	place|admin	Sherbrooke	45.40,-71.89	10000
+quebec	places	Gatineau	-	5	place|admin	Gatineau	45.48,-75.70	15000
+quebec	places	Saguenay	-	5	place|admin	Saguenay	48.43,-71.07	25000
+quebec	places	Lévis	-	5	place|admin	Lévis	46.80,-71.18	15000
+quebec	accents	Levis	-	5	place|admin	Lévis	46.80,-71.18	15000
+quebec	places	Rimouski	-	5	place|admin	Rimouski	48.45,-68.52	10000
+quebec	accents	Gaspe	-	5	place|admin	Gaspé	48.83,-64.48	15000
+quebec	accents	Riviere du Loup	-	5	place|admin	Rivière-du-Loup	47.83,-69.53	8000
+quebec	places	Rivière-du-Loup	-	5	place|admin	Rivière-du-Loup	47.83,-69.53	8000
+quebec	places	Laval	-	5	place|admin	Laval	45.57,-73.72	15000
+quebec	places	Longueuil	-	5	place|admin	Longueuil	45.53,-73.51	10000
+quebec	places	Drummondville	-	5	place|admin	Drummondville	45.88,-72.48	8000
+quebec	places	Granby	-	5	place|admin	Granby	45.40,-72.73	8000
+quebec	accents	Val d'Or	-	5	place|admin	Val-d'Or	48.10,-77.78	8000
+quebec	abbrev	Saint-Jérôme	-	5	place|admin	Saint-Jérôme	45.78,-74.00	8000
+quebec	abbrev	St-Jérôme	-	5	place|admin	Saint-Jérôme	45.78,-74.00	8000
+quebec	abbrev	St Jerome	-	5	place|admin	Saint-Jérôme	45.78,-74.00	8000
+quebec	abbrev	Ste-Agathe-des-Monts	-	5	place|admin	Sainte-Agathe	46.05,-74.28	8000
+quebec	abbrev	Ste-Julie	-	5	place|admin	Sainte-Julie	45.58,-73.33	6000
+quebec	abbrev	St-Hyacinthe	-	5	place|admin	Saint-Hyacinthe	45.63,-72.96	8000
+quebec	features	Lac Saint-Jean	-	5	any	Saint-Jean	48.6,-72.0	40000
+quebec	features	Lac St-Jean	-	5	any	Saint-Jean	48.6,-72.0	40000
+quebec	features	Lac Memphrémagog	-	5	any	Memphrémagog	45.1,-72.25	30000
+quebec	features	Lac Memphremagog	-	5	any	Memphrémagog	45.1,-72.25	30000
+quebec	features	Île d'Orléans	-	5	any	Orléans	46.92,-70.97	20000
+quebec	features	Ile d'Orleans	-	5	any	Orléans	46.92,-70.97	20000
+quebec	features	Mont Tremblant	-	5	any	Tremblant	46.15,-74.59	20000
+quebec	features	Parc national de la Jacques-Cartier	-	5	any	Jacques-Cartier	47.2,-71.4	40000
+quebec	pois	Château Frontenac	-	5	poi|feature	Frontenac	46.8118,-71.2052	1000
+quebec	pois	Chateau Frontenac	-	5	poi|feature	Frontenac	46.8118,-71.2052	1000
+quebec	pois	Aéroport Jean-Lesage	-	5	poi|feature	Jean-Lesage	46.79,-71.39	4000
+quebec	pois	Trudeau airport	-	5	poi|feature	Trudeau	45.47,-73.74	4000
+quebec	pois	Hôpital Sainte-Justine	-	5	poi|feature	Justine	45.503,-73.624	1500
+quebec	pois	Hopital Ste-Justine	-	5	poi|feature	Justine	45.503,-73.624	1500
+quebec	pois	Hôpital de l'Enfant-Jésus	-	5	poi	Enfant-Jésus	46.8387,-71.2279	1500
+quebec	pois	Chute Montmorency	-	5	poi|feature	Montmorency	46.89,-71.148	2000
+quebec	pois	Hopital Maisonneuve-Rosemont	-	5	poi	Maisonneuve	45.5745,-73.5587	1500
+quebec	brands	McDonald's	45.50,-73.57	13	poi	McDonald	45.50,-73.57	6000
+quebec	brands	Couche-Tard	46.81,-71.21	12	poi	Couche-Tard	46.81,-71.21	10000
+quebec	brands	Petro-Canada	46.81,-71.21	12	poi	Petro	46.81,-71.21	15000
+quebec	french	Rue Sainte-Catherine, Montréal	-	5	street	Sainte-Catherine	45.51,-73.57	10000
+quebec	abbrev	rue Ste-Catherine O Montreal	-	5	street	Sainte-Catherine Ouest	45.495,-73.58	6000
+quebec	abbrev	boul. St-Laurent, Montréal	-	5	street	Saint-Laurent	45.52,-73.59	12000
+quebec	french	Grande Allée, Québec	-	5	street	Grande Allée	46.80,-71.23	5000
+quebec	accents	Grande Allee Quebec	-	5	street	Grande Allée	46.80,-71.23	5000
+quebec	abbrev	ch. Ste-Foy, Québec	-	5	street	Chemin Sainte-Foy	46.79,-71.26	8000
+quebec	french	Avenue du Parc, Montréal	-	5	street	Avenue du Parc	45.52,-73.59	5000
+quebec	french	rue de la Montagne Montreal	-	5	street	de la Montagne	45.50,-73.577	3000
+quebec	french	Rue Saint-Jean, Québec	-	5	street	Saint-Jean	46.81,-71.22	4000
+quebec	numbered	1re Avenue, Québec	-	5	street	1re Avenue	46.83,-71.23	6000
+quebec	numbered	1st Avenue Quebec	-	5	street	1re Avenue	46.83,-71.23	6000
+quebec	numbered	4e Rue, Québec	-	5	street	4e Rue	46.83,-71.23	6000
+quebec	routes	Autoroute 40	-	5	street	-	-	-
+quebec	routes	A-20	-	5	street	-	-	-
+quebec	routes	Route 132	-	5	street	-	-	-
+quebec	addresses	1000 rue De La Gauchetière O, Montréal	-	5	address	-	45.4986,-73.5667	400
+quebec	addresses	1 rue des Carrières, Québec	-	5	address	-	46.8118,-71.2052	400
+quebec	addresses	4141 avenue Pierre-De Coubertin, Montréal	-	5	address	-	45.558,-73.552	800
+quebec	addresses	1200, rue Sainte-Catherine Ouest, Montréal	-	5	address	-	45.4979,-73.5745	500
+quebec	addresses	1200 Ste-Catherine O, Montreal	-	5	address	-	45.4979,-73.5745	500
+quebec	units	6223 Avenue du Costebelle app. 4, Québec	-	5	address	6223	46.82371,-71.33511	100
+quebec	units	4-6223 Avenue du Costebelle, Québec	-	5	address	6223	46.82371,-71.33511	100
+quebec	postcodes	G1R 2B6	-	5	postcode	G1R 2B6	46.804,-71.225	2000
+quebec	postcodes	g1r2b6	-	5	postcode	G1R 2B6	46.804,-71.225	2000
+quebec	postcodes	J7R 0M4	-	5	postcode	J7R 0M4	45.56,-73.93	3000
+quebec	typos	Montrael	-	5	any	Montréal	45.50,-73.57	15000
+quebec	typos	Sherbroke	-	5	any	Sherbrooke	45.40,-71.89	10000
+quebec	typos	Chicoutmi	-	5	any	Chicoutimi	48.43,-71.07	20000
+quebec	typos	Gatinau	-	5	any	Gatineau	45.48,-75.70	15000
+quebec	typos	Drummondvile	-	5	any	Drummondville	45.88,-72.48	8000
+quebec	none	Rue Inexistante Zzzq	-	5	none	-	-	-
+quebec	none	qwertyuiop	-	5	none	-	-	-
+quebec	none	Kalamazoo Michigan	-	5	none	-	-	-
+ontario	places	Toronto	-	5	place|admin	Toronto	43.65,-79.38	15000
+ontario	places	Ottawa	-	5	place|admin	Ottawa	45.42,-75.70	15000
+ontario	places	Kingston	-	5	place|admin	Kingston	44.23,-76.48	10000
+ontario	places	London	-	5	place|admin	London	42.98,-81.25	12000
+ontario	places	Hamilton	-	5	place|admin	Hamilton	43.25,-79.87	15000
+ontario	places	Niagara Falls	-	5	place|admin	Niagara Falls	43.09,-79.08	8000
+ontario	places	Thunder Bay	-	5	place|admin	Thunder Bay	48.38,-89.25	12000
+ontario	places	Mississauga	-	5	place|admin	Mississauga	43.59,-79.64	15000
+ontario	places	Kitchener	-	5	place|admin	Kitchener	43.45,-80.49	10000
+ontario	places	Windsor	-	5	place|admin	Windsor	42.30,-83.02	10000
+ontario	places	Barrie	-	5	place|admin	Barrie	44.39,-79.69	8000
+ontario	places	Peterborough	-	5	place|admin	Peterborough	44.30,-78.32	8000
+ontario	places	Sudbury	-	5	place|admin	Sudbury	46.49,-80.99	25000
+ontario	places	Timmins	-	5	place|admin	Timmins	48.48,-81.33	25000
+ontario	places	Kenora	-	5	place|admin	Kenora	49.77,-94.49	10000
+ontario	shared	London, ON	-	5	place|admin	London	42.98,-81.25	12000
+ontario	shared	Paris	-	5	place|admin	Paris	43.19,-80.38	6000
+ontario	shared	Kingston	45.42,-75.70	7	place|admin	Kingston	44.23,-76.48	10000
+ontario	shared	Richmond	45.42,-75.70	9	place|admin	Richmond	45.19,-75.84	6000
+ontario	shared	Perth	-	5	place|admin	Perth	44.90,-76.25	5000
+ontario	abbrev	Sault Ste. Marie	-	5	place|admin	Sault	46.52,-84.33	12000
+ontario	abbrev	Sault Sainte Marie	-	5	place|admin	Sault	46.52,-84.33	12000
+ontario	abbrev	St. Catharines	-	5	place|admin	Catharines	43.16,-79.24	10000
+ontario	abbrev	Saint Catharines	-	5	place|admin	Catharines	43.16,-79.24	10000
+ontario	abbrev	St Thomas, ON	-	5	place|admin	Thomas	42.78,-81.19	6000
+ontario	features	Lake Ontario	-	5	any	Ontario	43.6,-77.9	200000
+ontario	features	Algonquin Provincial Park	-	5	any	Algonquin	45.6,-78.4	80000
+ontario	features	Algonquin Park	-	5	any	Algonquin	45.6,-78.4	80000
+ontario	features	Georgian Bay	-	5	any	Georgian Bay	45.3,-80.9	150000
+ontario	features	Lake Simcoe	-	5	any	Simcoe	44.4,-79.35	30000
+ontario	pois	CN Tower	-	5	poi|feature	CN Tower	43.6426,-79.3871	1000
+ontario	pois	Pearson Airport	-	5	poi|feature	Pearson	43.68,-79.63	4000
+ontario	pois	Toronto Pearson	-	5	poi|feature	Pearson	43.68,-79.63	4000
+ontario	pois	Ottawa airport	-	5	poi|feature	Ottawa	45.32,-75.67	4000
+ontario	pois	Hospital for Sick Children	-	5	poi|feature	Sick	43.657,-79.388	1500
+ontario	pois	Kingston General Hospital	-	5	poi|feature	Kingston General	44.224,-76.494	1500
+ontario	pois	Toronto General Hospital	-	5	poi	Toronto General	43.6587,-79.3882	1500
+ontario	brands	McDonald's Kingston	-	5	poi	McDonald	44.23,-76.48	15000
+ontario	brands	Tim Hortons	43.25,-79.87	12	poi	Tim Hortons	43.25,-79.87	10000
+ontario	brands	Canadian Tire	45.42,-75.70	11	poi|any	Canadian Tire	45.42,-75.70	20000
+ontario	abbrev	Yonge St, Toronto	-	5	street	Yonge Street	43.70,-79.40	15000
+ontario	abbrev	Queen St W, Toronto	-	5	street	Queen Street West	43.648,-79.40	6000
+ontario	abbrev	Bloor St E Toronto	-	5	street	Bloor Street East	43.67,-79.38	5000
+ontario	abbrev	Princess St, Kingston	-	5	street	Princess Street	44.235,-76.50	5000
+ontario	abbrev	Rideau St, Ottawa	-	5	street	Rideau Street	45.428,-75.69	3000
+ontario	abbrev	Sparks Street Ottawa	-	5	street	Sparks Street	45.42,-75.70	2000
+ontario	abbrev	Dundas St, London ON	-	5	street	Dundas Street	42.985,-81.24	8000
+ontario	routes	Highway 401	-	5	street	-	-	-
+ontario	routes	Hwy 401	-	5	street	-	-	-
+ontario	routes	QEW	-	5	street	-	-	-
+ontario	routes	Highway 11	-	5	street	-	-	-
+ontario	numbered	First Avenue, Ottawa	-	5	street	First Avenue	45.405,-75.69	4000
+ontario	numbered	Concession Road 7, Loretto	-	5	street	Concession Road 7	44.07,-79.88	15000
+ontario	numbered	1st Street, Tehkummah	-	5	street|addrstreet	1st Street	45.56,-82.01	8000
+ontario	addresses	290 Bremner Blvd, Toronto	-	5	address	-	43.6426,-79.3871	400
+ontario	addresses	100 Queen St W, Toronto	-	5	address	-	43.6534,-79.3841	400
+ontario	addresses	1 Yonge St, Toronto	-	5	address	-	43.6424,-79.3756	400
+ontario	addresses	55 Mill St, Toronto	-	5	address	-	43.6503,-79.3596	400
+ontario	addresses	216 Ontario St, Kingston	-	5	address	-	44.2306,-76.4806	400
+ontario	addresses	300 Dufferin Ave, London, ON	-	5	address	-	42.987,-81.247	500
+ontario	units	1229 Shore Acres Drive Unit B, Innisfil	-	5	address	1229	44.225,-79.545	1500
+ontario	postcodes	P1L 1C7	-	5	postcode	P1L 1C7	45.03,-79.32	5000
+ontario	postcodes	K7L 4V1	-	5	postcode	K7L 4V1	44.32,-76.33	12000
+ontario	postcodes	M5V 3L9	-	5	postcode	M5V 3L9	43.6426,-79.3871	2000
+ontario	typos	Torotno	-	5	place|admin	Toronto	43.65,-79.38	15000
+ontario	typos	Otawa	-	5	place|admin	Ottawa	45.42,-75.70	15000
+ontario	typos	Missisauga	-	5	place|admin	Mississauga	43.59,-79.64	15000
+ontario	typos	Kitchner	-	5	place|admin	Kitchener	43.45,-80.49	10000
+ontario	typos	Peterborogh	-	5	place|admin	Peterborough	44.30,-78.32	8000
+ontario	none	Atlantis Boulevard Xyzq	-	5	none	-	-	-
+ontario	none	zzzzzz	-	5	none	-	-	-
+ontario	none	Albuquerque	-	5	none	-	-	-

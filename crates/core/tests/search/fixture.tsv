@@ -1,0 +1,22 @@
+# Queries on the test pack of `crates/core/src/search_tests.rs`, run by `cargo test` (CI).
+# Same columns as queries.tsv; positions are left out, the names say enough.
+fixture	places	Columbus	-	5	place	Columbus	-	-
+fixture	typos	Colubmus	-	5	place	Columbus	-	-
+fixture	shared	Far Town, OH	-	5	place	Far Town	-	-
+fixture	admin	Franklin	-	5	admin	Franklin	-	-
+fixture	addresses	101 Main St, Columbus, OH	-	5	address	101 Main Street	-	-
+fixture	addresses	101A Main Street	-	5	address	101A Main Street	-	-
+fixture	ranges	250 High St	-	5	address	250 High Street	-	-
+fixture	units	103 Main St Apt 2	-	5	address	103 Main Street	-	-
+fixture	units	3 1/2 Road 2	-	5	address	3 1/2 Road 2	-	-
+fixture	missing	999 Main St	-	5	street	Main Street	-	-
+fixture	loose	859 Kuup Tukia	-	5	address	859 Kuup Tukia	-	-
+fixture	loose	9B Kuup Tukia, Columbus	-	5	address	9B Kuup Tukia	-	-
+fixture	postcodes	43215	-	5	postcode	43215	-	-
+fixture	alts	Old Main	-	5	street	Main Street	-	-
+fixture	routes	OH 3	-	5	street	Main Street	-	-
+fixture	routes	State Route 3	-	5	street	Main Street	-	-
+fixture	pois	Tim Hortons	-	5	poi	Tim Hortons	-	-
+fixture	features	Mirror Lake	-	5	feature	Mirror Lake	-	-
+fixture	none	zzzz	-	5	none	-	-	-
+fixture	none	Elm Street	-	5	none	-	-	-
