@@ -1008,6 +1008,24 @@ fn query_set_on_the_test_pack() {
             ..Request::new("Colu")
         };
         assert_eq!(s.find(&typed).unwrap()[0].name, "Columbus");
+        // Typing a state: the last word may begin its name. And words after the last comma
+        // that name nothing yet are left out rather than giving nothing.
+        for q in ["101 Main St, Columbus, Ohi", "101 Main St, Columbus, Zz"] {
+            let typed = Request {
+                prefix: true,
+                ..Request::new(q)
+            };
+            let hits = s.find(&typed).unwrap();
+            assert_eq!(
+                hits.first().map(|h| h.name.as_str()),
+                Some("101 Main Street"),
+                "{q}"
+            );
+            assert!(
+                s.find(&Request::new(q)).unwrap().is_empty(),
+                "{q}, not typing"
+            );
+        }
         // Near the view: a street in Columbus with the view there, the limit kept.
         let near = Request {
             near: Some(at(2_900.0, 1_100.0)),

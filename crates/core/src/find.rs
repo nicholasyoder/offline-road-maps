@@ -37,7 +37,9 @@ pub struct Request<'a> {
     /// neighbourhood at z14.
     pub zoom: f64,
     pub limit: usize,
-    /// The last word is still being typed, so it also matches as a prefix.
+    /// The query is still being typed: its last word also matches as a prefix (unless a
+    /// space follows it), and if nothing is found, the words after the last comma are left
+    /// out.
     pub prefix: bool,
 }
 
@@ -139,6 +141,17 @@ const PER_REGION: usize = 300;
 const MAX_LOCALITY_IDS: usize = 800;
 /// Localities kept per reading, most important first.
 const MAX_LOCALITIES: usize = 6;
+/// The same for a reading with a house number whose first [`MAX_LOCALITIES`] gave no
+/// address: a small town that shares its name with larger ones is searched too, and the
+/// street there that has the number wins.
+const MAX_ADDRESS_LOCALITIES: usize = 30;
+/// Candidates read from each locality past the first [`MAX_LOCALITIES`]: the less
+/// important towns, with few streets of any one name.
+const PER_SMALL_LOCALITY: usize = 30;
+/// A state, province or country name the last word, still being typed after a comma, may
+/// begin, when it has 3 letters or more and begins at most this many ("…, Kentuck"; not
+/// "…, New").
+const MAX_STATE_PREFIXES: usize = 3;
 /// Entries read to check whether a state's name is also a town's ("Québec").
 const PROBE_IDS: usize = 300;
 /// How far beyond a town's area or place node its postal addresses are looked for.
@@ -379,7 +392,7 @@ struct Scored {
 }
 
 /// Locality words, the state, the fuzzy pass and the entries read.
-type LocalityKey = (String, Option<u32>, bool, usize);
+type LocalityKey = (String, Option<u32>, bool, usize, usize);
 type Tokens = Vec<String>;
 
 /// A token's postings and whether it was left out of them (a common generic token).
@@ -392,6 +405,10 @@ struct Run<'a> {
     fuzzy: bool,
     /// Rare tokens are matched within edits too (a second pass).
     rare: bool,
+    /// The words after the last comma are left out (a last pass while typing).
+    unfinished: bool,
+    /// [`MAX_ADDRESS_LOCALITIES`] localities are read, not [`MAX_LOCALITIES`].
+    wide: bool,
     postings: HashMap<(String, usize), Posted>,
     entries: HashMap<u32, Rc<Entry>>,
     localities: HashMap<LocalityKey, Rc<Vec<Locality>>>,
@@ -588,12 +605,23 @@ impl<'a> Run<'a> {
 
     /// The places, admin areas and postal codes the words `loc` name, most important first.
     fn localities(&mut self, r: &Reading) -> io::Result<Rc<Vec<Locality>>> {
-        self.localities_within(r, MAX_LOCALITY_IDS)
+        let keep = if self.wide {
+            MAX_ADDRESS_LOCALITIES
+        } else {
+            MAX_LOCALITIES
+        };
+        self.localities_within(r, MAX_LOCALITY_IDS, keep)
     }
 
-    /// [`Self::localities`] among the first `max_ids` entries holding the words.
-    fn localities_within(&mut self, r: &Reading, max_ids: usize) -> io::Result<Rc<Vec<Locality>>> {
-        let key = (r.loc_text.clone(), r.state, self.fuzzy, max_ids);
+    /// The `keep` most important of [`Self::localities`] among the first `max_ids` entries
+    /// holding the words.
+    fn localities_within(
+        &mut self,
+        r: &Reading,
+        max_ids: usize,
+        keep: usize,
+    ) -> io::Result<Rc<Vec<Locality>>> {
+        let key = (r.loc_text.clone(), r.state, self.fuzzy, max_ids, keep);
         if let Some(v) = self.localities.get(&key) {
             return Ok(v.clone());
         }
@@ -603,9 +631,7 @@ impl<'a> Run<'a> {
             let e = self.entry(id)?;
             // Postings run by importance bucket: once enough are found, the rest are less
             // important than all of them.
-            if out.len() >= MAX_LOCALITIES
-                && out.iter().all(|l| l.importance >> 4 > e.importance >> 4)
-            {
+            if out.len() >= keep && out.iter().all(|l| l.importance >> 4 > e.importance >> 4) {
                 break;
             }
             if !matches!(e.kind, Kind::Place | Kind::Admin | Kind::Postcode) {
@@ -653,7 +679,7 @@ impl<'a> Run<'a> {
             });
         }
         out.sort_by_key(|l| std::cmp::Reverse(l.importance));
-        out.truncate(MAX_LOCALITIES);
+        out.truncate(keep);
         let v = Rc::new(out);
         self.localities.insert(key, v.clone());
         Ok(v)
@@ -701,8 +727,13 @@ impl<'a> Run<'a> {
             Ok(())
         };
         if !localities.is_empty() {
-            for l in localities.iter() {
-                take(self, l.bbox, PER_REGION)?;
+            for (i, l) in localities.iter().enumerate() {
+                let n = if i < MAX_LOCALITIES {
+                    PER_REGION
+                } else {
+                    PER_SMALL_LOCALITY
+                };
+                take(self, l.bbox, n)?;
             }
             if let Some(st) = r.state.and_then(|s| self.s.admin.area(s)) {
                 take(self, st.bbox, PER_REGION)?;
@@ -802,15 +833,37 @@ impl<'a> Run<'a> {
     }
 
     /// The readings of `parsed`: a state at the end or not, a locality split, a number or
-    /// not.
+    /// not. In the `unfinished` pass, those of the words before the last comma: what is
+    /// being typed after it may not say anything yet ("…, Buffalo, New ", "…, Clearfield,
+    /// K").
     fn readings(&self, parsed: &Parsed) -> Vec<Reading> {
-        let states = self.states(&parsed.words);
+        if !self.unfinished {
+            return self.readings_of(parsed, &parsed.words, parsed.prefix);
+        }
+        let n = parsed.words.len();
+        match parsed.words[..n.saturating_sub(1)]
+            .iter()
+            .rposition(|w| w.comma)
+        {
+            Some(i) if parsed.postcode.is_none() => {
+                let mut words = parsed.words[..=i].to_vec();
+                words[i].comma = false;
+                self.readings_of(parsed, &words, false)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The readings of `words`, the last of which is still being typed if `prefix`.
+    fn readings_of(&self, parsed: &Parsed, words: &[Word], prefix: bool) -> Vec<Reading> {
+        let states = self.states(words, prefix && parsed.postcode.is_none());
         let mut out = Vec::new();
         let number_options: Vec<Option<&Number>> = std::iter::once(None)
             .chain(parsed.numbers.iter().map(Some))
             .collect();
+        let all = words;
         for &(used, state) in &states {
-            let words = &parsed.words[..parsed.words.len() - used];
+            let words = &all[..all.len() - used];
             let at_end = used == 0 && parsed.postcode.is_none();
             let mut splits: Vec<usize> = vec![words.len()];
             let commas: Vec<usize> = (0..words.len().saturating_sub(1))
@@ -833,7 +886,7 @@ impl<'a> Run<'a> {
                     if name_words.is_empty() {
                         continue;
                     }
-                    let prefix = parsed.prefix && at_end;
+                    let prefix = prefix && at_end;
                     let name = qtoks(&name_words, prefix && loc_words.is_empty());
                     let mut loc = qtoks(loc_words, prefix);
                     for q in &mut loc {
@@ -848,7 +901,7 @@ impl<'a> Run<'a> {
                         loc,
                         loc_text: join(loc_words),
                         state,
-                        state_words: parsed.words[parsed.words.len() - used..].to_vec(),
+                        state_words: all[all.len() - used..].to_vec(),
                     });
                 }
             }
@@ -857,8 +910,9 @@ impl<'a> Run<'a> {
     }
 
     /// The ways the last words can name a state, province or country: `(words used,
-    /// area)`, with `(0, None)` first.
-    fn states(&self, words: &[Word]) -> Vec<(usize, Option<u32>)> {
+    /// area)`, with `(0, None)` first. With `typing`, the last word may also begin the
+    /// name of up to [`MAX_STATE_PREFIXES`] of them.
+    fn states(&self, words: &[Word], typing: bool) -> Vec<(usize, Option<u32>)> {
         let mut out = vec![(0, None)];
         let n = words.len();
         let names = self.s.state_names();
@@ -878,6 +932,20 @@ impl<'a> Run<'a> {
             for (_, a) in names[from..].iter().take_while(|(n, _)| *n == joined) {
                 if !out.iter().any(|&(u, s)| u == k && s == Some(*a)) {
                     out.push((k, Some(*a)));
+                }
+            }
+            let last = t.last().map_or(0, |w| w.chars().count());
+            if typing && last >= 3 && n > k && words[n - k - 1].comma {
+                let mut begun: Vec<u32> = names[from..]
+                    .iter()
+                    .take_while(|(n, _)| n.starts_with(&joined))
+                    .map(|&(_, a)| a)
+                    .filter(|&a| !out.iter().any(|&(u, s)| u == k && s == Some(a)))
+                    .collect();
+                begun.sort_unstable();
+                begun.dedup();
+                if begun.len() <= MAX_STATE_PREFIXES {
+                    out.extend(begun.into_iter().map(|a| (k, Some(a))));
                 }
             }
         }
@@ -1120,7 +1188,10 @@ impl<'a> Run<'a> {
                     state: None,
                     state_words: Vec::new(),
                 };
-                if !self.localities_within(&probe, PROBE_IDS)?.is_empty() {
+                if !self
+                    .localities_within(&probe, PROBE_IDS, MAX_LOCALITIES)?
+                    .is_empty()
+                {
                     penalty = 6.0;
                 }
             }
@@ -1130,12 +1201,32 @@ impl<'a> Run<'a> {
             }
             match &r.number {
                 Some(n) => {
-                    let found = self.addresses(
+                    let mut found = self.addresses(
                         n,
                         parsed.unit.as_deref(),
                         parsed.postcode.as_deref(),
                         &cands,
                     )?;
+                    // No address in the most important towns of that name: the smaller
+                    // ones too.
+                    if !found.iter().any(|h| h.kind == HitKind::Address)
+                        && !r.loc.is_empty()
+                        && self.localities(&r)?.len() >= MAX_LOCALITIES
+                    {
+                        self.wide = true;
+                        let wider = self.candidates(&r, postcode.as_ref());
+                        self.wide = false;
+                        let mut cands = wider?;
+                        for c in &mut cands {
+                            c.score -= penalty;
+                        }
+                        found = self.addresses(
+                            n,
+                            parsed.unit.as_deref(),
+                            parsed.postcode.as_deref(),
+                            &cands,
+                        )?;
+                    }
                     hits.extend(found);
                 }
                 None => {
@@ -1294,6 +1385,8 @@ impl Search {
             req,
             fuzzy: false,
             rare: false,
+            unfinished: false,
+            wide: false,
             postings: HashMap::new(),
             entries: HashMap::new(),
             localities: HashMap::new(),
@@ -1311,6 +1404,17 @@ impl Search {
         if !exact || !address && run.any_rare(&parsed)? {
             run.fuzzy = !exact;
             run.rare = true;
+            for mut h in run.all(&parsed)? {
+                h.exact = false;
+                hits.push(h);
+            }
+        }
+        // Still typing and nothing found: the words after the last comma may be a town or
+        // state not yet typed far enough to name it, so try without them.
+        if hits.is_empty() && req.prefix {
+            run.fuzzy = false;
+            run.rare = false;
+            run.unfinished = true;
             for mut h in run.all(&parsed)? {
                 h.exact = false;
                 hits.push(h);

@@ -65,8 +65,6 @@ pub struct Query {
     /// The view's centre (world coordinates) and zoom, for ranking.
     pub near: camera::Vec2,
     pub zoom: f64,
-    /// Still being typed: the last word may be a prefix.
-    pub prefix: bool,
     pub limit: usize,
     /// Asked by Enter, for the results panel.
     pub submit: bool,
@@ -239,7 +237,9 @@ fn work(shared: &Shared, first_chunk: &std::path::Path, tx: &Sender<Answer>, wak
             near: Some(to_p(q.near)),
             zoom: q.zoom,
             limit: q.limit,
-            prefix: q.prefix,
+            // Typed, Enter included: Enter on a word still being typed means what its
+            // suggestions showed.
+            prefix: true,
         };
         let hits = search.find(&req).map_err(|e| e.to_string());
         let find = t.elapsed();
@@ -370,8 +370,6 @@ impl Session {
             text: text.to_string(),
             near,
             zoom,
-            // Enter on a word still being typed means what its suggestions showed.
-            prefix: !text.ends_with(char::is_whitespace),
             limit: if submit { RESULTS } else { SUGGESTIONS },
             submit,
             asked: Instant::now(),
@@ -1184,7 +1182,7 @@ mod tests {
         let mut s = Session::default();
         let a = s.ask("Col", false, [0.3, 0.4], 8.0);
         let b = s.ask("Colu", false, [0.3, 0.4], 8.0);
-        assert!(a.prefix && b.limit == SUGGESTIONS);
+        assert_eq!(b.limit, SUGGESTIONS);
         assert!(
             s.take(answer(&a, vec![hit(HitKind::Address, 40.0, -83.0, 10.0)]))
                 .is_none()
@@ -1196,8 +1194,6 @@ mod tests {
             .unwrap();
         assert!(!t.submit && t.hits == 1 && !s.waiting());
         assert_eq!(s.hits_for, "Colu");
-        // A space ends the word, so the last word is no longer a prefix.
-        assert!(!s.ask("Columbus ", false, [0.3, 0.4], 8.0).prefix);
         s.cancel();
         assert!(!s.waiting() && s.hits.is_empty());
     }
@@ -1206,7 +1202,7 @@ mod tests {
     fn enter_opens_results_and_marks_the_first() {
         let mut s = Session::default();
         let q = s.ask("Springfield", true, [0.3, 0.4], 8.0);
-        assert!(q.prefix && q.limit == RESULTS);
+        assert_eq!(q.limit, RESULTS);
         let hits = vec![
             hit(HitKind::Entry(Kind::Place), 39.8, -89.6, 8000.0),
             hit(HitKind::Entry(Kind::Place), 37.2, -93.3, 8000.0),
@@ -1296,7 +1292,7 @@ mod tests {
         frame(&mut s, &mut recent, vec![Event::Text("Col".into())]);
         assert_eq!(s.text, "Col");
         let q = s.worker.take_query().unwrap();
-        assert!(q.prefix && !q.submit);
+        assert!(!q.submit);
         let hits = vec![
             hit(HitKind::Entry(Kind::Place), 39.96, -83.0, 8000.0),
             hit(HitKind::Entry(Kind::Street), 41.5, -81.7, 500.0),
@@ -1341,7 +1337,7 @@ mod tests {
         );
         frame(&mut s, &mut recent, vec![key(Key::Enter, none)]);
         let q = s.worker.take_query().unwrap();
-        assert!(q.submit && q.limit == RESULTS && q.prefix);
+        assert!(q.submit && q.limit == RESULTS);
         tx.send(answer(&q, hits.clone())).unwrap();
         let (out, _) = frame(&mut s, &mut recent, Vec::new());
         assert_eq!(out.fly.as_ref(), Some(&hits[0]));
