@@ -15,9 +15,13 @@
 //! on with the suggestions' session when it is for the same text: after a pause, its
 //! levels are done and Enter is answered at once. A session's caches are kept until the
 //! next query.
+//!
+//! The worker also answers "what's here" (2.8, [`crate::here`]): a request waiting is
+//! answered before the next search level, and stops a level running, which runs again
+//! after it.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -33,6 +37,7 @@ use omp_core::schema::Schema;
 use omp_core::search::Kind;
 
 use crate::camera::{self, Camera, TILE_PX};
+use crate::here::{HereAnswer, HereQuery};
 use crate::scale::Units;
 
 /// Suggestions shown while typing.
@@ -112,6 +117,7 @@ pub struct Stats {
 
 struct Slot {
     query: Option<Query>,
+    here: Option<HereQuery>,
     quit: bool,
     status: Status,
     stats: Stats,
@@ -122,51 +128,67 @@ struct Shared {
     ready: Condvar,
     /// Counts the queries asked: a level stops once it is not its query's.
     generation: AtomicU64,
+    /// A "what's here" request is waiting: a level stops for it.
+    here_waiting: AtomicBool,
+}
+
+impl Shared {
+    fn new(status: Status) -> Self {
+        Self {
+            slot: Mutex::new(Slot {
+                query: None,
+                here: None,
+                quit: false,
+                status,
+                stats: Stats::default(),
+            }),
+            ready: Condvar::new(),
+            generation: AtomicU64::new(0),
+            here_waiting: AtomicBool::new(false),
+        }
+    }
 }
 
 pub struct Worker {
     shared: Arc<Shared>,
     rx: Receiver<Answer>,
+    here_rx: Receiver<HereAnswer>,
 }
 
 impl Worker {
     /// Opens the pack's search readers on a new thread, then answers queries. `wake` is
     /// called when the readers are open and after each answer.
     pub fn start(first_chunk: PathBuf, wake: impl Fn() + Send + 'static) -> Self {
-        let shared = Arc::new(Shared {
-            slot: Mutex::new(Slot {
-                query: None,
-                quit: false,
-                status: Status::Opening,
-                stats: Stats::default(),
-            }),
-            ready: Condvar::new(),
-            generation: AtomicU64::new(0),
-        });
+        let shared = Arc::new(Shared::new(Status::Opening));
         let (tx, rx) = channel();
+        let (here_tx, here_rx) = channel();
         let s = shared.clone();
         std::thread::Builder::new()
             .name("search".into())
-            .spawn(move || work(s, &first_chunk, &tx, &wake))
+            .spawn(move || work(s, &first_chunk, &tx, &here_tx, &wake))
             .expect("spawn search worker");
-        Self { shared, rx }
+        Self {
+            shared,
+            rx,
+            here_rx,
+        }
     }
 
     /// A worker with no thread, ready: the test takes the queries and sends the answers.
     #[cfg(test)]
-    fn stub() -> (Self, Sender<Answer>) {
-        let shared = Arc::new(Shared {
-            slot: Mutex::new(Slot {
-                query: None,
-                quit: false,
-                status: Status::Ready,
-                stats: Stats::default(),
-            }),
-            ready: Condvar::new(),
-            generation: AtomicU64::new(0),
-        });
+    fn stub() -> (Self, Sender<Answer>, Sender<HereAnswer>) {
+        let shared = Arc::new(Shared::new(Status::Ready));
         let (tx, rx) = channel();
-        (Self { shared, rx }, tx)
+        let (here_tx, here_rx) = channel();
+        (
+            Self {
+                shared,
+                rx,
+                here_rx,
+            },
+            tx,
+            here_tx,
+        )
     }
 
     #[cfg(test)]
@@ -174,11 +196,26 @@ impl Worker {
         self.shared.slot.lock().unwrap().query.take()
     }
 
+    #[cfg(test)]
+    fn take_here(&self) -> Option<HereQuery> {
+        self.shared.slot.lock().unwrap().here.take()
+    }
+
     /// Replaces the query waiting, if any, and stops the one running.
     pub fn ask(&self, q: Query) {
         let mut slot = self.shared.slot.lock().unwrap();
         self.shared.generation.fetch_add(1, Ordering::Relaxed);
         slot.query = Some(q);
+        drop(slot);
+        self.shared.ready.notify_one();
+    }
+
+    /// Replaces the "what's here" request waiting, if any; a search level running stops
+    /// for it.
+    pub fn ask_here(&self, q: HereQuery) {
+        let mut slot = self.shared.slot.lock().unwrap();
+        self.shared.here_waiting.store(true, Ordering::Relaxed);
+        slot.here = Some(q);
         drop(slot);
         self.shared.ready.notify_one();
     }
@@ -194,6 +231,25 @@ impl Worker {
     pub fn poll(&self) -> impl Iterator<Item = Answer> + '_ {
         self.rx.try_iter()
     }
+
+    pub fn poll_here(&self) -> impl Iterator<Item = HereAnswer> + '_ {
+        self.here_rx.try_iter()
+    }
+}
+
+/// What the worker does next.
+enum Next {
+    Here(HereQuery),
+    /// A new query, or the next level of the current one; with the generation then.
+    Search(Option<Query>, u64),
+}
+
+/// A session's stop check: a newer query was asked, or a "what's here" is waiting.
+fn stopper(shared: &Arc<Shared>, generation: u64) -> impl Fn() -> bool + 'static {
+    let s = shared.clone();
+    move || {
+        s.generation.load(Ordering::Relaxed) != generation || s.here_waiting.load(Ordering::Relaxed)
+    }
 }
 
 impl Drop for Worker {
@@ -205,7 +261,13 @@ impl Drop for Worker {
     }
 }
 
-fn work(shared: Arc<Shared>, first_chunk: &std::path::Path, tx: &Sender<Answer>, wake: &dyn Fn()) {
+fn work(
+    shared: Arc<Shared>,
+    first_chunk: &std::path::Path,
+    tx: &Sender<Answer>,
+    here_tx: &Sender<HereAnswer>,
+    wake: &dyn Fn(),
+) {
     let t0 = Instant::now();
     let opened = Pack::open(first_chunk).map(Arc::new).and_then(|p| {
         let minor = p.minor;
@@ -252,26 +314,54 @@ fn work(shared: Arc<Shared>, first_chunk: &std::path::Path, tx: &Sender<Answer>,
     // The latest query, its session, the next level to run and when it may start.
     let mut current: Option<(Query, find::Session, usize, Instant)> = None;
     loop {
-        let (new, generation) = {
+        let next = {
             let mut slot = shared.slot.lock().unwrap();
             loop {
                 if slot.quit {
                     return;
                 }
+                if let Some(h) = slot.here.take() {
+                    shared.here_waiting.store(false, Ordering::Relaxed);
+                    break Next::Here(h);
+                }
                 if let Some(q) = slot.query.take() {
-                    break (Some(q), shared.generation.load(Ordering::Relaxed));
+                    break Next::Search(Some(q), shared.generation.load(Ordering::Relaxed));
                 }
                 match &current {
                     Some((_, _, next, at)) if *next < find::Session::LEVELS => {
                         let now = Instant::now();
                         if now >= *at {
-                            break (None, shared.generation.load(Ordering::Relaxed));
+                            break Next::Search(None, shared.generation.load(Ordering::Relaxed));
                         }
                         slot = shared.ready.wait_timeout(slot, *at - now).unwrap().0;
                     }
                     _ => slot = shared.ready.wait(slot).unwrap(),
                 }
             }
+        };
+        let (new, generation) = match next {
+            Next::Here(h) => {
+                let t = Instant::now();
+                let shown = search
+                    .whats_here(h.p, omp_core::here::ADDRESS_RADIUS_M, h.entries_m)
+                    .map_err(|e| e.to_string());
+                let answer = HereAnswer {
+                    query: h,
+                    shown,
+                    find: t.elapsed(),
+                };
+                {
+                    let mut slot = shared.slot.lock().unwrap();
+                    slot.stats.heap_bytes = search.heap_bytes();
+                    slot.stats.bytes_read = search.bytes_read();
+                }
+                if here_tx.send(answer).is_err() {
+                    return;
+                }
+                wake();
+                continue;
+            }
+            Next::Search(q, g) => (q, g),
         };
         // Enter on the text the suggestions are for (same view) goes on with their session:
         // after a pause, its levels are done.
@@ -280,8 +370,7 @@ fn work(shared: Arc<Shared>, first_chunk: &std::path::Path, tx: &Sender<Answer>,
             && let Some((c, session, _, _)) = current.as_mut().filter(|c| same(&c.0, q))
         {
             session.set_limit(q.limit);
-            let s = shared.clone();
-            session.stop_when(move || s.generation.load(Ordering::Relaxed) != generation);
+            session.stop_when(stopper(&shared, generation));
             *c = q.clone();
         } else if let Some(q) = new {
             let req = Request {
@@ -294,8 +383,7 @@ fn work(shared: Arc<Shared>, first_chunk: &std::path::Path, tx: &Sender<Answer>,
                 prefix: true,
             };
             let mut session = search.start(&req);
-            let s = shared.clone();
-            session.stop_when(move || s.generation.load(Ordering::Relaxed) != generation);
+            session.stop_when(stopper(&shared, generation));
             current = Some((q, session, 0, Instant::now()));
         }
         let Some((q, session, next, at)) = current.as_mut() else {
@@ -320,7 +408,8 @@ fn work(shared: Arc<Shared>, first_chunk: &std::path::Path, tx: &Sender<Answer>,
         }
         let find = t.elapsed();
         let hits = match hits {
-            // Stopped by a newer query, which is waiting.
+            // Stopped by a newer query or a "what's here", which is waiting; a level stopped
+            // for "what's here" runs again after it.
             Ok(None) => continue,
             Ok(Some(h)) => Ok(h),
             Err(e) => {
@@ -360,7 +449,8 @@ pub fn world(p: P) -> camera::Vec2 {
     [f64::from(p[0]) / WORLD, f64::from(p[1]) / WORLD]
 }
 
-fn to_p(w: camera::Vec2) -> P {
+/// A world point (0‥1) as a pack point.
+pub fn to_p(w: camera::Vec2) -> P {
     w.map(|v| (v * WORLD).round().clamp(0.0, f64::from(u32::MAX)) as u32)
 }
 
@@ -622,17 +712,21 @@ impl Icons {
     }
 
     pub fn of(&self, hit: &Hit) -> &'static str {
-        let class = |v: &[&'static str], or| v.get(usize::from(hit.class)).copied().unwrap_or(or);
         match hit.kind {
             HitKind::Address => "🏠",
-            HitKind::Entry(k) => match k {
-                Kind::Street | Kind::AddressStreet => "🚗",
-                Kind::Admin => "🗺",
-                Kind::Postcode => "📮",
-                Kind::Place => class(&self.places, "🏡"),
-                Kind::Poi => class(&self.pois, "📍"),
-                Kind::Feature => class(&self.labels, "🌲"),
-            },
+            HitKind::Entry(k) => self.of_entry(k, hit.class),
+        }
+    }
+
+    pub fn of_entry(&self, kind: Kind, class: u16) -> &'static str {
+        let class = |v: &[&'static str], or| v.get(usize::from(class)).copied().unwrap_or(or);
+        match kind {
+            Kind::Street | Kind::AddressStreet => "🚗",
+            Kind::Admin => "🗺",
+            Kind::Postcode => "📮",
+            Kind::Place => class(&self.places, "🏡"),
+            Kind::Poi => class(&self.pois, "📍"),
+            Kind::Feature => class(&self.labels, "🌲"),
         }
     }
 }
@@ -692,6 +786,40 @@ impl SearchUi {
 
     pub fn stats(&self) -> Stats {
         self.worker.stats()
+    }
+
+    pub fn icons(&self) -> &Icons {
+        &self.icons
+    }
+
+    /// The box had the focus at the end of the last frame: an Escape now is its own.
+    pub fn box_was_focused(&self) -> bool {
+        self.was_focused
+    }
+
+    pub fn ask_here(&self, q: HereQuery) {
+        self.worker.ask_here(q);
+    }
+
+    pub fn here_answers(&self) -> Vec<HereAnswer> {
+        self.worker.poll_here().collect()
+    }
+
+    /// A search UI on a worker with no thread: the test takes the "what's here" requests
+    /// and sends the answers.
+    #[cfg(test)]
+    pub fn stub() -> (Self, Sender<HereAnswer>) {
+        let (worker, _, here_tx) = Worker::stub();
+        let schema = Schema {
+            whitelist_version: 0,
+            layers: Vec::new(),
+        };
+        (Self::with_worker(worker, &schema), here_tx)
+    }
+
+    #[cfg(test)]
+    pub fn take_here(&self) -> Option<HereQuery> {
+        self.worker.take_here()
     }
 
     fn clear(&mut self) {
@@ -1465,7 +1593,7 @@ mod tests {
 
     #[test]
     fn keyboard() {
-        let (worker, tx) = Worker::stub();
+        let (worker, tx, _) = Worker::stub();
         let schema = Schema {
             whitelist_version: 0,
             layers: Vec::new(),

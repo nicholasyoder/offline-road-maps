@@ -99,7 +99,7 @@ pub struct HereArgs {
     #[arg(long, default_value_t = 100.0)]
     radius: f64,
 
-    /// How far to look for places, POIs and labels, in metres.
+    /// How far to look for places, POIs and named features, in metres.
     #[arg(long, default_value_t = 100.0)]
     entries: f64,
 
@@ -240,14 +240,14 @@ pub fn here(args: HereArgs) -> Result<()> {
     let (_, s) = open(&args.pack)?;
     let p = parse_point(&args.point)?;
     let t = Instant::now();
-    let h = s.here(p, args.radius, args.entries)?;
+    let h = s.whats_here(p, args.radius, args.entries)?;
     let ms = t.elapsed().as_secs_f64() * 1e3;
     let areas = s.admin.areas();
     let chain: Vec<String> = h
         .chain
         .iter()
         .rev()
-        .map(|&a| areas[a as usize].name.clone())
+        .map(|&a| format!("{} ({})", areas[a as usize].name, areas[a as usize].level))
         .collect();
     let (lat, lon) = geo::unproject(p);
     if args.json {
@@ -256,23 +256,25 @@ pub fn here(args: HereArgs) -> Result<()> {
             "lon": lon,
             "address": h.address.as_ref().map(|a| json!({
                 "label": a.label,
+                "place": h.address_place,
                 "dist_m": a.dist_m,
                 "approx": a.approx,
                 "postcode": a.postcode,
                 "units": a.units,
             })),
-            "street": h.street.as_ref().map(|(id, st, spot)| json!({
-                "id": id,
-                "name": st.name,
-                "town": st.town,
-                "dist_m": spot.dist_m,
+            "street": h.street.as_ref().map(|(name, town, d)| json!({
+                "name": name,
+                "town": town,
+                "dist_m": d,
             })),
-            "nearby": h.nearby.iter().map(|(id, e, d)| json!({
-                "entry": id,
+            "nearby": h.nearby.iter().map(|(e, d)| json!({
                 "name": e.name,
+                "kind": format!("{:?}", e.kind),
                 "dist_m": d,
             })).collect::<Vec<_>>(),
+            "areas": h.areas,
             "chain": chain,
+            "ms": ms,
         });
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(());
@@ -280,11 +282,9 @@ pub fn here(args: HereArgs) -> Result<()> {
     println!("point    {lat:.6},{lon:.6}");
     match &h.address {
         Some(a) => println!(
-            "address  {}{}{}, {:.0} m{}",
+            "address  {}, {}{}, {:.0} m{}",
             a.label,
-            a.postcode
-                .as_ref()
-                .map_or(String::new(), |c| format!(" {c}")),
+            h.address_place,
             if a.units.is_empty() {
                 String::new()
             } else {
@@ -296,13 +296,14 @@ pub fn here(args: HereArgs) -> Result<()> {
         None => println!("address  none within {} m", args.radius),
     }
     match &h.street {
-        Some((_, st, spot)) => println!("street   {}, {} ({:.0} m)", st.name, st.town, spot.dist_m),
+        Some((name, town, d)) => println!("street   {name}, {town} ({d:.0} m)"),
         None => println!("street   none within {} m", args.radius),
     }
-    for (_, e, d) in &h.nearby {
+    for (e, d) in &h.nearby {
         println!("nearby   {} ({:?}, {d:.0} m)", e.name, e.kind);
     }
-    println!("where    {}", chain.join(" > "));
+    println!("in       {}", h.areas.join(", "));
+    println!("chain    {}", chain.join(" > "));
     println!("{ms:.1} ms");
     Ok(())
 }

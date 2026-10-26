@@ -120,3 +120,30 @@ hold = 0.5
 label = "search: brand near view"
 search = "Speedway"
 hold = 0.5
+
+# "What's here" (phase2-plan.md 2.8): asked at the view's centre after a jump, as the
+# right-click menu does. Skipped on packs without search.
+
+[[step]]
+label = "here: Statehouse, Columbus"
+lat = 39.9612
+lon = -82.9988
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: approximate, Butler County"
+lat = 39.3846
+lon = -84.4600
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: farmland, no address"
+lat = 40.2650
+lon = -83.4400
+zoom = 15
+here = true
+hold = 0.5

@@ -17,6 +17,10 @@
 //! of that name first was. Then it presses Enter, jumps to the first result as picking it
 //! does, and waits for that view to be detailed. With `OMP_BENCH_SHOTS=<dir>`, the window
 //! is saved there as a PNG with the suggestions open and again at the result.
+//!
+//! A step with `here = true` asks "what's here" (2.8) at the view's centre after the move,
+//! as the right-click menu does, and records the time from the request to the frame that
+//! shows the panel, and what the panel shows (saved as a PNG too, with `OMP_BENCH_SHOTS`).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -24,6 +28,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{Camera, Vec2, lonlat_to_world};
+use crate::here::HereTaken;
 use crate::loader::Done;
 use crate::search::{BenchKey, Taken};
 
@@ -77,6 +82,9 @@ pub struct Step {
     pub keystroke_ms: Option<f64>,
     /// Text of the name of the result the search should find.
     pub expect: Option<String>,
+    /// Ask "what's here" at the view's centre after the move (not with `search`).
+    #[serde(default)]
+    pub here: bool,
 }
 
 impl Flight {
@@ -85,6 +93,12 @@ impl Flight {
         let f: Self = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         if f.steps.is_empty() {
             return Err(format!("{}: the flight has no steps", path.display()));
+        }
+        if f.steps.iter().any(|s| s.here && s.search.is_some()) {
+            return Err(format!(
+                "{}: a step has both `search` and `here`",
+                path.display()
+            ));
         }
         Ok(f)
     }
@@ -96,6 +110,8 @@ enum Phase {
     Wait,
     /// Typing the step's search.
     Type,
+    /// Waiting for the step's "what's here".
+    Here,
     Hold,
 }
 
@@ -125,6 +141,29 @@ struct StepLog {
     bytes_read_start: u64,
     rss_end: Option<u64>,
     search: SearchLog,
+    here: HereLog,
+}
+
+#[derive(Default)]
+struct HereLog {
+    asked: Option<Instant>,
+    done: bool,
+    latency_ms: Option<f64>,
+    find_ms: Option<f64>,
+    answer: Option<HereAnswerLog>,
+    error: Option<String>,
+    timed_out: bool,
+    skipped: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HereAnswerLog {
+    /// "123 Main Street, Springfield, IL 62701", with " (approximate)".
+    pub address: Option<String>,
+    pub address_m: Option<f64>,
+    pub street: Option<String>,
+    pub nearby: Vec<String>,
+    pub areas: Vec<String>,
 }
 
 #[derive(Default)]
@@ -179,6 +218,8 @@ pub struct Bench {
     labels: Vec<f64>,
     /// Every keystroke's latency, and the first one's.
     keystrokes: Vec<f64>,
+    /// Every "what's here" latency.
+    heres: Vec<f64>,
     first_keystroke_ms: Option<f64>,
     startup_ms: Option<f64>,
     cache_peak: usize,
@@ -225,6 +266,7 @@ impl Bench {
             cpu: Vec::new(),
             labels: Vec::new(),
             keystrokes: Vec::new(),
+            heres: Vec::new(),
             first_keystroke_ms: None,
             startup_ms: None,
             cache_peak: 0,
@@ -384,6 +426,63 @@ impl Bench {
         }
     }
 
+    /// Whether to ask "what's here" at the view's centre now: once, in a `here` step after
+    /// its move. `available` is false for a pack without search, whose steps are skipped.
+    pub fn here_ask(&mut self, available: bool) -> bool {
+        if self.phase != Phase::Here {
+            return false;
+        }
+        let log = &mut self.logs[self.step].here;
+        if log.asked.is_some() || log.done {
+            return false;
+        }
+        if !available {
+            log.skipped = true;
+            log.done = true;
+            return false;
+        }
+        log.asked = Some(Instant::now());
+        true
+    }
+
+    /// A "what's here" answer the panel took.
+    pub fn here_answer(&mut self, t: &HereTaken) {
+        if self.phase != Phase::Here {
+            return;
+        }
+        let log = &mut self.logs[self.step].here;
+        if log.asked.is_none() || log.done {
+            return;
+        }
+        log.done = true;
+        let latency = ms(t.latency);
+        log.latency_ms = Some(latency);
+        log.find_ms = Some(ms(t.find));
+        self.heres.push(latency);
+        match &t.shown {
+            Ok(s) => {
+                log.answer = Some(HereAnswerLog {
+                    address: s.address.as_ref().map(|a| {
+                        format!(
+                            "{}, {}{}",
+                            a.label,
+                            s.address_place,
+                            if a.approx { " (approximate)" } else { "" }
+                        )
+                    }),
+                    address_m: s.address.as_ref().map(|a| (a.dist_m * 10.0).round() / 10.0),
+                    street: s.street.as_ref().map(|(n, t, _)| match t.as_str() {
+                        "" => n.clone(),
+                        t => format!("{n}, {t}"),
+                    }),
+                    nearby: s.nearby.iter().map(|(e, _)| e.name.clone()).collect(),
+                    areas: s.areas.clone(),
+                });
+            }
+            Err(e) => log.error = Some(e.clone()),
+        }
+    }
+
     /// Where to save a screenshot of this frame, if one is due.
     pub fn take_shot(&mut self) -> Option<PathBuf> {
         let name = self.shot.take()?;
@@ -437,6 +536,8 @@ impl Bench {
                 Phase::Wait
             } else if step.search.is_some() {
                 Phase::Type
+            } else if step.here {
+                Phase::Here
             } else {
                 Phase::Hold
             };
@@ -459,6 +560,8 @@ impl Bench {
             }
             self.phase = if step.search.is_some() && !picked {
                 Phase::Type
+            } else if step.here {
+                Phase::Here
             } else {
                 Phase::Hold
             };
@@ -479,6 +582,26 @@ impl Bench {
                 }
                 None => Phase::Hold,
             };
+            self.phase_start = now;
+            return None;
+        }
+        if self.phase == Phase::Here {
+            let h = &mut log.here;
+            if !h.done {
+                if h.asked.is_none_or(|a| now - a < SEARCH_TIMEOUT) {
+                    return None;
+                }
+                h.timed_out = true;
+                h.done = true;
+            }
+            // A screenshot of the panel, once it has faded in.
+            if self.shots.is_some() {
+                if t < SHOT_WAIT.as_secs_f64() {
+                    return None;
+                }
+                self.shot("here");
+            }
+            self.phase = Phase::Hold;
             self.phase_start = now;
             return None;
         }
@@ -574,6 +697,14 @@ impl Bench {
                     timed_out: l.search.timed_out,
                     skipped: l.search.skipped,
                 }),
+                here: s.here.then(|| HereStepReport {
+                    latency_ms: l.here.latency_ms,
+                    find_ms: l.here.find_ms,
+                    answer: l.here.answer.clone(),
+                    error: l.here.error.clone(),
+                    timed_out: l.here.timed_out,
+                    skipped: l.here.skipped,
+                }),
             })
             .collect::<Vec<_>>();
         Report {
@@ -618,6 +749,7 @@ impl Bench {
                     heap_bytes: c.heap_bytes,
                     bytes_read: c.bytes_read,
                 }),
+            here_ms: (!self.heres.is_empty()).then(|| Summary::of(&mut self.heres)),
             steps,
         }
     }
@@ -707,6 +839,9 @@ pub struct Report {
     /// Over every search step, when there are any and the pack has search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchReport>,
+    /// Every "what's here" step's latency, from the request to the frame showing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub here_ms: Option<Summary>,
     pub steps: Vec<StepReport>,
 }
 
@@ -750,6 +885,19 @@ pub struct SearchStepReport {
 }
 
 #[derive(Debug, Serialize)]
+pub struct HereStepReport {
+    /// From the request to the frame showing the panel.
+    pub latency_ms: Option<f64>,
+    /// Time in `whats_here`, part of the latency.
+    pub find_ms: Option<f64>,
+    pub answer: Option<HereAnswerLog>,
+    pub error: Option<String>,
+    pub timed_out: bool,
+    /// The pack has no search.
+    pub skipped: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct TilesReport {
     pub loaded: usize,
     pub absent: usize,
@@ -782,6 +930,8 @@ pub struct StepReport {
     pub rss_end: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchStepReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub here: Option<HereStepReport>,
 }
 
 impl Report {
@@ -837,6 +987,12 @@ impl Report {
                 mib(sr.bytes_read),
             );
         }
+        if let Some(h) = &self.here_ms {
+            s += &format!(
+                "what's here: {} asked, latency p50 {:.1} / p95 {:.1} / max {:.1} ms\n",
+                h.count, h.p50, h.p95, h.max
+            );
+        }
         for st in &self.steps {
             let detail = match (st.detail_ms, st.timed_out) {
                 (Some(d), _) => format!(", detailed in {d:.0} ms"),
@@ -874,6 +1030,33 @@ impl Report {
                         q.enter_ms.map_or("-".into(), |v| format!("{v:.1}")),
                         top.as_deref().unwrap_or("nothing"),
                         if q.timed_out { " (timed out)" } else { "" },
+                    ),
+                };
+            }
+            if let Some(h) = &st.here {
+                s += &match (h.skipped, &h.answer) {
+                    (true, _) => "    what's here skipped: the pack has no search\n".to_string(),
+                    (false, Some(a)) => format!(
+                        "    what's here: {} ms (whats_here {} ms) → {}; street {}; nearby {}; in {}\n",
+                        h.latency_ms.map_or("-".into(), |v| format!("{v:.1}")),
+                        h.find_ms.map_or("-".into(), |v| format!("{v:.1}")),
+                        a.address.as_deref().unwrap_or("no address"),
+                        a.street.as_deref().unwrap_or("none"),
+                        a.nearby
+                            .iter()
+                            .take(3)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" / "),
+                        a.areas.join(", "),
+                    ),
+                    (false, None) => format!(
+                        "    what's here: {}\n",
+                        h.error.as_deref().unwrap_or(if h.timed_out {
+                            "timed out"
+                        } else {
+                            "no answer"
+                        })
                     ),
                 };
             }

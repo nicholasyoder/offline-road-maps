@@ -3,10 +3,14 @@
 
 use std::io;
 
+use crate::admin::Area;
 use crate::find::number_text;
 use crate::geo::{self, P};
-use crate::search::{Entry, NearAddress, Search};
+use crate::search::{Entry, Kind, NearAddress, Search};
 use crate::street::{STEP_M, Spot, Street};
+
+/// How far "what's here" looks for an address and a street (phase 2 plan, 2.8).
+pub const ADDRESS_RADIUS_M: f64 = 100.0;
 
 /// The nearest address to a point.
 #[derive(Clone, Debug, PartialEq)]
@@ -124,4 +128,102 @@ impl Search {
             chain: self.admin.chain(p)?,
         })
     }
+}
+
+/// What "what's here" shows, as the app's panel and `omp-builder here` give it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shown {
+    pub p: P,
+    pub address: Option<HereAddress>,
+    /// The address's town, state and postcode: "New York, NY 10001".
+    pub address_place: String,
+    /// The nearest street: its name, town and distance.
+    pub street: Option<(String, String, f64)>,
+    /// Places, POIs and named features nearby, nearest first.
+    pub nearby: Vec<(Entry, f64)>,
+    /// The municipality, county, state and country holding the point, those it has.
+    pub areas: Vec<String>,
+    /// Every admin area holding the point, country first.
+    pub chain: Vec<u32>,
+}
+
+impl Search {
+    /// [`Search::here`] as shown: entries within `entries_m`, but only places, POIs and
+    /// features, with names for the address's place and the areas.
+    pub fn whats_here(&self, p: P, radius_m: f64, entries_m: f64) -> io::Result<Shown> {
+        let h = self.here(p, radius_m, entries_m)?;
+        let areas = self.admin.areas();
+        let mut address_place = String::new();
+        if let Some(a) = &h.address {
+            // A loose address has no street record; the nearest street's town stands in.
+            let town = match a.street {
+                Some(id) => self.streets.street(id)?.town,
+                None => h
+                    .street
+                    .as_ref()
+                    .map_or(String::new(), |s| s.1.town.clone()),
+            };
+            let state = h
+                .chain
+                .iter()
+                .map(|&i| &areas[i as usize])
+                .find(|a| a.level == 4)
+                .map(|s| if s.abbr.is_empty() { &s.name } else { &s.abbr });
+            let mut parts: Vec<&str> = Vec::new();
+            parts.extend(Some(town.as_str()).filter(|t| !t.is_empty()));
+            parts.extend(state.map(String::as_str));
+            address_place = parts.join(", ");
+            if let Some(pc) = &a.postcode {
+                if !address_place.is_empty() {
+                    address_place.push(' ');
+                }
+                address_place += pc;
+            }
+        }
+        Ok(Shown {
+            p,
+            address_place,
+            street: h
+                .street
+                .as_ref()
+                .map(|(_, st, spot)| (st.name.clone(), st.town.clone(), spot.dist_m)),
+            nearby: h
+                .nearby
+                .into_iter()
+                .filter(|(_, e, _)| matches!(e.kind, Kind::Place | Kind::Poi | Kind::Feature))
+                .map(|(_, e, d)| (e, d))
+                .collect(),
+            areas: shown_areas(areas, &h.chain)
+                .into_iter()
+                .map(|a| a.name.clone())
+                .collect(),
+            address: h.address,
+            chain: h.chain,
+        })
+    }
+}
+
+/// The areas "what's here" names, innermost first: the municipality (the deepest area at
+/// level 7 or 8, a township too, whatever the town flag says), the county (level 6, else
+/// 5), the state or province (4) and the country (2). Boroughs and neighbourhoods (9–10)
+/// are left out.
+pub fn shown_areas<'a>(areas: &'a [Area], chain: &[u32]) -> Vec<&'a Area> {
+    let deepest = |levels: &[u8]| {
+        levels.iter().find_map(|&l| {
+            chain
+                .iter()
+                .rev()
+                .map(|&i| &areas[i as usize])
+                .find(|a| a.level == l)
+        })
+    };
+    [
+        deepest(&[8, 7]),
+        deepest(&[6, 5]),
+        deepest(&[4]),
+        deepest(&[2]),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }

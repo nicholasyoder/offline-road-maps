@@ -42,7 +42,7 @@ The roadmap's items are "search suggestions as you type, ranking by importance a
 | 2.6 Query parsing, matching and ranking (`omp-core`) | **Done** 2026-10-26 | `omp_core::find` + `query` + `fuzzy` + `here`; `omp-builder search` / `here`. Query set: 1,000 random addresses (Ohio, Quebec, Ontario) and 241 hand-written queries. Ohio / Quebec: addresses 99.4 / 97.3% first, hand-written 98.9 / 98.7% first and 100% top 5, "what's here" 100%; warm p95 17.0 / 15.3 ms. No format change. |
 | 2.7 Search UI | **Done** 2026-10-26 | Search box, suggestions, results panel, fly-to and marker (`app/src/search.rs`); queries on one worker, stale answers dropped. North America rebuilt to format 0.4 (53 min, 49.4 GiB). Bench keystroke latency p95 53 ms Ohio, 89 ms North America, warm; RSS peak 193 / 239 MiB. The on-map credit is now OpenStreetMap's only. |
 | 2.7b Progressive search | **Done** 2026-10-26 | `find::Session`, 4 levels sharing one run; the worker goes deeper after a 150 ms pause, cancelled by the next keystroke. North America, town cut to 4 letters: 71.3 → **89.3%** first (94.0% in the 8 suggestions), shown within 1.74 s of the pause; level 0 unchanged. Enter after a pause ≤ 8 ms. |
-| 2.8 "What's here" | Not started | |
+| 2.8 "What's here" | **Done** 2026-10-26 | Right-click menu ("What's here?", coordinates to copy) and a panel at the point (`app/src/here.rs`), answered by the search worker through `Search::whats_here`, shared with `omp-builder here`. At the address points: North America 99.7%, Ohio / Quebec / Ontario 100 / 100 / 99.7%. Bench: 1.9–9.4 ms from the request to the panel, warm. |
 | 2.9 Performance, accuracy and hardware checks | Not started | |
 
 ## Environment notes
@@ -372,6 +372,27 @@ The idea: answer at once as now, then, while the user pauses, keep searching dee
 
 **Done when:** right-clicking in Ohio, Quebec and Manhattan gives the expected addresses and places, and `here` on the query set's address points meets exit criterion 2.
 
+> **Done 2026-10-26** (the commit that adds `crates/app/src/here.rs`).
+> - **Core.** `Search::whats_here(p, radius, entries)` (`omp_core::here`) is what the panel and `omp-builder here` show: `Search::here`'s nearest address within `ADDRESS_RADIUS_M` (100 m) with its place line ("New York, NY 10001": the street's postal town, the state's code, the postcode; a loose address takes the nearest street's town), the nearest street, the places, POIs and named features within `entries` (postcodes and street entries left out), and the areas shown (`shown_areas`): the municipality (the deepest area at level 8, else 7), the county (6, else 5), the state (4) and the country (2). Boroughs and neighbourhoods (9–10) are left out, so Manhattan's "Community Board 5" and Québec's "Vieux-Québec–Cap-Blanc–Colline-Parlementaire" are not shown. `omp-builder here` prints the same answer, plus the whole chain with levels.
+> - **App.** A right-click on the map opens a menu: "What's here?" (disabled, with the reason on hover, for a pack without search) and the point's coordinates, which a click copies as `lat, lon` to six decimals. "What's here?" sends a request to the search worker, which answers it before the next search level. A request stops a level that is running (the session's stop check also watches a "what's here waiting" flag), and the level runs again afterwards. The panel sits next to a blue dot at the point and is kept inside the map. It shows the address (with "approximate"), its place line and distance, the nearest street when the address is not on it (or when there is no address), up to 5 places and POIs within 30 screen points (15–300 m), the areas, and the coordinates with a Copy button. When the address is more than 8 points from the click, a ring marks it, joined to the dot by a line. Escape on the map closes the panel before the search results and marker; so do its × and a left click on the map. Left drag still pans. The optional left click on a POI or label was not built. A headless egui test covers the right click, the request, a stale answer being dropped, and Escape and click closing the panel. The menu was not used by hand: no window automation tool was available, so the bench drives the same code from the view centre.
+> - **Bench.** A step with `here = true` asks at the view centre after its move and records the time from the request to the frame showing the panel, plus what the panel shows (`here` per step, `here_ms` over the run, a screenshot with `OMP_BENCH_SHOTS`). The Ohio flight gains 3 such steps (the Statehouse, an approximate address in Butler County, and farmland with no address). The North America flight gains 5: the Empire State Building, Times Square, Vieux-Québec, the Plateau in Montréal and the Statehouse.
+> - **Results** (dev machine, packs in the page cache; `$OMP_WORK/measure/here28/`, with the screenshots):
+>
+>   | Point | Address shown | Nearby | Areas | Request → panel |
+>   |---|---|---|---|---:|
+>   | Empire State Building | 10 West 33rd Street, New York, NY 10001 (39 m) | Empire State Building, Sushi teria, NY Skyride | Manhattan, New York County, New York, United States | 8.6 ms |
+>   | Times Square | 1515 Broadway, New York, NY 10019 (17 m); street 7th Avenue | Theater District, Manhattan | as above | 1.9 ms |
+>   | Vieux-Québec | 2 Rue des Jardins, Québec, QC G1R 4L4 (45 m) | Jardins de l'hôtel de ville | Québec, Agglomération de Québec, Québec, Canada | 9.4 ms |
+>   | Plateau, Montréal | 4311 Rue Saint-Denis, Montréal, QC H2J 2K9 (12 m) | Restaurant Azalea | Montréal, Agglomération de Montréal, Québec, Canada | 9.0 ms |
+>   | Statehouse, Columbus | 1 Capitol Square, Columbus, OH 43215 (19 m); street East State Street | (none within 30 points) | Columbus, Franklin County, Ohio | 8.2–9.1 ms |
+>   | Butler County, Ohio | 4665 Logsdons Meadow Drive, Liberty Township, OH, approximate | | Liberty Township, Butler County, Ohio | 5.0 ms |
+>   | Farmland, Union County | none within 100 m | | Paris Township, Union County, Ohio | 3.0 ms |
+>
+>   Bench RSS peak 248 MiB on North America (237 in 2.7b), keystroke p95 91.2 ms (90.8), idle CPU 0.30%. App binary 14.2 MB.
+> - **Exit criterion 2** ("what's here" at random address points gives that address, or one within 30 m on the same street, in at least 95%): Ohio 334/334, Quebec 333/333, Ontario 332/333 (99.7%), and North America 299/300 (99.7%, the 300 addresses of 2.7b's `addresses-na.tsv`). Warm p95 1.2–1.4 ms on the regional packs and 3.6 ms on North America.
+> - **The per-state town flag** (left open in 2.1 and moved here) is not needed for "what's here": the panel names the deepest level 8 area whatever the flag says, so Wisconsin's "Town of …" and New York's villages show as they are, and the postal town comes from the street. The flag only affects the builder's fallback for streets that have no postal town (under 3% of streets in those states, 17% in Wisconsin). That fix stays open, for after 2.9.
+> - **Left open, for 2.9:** "what's here" cold from the USB stick (1 s target) and on the E6430 (200 ms warm). The panel opens to the right of the point and can cover the ring at the address (Vieux-Québec, where the address lies east of the point).
+
 ## 2.9 Performance, accuracy and hardware checks
 
 As phase 1 step 1.10, with search added:
@@ -395,7 +416,7 @@ As phase 1 step 1.10, with search added:
 - 2.3 and 2.4 both need the street table from 2.2 and can run side by side.
 - Build the North America pack at the end of 2.3 and of 2.4, so size and memory surprises show up early.
 - 2.6 can start on the Ohio pack as soon as 2.5's readers exist; the query set grows through 2.3–2.6.
-- 2.7 and 2.8 share the right-click and marker code and can be done in either order.
+- 2.7 and 2.8 share the marker code and can be done in either order.
 - 2.7b (progressive search) builds on 2.7's worker and list. It comes before 2.9, which measures the search latencies it changes.
 
 ## Decisions

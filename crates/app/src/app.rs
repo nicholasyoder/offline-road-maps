@@ -15,6 +15,7 @@ use crate::bench::{Bench, FrameSample, Poll, ReportContext, SearchContext};
 use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
 use crate::config::{self, Config, Location, View};
+use crate::here::{HereUi, lonlat_text};
 use crate::labels::{self, Placer, TileLabels};
 use crate::layers::{Hidden, Layers};
 use crate::loader::{self, Done, Loader};
@@ -110,6 +111,7 @@ struct MapState {
     /// A tile failed to load and "Verify pack" was suggested.
     error_suggested: bool,
     search: SearchUi,
+    here: HereUi,
 }
 
 /// What the last frame showed, for the overlay.
@@ -281,6 +283,7 @@ impl App {
             units,
             error_suggested: false,
             search,
+            here: HereUi::default(),
         });
         self.first_full = None;
         if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
@@ -763,6 +766,7 @@ impl eframe::App for App {
                 }
                 if self.bench.is_none() {
                     m.input(ui, &resp, rect.min, dt);
+                    m.here.map_input(&resp, rect.min, &m.camera, &m.search);
                     m.motion.step(&mut m.camera, dt);
                     animate = m.motion.moving() || MapState::keys_held(ui) || m.view.fading;
                     self.cursor = resp.hover_pos().map(|p| {
@@ -790,6 +794,7 @@ impl eframe::App for App {
                 if let Some(h) = &m.search.session.marker {
                     search::draw_marker(&painter, rect.min, &m.camera, h);
                 }
+                m.here.draw_marker(&painter, rect.min, &m.camera);
                 if m.view.detailed && self.first_full.is_none() {
                     self.first_full = Some(self.started.elapsed());
                 }
@@ -965,6 +970,7 @@ impl App {
                 lines.push(format!("last error: {e}"));
             }
             lines.extend(m.search.overlay_lines());
+            lines.extend(m.here.overlay_line());
         }
         if let Some(u) = crate::memory::usage() {
             lines.push(format!(
@@ -1063,9 +1069,23 @@ impl App {
         let Some(m) = &mut self.map else { return };
         let units = self.cfg.units.unwrap_or(m.units);
 
+        // "What's here": Escape on the map closes its panel before the search's results and
+        // marker. The bench asks at the view's centre, as the right-click menu would.
+        if !m.search.box_was_focused() {
+            m.here.escape(ctx);
+        }
+        let available = matches!(m.search.status(), Status::Opening | Status::Ready);
+        if self.bench.as_mut().is_some_and(|b| b.here_ask(available)) {
+            m.here.ask(&m.search, m.camera.center, &m.camera);
+        }
+        for t in m.here.take(&m.search) {
+            if let Some(b) = &mut self.bench {
+                b.here_answer(&t);
+            }
+        }
+
         // Top left: search. The bench types into it as a user would, and jumps to what it
         // picks itself.
-        let available = matches!(m.search.status(), Status::Opening | Status::Ready);
         let key = self.bench.as_mut().and_then(|b| b.search_key(available));
         let out = m.search.ui(
             ctx,
@@ -1084,6 +1104,7 @@ impl App {
             let (c, z) = search::view_for(&h, m.camera.size);
             m.motion.fly_to(&m.camera, c, z);
         }
+        m.here.ui(ctx, map_rect, &m.camera, units, m.search.icons());
 
         let panel = egui::Frame::popup(&ctx.global_style())
             .inner_margin(egui::Margin::symmetric(6, 4))
@@ -1479,13 +1500,6 @@ fn scale_bar(ui: &mut egui::Ui, metres_per_point: f64, units: Units) {
             INK,
         );
     }
-}
-
-/// `40.12345° N, 83.12345° W`.
-fn lonlat_text(lon: f64, lat: f64) -> String {
-    let ns = if lat < 0.0 { 'S' } else { 'N' };
-    let ew = if lon < 0.0 { 'W' } else { 'E' };
-    format!("{:.5}° {ns}, {:.5}° {ew}", lat.abs(), lon.abs())
 }
 
 fn seconds(s: f64) -> String {

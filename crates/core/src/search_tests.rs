@@ -1086,5 +1086,16 @@ fn query_set_on_the_test_pack() {
         let high = s.streets.geometry(1).unwrap();
         let on_range = s.here(high.point_at(150.0), 30.0, 10.0).unwrap();
         assert!(on_range.address.unwrap().approx);
+        // As shown: the address's place, nearby places and POIs only, the areas.
+        let shown = s.whats_here(p, 100.0, 300.0).unwrap();
+        assert!(shown.address_place.starts_with("Columbus, OH"));
+        assert_eq!(shown.areas, ["Columbus", "Franklin", "Ohio"]);
+        assert!(shown.nearby.iter().any(|(e, _)| e.name == "Tim Hortons"));
+        assert!(
+            shown
+                .nearby
+                .iter()
+                .all(|(e, _)| matches!(e.kind, Kind::Place | Kind::Poi | Kind::Feature))
+        );
     }
 }
