@@ -114,6 +114,8 @@ Detailed plan: [phase1-plan.md](phase1-plan.md).
   Measured 2026-10-25 ([phase 1 step 1.10](phase1-plan.md#110-performance-usb-and-hardware-checks)): from a FAT32 USB 2 stick with a cold cache, the dev machine draws at 1.17 ms p95, starts in 1.46 s, has any jump fully detailed within 0.63 s, and peaks at 144 MiB RSS. Two Windows laptops pass the 30 fps target (Latitude 7490 on DX12 12–14 ms; Latitude E6430 on GL 20 ms). Not met everywhere: the 7490 on Windows peaks at 373 MiB (flat), and the E6430's Windows GL driver leaks about 0.35 MiB per frame presented, outside the app. A pre-2012 laptop gets only a software renderer (~3 fps).
 
 ### Phase 2: Search and addresses
+Detailed plan: [phase2-plan.md](phase2-plan.md).
+
 - [ ] Builder: admin hierarchy, places, streets, POIs, the merged address store and TIGER ranges.
 - [ ] App: search suggestions as you type, ranking by importance and distance from the map view, address lookup (with "approximate" marking for interpolated addresses), and a "what's here" lookup on click.
 
@@ -134,6 +136,7 @@ Detailed plan: [phase1-plan.md](phase1-plan.md).
 - [ ] Planet build trial (stretch goal).
 
 ### Later or optional
+- A larger POI set (shops, schools, offices and other named places beyond the 11 car-trip classes), added to the map and search together. To consider once the app works end to end and the final pack sizes are known (decided 2026-10-25, phase 2 planning).
 - GPS position display (NMEA, gpsd, Windows Location API).
 - macOS polish.
 - Mobile.
