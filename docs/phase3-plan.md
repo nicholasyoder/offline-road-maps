@@ -41,7 +41,7 @@ The roadmap's items are "road graph, car profile, turn restrictions and contract
 
 | Step | Status | Notes |
 |---|---|---|
-| 3.1 Car profile and road graph | In progress | Profile, graph, restrictions, components and the `build` stage done and measured (North America 63.7M nodes / 152.7M edges, build peak 47.4 GiB). Left: run OSRM on Ohio and Quebec and compare coverage (needs the owner; see the note under 3.1) |
+| 3.1 Car profile and road graph | **Done** 2026-10-27 | North America 63.7M nodes / 152.7M edges, 511k restrictions applied (+0.8% nodes), stage 231 s, build peak 47.4 GiB. OSRM 6.0.0 runs on Ohio and Quebec; coverage differs only where the profile table says |
 | 3.2 Contraction hierarchy | Not started | |
 | 3.3 Routing format and core reader | Not started | |
 | 3.4 Queries, snapping and multi-stop (`omp-core`) | Not started | |
@@ -58,7 +58,7 @@ As in [phase 2](phase2-plan.md#environment-notes): builder data in `$OMP_WORK`, 
 
 **Memory:** run North America builds under `systemd-run --user --scope -p MemoryMax=56G -p MemorySwapMax=0`, as before.
 
-**OSRM as the reference** (decision 12): OSRM's `osrm-backend` with its stock `car.lua`, run on the dev machine only, on the same Ohio and Quebec extracts the packs are built from (`$OMP_WORK/osrm/`). It is a build-time tool for checks; nothing from it goes into a pack or the app. The dev machine has neither Docker nor Podman yet: install Podman (`apt install podman`, needs the owner's sudo) and use the project's image, or build OSRM from source if that is easier. It is set up in 3.1, where its profile is the one ours is compared against. North America is too large for it on this machine and is not needed.
+**OSRM as the reference** (decision 12): OSRM's `osrm-backend` with its stock `car.lua`, run on the dev machine only, on the same Ohio and Quebec extracts the packs are built from (`$OMP_WORK/osrm/`). It is a build-time tool for checks; nothing from it goes into a pack or the app. It runs in Podman from the project's image `ghcr.io/project-osrm/osrm-backend:v6.0.0`, set up in 3.1 (commands in the 3.1 note). North America is too large for it on this machine and is not needed.
 
 **Routing without a window:** step 3.4 adds `omp-builder route <pack> <lat,lon> <lat,lon>… [--avoid tolls,ferries] [--directions] [--geojson <file>]` and `route --check`, thin wrappers over `omp-core`, so routing is tested in a session without the app, as `search` and `here` are. Step 3.6 adds a route to `omp-app --render`, so the overlay is checked with snapshots.
 
@@ -68,9 +68,22 @@ As in [phase 2](phase2-plan.md#environment-notes): builder data in `$OMP_WORK`, 
 
 Build the car graph in the builder from OSM, as its own stage, and measure it. No CH yet.
 
-> **In progress 2026-10-27.** Done: `omp_core::profile` (the car profile, with a unit test per rule); the builder's `graph` module (three PBF passes, edges between intersections with signal, barrier and toll-booth delays and flags on the edges, blocking barriers cut, loop drives split at their middle node, ferries kept only where both ends meet a road, restricted roads charged on entry); turn restrictions by node splitting, done as an Aho–Corasick automaton over forbidden node paths, so via-node, via-way and overlapping restrictions share one rule (a test checks every pair on a hand-built grid against a search over paths); strongly connected components, nodes in components under 1,000 marked small. It runs as `build`'s stage 5 (cached under `--reuse-stages`, which is the temp file 3.2 reruns from) and alone as `omp-builder graph <pbf> [--json] [--save]`. Counts for Ohio, Quebec and North America are in the [size table](size-table.md#phase-3-step-31-the-car-graph). Restrictions add 0.7–2.1% of the nodes. North America alone: 188 s, peak 25.2 GiB. In `build --addresses all --bands 3`: stage 231 s, build peak 47.4 GiB (45.3 GiB before the stage; 47.2 GiB in R4), wall time 40.5 min. That leaves about 8 GiB under the cap for 3.2's contraction, which may have to free the graph's input first or spill.
+> **Done 2026-10-27.** Done: `omp_core::profile` (the car profile, with a unit test per rule); the builder's `graph` module (three PBF passes, edges between intersections with signal, barrier and toll-booth delays and flags on the edges, blocking barriers cut, loop drives split at their middle node, ferries kept only where both ends meet a road, restricted roads charged on entry); turn restrictions by node splitting, done as an Aho–Corasick automaton over forbidden node paths, so via-node, via-way and overlapping restrictions share one rule (a test checks every pair on a hand-built grid against a search over paths); strongly connected components, nodes in components under 1,000 marked small. It runs as `build`'s stage 5 (cached under `--reuse-stages`, which is the temp file 3.2 reruns from) and alone as `omp-builder graph <pbf> [--json] [--save]`. Counts for Ohio, Quebec and North America are in the [size table](size-table.md#phase-3-step-31-the-car-graph). Restrictions add 0.7–2.1% of the nodes. North America alone: 188 s, peak 25.2 GiB. In `build --addresses all --bands 3`: stage 231 s, build peak 47.4 GiB (45.3 GiB before the stage; 47.2 GiB in R4), wall time 40.5 min. That leaves about 8 GiB under the cap for 3.2's contraction, which may have to free the graph's input first or spill.
 >
-> **Left: OSRM.** It is not installed: Debian has no `osrm-tools` package, Podman needs sudo, and building v6.0.0 from source was blocked in this session (the source, and the Boost, TBB and Lua `-dev` packages unpacked without root, are in `~/osrm`). Either `sudo apt install podman` and use `ghcr.io/project-osrm/osrm-backend:v6.0.0`, or build `~/osrm/src` with CMake against `~/osrm/prefix/usr`. Then run `osrm-extract -p profiles/car.lua` on the Ohio and Quebec extracts in `$OMP_WORK/osrm/` and compare its coverage with ours (ways it routes that we drop, and the reverse). The differences from `car.lua` are listed below from reading it.
+> **OSRM** 6.0.0 runs in Podman (`ghcr.io/project-osrm/osrm-backend:v6.0.0`) on the Ohio and Quebec extracts in `$OMP_WORK/osrm/`, extracted, partitioned and customized for MLD, so `osrm-routed --algorithm mld` serves step 3.5 (Columbus to Cleveland: 230 km, 164 min). Extracted with [`tools/osrm/car-log.lua`](../tools/osrm/car-log.lua), which runs the stock `car.lua` unchanged and logs each way's verdict; [`tools/osrm/coverage.py`](../tools/osrm/coverage.py) compares that with `omp-builder graph --way-ids`. Every difference has a cause in the table below:
+>
+> | | Ohio | Quebec |
+> |---|---:|---:|
+> | Ways both keep | 1,313,012 | 530,732 |
+> | OSRM only: `access=private` (it keeps them as start or end only) | 249,564 | 127,798 |
+> | OSRM only: `footway`, `path`, `corridor`, `track`, … with an access tag that allows (`access=yes` on a footway is meant for walkers) | 1,006 | 1,158 |
+> | OSRM only: ferries that meet no road | 5 | 30 |
+> | Ours only: `width` ≤ 1.9 m, which OSRM reads as a size limit (mostly `width=0`–`1.5` on service roads, likely mistagged) | 53 | 21 |
+> | Ours only: a ferry with `maxweight=5`, which OSRM reads as 5 kg | 0 | 1 |
+>
+> Left open for 3.5: the time comparison and tuning (speed factor, signal and barrier delays, ferry boarding).
+>
+> Commands, from `$OMP_WORK/osrm/` with the extract copied in: `podman run --rm -v $PWD:/data ghcr.io/project-osrm/osrm-backend:v6.0.0 osrm-extract -p /data/car-log.lua /data/ohio-261001.osm.pbf > ohio-extract.log`, then `osrm-partition` and `osrm-customize` on `/data/ohio-261001.osrm`.
 
 - **Read** the routable ways in their own PBF passes after the address and search stages have freed their memory (as `measure --routing graph` does, through `pbf::Pbf`'s typed passes): `highway` from the whitelist's road classes, `route=ferry` ways, and the nodes they use. Keep only what routing needs per way: class, speed, flags, the way ID (for the street table and names), and the node refs. Node locations come from the needed-nodes store, limited to road nodes.
 - **The car profile**, in `omp-core` so the builder and tests share it (`omp_core::profile`), modelled on OSRM's `car.lua`:
@@ -99,7 +112,7 @@ Build the car graph in the builder from OSM, as its own stage, and measure it. N
 | Signals | On the turn through the node | On each edge entering the node, in the signal's direction | No turns; a route pays once per signal either way |
 | `access=private` | Kept as restricted (start or end only) | Dropped | The plan's rule; private roads are mostly driveways and gated land a route should not use |
 | Restricted roads (`destination`, `delivery`, `customers`, HOV) | `max_turn_weight` on the turn into one from an open road | 3,600 s on each edge entering one from a node an open road touches; the time shown leaves it out | Same effect without turns: a route uses them only to start or end there |
-| Classes without a speed (`track`, `road`, `path`, …) with an access tag that allows cars | Routed at 10 km/h | Never routed | The plan's class list; `track` is mostly farm and forest roads |
+| Classes without a speed (`track`, `road`, `path`, `footway`, `corridor`, …) with an access tag that allows cars | Routed at 10 km/h | Never routed | The plan's class list; `track` is mostly farm and forest roads |
 | `motorway_link` without `oneway` | Two-way | One-way | The plan's rule |
 | `oneway=reverse` | Not read | As `-1` | A common synonym |
 | `oneway=alternating` | Weight × 0.4 | Not slowed | Rare; weight-only in OSRM |

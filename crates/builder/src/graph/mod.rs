@@ -18,6 +18,7 @@ mod scc;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -549,6 +550,10 @@ pub struct GraphArgs {
     /// Save the graph (postcard), for rerunning the next stage alone.
     #[arg(long)]
     save: Option<PathBuf>,
+
+    /// Write the IDs of the ways in the graph, one per line, to compare with OSRM's.
+    #[arg(long)]
+    way_ids: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -565,11 +570,18 @@ pub fn run(args: GraphArgs) -> Result<()> {
     let pbf = Pbf::open(&args.input)?;
     let g = make(&pbf)?;
     print_stats(&g.stats);
+    if let Some(path) = &args.way_ids {
+        let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+        for id in &g.ways {
+            writeln!(w, "{id}")?;
+        }
+        w.flush()?;
+    }
     if let Some(path) = &args.save {
         let t = Instant::now();
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         postcard::to_io(&g, &mut w)?;
-        std::io::Write::flush(&mut w)?;
+        w.flush()?;
         eprintln!(
             "  saved {} ({:.1} MiB) in {:.1} s",
             path.display(),
