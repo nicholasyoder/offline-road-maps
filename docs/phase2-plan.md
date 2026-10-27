@@ -1,6 +1,6 @@
 # Phase 2 Plan: Search and Addresses
 
-*Draft 1, 2026-10-25. Expands Phase 2 of [roadmap.md](roadmap.md#phase-2-search-and-addresses). Builds on the address spike ([phase 0 step 0.4](phase0-plan.md#04-address-spike-ohio-first-then-ontario-and-quebec), [0.5](phase0-plan.md#05-full-north-america-run)), the address format in [format.md](format.md#addresses), and the pack and app from [phase 1](phase1-plan.md).*
+*Draft 1, 2026-10-25; done 2026-10-26, exit criteria accepted by the owner (decision 9). Expands Phase 2 of [roadmap.md](roadmap.md#phase-2-search-and-addresses). Builds on the address spike ([phase 0 step 0.4](phase0-plan.md#04-address-spike-ohio-first-then-ontario-and-quebec), [0.5](phase0-plan.md#05-full-north-america-run)), the address format in [format.md](format.md#addresses), and the pack and app from [phase 1](phase1-plan.md).*
 
 ## Purpose
 
@@ -499,6 +499,9 @@ Settled by the owner (2026-10-25):
 7. **No search-only POIs.** Search covers the POIs that are on the map. A larger POI set is left for later, once the final pack sizes are known, and would be added to the map and search together ([roadmap](roadmap.md#later-or-optional)).
 8. **"What's here" on right-click** (2.8), so left click stays for panning.
 
+Settled by the owner after 2.9 (2026-10-26):
+9. **Phase 2's exit criteria are accepted** with the misses of 2.9 as small issues: the first address search from a cold USB 2 stick at 1.1–1.3 s, the 7490 on Windows at 473 MiB, the E6430's GL leak (phase 1 decision 22), deep levels and Enter taking seconds on slower CPUs, and the ranking notes. The 7490's slow search was its battery running low (the CPU throttles), so it needs no rerun.
+
 Open: none.
 
 ## Out of scope for phase 2
@@ -508,3 +511,12 @@ Open: none.
 - Scripts other than Latin; Spanish street-type normalization for Mexico beyond what the data needs.
 - Builder memory for a 16–32 GB machine (phase 6).
 - An aerial-imagery check of the conflict sample (still open from phase 0); the query set checks merge quality instead.
+
+## Carried to later phases
+
+- **Town flag per state** (2.1, then 2.8): the builder's fallback town is wrong for streets with no postal town in New York, Wisconsin, New Brunswick, Alberta, Manitoba, Yukon and Hawaii (under 3% of streets, 17% in Wisconsin). Not shown by "what's here", which names the area itself.
+- **Puerto Rico and the Virgin Islands** have no streets (2.1: their level 4 areas carry no `US-PR` / `US-VI`).
+- **Search speed options** from 2.9, if they matter in use: read the search sections' hot parts in the background after start-up (the cold first address search), lower the level 3 bounds, or have Enter fly to the current first result at once and fill the results panel as the levels finish.
+- **Ranking** (2.7, 2.9): fuzzy matches losing to names spelled that way elsewhere ("Cincinatti"), airports named after another town, the larger of two same-named towns winning at zoom 5 even with the view on the smaller one, "45201" giving 05201, a fuzzy brand ("Tim Hortons" → McDonald's), and a street's records not grouped ("Rue Sainte-Catherine Ouest" three times).
+- **Spanish street types**: "Calle Hidalgo, Guadalajara" does not find Avenida Hidalgo, as "calle" is not a generic street word (decision 3). The `calle` postings left open in 2.3 cost little: Mexican street queries take 40–94 ms warm on North America.
+- **Packaging** (from phase 1, still open): a Linux launcher run with `sh`, since FAT32 sticks mount without exec; goes with phase 6's release layout.
