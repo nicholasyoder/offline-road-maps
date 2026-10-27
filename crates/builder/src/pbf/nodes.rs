@@ -1,4 +1,5 @@
-//! Node location stores for the two strategies compared in step 0.3.
+//! Node location stores for the two strategies compared in step 0.3, and the node sets and
+//! ranks they are built on.
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -175,17 +176,15 @@ impl NodeSet {
 /// are counted at lookup.
 const RANK_WORDS: usize = 8;
 
-/// Strategy 2: the locations of the nodes in a [`NodeSet`], one 8-byte slot per member,
-/// addressed by the member's rank in the set. Slot value 0 means "not found in the file",
-/// as in [`DenseIndex`]. Slots are atomic so the node pass can fill them in parallel.
-pub struct RankedLocations {
+/// The members of a [`NodeSet`] numbered `0..len` in ID order.
+pub struct NodeRanks {
     set: NodeSet,
     /// Per page: the number of members before each block of [`RANK_WORDS`] words.
     ranks: Vec<Box<[u64]>>,
-    slots: Vec<AtomicU64>,
+    len: u64,
 }
 
-impl RankedLocations {
+impl NodeRanks {
     pub fn new(set: NodeSet) -> Self {
         let mut total = 0;
         let ranks = set
@@ -206,11 +205,15 @@ impl RankedLocations {
                     .collect(),
             })
             .collect();
-        let slots = (0..total).map(|_| AtomicU64::new(0)).collect();
-        Self { set, ranks, slots }
+        Self {
+            set,
+            ranks,
+            len: total,
+        }
     }
 
-    fn slot(&self, id: i64) -> Option<&AtomicU64> {
+    /// `id`'s number, if it is a member.
+    pub fn rank(&self, id: i64) -> Option<u64> {
         let (page, word, mask) = NodeSet::locate(id)?;
         let words = self.set.pages[page].get()?;
         let w = words[word].load(Ordering::Relaxed);
@@ -222,8 +225,35 @@ impl RankedLocations {
             .iter()
             .map(|x| x.load(Ordering::Relaxed).count_ones())
             .sum();
-        let rank = self.ranks[page][block] + u64::from(before + (w & (mask - 1)).count_ones());
-        self.slots.get(rank as usize)
+        Some(self.ranks[page][block] + u64::from(before + (w & (mask - 1)).count_ones()))
+    }
+
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn heap_bytes(&self) -> u64 {
+        self.set.heap_bytes() + self.ranks.iter().map(|r| r.len() as u64 * 8).sum::<u64>()
+    }
+}
+
+/// Strategy 2: the locations of the nodes in a [`NodeSet`], one 8-byte slot per member,
+/// addressed by the member's rank in the set. Slot value 0 means "not found in the file",
+/// as in [`DenseIndex`]. Slots are atomic so the node pass can fill them in parallel.
+pub struct RankedLocations {
+    ranks: NodeRanks,
+    slots: Vec<AtomicU64>,
+}
+
+impl RankedLocations {
+    pub fn new(set: NodeSet) -> Self {
+        let ranks = NodeRanks::new(set);
+        let slots = (0..ranks.len()).map(|_| AtomicU64::new(0)).collect();
+        Self { ranks, slots }
+    }
+
+    fn slot(&self, id: i64) -> Option<&AtomicU64> {
+        self.slots.get(self.ranks.rank(id)? as usize)
     }
 
     /// Stores `p` if `id` is in the set.
@@ -238,15 +268,18 @@ impl RankedLocations {
         (v != 0).then(|| unpack(v))
     }
 
+    /// Whether `id` is in the set, found in the file or not.
+    pub fn contains(&self, id: i64) -> bool {
+        self.ranks.set.contains(id)
+    }
+
     /// Members of the set, found in the file or not.
     pub fn len(&self) -> usize {
         self.slots.len()
     }
 
     pub fn heap_bytes(&self) -> u64 {
-        self.set.heap_bytes()
-            + self.ranks.iter().map(|r| r.len() as u64 * 8).sum::<u64>()
-            + self.slots.len() as u64 * 8
+        self.ranks.heap_bytes() + self.slots.len() as u64 * 8
     }
 }
 

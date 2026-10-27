@@ -8,6 +8,7 @@ mod build;
 mod fetch;
 mod find;
 mod geom;
+mod graph;
 mod measure;
 mod pbf;
 mod poly;
@@ -50,6 +51,8 @@ enum Command {
     Admin(admin::AdminArgs),
     /// Read a PBF's streets and report the street table's counts and section sizes.
     Streets(street::StreetsArgs),
+    /// Build a PBF's car routing graph and report its counts.
+    Graph(graph::GraphArgs),
     /// Print Markdown size tables from `measure` JSON files.
     Report(report::ReportArgs),
 }
@@ -96,6 +99,7 @@ fn main() -> anyhow::Result<()> {
         Command::Measure(args) => measure::run(args, &dir)?,
         Command::Admin(args) => admin::run(args)?,
         Command::Streets(args) => street::run(args)?,
+        Command::Graph(args) => graph::run(args)?,
         Command::Report(args) => report::run(args)?,
     }
     Ok(())

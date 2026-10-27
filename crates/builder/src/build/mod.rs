@@ -18,12 +18,15 @@
 //! 4. [`search_index`] (`SENT`, `STWN`, `SFST`, `SPST`): its streets from the table before
 //!    it is dropped, its places, POIs and labels from the bands, and its postcodes and the
 //!    streets known only from their addresses from the merge.
-//! 5. [`write_pack`]: dictionaries trained once from the whole tile store, then tiles
+//! 5. The car routing graph ([`graph::make`], step 3.1), its own PBF passes after the
+//!    address and search stages have freed their memory. Only counted for now; step 3.3
+//!    writes it into the pack.
+//! 6. [`write_pack`]: dictionaries trained once from the whole tile store, then tiles
 //!    compressed and written in zoom, then Hilbert order, then the other sections.
 //!
 //! The PBF is read through one [`Pbf`], so each pass reads only the blobs of the element
-//! types it needs. With `--reuse-stages`, the admin areas, the bands and the address merge
-//! are saved in and reused from a cache ([`cache`]).
+//! types it needs. With `--reuse-stages`, the admin areas, the bands, the address merge and
+//! the routing graph are saved in and reused from a cache ([`cache`]).
 //!
 //! `META`'s sources and settings are in [`meta`], and what `build` prints in [`report`].
 
@@ -55,6 +58,7 @@ use crate::addr::postcodes::{self, Postcode};
 use crate::addr::{self, Input, SourceOpts, merge, store};
 use crate::admin::{self, Admin, encode as admin_encode};
 use crate::fetch::regions::Subdivision;
+use crate::graph;
 use crate::mib;
 use crate::pbf::{self, Pbf, features};
 use crate::peak_rss_mib;
@@ -205,6 +209,7 @@ struct Stages {
     admin: Key,
     tiles: Key,
     addresses: Key,
+    graph: Key,
 }
 
 impl Stages {
@@ -235,6 +240,7 @@ impl Stages {
             admin: cache.key("admin", &admin),
             tiles: cache.key("tiles", &tiles),
             addresses: cache.key("addresses", &addresses),
+            graph: cache.key("graph", &format!("{}", cache::GRAPH)),
             cache,
         })
     }
@@ -363,6 +369,12 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         &mut streets,
         &mut t,
     )?;
+    let routing = cache::stage(Stages::at(&setup.stages, |s| &s.graph), || {
+        graph::make(&setup.pbf)
+    })?;
+    graph::print_stats(&routing.stats);
+    drop(routing);
+    t.stage("routing graph");
     let build_time = match args.deterministic {
         true => 0,
         false => jiff::Timestamp::now().as_second(),

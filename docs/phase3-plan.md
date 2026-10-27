@@ -41,7 +41,7 @@ The roadmap's items are "road graph, car profile, turn restrictions and contract
 
 | Step | Status | Notes |
 |---|---|---|
-| 3.1 Car profile and road graph | Not started | |
+| 3.1 Car profile and road graph | In progress | Profile, graph, restrictions, components and the `build` stage done and measured (North America 63.7M nodes / 152.7M edges, build peak 47.4 GiB). Left: run OSRM on Ohio and Quebec and compare coverage (needs the owner; see the note under 3.1) |
 | 3.2 Contraction hierarchy | Not started | |
 | 3.3 Routing format and core reader | Not started | |
 | 3.4 Queries, snapping and multi-stop (`omp-core`) | Not started | |
@@ -68,6 +68,10 @@ As in [phase 2](phase2-plan.md#environment-notes): builder data in `$OMP_WORK`, 
 
 Build the car graph in the builder from OSM, as its own stage, and measure it. No CH yet.
 
+> **In progress 2026-10-27.** Done: `omp_core::profile` (the car profile, with a unit test per rule); the builder's `graph` module (three PBF passes, edges between intersections with signal, barrier and toll-booth delays and flags on the edges, blocking barriers cut, loop drives split at their middle node, ferries kept only where both ends meet a road, restricted roads charged on entry); turn restrictions by node splitting, done as an Aho–Corasick automaton over forbidden node paths, so via-node, via-way and overlapping restrictions share one rule (a test checks every pair on a hand-built grid against a search over paths); strongly connected components, nodes in components under 1,000 marked small. It runs as `build`'s stage 5 (cached under `--reuse-stages`, which is the temp file 3.2 reruns from) and alone as `omp-builder graph <pbf> [--json] [--save]`. Counts for Ohio, Quebec and North America are in the [size table](size-table.md#phase-3-step-31-the-car-graph). Restrictions add 0.7–2.1% of the nodes. North America alone: 188 s, peak 25.2 GiB. In `build --addresses all --bands 3`: stage 231 s, build peak 47.4 GiB (45.3 GiB before the stage; 47.2 GiB in R4), wall time 40.5 min. That leaves about 8 GiB under the cap for 3.2's contraction, which may have to free the graph's input first or spill.
+>
+> **Left: OSRM.** It is not installed: Debian has no `osrm-tools` package, Podman needs sudo, and building v6.0.0 from source was blocked in this session (the source, and the Boost, TBB and Lua `-dev` packages unpacked without root, are in `~/osrm`). Either `sudo apt install podman` and use `ghcr.io/project-osrm/osrm-backend:v6.0.0`, or build `~/osrm/src` with CMake against `~/osrm/prefix/usr`. Then run `osrm-extract -p profiles/car.lua` on the Ohio and Quebec extracts in `$OMP_WORK/osrm/` and compare its coverage with ours (ways it routes that we drop, and the reverse). The differences from `car.lua` are listed below from reading it.
+
 - **Read** the routable ways in their own PBF passes after the address and search stages have freed their memory (as `measure --routing graph` does, through `pbf::Pbf`'s typed passes): `highway` from the whitelist's road classes, `route=ferry` ways, and the nodes they use. Keep only what routing needs per way: class, speed, flags, the way ID (for the street table and names), and the node refs. Node locations come from the needed-nodes store, limited to road nodes.
 - **The car profile**, in `omp-core` so the builder and tests share it (`omp_core::profile`), modelled on OSRM's `car.lua`:
   - **Access:** `access`, `vehicle`, `motor_vehicle` and `motorcar`, most specific first. `no` and `private` drop the way; `destination` and `delivery` keep it with a time penalty, so routes use it only to start or end there. `highway=construction`, `proposed`, `track`, `path` and `footway` are not routable.
@@ -83,6 +87,36 @@ Build the car graph in the builder from OSM, as its own stage, and measure it. N
 - **Measure** on Ohio, Quebec and North America: nodes, edges, nodes added by restrictions, components and their sizes, ways dropped by access, and the time and peak RSS of the stage. Write the graph to a temp file so 3.2 can be rerun alone, and cache it under `--reuse-stages`.
 
 **Done when:** OSRM runs on Ohio and Quebec, the profile differences from `car.lua` are listed in this plan, Ohio, Quebec and North America graphs are built with the profile and restrictions, the counts above are in the size table, a unit test covers each profile rule and restriction type on a hand-built graph, and the stage fits under the cap on North America.
+
+### Profile differences from `car.lua`
+
+`omp_core::profile` against `car.lua` and `lib/way_handlers.lua` of osrm-backend 6.0.0, rule by rule. Where nothing is listed, ours does what OSRM does: the access hierarchy (`motorcar`, `motor_vehicle`, `vehicle`, `access`, each with `:forward` and `:backward`), the default speeds by class, `maxspeed` (with `maxspeed:advisory` first) times 0.8 replacing the default, the `surface`, `tracktype` and `smoothness` caps, the closed-way tags (`area=yes`, `construction` but `no`/`widening`/`minor`, `proposed`, `oneway=reversible`, `impassable`, `status=impassable`, `service=emergency_access`), `maxheight` under 2.0 m and `maxwidth` up to 1.9 m, HOV-only ways as restricted, `toll=yes` per direction, the barrier rules for nodes (an access tag decides alone; the barrier whitelist; rising bollards and flat kerbs pass), the signal delay of 2 s with its direction, and restrictions (`restriction:motorcar`, `motor_vehicle`, `vehicle`, then `restriction`; `except`; conditional ones ignored; via nodes and via ways).
+
+| Rule | OSRM | Ours | Why |
+|---|---|---|---|
+| Turn and U-turn costs | Sigmoid up to 7.5 s by angle, 20 s more for a U-turn | None | Decision 2; measured in 3.5 |
+| Stop signs, give-way | 2 s and 1 s on turns, with a minor-road heuristic | None | They need turns to apply to the right approach; a node delay would charge the major road too |
+| Signals | On the turn through the node | On each edge entering the node, in the signal's direction | No turns; a route pays once per signal either way |
+| `access=private` | Kept as restricted (start or end only) | Dropped | The plan's rule; private roads are mostly driveways and gated land a route should not use |
+| Restricted roads (`destination`, `delivery`, `customers`, HOV) | `max_turn_weight` on the turn into one from an open road | 3,600 s on each edge entering one from a node an open road touches; the time shown leaves it out | Same effect without turns: a route uses them only to start or end there |
+| Classes without a speed (`track`, `road`, `path`, …) with an access tag that allows cars | Routed at 10 km/h | Never routed | The plan's class list; `track` is mostly farm and forest roads |
+| `motorway_link` without `oneway` | Two-way | One-way | The plan's rule |
+| `oneway=reverse` | Not read | As `-1` | A common synonym |
+| `oneway=alternating` | Weight × 0.4 | Not slowed | Rare; weight-only in OSRM |
+| Slow service roads (`alley`, `parking`, `parking_aisle`, `driveway`, `drive-through`) | Weight × 0.5, duration unchanged | Speed × 0.5, so the time too | One metric; a parking aisle is driven slowly |
+| Narrow roads (`width` ≤ 3 m, or one lane both ways) | Weight × 0.5 | Not slowed | Weight-only in OSRM; `width` is sparse in North America |
+| `side_road=yes` | Weight × 0.8 | Not slowed | Weight-only |
+| Zone `maxspeed` (`CA:urban`, `CA:ON:rural`) | European defaults: urban 50, rural 90, trunk 110, motorway 130, plus a table of countries | urban 50, rural 80 (Quebec 90), trunk 90, motorway 100, living street 10 | North American limits |
+| `maxspeed=walk` | Not read | 5 km/h | |
+| Ferries without `duration` | 5 km/h | 20 km/h | Car ferries run at 20–30 km/h; OSRM's 5 stands in for waiting |
+| Ferry waiting and boarding | None (or in the 5 km/h) | 600 s per crossing, with or without `duration` | |
+| Ferries that meet no road at one end | Kept (a pocket the snapping avoids) | Left out | The plan's rule; most are cut at the extract's edge |
+| `route=shuttle_train`, `bridge=movable` | 10 km/h; 5 km/h | Not read | No car trains in North America OSM; movable bridges are rare |
+| `maxweight`, `maxlength`; `width`, `est_width`, `narrow` for size | Below 2,000 kg or 4.8 m blocks; widths checked | Not read | Rare for cars, with messy units |
+| Barriers that pass | No delay | `gate`, `lift_gate`, `sally_port`, `toll_booth` 10 s; others 0 (border crossings add none, decision 9) | The plan's rule |
+| `access=private` (or `destination`) on a barrier node | Passes (restricted values are not blocks) | `private` blocks, `destination` passes | Consistent with dropping private ways |
+| `barrier=toll_booth` | Not a toll | Marks the edges through it as toll | Toll booths on roads without `toll=yes` |
+| Restriction members | | `from` and `to` ways must start or end at the via node (or at the via ways' ends); otherwise counted as broken | A way through the via node is ambiguous |
 
 ## 3.2 Contraction hierarchy
 

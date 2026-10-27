@@ -212,6 +212,29 @@ North America as `build --addresses all` wrote it in step 2.7 (format 0.4, 2 chu
 
 Phase 2 adds 996.6 MiB (admin, streets, grid, search, addresses), within the 1.5 GiB of its exit criterion 6. With the routing estimate, the North America total stays at **about 10,349 MiB** (10.1 GiB, 10.9 GB).
 
+### Phase 3 step 3.1: the car graph
+
+The car routing graph of [step 3.1](phase3-plan.md#31-car-profile-and-road-graph): the car profile, turn restrictions applied by splitting nodes, and the strongly connected components (`omp-builder graph`, Geofabrik `261001` extracts). Nothing is in the pack yet; the CH and its sections come in steps 3.2 and 3.3.
+
+| | Ohio | Quebec | North America |
+|---|---:|---:|---:|
+| Road and ferry ways read / kept | 1,566,581 / 1,313,065 | 662,995 / 530,754 | 45,405,629 / 38,760,209 |
+| — dropped by access (mostly `private`) / closed / size / speed | 252,047 / 1,460 / 4 / 0 | 130,865 / 1,334 / 10 / 2 | 6,611,821 / 32,868 / 217 / 151 |
+| Ferries kept / left out (an end meets no road) | 5 / 5 | 34 / 30 | 437 / 363 |
+| Nodes before restrictions (of them, extra ends at blocking barriers) | 2,237,711 (1,580) | 768,912 (1,521) | 63,157,513 (55,230) |
+| Nodes after restrictions | 2,254,008 | 785,367 | 63,669,618 |
+| Directed edges | 5,403,268 | 1,829,231 | 152,707,629 |
+| — toll / ferry / restricted (start or end only) | 1,633 / 10 / 86,807 | 401 / 66 / 205,767 | 88,653 / 916 / 2,241,534 |
+| Signals / passable barriers / toll booths / blocking barriers | 17,032 / 8,686 / 112 / 3,969 | 18,896 / 2,271 / 89 / 2,768 | 632,977 / 467,716 / 3,683 / 122,990 |
+| Restriction relations / for cars / applied (via ways) | 20,859 / 20,033 / 18,180 (631) | 16,843 / 15,797 / 15,008 (2,699) | 567,305 / 543,121 / 511,381 (55,284) |
+| — missing members / broken | 1,829 / 24 | 738 / 51 | 30,499 / 1,241 |
+| — nodes added | 16,297 (0.7%) | 16,455 (2.1%) | 512,105 (0.8%) |
+| Components / largest | 18,678 / 2,208,631 | 5,342 / 755,838 | 560,884 / 62,073,860 |
+| — nodes in small components (< 1,000 nodes) | 45,377 (2.0%) | 17,692 (2.3%) | 1,460,960 (2.3%) |
+| Stage time / peak RSS, alone | 5.2 s / 3.4 GiB | 4.8 s / 2.9 GiB | 188 s / 25.2 GiB |
+
+Phase 0 counted 2.21M / 5.28M nodes and edges for Ohio and 62.5M / 149.6M for North America with a simpler profile (no ferries, barriers or restrictions, and only `access=no|private` read). Restrictions add under 1% of the nodes on Ohio and North America, as decision 2 expected. The longest edge is a ferry of 38 h (137,400 s), within the 24-bit weights (466 h) planned for `RCHE`. Quebec's many restricted edges are parking lots (`access=customers`, 43,014 ways).
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

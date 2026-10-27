@@ -1,5 +1,5 @@
 //! Shared pack format types, reader/writer, tag whitelist and text normalization, and the
-//! search, address, street, admin and grid readers.
+//! search, address, street, admin and grid readers, and the car routing profile.
 //!
 //! The pack format is specified in `docs/format.md`.
 
@@ -14,6 +14,7 @@ pub mod here;
 pub mod meta;
 pub mod normalize;
 pub mod pack;
+pub mod profile;
 pub mod query;
 pub mod routes;
 pub mod schema;
