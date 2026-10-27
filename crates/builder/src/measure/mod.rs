@@ -16,7 +16,7 @@ use clap::{Args, ValueEnum};
 use omp_core::whitelist::{GeometryKind, Whitelist};
 use serde::Serialize;
 
-use crate::pbf::features as osm;
+use crate::pbf::{Pbf, features as osm};
 use crate::peak_rss_mib;
 use crate::poly;
 use crate::tiles::{self, Band, Cell, Variant, compress, water};
@@ -210,8 +210,9 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
         let name = args.input.file_name().unwrap_or_default().to_string_lossy();
         name.split(['-', '.']).next().unwrap_or_default().to_owned()
     });
+    let mut marked = None;
     let strategy = match (args.nodes, &args.node_index) {
-        (NodeStrategy::Sparse, _) => osm::Strategy::Sparse,
+        (NodeStrategy::Sparse, _) => osm::Strategy::Sparse(&mut marked),
         (NodeStrategy::Dense, Some(p)) => osm::Strategy::Dense(p),
         (NodeStrategy::Dense, None) => bail!("--nodes dense needs --node-index <file on ext4>"),
     };
@@ -228,13 +229,15 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
 
     eprintln!("measure {region}: {}", args.input.display());
     let band = args.band.unwrap_or(Band::ALL);
+    let pbf = Pbf::open(&args.input)?;
     let mut data = osm::read(
-        &args.input,
+        &pbf,
         &wl,
         strategy,
         args.routing == Routing::Ch,
         band,
         &[],
+        None,
     )?;
     stages.done("read");
 
@@ -245,7 +248,7 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
             let names: Vec<String> = roads.classes.iter().map(|c| c.name.clone()).collect();
             Some(routing::build(&data.roads, &names, restrictions))
         }
-        Routing::Graph => Some(routing::count_graph(&args.input, &wl, restrictions)?),
+        Routing::Graph => Some(routing::count_graph(&pbf, &wl, restrictions)?),
         Routing::None => None,
     };
     data.roads = Vec::new();

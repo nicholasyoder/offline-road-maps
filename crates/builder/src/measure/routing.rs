@@ -1,7 +1,6 @@
 //! Car road graph and an off-the-shelf contraction hierarchy (`fast_paths`), for size numbers only.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -10,6 +9,7 @@ use omp_core::whitelist::Whitelist;
 use serde::Serialize;
 
 use crate::geom::{self, P};
+use crate::pbf::Pbf;
 use crate::pbf::features::{self, Road};
 use crate::pbf::nodes::NodeSet;
 
@@ -145,8 +145,8 @@ pub fn build(roads: &[Road], class_names: &[String], restrictions: u64) -> Routi
 /// two more passes over the ways, one marking nodes that are intersections or way ends and
 /// one counting the edges between them. For a continent, where the roads do not fit next to
 /// everything else.
-pub fn count_graph(path: &Path, wl: &Whitelist, restrictions: u64) -> Result<RoutingStats> {
-    let roads = |f: &(dyn Fn(&[i64], i8, bool) + Sync)| features::road_ways(path, wl, f);
+pub fn count_graph(pbf: &Pbf, wl: &Whitelist, restrictions: u64) -> Result<RoutingStats> {
+    let roads = |f: &(dyn Fn(&[i64], i8, bool) + Sync)| features::road_ways(pbf, wl, f);
     let routable = |refs: &[i64], ok: bool| ok && refs.len() >= 2;
     let (seen, graph_nodes) = (NodeSet::new(), NodeSet::new());
     let [road_ways, routable_ways, edges, oneway_segments] =

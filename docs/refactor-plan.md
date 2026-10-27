@@ -29,7 +29,7 @@ None of this changes the pack format or what the app shows.
 | R1 Bug fixes | **Done** 2026-10-26 | `build` writes into `<out>/.building` and swaps the chunks in on success; `--addresses` keeps each subdivision once; resumes send `If-Range` from `<file>.part.meta`; `Pack::open` checks section bounds without wrapping; `OMP_BENCH_NO_MAP` read once; `wanted` deduped with a `HashSet`. Delaware `--deterministic` pack byte-identical to `master`'s. |
 | R2 Shared geometry and small helpers | **Done** 2026-10-26 | One Web Mercator in `omp_core::geo` (with the app's `0..1` form and `distance_m`); one Douglas–Peucker (`geom::simplify_kept`); `put_str`, `invalid`, `read_at`/`write_at`, `mib`, first-chunk lookup and the UI colours each in one place. Ohio and Quebec `--deterministic` packs byte-identical; renders pixel-identical; `search --check` unchanged. |
 | R3 Builder structure: production code out of the spikes | **Done** 2026-10-26 | `addr-spike` retired, `measure` kept (decision 1). New `pbf/` (one `pass`), `geom.rs`, `poly.rs`, `tiles/`, `addr/pipeline.rs`; `build::run` is 91 lines of stages, with `build/meta.rs` and `build/report.rs`; one hidden `--measure-blocks`. Ohio and Quebec `--deterministic` packs byte-identical; `measure` JSON on Delaware unchanged. |
-| R4 Build time | Not started | |
+| R4 Build time | **Done** 2026-10-27 | North America `build --addresses all --bands 3`: 52.6 → 36.7 min (−30.4%), peak 47.5 → 47.2 GiB; Ohio 42 → 32 s. `Pbf` indexes the blobs by element type from the sorted header, so passes read only what they need; the alternative-names pass is folded into the bands; bands 1 and up reuse band 0's needed-node set; `--reuse-stages` (Ohio rebuild 33 → 9 s). Packs byte-identical. R4.5 (merge profiling) not done. |
 | R5 Split the app's search UI | **Done** 2026-10-26 | `search/` = `mod.rs` (view and distance helpers, re-exports), `worker.rs`, `session.rs`, `ui.rs`, `draw.rs` (icons, rows, marker); largest file 591 lines. The worker loop is generic over a small `Engine` trait, so four headless tests run it on a stand-in search. Ohio bench keystroke latency the same within noise (p95 49.8/49.6 ms before, 54.0/48.3 after). |
 | R6 Split the search engine | Not started | |
 
@@ -151,6 +151,47 @@ Moves and splits, with no behaviour change. One session; probably the largest di
 **Done when:** `build` imports nothing from `measure` or from the `addr-spike` command; there is one `pass`; `build::run` reads as a list of stages (under about 100 lines); Ohio and Quebec `--deterministic` packs are byte-identical to the baseline; the spike commands that stay still run on Delaware; CI passes.
 
 ## R4 Build time
+
+> **Done 2026-10-27** (the commit "Refactor R4: build time"). What was done, and how it was checked:
+> - **Measure (R4.1):** `Pbf::pass` prints every pass's wall time, with the CPU time spent decoding blobs apart from the CPU time in the pass's own work. North America baseline with R3's code (`--addresses all --bands 3 --deterministic`, in a 56 GB scope): **3,158 s (52.6 min), peak RSS 47.5 GiB**. Logs and packs in `$OMP_WORK/refactor/r4/`.
+> - **Blob index (R4.2):** `pbf::Pbf` replaces the path. When the header says `Sort.Type_then_ID` (Geofabrik's do), `Pbf::open` reads only the blob headers and binary-searches the first blob holding ways and the first holding relations (about 40 blobs decoded; 19.8 s for North America's 338,473 blobs, 0.1 s for Ohio). A file without the flag is indexed by its first pass, which reads everything as before. Each pass names the `Kinds` it wants and reads only those blobs, seeking over the rest. North America has 310,751 node blobs, 27,411 way blobs and 311 relation blobs. Unit tests on a hand-encoded PBF: the binary search gives the same index as a full pass, including blocks that mix two types; passes see every element of their types.
+> - **Shared passes (R4.3):** the alternative-names pass is gone. The band reads keep the alternative-name tags of the elements that become places, POIs and labels (`features::KeepTags`), and `search::Collector` keeps them for the features it collects. Bands 1 and up reuse band 0's needed-node set (1.6 GB), since the ways a band needs do not depend on the band, so they skip the "ways (mark)" pass; they no longer count elements, tags and classes, which `build` uses only from band 0 (route coverage). Not done: reading the relations once for all bands (after R4.2 the pass takes under 1 s) and folding admin's node pass or the address reader into the bands (about 30 s and 80 s, more memory at the peak).
+> - **Stage cache (R4.4):** `build --reuse-stages` saves the admin areas as read, the band output (tile store, its entries, the cut statistics, chain counts and collected search features) and the OSM address read with its merge in `<temp>/cache/` (`postcard`, a new dependency), and reuses them when the key matches. The key covers the input (path, size, mtime, xxh3 of its first and last MiB), the builder version, a version per stage in `build/cache.rs`, and the options each stage depends on (whitelist, bands, water and clip files; address subdivisions, sources, licenses, distances and the manifest). It does not cover the code, so a change to what a stage outputs needs its version bumped. Ohio: 33 s saving the stages, then **9 s** reusing all three, with the same SHA-256. Unit test `stages_are_saved_reused_and_replaced`.
+> - **Checks:** North America `90d5ef59…`, Ohio `12c70434…`, Quebec `df133861…` and Delaware `ec08d9be…` (no addresses) are byte-identical to the baseline. `measure` on Delaware, default and `--routing graph`, gives the same JSON as R3's except timings. CI checks pass (172 tests).
+> - **Found, not fixed:** an Ohio pack built with `--bands 3` differs from one built with `--bands 1` in `SENT` and `SPST` only (same lengths): search entries are ordered partly by the order the bands collect features. R3's builder does the same, so the problem predates R4. Phase 1's "byte-identical across band counts" holds for the tiles but not for search since phase 2. It should get its own fix (a total order on the collected features).
+> - **R4.5 (merge profiling) not done:** the merge is now the largest stage (813 s of 2,199). No profiler is installed (`perf` is missing, and `perf_event_paranoid` is 3).
+>
+> North America, seconds of wall time per pass (decode / work CPU s in brackets):
+>
+> | Pass | Before | After |
+> |---|---|---|
+> | Blob index | – | 19.8 |
+> | admin relations | 47.0 (295 / 157) | 0.3 |
+> | admin ways | 35.3 (343 / 185) | 20.0 (146 / 122) |
+> | admin nodes | 49.3 (361 / 384) | 30.6 (157 / 237) |
+> | relations, per band | 77–95 (≈320 / 110) | 0.7–0.9 |
+> | ways (mark), per band | 124–136 (≈385 / 500) | 100.5, band 0 only (189 / 413) |
+> | nodes, per band | 51–57 (≈312 / 315) | 30–32 (≈155 / 230) |
+> | ways (resolve), per band | 138–151 (≈393 / 617) | 118–119 (205 / ≈513) |
+> | address ways | 72.7 (295 / 150) | 51.4 (133 / 122) |
+> | address nodes | 43.7 (334 / 319) | 28.6 (154 / 207) |
+> | alternative names | 155.2 (399 / 257) | – |
+>
+> And per stage:
+>
+> | Stage | Before | After |
+> |---|---|---|
+> | admin | 133.8 | 53.0 |
+> | read, bands 0 / 1 / 2 | 421.1 / 446.6 / 424.7 | 272.0 / 167.4 / 165.9 |
+> | water + tiles, 3 bands | 212.7 | 211.2 |
+> | addresses read | 158.0 | 119.7 |
+> | addresses merged | 826.0 | 813.2 |
+> | streets + addresses | 191.4 | 188.9 |
+> | search | 188.6 | 33.4 |
+> | dictionaries + compress + write | 154.2 | 153.9 |
+> | **total** | **3,158** (52.6 min), peak 47.5 GiB | **2,199** (36.7 min), peak 47.2 GiB |
+>
+> The way passes are the largest cost left (about 100–120 s each, CPU- and memory-bound: about 6 threads busy on average on this 8-core, 16-thread CPU, against about 15 for the same passes on Ohio). Ohio: 42 → 32 s.
 
 Measure, then cut PBF passes, then make dev loops cheaper. One session, maybe two if R4.4 grows. Builds on R3's single `pbf::pass`.
 

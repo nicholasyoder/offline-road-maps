@@ -101,6 +101,24 @@ pub struct NodeSet {
 const PAGE_BITS: u64 = 1 << 22;
 const PAGE_WORDS: usize = (PAGE_BITS / 64) as usize;
 
+impl Clone for NodeSet {
+    fn clone(&self) -> Self {
+        let copy = |words: &[AtomicU64]| -> Box<[AtomicU64]> {
+            words
+                .iter()
+                .map(|w| AtomicU64::new(w.load(Ordering::Relaxed)))
+                .collect()
+        };
+        Self {
+            pages: self
+                .pages
+                .iter()
+                .map(|p| p.get().map(|w| OnceLock::from(copy(w))).unwrap_or_default())
+                .collect(),
+        }
+    }
+}
+
 impl NodeSet {
     pub fn new() -> Self {
         Self {

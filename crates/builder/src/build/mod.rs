@@ -5,9 +5,9 @@
 //! 1. Admin areas (`SADM`, `SAPL`), so every place and POI can be given its chain of admin
 //!    areas (for now only the coverage is reported).
 //! 2. [`read_bands`]: the whitelisted features ([`features::read`]: needed-nodes store, ring
-//!    assembly), cut into z6 split tiles. `--bands n` cuts the pyramid in `n` passes,
-//!    freeing the features in between, and every band appends its V2 payloads to one temp
-//!    store.
+//!    assembly, and the alternative names search wants), cut into z6 split tiles. `--bands
+//!    n` cuts the pyramid in `n` passes, freeing the features in between, and every band
+//!    appends its V2 payloads to one temp store.
 //! 3. [`addresses_and_streets`], after the bands so their memory is free: the addresses of
 //!    `--addresses` merged per state and province ([`merge`], step 2.4), then the street
 //!    table (`SSTR`, `SGEO`), split where the postal town of its addresses changes, at
@@ -21,8 +21,13 @@
 //! 5. [`write_pack`]: dictionaries trained once from the whole tile store, then tiles
 //!    compressed and written in zoom, then Hilbert order, then the other sections.
 //!
+//! The PBF is read through one [`Pbf`], so each pass reads only the blobs of the element
+//! types it needs. With `--reuse-stages`, the admin areas, the bands and the address merge
+//! are saved in and reused from a cache ([`cache`]).
+//!
 //! `META`'s sources and settings are in [`meta`], and what `build` prints in [`report`].
 
+mod cache;
 pub mod inspect;
 mod meta;
 mod readers;
@@ -43,6 +48,7 @@ use omp_core::tile::hilbert;
 use omp_core::tiles::{FrameCompressor, LEVEL, TileWriter};
 use omp_core::whitelist::Whitelist;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
 use crate::addr::postcodes::{self, Postcode};
@@ -50,12 +56,13 @@ use crate::addr::{self, Input, SourceOpts, merge, store};
 use crate::admin::{self, Admin, encode as admin_encode};
 use crate::fetch::regions::Subdivision;
 use crate::mib;
-use crate::pbf::{self, features};
+use crate::pbf::{self, Pbf, features};
 use crate::peak_rss_mib;
 use crate::poly::Poly;
 use crate::search::{self, AddressStreet, encode as search_encode};
 use crate::street::{self, encode as street_encode, grid};
 use crate::tiles::{self, Band, Entry, Store, compress, water};
+use cache::{Cache, Key};
 use meta::Provenance;
 use report::{ChainStats, Timer, ZoomTotals};
 
@@ -125,6 +132,13 @@ pub struct BuildArgs {
     #[arg(long, hide = true)]
     measure_blocks: bool,
 
+    /// Reuse the admin areas, the merged addresses and the band tiles of an earlier build
+    /// with the same input and options, from `<temp>/cache/`, and save them there when there
+    /// are none. For dev loops: the key does not cover the code, so bump a stage's version in
+    /// `build/cache.rs` after changing what it outputs.
+    #[arg(long)]
+    reuse_stages: bool,
+
     /// Directory for the temporary tile store [default: <work dir>/tmp].
     #[arg(long)]
     temp: Option<PathBuf>,
@@ -164,6 +178,7 @@ fn region_name(input: &Path) -> String {
 
 /// What [`run`] works out from the arguments before it reads anything.
 struct Setup {
+    pbf: Pbf,
     wl: Whitelist,
     /// The region name shown in the app.
     name: String,
@@ -180,6 +195,54 @@ struct Setup {
     regions: Vec<(String, Poly)>,
     addresses: merge::Options,
     provenance: Provenance,
+    /// With `--reuse-stages`.
+    stages: Option<Stages>,
+}
+
+/// The stage cache and the keys of the stages it holds.
+struct Stages {
+    cache: Cache,
+    admin: Key,
+    tiles: Key,
+    addresses: Key,
+}
+
+impl Stages {
+    fn new(args: &BuildArgs, temp: &Path, wl_text: &str, opts: &merge::Options) -> Result<Self> {
+        let cache = Cache::new(temp, &args.input)?;
+        let file = |p: &Option<PathBuf>| p.as_deref().map(cache::fingerprint).transpose();
+        let admin = format!("{}", cache::ADMIN);
+        let tiles = format!(
+            "{admin} {}\n{:032x}\n{} {:?} {:?}",
+            cache::TILES,
+            xxh3_128(wl_text.as_bytes()),
+            args.bands,
+            file(&args.water)?,
+            file(&args.clip_poly)?,
+        );
+        let addresses = format!(
+            "{admin} {}\n{:?}\n{:?} {:?} {} {} {}\n{}",
+            cache::ADDRESSES,
+            opts.subdivisions,
+            opts.sources.sources,
+            opts.sources.exclude_license,
+            opts.inputs.display(),
+            opts.attach_m,
+            opts.dedup_m,
+            cache::fingerprint(&opts.inputs.join("manifest.toml"))?,
+        );
+        Ok(Stages {
+            admin: cache.key("admin", &admin),
+            tiles: cache.key("tiles", &tiles),
+            addresses: cache.key("addresses", &addresses),
+            cache,
+        })
+    }
+
+    /// The cache and the key `key` picks, with `--reuse-stages`.
+    fn at(s: &Option<Stages>, key: impl Fn(&Stages) -> &Key) -> Option<(&Cache, &Key)> {
+        s.as_ref().map(|s| (&s.cache, key(s)))
+    }
 }
 
 impl Setup {
@@ -241,10 +304,19 @@ impl Setup {
                 .clone()
                 .unwrap_or_else(|| work_dir.join("inputs/poly")),
         )?;
+        let stages = match args.reuse_stages {
+            true => Some(Stages::new(args, &temp, &wl_text, &addresses)?),
+            false => None,
+        };
+        let store_path = match &stages {
+            Some(s) => s.cache.file(&s.tiles, "v2"),
+            None => temp.join(format!("{file_name}-build.v2")),
+        };
         Ok(Self {
+            pbf: Pbf::open(&args.input)?,
             wl,
             name,
-            store_path: temp.join(format!("{file_name}-build.v2")),
+            store_path,
             file_name,
             staging,
             bounds,
@@ -253,6 +325,7 @@ impl Setup {
             regions,
             addresses,
             provenance,
+            stages,
         })
     }
 }
@@ -262,9 +335,20 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let mut setup = Setup::new(&args, work_dir)?;
     eprintln!("build {}: {}", setup.name, args.input.display());
     let mut t = Timer::new();
-    let admin = admin::load(&args.input)?;
+    let admin = admin::load_from(|| {
+        cache::stage(Stages::at(&setup.stages, |s| &s.admin), || {
+            admin::read::read(&setup.pbf)
+        })
+    })?;
     t.stage("admin");
-    let bands = read_bands(&args, &setup, &admin, &mut t)?;
+    if let Some(s) = &setup.stages
+        && !setup.store_path.exists()
+    {
+        s.cache.forget(&s.tiles);
+    }
+    let bands = cache::stage(Stages::at(&setup.stages, |s| &s.tiles), || {
+        read_bands(&args, &setup, &admin, &mut t)
+    })?;
     let mut search = search::Builder::new();
     let mut streets = addresses_and_streets(&args, &setup, &admin, &mut search, &mut t)?;
     if let Some(a) = &streets.addresses {
@@ -314,7 +398,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     if let Some(a) = streets.addresses {
         sections.extend(a.sections.list());
     }
-    let written = write_pack(&args, &setup, bands.store, meta, sections, &mut t)?;
+    let written = write_pack(&args, &setup, bands.entries, meta, sections, &mut t)?;
 
     report::print_zooms(&written.zooms);
     report::print_left_out(&bands.cut, &setup.wl);
@@ -344,13 +428,16 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         written.dictionaries,
         start.elapsed().as_secs_f64(),
         peak_rss_mib(),
-        mib(written.store_bytes)
+        mib(bands.store_bytes)
     );
     Ok(())
 }
 /// What the bands leave for the later stages.
+#[derive(Serialize, Deserialize)]
 struct Bands {
-    store: Store,
+    /// The tile store's entries, sorted, and its size.
+    entries: Vec<Entry>,
+    store_bytes: u64,
     cut: tiles::Stats,
     chains: ChainStats,
     collected: search::Collector,
@@ -360,24 +447,30 @@ struct Bands {
 /// the store. Each band's features are freed before the next is read.
 fn read_bands(args: &BuildArgs, setup: &Setup, admin: &Admin, t: &mut Timer) -> Result<Bands> {
     let wl = &setup.wl;
+    let mut store = Store::create(&setup.store_path)?;
     let mut bands = Bands {
-        store: Store::create(&setup.store_path)?,
+        entries: Vec::new(),
+        store_bytes: 0,
         cut: tiles::Stats::default(),
         chains: ChainStats::default(),
         collected: search::Collector::new(wl),
     };
+    let keep_tags = bands.collected.keep_tags();
+    // The nodes the ways need, from band 0's read.
+    let mut marked = None;
     for k in 0..args.bands {
         let band = Band { k, n: args.bands };
         if args.bands > 1 {
             eprintln!(" band {k}/{}", args.bands);
         }
         let mut data = features::read(
-            &args.input,
+            &setup.pbf,
             wl,
-            features::Strategy::Sparse,
+            features::Strategy::Sparse(&mut marked),
             false,
             band,
             &setup.regions,
+            Some(&keep_tags),
         )?;
         data.roads = Vec::new();
         t.stage("read");
@@ -400,12 +493,13 @@ fn read_bands(args: &BuildArgs, setup: &Setup, admin: &Admin, t: &mut Timer) -> 
             t.stage("water");
         }
         bands.chains.add(&data.features, wl, admin);
-        bands.collected.add(&data.features);
-        let cut = tiles::cut_pyramid(&data.features, wl, &mut bands.store, band, false);
+        bands.collected.add(&data.features, &data.kept_tags);
+        let cut = tiles::cut_pyramid(&data.features, wl, &mut store, band, false);
         bands.cut.merge(cut);
         drop(data);
         t.stage("tiles");
     }
+    (bands.entries, bands.store_bytes) = store.finish()?;
     Ok(bands)
 }
 
@@ -437,15 +531,16 @@ fn addresses_and_streets(
     search: &mut search::Builder,
     t: &mut Timer,
 ) -> Result<Streets> {
-    let (ways, merged) = if setup.addresses.subdivisions.is_empty() {
-        (addr::osm::read_streets(&args.input)?, None)
-    } else {
-        let osm = addr::osm::read(&args.input)?;
+    let (ways, merged) = cache::stage(Stages::at(&setup.stages, |s| &s.addresses), || {
+        if setup.addresses.subdivisions.is_empty() {
+            return Ok((addr::osm::read_streets(&setup.pbf)?, None));
+        }
+        let osm = addr::osm::read(&setup.pbf)?;
         t.stage("addresses read");
         let (m, ways) = merge::merge(&setup.addresses, admin, osm)?;
         t.stage("addresses merged");
-        (ways, Some(m))
-    };
+        Ok((ways, Some(m)))
+    })?;
     let table = match &merged {
         Some(m) => street::Table::build(&ways, admin, &m.votes, &m.cities.list),
         None => street::Table::build(&ways, admin, &[], &[]),
@@ -529,7 +624,6 @@ fn search_index(
         admin,
         &setup.wl,
         collected,
-        &args.input,
         &streets.postcodes,
         &address_streets,
     )?;
@@ -555,7 +649,6 @@ struct Written {
     tdat: u64,
     tidx: u64,
     dictionaries: usize,
-    store_bytes: u64,
 }
 
 /// Trains the dictionaries on the tile store, then writes `META`, `SCHM`, the tiles and
@@ -563,12 +656,11 @@ struct Written {
 fn write_pack(
     args: &BuildArgs,
     setup: &Setup,
-    store: Store,
+    mut entries: Vec<Entry>,
     meta: Meta,
     sections: Vec<([u8; 4], Vec<u8>)>,
     t: &mut Timer,
 ) -> Result<Written> {
-    let (mut entries, store_bytes) = store.finish()?;
     let store_path = &setup.store_path;
     let store_file =
         File::open(store_path).with_context(|| format!("open {}", store_path.display()))?;
@@ -639,7 +731,9 @@ fn write_pack(
         written.push(w.section(id, &bytes)?);
     }
     drop(store_file);
-    let _ = std::fs::remove_file(store_path);
+    if setup.stages.is_none() {
+        let _ = std::fs::remove_file(store_path);
+    }
     t.stage("compress");
 
     let pack_id = match args.deterministic {
@@ -682,7 +776,6 @@ fn write_pack(
         tdat: tdat.len,
         tidx: tidx.len,
         dictionaries: dicts.0.values().filter(|d| !d.is_empty()).count(),
-        store_bytes,
     })
 }
 

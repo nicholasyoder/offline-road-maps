@@ -3,16 +3,15 @@
 //! the areas' label nodes and every named `place=city|town|village|hamlet` node.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
 
 use anyhow::Result;
 use osmpbf::{Element, PrimitiveBlock, RelMemberType};
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::geom::{self, Assembly, P};
 use crate::pbf::{
-    self,
+    Kinds, Pbf,
     nodes::{NodeSet, RankedLocations},
 };
 
@@ -27,7 +26,7 @@ pub const ALT_NAMES: &[&str] = &[
 ];
 
 /// Place classes a street or POI can take its town from when its addresses give none.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaceClass {
     City,
@@ -48,6 +47,7 @@ impl PlaceClass {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Area {
     pub osm_id: i64,
     pub level: u8,
@@ -67,6 +67,7 @@ pub struct Area {
     pub broken: bool,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Place {
     pub osm_id: i64,
     pub class: PlaceClass,
@@ -74,7 +75,7 @@ pub struct Place {
     pub p: P,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct LevelStats {
     pub relations: u64,
     pub ok: u64,
@@ -92,7 +93,7 @@ pub struct LevelStats {
     pub with_label: u64,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct ReadStats {
     pub levels: BTreeMap<u8, LevelStats>,
     pub places: BTreeMap<String, u64>,
@@ -100,6 +101,7 @@ pub struct ReadStats {
     pub member_nodes: u64,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct AdminData {
     pub areas: Vec<Area>,
     pub places: Vec<Place>,
@@ -185,14 +187,20 @@ struct NodeBlock {
     places: Vec<Place>,
 }
 
-pub fn read(path: &Path) -> Result<AdminData> {
-    let mut rels: Vec<Rel> = pbf::pass(path, Vec::new, |block, out| {
-        relations_block(block, out);
-        Ok(())
-    })?
-    .into_iter()
-    .flatten()
-    .collect();
+pub fn read(pbf: &Pbf) -> Result<AdminData> {
+    let mut rels: Vec<Rel> = pbf
+        .pass(
+            "admin relations",
+            Kinds::RELATIONS,
+            Vec::new,
+            |block, out| {
+                relations_block(block, out);
+                Ok(())
+            },
+        )?
+        .into_iter()
+        .flatten()
+        .collect();
     rels.sort_unstable_by_key(|r| r.id);
     let member_ids: HashSet<i64> = rels.iter().flat_map(|r| &r.ways).map(|w| w.0).collect();
     let label_ids: HashSet<i64> = rels
@@ -201,19 +209,20 @@ pub fn read(path: &Path) -> Result<AdminData> {
         .flatten()
         .collect();
 
-    let way_refs: HashMap<i64, Vec<i64>> = pbf::pass(path, Vec::new, |block, out| {
-        for el in block.elements() {
-            if let Element::Way(w) = el
-                && member_ids.contains(&w.id())
-            {
-                out.push((w.id(), w.refs().collect::<Vec<i64>>()));
+    let way_refs: HashMap<i64, Vec<i64>> = pbf
+        .pass("admin ways", Kinds::WAYS, Vec::new, |block, out| {
+            for el in block.elements() {
+                if let Element::Way(w) = el
+                    && member_ids.contains(&w.id())
+                {
+                    out.push((w.id(), w.refs().collect::<Vec<i64>>()));
+                }
             }
-        }
-        Ok(())
-    })?
-    .into_iter()
-    .flatten()
-    .collect();
+            Ok(())
+        })?
+        .into_iter()
+        .flatten()
+        .collect();
     let needed = NodeSet::new();
     for refs in way_refs.values() {
         for &id in refs {
@@ -222,47 +231,52 @@ pub fn read(path: &Path) -> Result<AdminData> {
     }
     let locs = RankedLocations::new(needed);
 
-    let blocks = pbf::pass(path, NodeBlock::default, |block, out| {
-        let mut visit =
-            |id: i64, lat: i32, lon: i32, tags: &mut dyn Iterator<Item = (&str, &str)>| {
-                let p = geom::project_e7(lat, lon);
-                locs.set(id, p);
-                let label = label_ids.contains(&id);
-                let (mut place, mut name) = (None, None);
-                for (k, v) in tags {
-                    match k {
-                        "place" => place = Some(v),
-                        "name" => name = Some(v),
-                        _ => {}
+    let blocks = pbf.pass(
+        "admin nodes",
+        Kinds::NODES,
+        NodeBlock::default,
+        |block, out| {
+            let mut visit =
+                |id: i64, lat: i32, lon: i32, tags: &mut dyn Iterator<Item = (&str, &str)>| {
+                    let p = geom::project_e7(lat, lon);
+                    locs.set(id, p);
+                    let label = label_ids.contains(&id);
+                    let (mut place, mut name) = (None, None);
+                    for (k, v) in tags {
+                        match k {
+                            "place" => place = Some(v),
+                            "name" => name = Some(v),
+                            _ => {}
+                        }
                     }
+                    if label {
+                        out.labels.push((id, p, place.map(str::to_owned)));
+                    }
+                    if let (Some(class), Some(name)) = (place.and_then(PlaceClass::parse), name)
+                        && !name.trim().is_empty()
+                    {
+                        out.places.push(Place {
+                            osm_id: id,
+                            class,
+                            name: name.trim().to_owned(),
+                            p,
+                        });
+                    }
+                };
+            for el in block.elements() {
+                match el {
+                    Element::DenseNode(n) => {
+                        visit(n.id(), n.decimicro_lat(), n.decimicro_lon(), &mut n.tags())
+                    }
+                    Element::Node(n) => {
+                        visit(n.id(), n.decimicro_lat(), n.decimicro_lon(), &mut n.tags())
+                    }
+                    _ => {}
                 }
-                if label {
-                    out.labels.push((id, p, place.map(str::to_owned)));
-                }
-                if let (Some(class), Some(name)) = (place.and_then(PlaceClass::parse), name)
-                    && !name.trim().is_empty()
-                {
-                    out.places.push(Place {
-                        osm_id: id,
-                        class,
-                        name: name.trim().to_owned(),
-                        p,
-                    });
-                }
-            };
-        for el in block.elements() {
-            match el {
-                Element::DenseNode(n) => {
-                    visit(n.id(), n.decimicro_lat(), n.decimicro_lon(), &mut n.tags())
-                }
-                Element::Node(n) => {
-                    visit(n.id(), n.decimicro_lat(), n.decimicro_lon(), &mut n.tags())
-                }
-                _ => {}
             }
-        }
-        Ok(())
-    })?;
+            Ok(())
+        },
+    )?;
     let mut labels: HashMap<i64, (P, Option<String>)> = HashMap::new();
     let mut places = Vec::new();
     for b in blocks {

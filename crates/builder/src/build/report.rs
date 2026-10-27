@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use omp_core::whitelist::Whitelist;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::addr::{merge, store};
 use crate::admin::Admin;
@@ -68,7 +69,7 @@ pub fn print_zooms(zooms: &[ZoomTotals]) {
 
 /// Admin chains of places and POIs, per layer: `[features, in no area, without a level 4
 /// area, without level 6, without level 8, in a city, town or village]`.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct ChainStats {
     seen: std::collections::HashSet<(u8, i64)>,
     layers: std::collections::BTreeMap<String, [u64; 6]>,

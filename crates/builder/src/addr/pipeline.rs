@@ -12,6 +12,7 @@ use anyhow::{Result, bail};
 use clap::ValueEnum;
 use omp_core::normalize::{HouseNumber, house_number, postcode};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use super::attach::{self, How};
 use super::sources;
@@ -116,7 +117,7 @@ pub struct Rec {
     pub att: Option<Att>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Interner {
     map: HashMap<String, u32>,
     pub list: Vec<String>,

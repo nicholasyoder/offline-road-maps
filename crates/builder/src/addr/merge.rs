@@ -11,7 +11,7 @@ use std::time::Instant;
 use anyhow::Result;
 use omp_core::normalize::street_key;
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::attach::How;
 use super::osm::{self, OsmAddresses, StreetWay};
@@ -56,6 +56,7 @@ pub const NEAR: u8 = 4;
 pub const UNATTACHED: u32 = 1 << 31;
 
 /// A merged address attached to an OSM way. Strings are IDs in [`Merged`]'s interners.
+#[derive(Serialize, Deserialize)]
 pub struct Attached {
     /// Index into the street ways [`merge`] returns.
     pub way: u32,
@@ -67,6 +68,7 @@ pub struct Attached {
 }
 
 /// A merged address with no street within the attach distance.
+#[derive(Serialize, Deserialize)]
 pub struct Unattached {
     pub p: P,
     pub num: u32,
@@ -80,6 +82,7 @@ pub struct Unattached {
 }
 
 /// An interpolation range with no merged point in it, on the way nearest its middle.
+#[derive(Serialize, Deserialize)]
 pub struct Range {
     pub way: u32,
     pub start: P,
@@ -94,7 +97,7 @@ pub struct Range {
 }
 
 /// One state or province.
-#[derive(Serialize, Default)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct SubRow {
     pub iso: String,
     /// Records with a number and a street, from all sources.
@@ -111,6 +114,7 @@ pub struct SubRow {
     pub secs: f64,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Merged {
     pub attached: Vec<Attached>,
     pub unattached: Vec<Unattached>,

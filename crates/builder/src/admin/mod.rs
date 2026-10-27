@@ -8,7 +8,7 @@ pub mod read;
 pub mod towns;
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::addr::streets::morton;
 use crate::geom::{self, BBox, P};
+use crate::pbf::Pbf;
 use crate::peak_rss_mib;
 use index::Index;
 pub use read::{Area, Place, PlaceClass};
@@ -255,7 +256,7 @@ struct Report {
 pub fn run(args: AdminArgs) -> Result<()> {
     let start = Instant::now();
     eprintln!("admin: {}", args.input.display());
-    let data = read::read(&args.input)?;
+    let data = read::read(&Pbf::open(&args.input)?)?;
     eprintln!(
         "  read {} areas, {} places: {:.1} s, peak RSS {:.0} MiB",
         data.areas.len(),
@@ -368,9 +369,14 @@ pub fn run(args: AdminArgs) -> Result<()> {
 }
 
 /// Reads and builds the admin areas of a PBF, logging the time.
-pub fn load(path: &Path) -> Result<Admin> {
+pub fn load(pbf: &Pbf) -> Result<Admin> {
+    load_from(|| read::read(pbf))
+}
+
+/// Builds the admin areas from what `read` returns, logging the time.
+pub fn load_from(read: impl FnOnce() -> Result<read::AdminData>) -> Result<Admin> {
     let t = Instant::now();
-    let admin = Admin::build(read::read(path)?);
+    let admin = Admin::build(read()?);
     eprintln!(
         "  admin: {} areas, {} places, {:.1} s, peak RSS {:.0} MiB",
         admin.areas.len(),

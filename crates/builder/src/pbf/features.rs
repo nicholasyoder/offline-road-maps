@@ -11,6 +11,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use super::nodes::{DenseIndex, NodeSet, RankedLocations};
+use super::{Kinds, Pbf};
 use crate::geom::{self, Assembly, BBox, Geometry, P};
 use crate::peak_rss_mib;
 use crate::poly::Poly;
@@ -188,6 +189,9 @@ pub fn label_point(rings: &[Vec<P>]) -> Option<(P, u8, u32)> {
 pub struct OsmData {
     pub bbox: Option<BBox>,
     pub features: Vec<Feature>,
+    /// The [`KeepTags`] of the features of its layers, by [`Feature::id`]; only features
+    /// that have some.
+    pub kept_tags: HashMap<i64, Vec<(String, String)>>,
     pub roads: Vec<Road>,
     /// `[layer][class]`.
     pub class_counts: Vec<Vec<ClassCount>>,
@@ -195,9 +199,37 @@ pub struct OsmData {
     pub stats: ReadStats,
 }
 
+/// Tags to keep for the features of some layers (search's alternative names), so they need
+/// no pass of their own. Values are split at `;`.
+pub struct KeepTags {
+    pub layers: Vec<u8>,
+    pub keys: Vec<&'static str>,
+}
+
+impl KeepTags {
+    /// The tags of `keys`, if any of `outs` is in `layers`.
+    fn of(&self, outs: &[Out], tags: &[(&str, &str)]) -> Vec<(String, String)> {
+        if !outs.iter().any(|o| self.layers.contains(&o.layer)) {
+            return Vec::new();
+        }
+        tags.iter()
+            .filter(|(k, _)| self.keys.contains(k))
+            .flat_map(|(k, v)| {
+                v.split(';')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(move |v| ((*k).to_owned(), v.to_owned()))
+            })
+            .collect()
+    }
+}
+
 pub enum Strategy<'a> {
     Dense(&'a Path),
-    Sparse,
+    /// The nodes the ways need, if an earlier band marked them; else they are marked and
+    /// kept here for the next band. The ways do not depend on the band, so later bands skip
+    /// the marking pass (and do not count what it counts: elements, tags and classes).
+    Sparse(&'a mut Option<NodeSet>),
 }
 
 /// Keys whose every value is counted, matched or not, so whitelist changes can be judged.
@@ -222,6 +254,7 @@ struct Ctx<'a> {
     regions: &'a [(String, Poly)],
     band: Band,
     minzoom: Vec<Vec<u8>>,
+    keep_tags: Option<&'a KeepTags>,
 }
 
 impl Ctx<'_> {
@@ -303,6 +336,8 @@ struct WayRec {
     refs: Vec<i64>,
     outs: Vec<Out>,
     member: bool,
+    /// [`KeepTags`].
+    kept: Vec<(String, String)>,
     road: Option<(u16, i8, Option<f64>, bool)>,
     /// For road ways: where `routes` came from, the class if it is counted in the coverage,
     /// the way's route relations (indices into [`Rels::routes`]), and whether its first route
@@ -327,6 +362,8 @@ struct RelRec {
     id: i64,
     outs: Vec<Out>,
     members: Vec<(i64, bool)>,
+    /// [`KeepTags`].
+    kept: Vec<(String, String)>,
 }
 
 struct AdminRel {
@@ -342,6 +379,8 @@ struct Block {
     unclosed: u64,
     missing_refs: u64,
     features: Vec<Feature>,
+    /// `(Feature::id, tags)`: [`KeepTags`].
+    kept_tags: Vec<(i64, Vec<(String, String)>)>,
     way_recs: Vec<WayRec>,
     member_coords: Vec<(i64, Vec<P>)>,
     roads: Vec<Road>,
@@ -391,11 +430,11 @@ fn class_counts(wl: &Whitelist) -> Vec<Vec<ClassCount>> {
 }
 
 /// [`super::pass`], each block into a fresh [`Block`].
-fn blocks<F>(path: &Path, wl: &Whitelist, f: F) -> Result<Vec<Block>>
+fn blocks<F>(pbf: &Pbf, what: &str, kinds: Kinds, wl: &Whitelist, f: F) -> Result<Vec<Block>>
 where
     F: Fn(&PrimitiveBlock, &mut Block) -> Result<()> + Sync,
 {
-    super::pass(path, || Block::new(wl), f)
+    pbf.pass(what, kinds, || Block::new(wl), f)
 }
 
 fn header_bbox(path: &Path) -> Result<Option<BBox>> {
@@ -458,7 +497,12 @@ fn parse_maxspeed(v: &str) -> Option<f64> {
 }
 
 impl<'a> Ctx<'a> {
-    fn new(wl: &'a Whitelist, band: Band, regions: &'a [(String, Poly)]) -> Result<Self> {
+    fn new(
+        wl: &'a Whitelist,
+        band: Band,
+        regions: &'a [(String, Poly)],
+        keep_tags: Option<&'a KeepTags>,
+    ) -> Result<Self> {
         let roads_layer = wl
             .layer_index("roads")
             .context("whitelist has no roads layer")?;
@@ -490,16 +534,17 @@ impl<'a> Ctx<'a> {
             boundaries_layer: wl
                 .layer_index("boundaries")
                 .context("whitelist has no boundaries layer")?,
+            keep_tags,
         })
     }
 }
 
 /// One pass over the ways, calling `f` with each road way's `(refs, oneway, routable)`: for
 /// counting the routing graph without keeping the roads (`measure --routing graph`).
-pub fn road_ways(path: &Path, wl: &Whitelist, f: &(dyn Fn(&[i64], i8, bool) + Sync)) -> Result<()> {
-    let ctx = Ctx::new(wl, Band::ALL, &[])?;
+pub fn road_ways(pbf: &Pbf, wl: &Whitelist, f: &(dyn Fn(&[i64], i8, bool) + Sync)) -> Result<()> {
+    let ctx = Ctx::new(wl, Band::ALL, &[], None)?;
     let rels = Rels::default();
-    blocks(path, wl, |block, out| {
+    blocks(pbf, "road ways", Kinds::WAYS, wl, |block, out| {
         ways_block(&ctx, block, out, &rels);
         for rec in out.way_recs.drain(..) {
             if let Some((_, oneway, _, routable)) = rec.road {
@@ -513,18 +558,19 @@ pub fn road_ways(path: &Path, wl: &Whitelist, f: &(dyn Fn(&[i64], i8, bool) + Sy
 
 /// `keep_roads`: also return the road ways with their coordinates, for
 /// the routing estimate in `measure`. `band`: keep only the features that band needs. `regions`:
-/// the regions [`RouteStats::coverage`] is split by.
+/// the regions [`RouteStats::coverage`] is split by. `keep_tags`: tags to return apart.
 pub fn read(
-    path: &Path,
+    pbf: &Pbf,
     wl: &Whitelist,
     strategy: Strategy,
     keep_roads: bool,
     band: Band,
     regions: &[(String, Poly)],
+    keep_tags: Option<&KeepTags>,
 ) -> Result<OsmData> {
-    let ctx = Ctx::new(wl, band, regions)?;
+    let ctx = Ctx::new(wl, band, regions, keep_tags)?;
     let progress = |what: &str| eprintln!("    {what}: peak RSS {:.0} MiB", peak_rss_mib());
-    let bbox = header_bbox(path)?;
+    let bbox = header_bbox(pbf.path())?;
     let mut stats = ReadStats::default();
     let mut counts = class_counts(wl);
     let mut tag_values: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
@@ -564,7 +610,9 @@ pub fn read(
     let mut admin = Vec::new();
     let mut index = Rels::default();
     let mut route_ids: HashMap<(Box<str>, Box<str>), u32> = HashMap::new();
-    for mut b in blocks(path, wl, |block, out| relations_block(&ctx, block, out))? {
+    for mut b in blocks(pbf, "relations", Kinds::RELATIONS, wl, |block, out| {
+        relations_block(&ctx, block, out)
+    })? {
         merge_common(&mut b, &mut stats);
         rels.append(&mut b.rels);
         admin.append(&mut b.admin);
@@ -609,8 +657,10 @@ pub fn read(
     let mut features = Vec::new();
     let mut roads = Vec::new();
     let mut member_coords: HashMap<i64, Vec<P>> = HashMap::new();
+    let mut kept_tags: HashMap<i64, Vec<(String, String)>> = HashMap::new();
     let mut collect = |b: &mut Block| {
         features.append(&mut b.features);
+        kept_tags.extend(b.kept_tags.drain(..));
         roads.append(&mut b.roads);
         member_coords.extend(b.member_coords.drain(..));
         for (id, n) in b.route_ways.drain() {
@@ -621,7 +671,7 @@ pub fn read(
         Strategy::Dense(index_path) => {
             // Pass 2: every node into the index. Pass 3: ways, resolved as they are read.
             let dense = DenseIndex::create(index_path)?;
-            for mut b in blocks(path, wl, |block, out| {
+            for mut b in blocks(pbf, "nodes (dense)", Kinds::NODES, wl, |block, out| {
                 nodes_block(&ctx, block, out, |id, p| dense.set(id, p))?;
                 out.features.retain(|f| ctx.keeps(f));
                 Ok(())
@@ -630,7 +680,7 @@ pub fn read(
                 collect(&mut b);
             }
             stats.node_index_disk_bytes = dense.disk_bytes();
-            for mut b in blocks(path, wl, |block, out| {
+            for mut b in blocks(pbf, "ways (dense)", Kinds::WAYS, wl, |block, out| {
                 way_pass(block, out)?;
                 for rec in std::mem::take(&mut out.way_recs) {
                     resolve_way(&ctx, rec, |id| dense.get(id), keep_roads, out);
@@ -642,23 +692,30 @@ pub fn read(
                 collect(&mut b);
             }
         }
-        Strategy::Sparse => {
+        Strategy::Sparse(marked) => {
             // Pass 2: ways, marking the nodes they need. Pass 3: those nodes, stored by
             // rank. Pass 4: the ways again, resolved as they are read. Reading the ways twice
             // is cheaper than holding them, since their refs alone are 8 bytes per vertex.
-            let needed = NodeSet::new();
-            for mut b in blocks(path, wl, |block, out| {
-                way_pass(block, out)?;
-                for rec in out.way_recs.drain(..) {
-                    for &id in &rec.refs {
-                        needed.insert(id);
+            let needed = match marked {
+                Some(set) => set.clone(),
+                None => {
+                    let needed = NodeSet::new();
+                    for mut b in blocks(pbf, "ways (mark)", Kinds::WAYS, wl, |block, out| {
+                        way_pass(block, out)?;
+                        for rec in out.way_recs.drain(..) {
+                            for &id in &rec.refs {
+                                needed.insert(id);
+                            }
+                        }
+                        Ok(())
+                    })? {
+                        merge_common(&mut b, &mut stats);
                     }
+                    progress("ways marked");
+                    *marked = Some(needed.clone());
+                    needed
                 }
-                Ok(())
-            })? {
-                merge_common(&mut b, &mut stats);
-            }
-            progress("ways marked");
+            };
             stats.node_set_heap_bytes = needed.heap_bytes();
             let locs = RankedLocations::new(needed);
             stats.needed_nodes = locs.len() as u64;
@@ -668,7 +725,7 @@ pub fn read(
                 locs.len(),
                 locs.heap_bytes() as f64 / f64::from(1 << 30)
             );
-            for mut b in blocks(path, wl, |block, out| {
+            for mut b in blocks(pbf, "nodes", Kinds::NODES, wl, |block, out| {
                 nodes_block(&ctx, block, out, |id, p| {
                     locs.set(id, p);
                     Ok(())
@@ -680,7 +737,7 @@ pub fn read(
                 collect(&mut b);
             }
             progress("nodes located");
-            for mut b in blocks(path, wl, |block, out| {
+            for mut b in blocks(pbf, "ways (resolve)", Kinds::WAYS, wl, |block, out| {
                 // Tag and class counts were taken in pass 2.
                 let mut ways = Block::new(wl);
                 way_pass(block, &mut ways)?;
@@ -721,6 +778,11 @@ pub fn read(
             }
         }
     };
+    for r in &mut rels {
+        if !r.kept.is_empty() {
+            kept_tags.insert(r.id * 4 + 2, std::mem::take(&mut r.kept));
+        }
+    }
     // In parallel, for the label points of big areas.
     let (rel_features, assembly, rel_counts) = rels
         .into_par_iter()
@@ -768,6 +830,7 @@ pub fn read(
     Ok(OsmData {
         bbox,
         features,
+        kept_tags,
         roads,
         class_counts: counts,
         tag_values,
@@ -830,6 +893,10 @@ fn relations_block(ctx: &Ctx, block: &PrimitiveBlock, out: &mut Block) -> Result
         if !outs.is_empty() {
             out.rels.push(RelRec {
                 id: r.id(),
+                kept: ctx
+                    .keep_tags
+                    .map(|k| k.of(&outs, &tags))
+                    .unwrap_or_default(),
                 outs,
                 members: ways()?,
             });
@@ -970,6 +1037,10 @@ fn ways_block(ctx: &Ctx, block: &PrimitiveBlock, out: &mut Block, rels: &Rels) {
         out.way_recs.push(WayRec {
             id: w.id(),
             refs: w.refs().collect(),
+            kept: ctx
+                .keep_tags
+                .map(|k| k.of(&outs, &tags))
+                .unwrap_or_default(),
             outs,
             member,
             road,
@@ -992,7 +1063,14 @@ fn nodes_block(
         node(id, p)?;
         if !tags.is_empty() && ctx.interesting(tags) {
             out.count_tags(tags);
-            for o in classify(ctx, ElementType::Node, tags, &mut out.counts) {
+            let outs = classify(ctx, ElementType::Node, tags, &mut out.counts);
+            if let Some(k) = ctx.keep_tags {
+                let kept = k.of(&outs, tags);
+                if !kept.is_empty() {
+                    out.kept_tags.push((id * 4, kept));
+                }
+            }
+            for o in outs {
                 out.features.push(Feature {
                     id: id * 4,
                     layer: o.layer,
@@ -1055,6 +1133,9 @@ fn resolve_way(
         for &id in ids {
             *out.route_ways.entry(id).or_default() += 1;
         }
+    }
+    if !rec.kept.is_empty() {
+        out.kept_tags.push((rec.id * 4 + 1, rec.kept));
     }
     let ring = geom::closed_way_ring(&coords, true);
     let is_label = |o: &Out| ctx.labels.is_some_and(|(l, _)| l == o.layer);

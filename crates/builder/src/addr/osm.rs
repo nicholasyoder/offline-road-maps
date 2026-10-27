@@ -3,24 +3,24 @@
 //! (address points and the locations the ways need).
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use anyhow::Result;
 use omp_core::normalize::{NumberKind, house_number};
 use osmpbf::{Element, PrimitiveBlock};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use super::tiger::Range;
 use super::{Raw, Src};
 use crate::geom::{self, BBox, P};
 use crate::pbf::{
-    self,
+    Kinds, Pbf,
     nodes::{NodeSet, RankedLocations},
 };
 use crate::poly::Poly;
 
 /// A named highway way. Addresses attach to these.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StreetWay {
     pub id: i64,
     /// `name` first, then alternates and each `ref`.
@@ -344,23 +344,28 @@ pub fn split_indexed(
     (parts, owned, all.streets, stats)
 }
 
-pub fn read(path: &Path) -> Result<OsmAddresses> {
-    read_with(path, true)
+pub fn read(pbf: &Pbf) -> Result<OsmAddresses> {
+    read_with(pbf, true)
 }
 
 /// Only the street ways, with their coordinates (for `build`, until it merges addresses).
-pub fn read_streets(path: &Path) -> Result<Vec<StreetWay>> {
-    Ok(read_with(path, false)?.streets)
+pub fn read_streets(pbf: &Pbf) -> Result<Vec<StreetWay>> {
+    Ok(read_with(pbf, false)?.streets)
 }
 
-fn read_with(path: &Path, addresses: bool) -> Result<OsmAddresses> {
+fn read_with(pbf: &Pbf, addresses: bool) -> Result<OsmAddresses> {
     let mut streets = Vec::new();
     let mut addr_ways = Vec::new();
     let mut interps = Vec::new();
-    for mut b in pbf::pass(path, WayBlock::default, |block, out| {
-        ways_block(block, out, addresses);
-        Ok(())
-    })? {
+    for mut b in pbf.pass(
+        "address ways",
+        Kinds::WAYS,
+        WayBlock::default,
+        |block, out| {
+            ways_block(block, out, addresses);
+            Ok(())
+        },
+    )? {
         streets.append(&mut b.streets);
         addr_ways.append(&mut b.addr_ways);
         interps.append(&mut b.interps);
@@ -381,10 +386,15 @@ fn read_with(path: &Path, addresses: bool) -> Result<OsmAddresses> {
     let locs = RankedLocations::new(needed);
     let mut raws = Vec::new();
     let mut endpoints: HashMap<i64, (String, String)> = HashMap::new();
-    for mut b in pbf::pass(path, NodeBlock::default, |block, out| {
-        nodes_block(block, out, &locs, &endpoint_ids, addresses);
-        Ok(())
-    })? {
+    for mut b in pbf.pass(
+        "address nodes",
+        Kinds::NODES,
+        NodeBlock::default,
+        |block, out| {
+            nodes_block(block, out, &locs, &endpoint_ids, addresses);
+            Ok(())
+        },
+    )? {
         raws.append(&mut b.raws);
         endpoints.extend(b.endpoints.into_iter().map(|(id, n, s)| (id, (n, s))));
     }

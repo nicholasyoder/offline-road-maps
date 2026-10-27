@@ -28,6 +28,7 @@ use crate::addr::streets::morton;
 use crate::admin::towns::{self, FALLBACK, Fallbacks, Located, Source};
 use crate::admin::{self, Admin};
 use crate::geom::{self, P};
+use crate::pbf::Pbf;
 use crate::peak_rss_mib;
 
 /// Ways are cut into pieces at most about this long, so a long way can be split.
@@ -938,9 +939,10 @@ struct Report {
 /// admin 8 boundaries and the length cap only), with its section sizes.
 pub fn run(args: StreetsArgs) -> Result<()> {
     let start = Instant::now();
-    let admin = admin::load(&args.input)?;
+    let pbf = Pbf::open(&args.input)?;
+    let admin = admin::load(&pbf)?;
     let t = Instant::now();
-    let ways = osm::read_streets(&args.input)?;
+    let ways = osm::read_streets(&pbf)?;
     let read_s = t.elapsed().as_secs_f64();
     eprintln!(
         "  streets: {} ways read in {read_s:.1} s, peak RSS {:.0} MiB",

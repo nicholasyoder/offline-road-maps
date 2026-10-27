@@ -5,13 +5,14 @@
 use std::collections::HashMap;
 
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use super::pipeline::Rec;
 use crate::geom::{self, P};
 
 /// A postcode as a search entry: the median of its addresses and the distance from there
 /// that 90% of them lie within.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Postcode {
     /// Display form ([`omp_core::normalize::postcode`]).
     pub code: String,

@@ -15,15 +15,13 @@
 pub mod encode;
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result;
 use omp_core::normalize::{is_generic, postcode_token, search_tokens};
 use omp_core::whitelist::Whitelist;
-use osmpbf::Element;
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::addr::osm::HIGHWAYS;
 use crate::addr::postcodes::Postcode;
@@ -32,8 +30,7 @@ use crate::admin::Admin;
 use crate::admin::read::{ALT_NAMES, parse_population};
 use crate::admin::towns::{self, FALLBACK, Fallbacks, Located, Source};
 use crate::geom::{Geometry, P};
-use crate::pbf::{self, features::Feature};
-use crate::peak_rss_mib;
+use crate::pbf::features::{Feature, KeepTags};
 use crate::street::{self, Table};
 use crate::tiles;
 
@@ -209,7 +206,7 @@ pub struct AddressStreet {
 }
 
 /// Which layer a feature comes from.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum Layer {
     Places,
     Pois,
@@ -217,6 +214,7 @@ enum Layer {
 }
 
 /// A place, POI or label feature, as collected over the bands.
+#[derive(Serialize, Deserialize)]
 struct Feat {
     layer: Layer,
     id: i64,
@@ -229,11 +227,14 @@ struct Feat {
 
 /// Collects the named point features of the `places`, `pois` and `labels` layers, each
 /// once over all bands.
+#[derive(Serialize, Deserialize)]
 pub struct Collector {
     layers: Vec<(u8, Layer, Option<u8>, Option<u8>)>,
     minzoom: Vec<Vec<u8>>,
     seen: HashSet<(u8, i64)>,
     feats: Vec<Feat>,
+    /// The [`alt_keys`] of the features collected, by [`Feature::id`].
+    alts: HashMap<i64, Vec<(String, String)>>,
 }
 
 impl Collector {
@@ -261,10 +262,21 @@ impl Collector {
             minzoom: tiles::minzooms(wl),
             seen: HashSet::new(),
             feats: Vec::new(),
+            alts: HashMap::new(),
         }
     }
 
-    pub fn add(&mut self, features: &[Feature]) {
+    /// What the band reads keep for [`Collector::add`]: the [`alt_keys`] of the features of
+    /// the collected layers.
+    pub fn keep_tags(&self) -> KeepTags {
+        KeepTags {
+            layers: self.layers.iter().map(|l| l.0).collect(),
+            keys: alt_keys().collect(),
+        }
+    }
+
+    /// `kept`: the band's [`Collector::keep_tags`].
+    pub fn add(&mut self, features: &[Feature], kept: &HashMap<i64, Vec<(String, String)>>) {
         for f in features {
             let Some(&(_, layer, Some(name_prop), pop_prop)) =
                 self.layers.iter().find(|l| l.0 == f.layer)
@@ -278,6 +290,9 @@ impl Collector {
             };
             if !self.seen.insert((f.layer, f.id)) {
                 continue;
+            }
+            if let Some(alts) = kept.get(&f.id) {
+                self.alts.entry(f.id).or_insert_with(|| alts.clone());
             }
             self.feats.push(Feat {
                 layer,
@@ -296,40 +311,6 @@ impl Collector {
 /// for POIs. Values may be `;` lists.
 fn alt_keys() -> impl Iterator<Item = &'static str> {
     ALT_NAMES.iter().copied().chain(["brand"])
-}
-
-/// One pass over the PBF for the [`alt_keys`] of the features `ids` (`Feature::id`).
-fn read_alts(path: &Path, ids: &HashSet<i64>) -> Result<HashMap<i64, Vec<(String, String)>>> {
-    let keys: Vec<&str> = alt_keys().collect();
-    let blocks = pbf::pass(path, Vec::new, |block, out| {
-        let mut visit = |fid: i64, tags: &mut dyn Iterator<Item = (&str, &str)>| {
-            if !ids.contains(&fid) {
-                return;
-            }
-            let found: Vec<(String, String)> = tags
-                .filter(|(k, _)| keys.contains(k))
-                .flat_map(|(k, v)| {
-                    v.split(';')
-                        .map(str::trim)
-                        .filter(|v| !v.is_empty())
-                        .map(move |v| (k.to_owned(), v.to_owned()))
-                })
-                .collect();
-            if !found.is_empty() {
-                out.push((fid, found));
-            }
-        };
-        for el in block.elements() {
-            match el {
-                Element::DenseNode(n) => visit(n.id() * 4, &mut n.tags()),
-                Element::Node(n) => visit(n.id() * 4, &mut n.tags()),
-                Element::Way(w) => visit(w.id() * 4 + 1, &mut w.tags()),
-                Element::Relation(r) => visit(r.id() * 4 + 2, &mut r.tags()),
-            }
-        }
-        Ok(())
-    })?;
-    Ok(blocks.into_iter().flatten().collect())
 }
 
 /// Alternative names that are not just the name again: distinct, with a token set other
@@ -387,7 +368,6 @@ pub struct Stats {
     pub postings: u64,
     /// The longest lists before stopping: `(token, entries)`.
     pub longest: Vec<(String, u64)>,
-    pub alt_pass_s: f64,
     pub build_s: f64,
 }
 
@@ -485,22 +465,16 @@ impl Builder {
         admin: &Admin,
         wl: &Whitelist,
         collected: Collector,
-        pbf: &Path,
         postcodes: &[Postcode],
         address_streets: &[AddressStreet],
     ) -> Result<Index> {
         let start = Instant::now();
         let mut stats = Stats::default();
-        let feats = collected.feats;
-        let ids: HashSet<i64> = feats.iter().map(|f| f.id).collect();
-        let alts = read_alts(pbf, &ids)?;
-        drop(ids);
-        stats.alt_pass_s = start.elapsed().as_secs_f64();
+        let (feats, alts) = (collected.feats, collected.alts);
         eprintln!(
-            "  search: alternative names of {} features, {:.1} s, peak RSS {:.0} MiB",
+            "  search: {} features, {} with alternative names",
             feats.len(),
-            stats.alt_pass_s,
-            peak_rss_mib()
+            alts.len()
         );
         let class_name = |layer: &str, class: u16| -> &str {
             wl.layer_index(layer)

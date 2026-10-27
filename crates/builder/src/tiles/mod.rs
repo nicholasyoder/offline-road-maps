@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use anyhow::Result;
 use omp_core::whitelist::{Layer, MergeLines, Whitelist};
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use omp_core::tile::{EXTENT_BITS, Enc, Geom, Point, encode_layer};
 
@@ -51,7 +51,7 @@ fn thinning(z: u8, layer: &Layer) -> (f64, f64, f64) {
     (layer.tolerance(z).unwrap_or(tol), min_len, min_area)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Variant {
     V0,
@@ -62,7 +62,7 @@ pub enum Variant {
     V5,
 }
 
-#[derive(Default, Clone, Copy, Serialize)]
+#[derive(Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Cell {
     pub tiles: u64,
     pub features: u64,
@@ -79,7 +79,7 @@ impl Cell {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Stats {
     /// `(variant, layer, zoom)`.
     pub cells: BTreeMap<(Variant, u8, u8), Cell>,
@@ -117,7 +117,7 @@ impl Stats {
 }
 
 /// One V2 layer section in the temp file.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Entry {
     pub z: u8,
     pub x: u32,
