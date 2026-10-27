@@ -6,39 +6,54 @@ use omp_core::profile::{self, FERRY, Restriction, TOLL};
 use super::*;
 
 /// Node `10 x + y` is at grid point `(x, y)`, 100 m apart.
-fn pos(id: i64) -> P {
+pub(crate) fn pos(id: i64) -> P {
     let (x, y) = ((id / 10) as f64, (id % 10) as f64);
     let lat = 40.0 + y * 100.0 / 111_320.0;
     let lon = -80.0 + x * 100.0 / (111_320.0 * 40f64.to_radians().cos());
     geom::project(lat, lon)
 }
 
-const STREET: &[(&str, &str)] = &[("highway", "residential")];
+pub(crate) const STREET: &[(&str, &str)] = &[("highway", "residential")];
 
 /// A hand-built [`Input`].
 #[derive(Default)]
-struct In {
-    ways: Vec<WayIn>,
-    refs: Vec<i64>,
+pub(crate) struct In {
+    pub(crate) ways: Vec<WayIn>,
+    pub(crate) refs: Vec<i64>,
     nodes: HashMap<i64, profile::Node>,
     restrictions: Vec<RestrictionIn>,
+    labels: Labels,
+    pub(crate) junctions: Vec<(i64, String)>,
 }
 
 impl In {
-    fn way(&mut self, id: i64, tags: &[(&str, &str)], nodes: &[i64]) -> &mut Self {
+    pub(crate) fn way(&mut self, id: i64, tags: &[(&str, &str)], nodes: &[i64]) -> &mut Self {
         let w = profile::way(tags).unwrap();
+        let (class, roundabout, label) = way_tags(tags);
+        let info = WayInfo {
+            class,
+            roundabout,
+            label: self.labels.intern(label),
+        };
         let start = self.refs.len();
         self.refs.extend(nodes);
-        self.ways.push(WayIn::new(id, &w, start..self.refs.len()));
+        self.ways
+            .push(WayIn::new(id, &w, info, start..self.refs.len()));
         self
     }
 
-    fn node(&mut self, id: i64, tags: &[(&str, &str)]) -> &mut Self {
+    pub(crate) fn node(&mut self, id: i64, tags: &[(&str, &str)]) -> &mut Self {
         self.nodes.insert(id, profile::node(tags).unwrap());
         self
     }
 
-    fn restriction(&mut self, kind: Restriction, from: i64, via: Via, to: i64) -> &mut Self {
+    pub(crate) fn restriction(
+        &mut self,
+        kind: Restriction,
+        from: i64,
+        via: Via,
+        to: i64,
+    ) -> &mut Self {
         self.restrictions.push(RestrictionIn {
             id: self.restrictions.len() as i64,
             kind,
@@ -49,7 +64,7 @@ impl In {
         self
     }
 
-    fn build(&self) -> Graph {
+    pub(crate) fn build(&self) -> Graph {
         let mut ways = self.ways.clone();
         ways.sort_by_key(|w| w.id);
         build(Input {
@@ -58,6 +73,11 @@ impl In {
             coords: self.refs.iter().map(|&id| pos(id)).collect(),
             nodes: self.nodes.clone(),
             restrictions: self.restrictions.clone(),
+            labels: Labels {
+                list: self.labels.list.clone(),
+                ..Labels::default()
+            },
+            junctions: self.junctions.clone(),
             read: ReadStats::default(),
         })
     }
@@ -159,8 +179,9 @@ fn edges_between_intersections() {
     let e = edge(&g, 11, 21);
     // 100 m at 25 km/h is 14.4 s.
     assert!((143..=146).contains(&e.time_ds), "{e:?}");
-    assert!((e.metres - 100.0).abs() < 1.0);
-    assert_eq!(g.ways[e.way as usize], 1);
+    let seg = g.segments[(e.seg >> 1) as usize];
+    assert!((seg.metres - 100.0).abs() < 1.0);
+    assert_eq!(g.ways[seg.way as usize], 1);
     // A way through a node that no other way uses is one edge.
     let g = In::default().way(1, STREET, &[11, 21, 31]).build();
     assert_eq!((g.stats.nodes, g.stats.edges), (2, 2));
@@ -278,7 +299,7 @@ fn restricted_roads_cost_to_enter() {
 }
 
 /// A 3 × 3 grid of streets, one way per block, with a one-way street out to 41.
-fn grid() -> In {
+pub(crate) fn grid() -> In {
     let mut i = In::default();
     let mut id = 100;
     for x in 1..=3 {
@@ -303,7 +324,7 @@ fn grid() -> In {
 }
 
 /// The ID of the grid's way between nodes `a` and `b`.
-fn way_id(i: &In, a: i64, b: i64) -> i64 {
+pub(crate) fn way_id(i: &In, a: i64, b: i64) -> i64 {
     i.ways
         .iter()
         .find(|w| {
@@ -384,8 +405,7 @@ fn small_components() {
     let e = |to| Edge {
         to,
         time_ds: 1,
-        metres: 1.0,
-        way: 0,
+        seg: 0,
         flags: 0,
     };
     // 0 ⇄ 1 ⇄ 2, and 3 → 0 with no way back.

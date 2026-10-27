@@ -29,6 +29,10 @@ pub const COMBINATIONS: [u8; 4] = [0, omp_core::profile::TOLL, omp_core::profile
 pub struct Route {
     pub weight: u32,
     pub settled: usize,
+    /// The nodes settled, in order.
+    pub visited: Vec<u32>,
+    /// The hierarchy edges between the nodes of the route, before unpacking.
+    pub path: Vec<(u32, u32, ChEdge)>,
     pub edges: Vec<u32>,
 }
 
@@ -86,6 +90,7 @@ pub fn query(ch: &Ch, g: &Csr, s: u32, t: u32, avoid: u8) -> Option<Route> {
     f.start(s);
     b.start(t);
     let (mut best, mut meet, mut settled) = (u32::MAX, u32::MAX, 0);
+    let mut visited = Vec::new();
     while f.min().min(b.min()) < best {
         let (side, other, edges) = match f.min() <= b.min() {
             true => (&mut f, &b, &ch.up),
@@ -98,6 +103,7 @@ pub fn query(ch: &Ch, g: &Csr, s: u32, t: u32, avoid: u8) -> Option<Route> {
             continue;
         }
         settled += 1;
+        visited.push(u);
         if let (Some(a), Some(c)) = (side.dist(u), other.dist(u))
             && a + c < best
         {
@@ -116,20 +122,37 @@ pub fn query(ch: &Ch, g: &Csr, s: u32, t: u32, avoid: u8) -> Option<Route> {
         up.push((from, v, e));
         v = from;
     }
-    for (from, to, e) in up.into_iter().rev() {
-        unpack(ch, g, from, to, &e, &mut edges);
-    }
+    let mut path: Vec<(u32, u32, ChEdge)> = up.into_iter().rev().collect();
     let mut v = meet;
     while v != t {
         let (_, from, e) = b.dist[&v];
-        unpack(ch, g, v, from, &e, &mut edges);
+        path.push((v, from, e));
         v = from;
+    }
+    for (from, to, e) in &path {
+        unpack(ch, g, *from, *to, e, &mut edges);
     }
     Some(Route {
         weight: best,
         settled,
+        visited,
+        path,
         edges,
     })
+}
+
+/// The two halves of shortcut `e` from `a` to `b`, at its middle node: a down edge from
+/// `a` and an up edge to `b`.
+pub fn halves(ch: &Ch, a: u32, b: u32, e: &ChEdge) -> (ChEdge, ChEdge) {
+    let m = e.mid;
+    for d in ch.down.at(m).iter().filter(|d| d.other == a) {
+        for u in ch.up.at(m).iter().filter(|u| u.other == b) {
+            if d.weight + u.weight == e.weight && (d.flags | u.flags) & AVOID == e.flags & AVOID {
+                return (*d, *u);
+            }
+        }
+    }
+    panic!("shortcut {a} -> {b} through {m} has no halves");
 }
 
 /// Appends the base edges of `e`, an edge of the hierarchy from `a` to `b`.
@@ -141,17 +164,9 @@ fn unpack(ch: &Ch, g: &Csr, a: u32, b: u32, e: &ChEdge, out: &mut Vec<u32>) {
     }
     // The middle node is below both ends: `a` to it is one of its down edges, it to `b` one
     // of its up edges, with this weight and flags between them.
-    let m = e.mid;
-    for d in ch.down.at(m).iter().filter(|d| d.other == a) {
-        for u in ch.up.at(m).iter().filter(|u| u.other == b) {
-            if d.weight + u.weight == e.weight && (d.flags | u.flags) & AVOID == e.flags & AVOID {
-                unpack(ch, g, a, m, d, out);
-                unpack(ch, g, m, b, u, out);
-                return;
-            }
-        }
-    }
-    panic!("shortcut {a} -> {b} through {m} has no halves");
+    let (d, u) = halves(ch, a, b, e);
+    unpack(ch, g, a, e.mid, &d, out);
+    unpack(ch, g, e.mid, b, &u, out);
 }
 
 /// Dijkstra on the graph from `s` to `t`, on edges that avoid `avoid`; `dist` is all
@@ -417,6 +432,15 @@ pub struct ChArgs {
     #[arg(long)]
     share: Option<f64>,
 
+    /// Encode the routing sections (without street names) and compare layouts on this many
+    /// long and short random pairs.
+    #[arg(long)]
+    layout: Option<usize>,
+
+    /// Nodes per `RCHE` block and MiB at the top, for `--layout`.
+    #[arg(long, value_delimiter = ',')]
+    layout_params: Option<Vec<f64>>,
+
     /// Write the counts as JSON.
     #[arg(long)]
     json: Option<PathBuf>,
@@ -487,6 +511,24 @@ pub fn run(args: ChArgs) -> Result<()> {
             Some(c)
         }
     };
+    if let Some(k) = args.layout {
+        let mut p = crate::routing::Params::default();
+        if let Some(v) = &args.layout_params {
+            ensure!(v.len() == 2, "--layout-params takes two numbers");
+            (p.block_nodes, p.top_mib) = (v[0] as u32, v[1]);
+        }
+        let streets = crate::street::WayStreets::default();
+        let (_, sizes, order, lens) = crate::routing::sections(&g, &ch, &streets, &p)?;
+        crate::routing::print_sizes(&sizes);
+        use crate::routing::layout;
+        let sets = [
+            ("long", pairs(&g, k, args.seed)),
+            ("short", layout::short_pairs(&g, &order, k, args.seed + 1)),
+        ];
+        for (name, p) in &sets {
+            layout::print(&layout::compare(&g, &ch, &order, &lens, p, name));
+        }
+    }
     let report = Report {
         kind: "ch",
         input: args.input.display().to_string(),

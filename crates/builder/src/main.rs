@@ -14,6 +14,7 @@ mod measure;
 mod pbf;
 mod poly;
 mod report;
+mod routing;
 mod search;
 mod street;
 mod tiles;

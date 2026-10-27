@@ -1,6 +1,6 @@
 //! `inspect --readers`: reads a pack's search, street, address, admin and grid sections
 //! through `omp-core`'s readers, checks that they agree with each other, and times warm
-//! lookups (phase 2 step 2.5).
+//! lookups (phase 2 step 2.5); then the routing sections ([`super::route_readers`]).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,24 +16,24 @@ use omp_core::search::{Found, Kind, NearAddress, Search};
 use crate::mib;
 
 /// Every `n / want`-th index of `0..n`, about `want` of them.
-fn sample(n: usize, want: usize) -> impl Iterator<Item = usize> {
+pub(super) fn sample(n: usize, want: usize) -> impl Iterator<Item = usize> {
     let step = (n / want.max(1)).max(1);
     // An odd offset, so the sample does not line up with block starts.
     (step / 3..n).step_by(step).take(want)
 }
 
 #[derive(Default)]
-struct Times(Vec<Duration>);
+pub(super) struct Times(Vec<Duration>);
 
 impl Times {
-    fn time<T>(&mut self, f: impl FnOnce() -> T) -> T {
+    pub(super) fn time<T>(&mut self, f: impl FnOnce() -> T) -> T {
         let t = Instant::now();
         let v = f();
         self.0.push(t.elapsed());
         v
     }
 
-    fn line(&mut self, what: &str) {
+    pub(super) fn line(&mut self, what: &str) {
         self.0.sort_unstable();
         let q = |p: f64| {
             self.0
@@ -368,5 +368,5 @@ pub fn run(first: &Path, want: usize) -> Result<()> {
         mib(s.grid.heap_bytes() as u64),
         mib(s.bytes_read())
     );
-    Ok(())
+    super::route_readers::run(first, &pack, s.streets.count(), want)
 }

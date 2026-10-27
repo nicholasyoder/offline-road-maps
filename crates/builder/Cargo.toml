@@ -30,6 +30,9 @@ xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 zstd = "0.14.3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [lints]
 workspace = true
 

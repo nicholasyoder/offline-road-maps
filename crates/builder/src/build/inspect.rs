@@ -39,9 +39,9 @@ pub struct InspectArgs {
     #[arg(long)]
     search: Option<String>,
 
-    /// Read the search, street, address, admin and grid sections through the app's
+    /// Read the search, street, address, admin, grid and routing sections through the app's
     /// readers, check them against each other on about this many samples of each, and time
-    /// warm lookups.
+    /// warm lookups and warm and cold routes.
     #[arg(long, num_args = 0..=1, default_missing_value = "2000")]
     readers: Option<usize>,
 }

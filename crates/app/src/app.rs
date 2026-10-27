@@ -23,6 +23,7 @@ use crate::mesh;
 use crate::packs::{self, Opened};
 use crate::pool::Pool;
 use crate::render::{self, GpuMesh, MapCallback, Renderer};
+use crate::routing::Routing;
 use crate::scale::{self, Units};
 use crate::search::{self, SearchUi, Status};
 use crate::style::{Style, StyleFile};
@@ -113,6 +114,7 @@ struct MapState {
     error_suggested: bool,
     search: SearchUi,
     here: HereUi,
+    routing: Routing,
     /// `OMP_BENCH_NO_MAP`: everything but drawing the map, to see what the rest costs.
     no_map: bool,
 }
@@ -270,6 +272,10 @@ impl App {
         self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
         let units = packs::default_units(opened.meta.as_ref().ok());
         let search = SearchUi::start(opened.first_chunk.clone(), &opened.schema, ctx);
+        let repaint = ctx.clone();
+        let routing = Routing::start(opened.first_chunk.clone(), move || {
+            repaint.request_repaint()
+        });
         self.map = Some(MapState {
             opened,
             style,
@@ -287,6 +293,7 @@ impl App {
             error_suggested: false,
             search,
             here: HereUi::default(),
+            routing,
             no_map: std::env::var_os("OMP_BENCH_NO_MAP").is_some(),
         });
         self.first_full = None;
@@ -970,6 +977,7 @@ impl App {
                 lines.push(format!("last error: {e}"));
             }
             lines.extend(m.search.overlay_lines());
+            lines.push(m.routing.overlay_line());
             lines.extend(m.here.overlay_line());
         }
         if let Some(u) = crate::memory::usage() {

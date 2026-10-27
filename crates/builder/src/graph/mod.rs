@@ -6,6 +6,11 @@
 //! [`read`] reads the PBF in three passes (restrictions, ways, nodes) into an [`Input`], and
 //! [`build`] makes the [`Graph`] from it, so tests can build an input by hand.
 //!
+//! Each stretch of a way between two graph nodes is a [`Segment`], with its geometry
+//! simplified to 2 m; its one or two directed edges point to it. The segments, the ways'
+//! classes and labels, and the exit numbers are what the pack's `RGEO`, `RNAM` and `RJCT`
+//! are made of (step 3.3).
+//!
 //! Signals, gates and toll booths that are not intersections are not nodes of the graph:
 //! their delay and toll flag go on the edges through them, counted where an edge enters the
 //! node, so a route pays each once. Blocking barriers (bollards) cut the road: each road
@@ -15,7 +20,7 @@ mod read;
 mod restrict;
 mod scc;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -26,6 +31,9 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::Args;
 use omp_core::profile::{self, FERRY, TOLL};
+use omp_core::route::{FERRY_CLASS, Label};
+use omp_core::street::CLASSES;
+use omp_core::varint::{put, zigzag};
 use serde::{Deserialize, Serialize};
 
 use crate::geom::{self, P};
@@ -36,11 +44,15 @@ pub use read::{ReadStats, read};
 pub use restrict::RestrictionStats;
 pub use scc::ComponentStats;
 
-/// Edge flag: a road a car may use only to start or end a route on it.
-pub const RESTRICTED: u8 = 4;
-/// Edge flag: a [`RESTRICTED`] edge leaving a node that a road open to all also touches, so
-/// a route entering the restricted roads there pays [`profile::RESTRICTED_PENALTY_S`].
-pub const ENTRY: u8 = 8;
+/// Edge flags: [`RESTRICTED`], a road a car may use only to start or end a route on it;
+/// [`ENTRY`], a restricted edge leaving a node that a road open to all also touches, so a
+/// route entering the restricted roads there pays [`profile::RESTRICTED_PENALTY_S`].
+pub use omp_core::route::{ENTRY, RESTRICTED};
+
+/// Segment geometry is simplified to this, as streets' is.
+pub const SIMPLIFY_M: f64 = 2.0;
+/// Stored points are multiples of 2^`SHIFT` world units.
+pub const SHIFT: u32 = omp_core::route::SHIFT;
 
 /// Nodes in a strongly connected component smaller than this are marked small, so snapping
 /// prefers the large network (OSRM's `small_component_size`).
@@ -53,6 +65,71 @@ pub struct Dir {
     pub flags: u8,
 }
 
+/// What directions need of a way, beyond the profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WayInfo {
+    /// Index into [`CLASSES`], or [`FERRY_CLASS`].
+    pub class: u8,
+    pub roundabout: bool,
+    /// Index into [`Graph::labels`]; 0 is the empty label.
+    pub label: u32,
+}
+
+/// A way's class and roundabout flag, and its label: its name and signs, kept only for a
+/// ferry (which has no street) or a way with signs (`destination`, `destination:ref`,
+/// `junction:ref`). Other ways are named by their street.
+pub fn way_tags(tags: &[(&str, &str)]) -> (u8, bool, Label) {
+    let get = |k: &str| tags.iter().find(|t| t.0 == k).map_or("", |t| t.1);
+    let ferry = get("route") == "ferry";
+    let class = match ferry {
+        true => FERRY_CLASS,
+        false => CLASSES
+            .iter()
+            .position(|c| *c == get("highway"))
+            .unwrap_or(CLASSES.len() - 1) as u8,
+    };
+    let roundabout = matches!(get("junction"), "roundabout" | "circular");
+    let mut label = Label {
+        name: String::new(),
+        refs: String::new(),
+        destination: get("destination").to_owned(),
+        destination_ref: get("destination:ref").to_owned(),
+        junction_ref: get("junction:ref").to_owned(),
+    };
+    if ferry || !label.is_empty() {
+        label.name = get("name").to_owned();
+        label.refs = get("ref").to_owned();
+    }
+    (class, roundabout, label)
+}
+
+/// Labels, each stored once; index 0 is the empty label.
+pub struct Labels {
+    pub list: Vec<Label>,
+    index: HashMap<Label, u32>,
+}
+
+impl Default for Labels {
+    fn default() -> Self {
+        Labels {
+            list: vec![Label::default()],
+            index: HashMap::from([(Label::default(), 0)]),
+        }
+    }
+}
+
+impl Labels {
+    pub fn intern(&mut self, l: Label) -> u32 {
+        if let Some(&i) = self.index.get(&l) {
+            return i;
+        }
+        let i = self.list.len() as u32;
+        self.list.push(l.clone());
+        self.index.insert(l, i);
+        i
+    }
+}
+
 /// A way the car profile keeps.
 #[derive(Clone)]
 pub struct WayIn {
@@ -62,12 +139,13 @@ pub struct WayIn {
     /// A ferry's crossing time from its `duration`.
     pub duration_s: Option<f32>,
     pub ferry: bool,
+    pub info: WayInfo,
     /// Its nodes in [`Input::refs`] and [`Input::coords`].
     pub refs: Range<usize>,
 }
 
 impl WayIn {
-    pub fn new(id: i64, way: &profile::Way, refs: Range<usize>) -> Self {
+    pub fn new(id: i64, way: &profile::Way, info: WayInfo, refs: Range<usize>) -> Self {
         let dir = |d: Option<profile::Direction>| {
             d.map_or(Dir::default(), |d| Dir {
                 kmh: d.kmh as f32,
@@ -79,6 +157,7 @@ impl WayIn {
             dirs: [dir(way.forward), dir(way.backward)],
             duration_s: way.duration_s.map(|d| d as f32),
             ferry: way.ferry,
+            info,
             refs,
         }
     }
@@ -112,6 +191,9 @@ pub struct Input {
     /// The nodes on those ways that the profile does something with.
     pub nodes: HashMap<i64, profile::Node>,
     pub restrictions: Vec<RestrictionIn>,
+    pub labels: Labels,
+    /// `highway=motorway_junction` nodes with a `ref`: their exit numbers.
+    pub junctions: Vec<(i64, String)>,
     pub read: ReadStats,
 }
 
@@ -122,9 +204,9 @@ pub struct Edge {
     /// Travel time in tenths of a second, with the delays of the signals and barriers it
     /// enters.
     pub time_ds: u32,
-    pub metres: f32,
-    /// Index into [`Graph::ways`].
-    pub way: u32,
+    /// Its segment (whose way and length it has) and whether it runs against the segment's
+    /// points: `segment << 1 | reversed`.
+    pub seg: u32,
     /// [`TOLL`], [`FERRY`], [`RESTRICTED`], [`ENTRY`].
     pub flags: u8,
 }
@@ -169,8 +251,7 @@ impl Csr {
         let blank = Edge {
             to: 0,
             time_ds: 0,
-            metres: 0.0,
-            way: 0,
+            seg: 0,
             flags: 0,
         };
         let mut edges = vec![blank; list.len()];
@@ -194,9 +275,97 @@ pub struct Graph {
     /// copies made by turn restrictions, of the nodes in `copy_of`.
     pub base_nodes: u32,
     pub copy_of: Vec<u32>,
-    /// OSM way IDs, by [`Edge::way`].
+    /// OSM way IDs, by [`Segment::way`], and what directions need of them.
     pub ways: Vec<i64>,
+    pub way_info: Vec<WayInfo>,
+    pub labels: Vec<Label>,
+    pub segments: Vec<Segment>,
+    /// The segments' points, by [`Graph::points`].
+    pub geo: Vec<u8>,
+    pub geo_end: Vec<u64>,
+    /// Exit numbers at base nodes, sorted.
+    pub junctions: Vec<(u32, String)>,
     pub stats: Stats,
+}
+
+/// A stretch of a way between two graph nodes.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Segment {
+    /// Index into [`Graph::ways`].
+    pub way: u32,
+    /// The index in the way's nodes of the stretch's middle node, to find its street.
+    pub vertex: u32,
+    pub metres: f32,
+}
+
+impl Graph {
+    /// Segment `s`'s points, simplified, from its first node to its last.
+    pub fn points(&self, s: u32) -> Vec<P> {
+        let start = match s {
+            0 => 0,
+            _ => self.geo_end[s as usize - 1],
+        };
+        decode_points(&self.geo[start as usize..self.geo_end[s as usize] as usize])
+    }
+}
+
+/// `npts:varint x:varint y:varint (dx:zvarint dy:zvarint)*`, in units of 2^[`SHIFT`].
+fn encode_points(pts: &[P], out: &mut Vec<u8>) {
+    put(out, pts.len() as u64);
+    let mut cur = [0i64; 2];
+    for (i, p) in pts.iter().enumerate() {
+        let q = [i64::from(p[0] >> SHIFT), i64::from(p[1] >> SHIFT)];
+        match i {
+            0 => {
+                put(out, q[0] as u64);
+                put(out, q[1] as u64);
+            }
+            _ => {
+                put(out, zigzag((q[0] - cur[0]) as i32));
+                put(out, zigzag((q[1] - cur[1]) as i32));
+            }
+        }
+        cur = q;
+    }
+}
+
+fn decode_points(b: &[u8]) -> Vec<P> {
+    let mut r = omp_core::varint::Reader::new(b);
+    let n = r.count().expect("graph points");
+    let mut cur = [0i64; 2];
+    (0..n)
+        .map(|i| {
+            match i {
+                0 => cur = [r.varint().unwrap() as i64, r.varint().unwrap() as i64],
+                _ => {
+                    cur[0] += i64::from(r.zvarint().unwrap());
+                    cur[1] += i64::from(r.zvarint().unwrap());
+                }
+            }
+            [(cur[0] as u32) << SHIFT, (cur[1] as u32) << SHIFT]
+        })
+        .collect()
+}
+
+/// `pts` quantized to 2^[`SHIFT`] units and simplified to [`SIMPLIFY_M`]; at least two
+/// points.
+fn simplified(pts: &[P]) -> Vec<P> {
+    let mut q: Vec<P> = Vec::with_capacity(pts.len());
+    for p in pts {
+        let s = [(p[0] >> SHIFT) << SHIFT, (p[1] >> SHIFT) << SHIFT];
+        if q.last() != Some(&s) {
+            q.push(s);
+        }
+    }
+    if q.len() < 2 {
+        q.push(q[0]);
+        return q;
+    }
+    let tolerance = SIMPLIFY_M / geom::metres_per_unit(q[0]);
+    geom::simplify_kept(&q, tolerance)
+        .into_iter()
+        .map(|i| q[i])
+        .collect()
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -210,6 +379,12 @@ pub struct Stats {
     pub base_nodes: u64,
     pub barrier_nodes: u64,
     pub base_edges: u64,
+    /// Stretches between graph nodes, their stored points and bytes.
+    pub segments: u64,
+    pub segment_points: u64,
+    pub geo_bytes: u64,
+    pub labels: u64,
+    pub junctions: u64,
     /// Edges that would start and end at the same node: a node repeated in a way.
     pub loops: u64,
     pub nodes: u64,
@@ -347,6 +522,7 @@ pub fn build(mut input: Input) -> Graph {
     let mut seqs: HashMap<i64, Vec<u32>> = HashMap::new();
     let mut blocked_used: HashSet<u32> = HashSet::new();
     let mut list: Vec<(u32, Edge)> = Vec::new();
+    let (mut segments, mut geo, mut geo_end) = (Vec::new(), Vec::new(), Vec::new());
     for (wi, w) in ways.iter().enumerate() {
         let r = refs(w);
         let pts = &input.coords[w.refs.clone()];
@@ -374,6 +550,21 @@ pub fn build(mut input: Input) -> Graph {
             if a == b {
                 stats.loops += 1;
             } else {
+                // The segment runs the way's direction unless only the way back is open.
+                let reversed = w.dirs[0].kmh <= 0.0;
+                let sid = segments.len() as u32;
+                segments.push(Segment {
+                    way: wi as u32,
+                    vertex: ((i + k) / 2) as u32,
+                    metres: len as f32,
+                });
+                let mut line = simplified(&pts[i..=k]);
+                if reversed {
+                    line.reverse();
+                }
+                stats.segment_points += line.len() as u64;
+                encode_points(&line, &mut geo);
+                geo_end.push(geo.len() as u64);
                 // Forward enters nodes i+1..=k; backward enters k-1..=i.
                 for (fwd, from, to, nodes) in [(true, a, b, i + 1..k + 1), (false, b, a, i..k)] {
                     let d = w.dirs[usize::from(!fwd)];
@@ -399,8 +590,7 @@ pub fn build(mut input: Input) -> Graph {
                     let e = Edge {
                         to,
                         time_ds: ((s * 10.0).round() as u32).max(1),
-                        metres: len as f32,
-                        way: wi as u32,
+                        seg: sid << 1 | u32::from(fwd == reversed),
                         flags,
                     };
                     list.push((from, e));
@@ -420,6 +610,16 @@ pub fn build(mut input: Input) -> Graph {
     let n = coords.len();
     stats.base_nodes = n as u64;
     stats.base_edges = list.len() as u64;
+    stats.segments = segments.len() as u64;
+    stats.geo_bytes = geo.len() as u64;
+    let mut junctions: Vec<(u32, String)> = std::mem::take(&mut input.junctions)
+        .into_iter()
+        .filter_map(|(id, r)| Some((ranks.rank(id)? as u32, r)))
+        .collect();
+    junctions.sort_unstable();
+    junctions.dedup_by_key(|j| j.0);
+    stats.junctions = junctions.len() as u64;
+    stats.labels = input.labels.list.len() as u64 - 1;
 
     // Entering restricted roads from open ones costs the penalty.
     let mut open = vec![false; n];
@@ -440,6 +640,7 @@ pub fn build(mut input: Input) -> Graph {
 
     let t = Instant::now();
     let way_ids: Vec<i64> = ways.iter().map(|w| w.id).collect();
+    let way_info: Vec<WayInfo> = ways.iter().map(|w| w.info).collect();
     drop(ways);
     let via_rank = |id: i64| ranks.rank(id).map(|r| r as u32);
     let (csr, copy_of) = restrict::apply(
@@ -475,6 +676,12 @@ pub fn build(mut input: Input) -> Graph {
         base_nodes: n as u32,
         copy_of,
         ways: way_ids,
+        way_info,
+        labels: std::mem::take(&mut input.labels.list),
+        segments,
+        geo,
+        geo_end,
+        junctions,
         stats,
     }
 }
@@ -525,6 +732,14 @@ pub fn print_stats(s: &Stats) {
         s.entry_edges,
         f64::from(s.max_weight_ds) / 10.0,
         s.loops
+    );
+    eprintln!(
+        "  graph: {} segments, {} points stored ({:.1} MiB), {} labels, {} exit numbers",
+        s.segments,
+        s.segment_points,
+        mib(s.geo_bytes),
+        s.labels,
+        s.junctions
     );
     eprintln!(
         "  graph: {} components, largest {} nodes; {} nodes in {} small ones; sizes 1 / \

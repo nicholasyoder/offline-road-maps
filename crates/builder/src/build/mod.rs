@@ -20,10 +20,12 @@
 //!    streets known only from their addresses from the merge.
 //! 5. The car routing graph ([`graph::make`], step 3.1), its own PBF passes after the
 //!    address and search stages have freed their memory, and its contraction hierarchy
-//!    ([`ch::contract`], step 3.2). Only counted for now; step 3.3 writes them into the
-//!    pack.
+//!    ([`ch::contract`], step 3.2), encoded as the routing sections ([`routing::sections`],
+//!    step 3.3, with segments named by the street table's way map) and measured against
+//!    other layouts ([`routing::layout`]).
 //! 6. [`write_pack`]: dictionaries trained once from the whole tile store, then tiles
-//!    compressed and written in zoom, then Hilbert order, then the other sections.
+//!    compressed and written in zoom, then Hilbert order, then the other sections, the
+//!    routing ones last.
 //!
 //! The PBF is read through one [`Pbf`], so each pass reads only the blobs of the element
 //! types it needs. With `--reuse-stages`, the admin areas, the bands, the address merge,
@@ -36,6 +38,7 @@ pub mod inspect;
 mod meta;
 mod readers;
 mod report;
+mod route_readers;
 
 use std::fs::File;
 use std::ops::Range;
@@ -63,6 +66,7 @@ use crate::mib;
 use crate::pbf::{self, Pbf, features};
 use crate::peak_rss_mib;
 use crate::poly::Poly;
+use crate::routing::{self, layout};
 use crate::search::{self, AddressStreet, encode as search_encode};
 use crate::street::{self, encode as street_encode, grid};
 use crate::tiles::{self, Band, Entry, Store, compress, water};
@@ -73,6 +77,8 @@ use report::{ChainStats, Timer, ZoomTotals};
 
 /// Tiles compressed in parallel before they are written in order.
 const BATCH_TILES: usize = 16_384;
+/// Random pairs, long and short, the routing layouts are compared on.
+const LAYOUT_PAIRS: usize = 500;
 
 #[derive(Args)]
 pub struct BuildArgs {
@@ -381,8 +387,31 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         Ok(ch::contract(&routing.csr, &ch::Params::default()))
     })?;
     ch::print_stats(&hierarchy.stats);
-    drop((routing, hierarchy));
     t.stage("routing CH");
+    let way_streets = std::mem::take(&mut streets.way_streets);
+    let (route_sections, route_sizes, order, lens) = routing::sections(
+        &routing,
+        &hierarchy,
+        &way_streets,
+        &routing::Params::default(),
+    )?;
+    drop(way_streets);
+    routing::print_sizes(&route_sizes);
+    t.stage("routing sections");
+    let pairs = [
+        ("long", ch::check::pairs(&routing, LAYOUT_PAIRS, 1)),
+        (
+            "short",
+            layout::short_pairs(&routing, &order, LAYOUT_PAIRS, 2),
+        ),
+    ];
+    for (name, p) in &pairs {
+        layout::print(&layout::compare(
+            &routing, &hierarchy, &order, &lens, p, name,
+        ));
+    }
+    drop((routing, hierarchy, order, lens));
+    t.stage("routing layout");
     let build_time = match args.deterministic {
         true => 0,
         false => jiff::Timestamp::now().as_second(),
@@ -418,7 +447,16 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     if let Some(a) = streets.addresses {
         sections.extend(a.sections.list());
     }
-    let written = write_pack(&args, &setup, bands.entries, meta, sections, &mut t)?;
+    let written = write_pack(
+        &args,
+        &setup,
+        bands.entries,
+        meta,
+        sections,
+        &route_sections,
+        &mut t,
+    )?;
+    drop(route_sections);
 
     report::print_zooms(&written.zooms);
     report::print_left_out(&bands.cut, &setup.wl);
@@ -431,6 +469,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     );
     bands.chains.print();
     street::print_sizes(&street_sizes);
+    routing::print_sizes(&route_sizes);
     report::print_search_sizes(&search_sizes);
     if let Some(s) = &address_sizes {
         report::print_address_sizes(s);
@@ -528,6 +567,8 @@ fn read_bands(args: &BuildArgs, setup: &Setup, admin: &Admin, t: &mut Timer) -> 
 struct Streets {
     sections: (Vec<u8>, Vec<u8>, street_encode::Sizes),
     sgrd: Vec<u8>,
+    /// The street of each piece of each way, to name the routing segments.
+    way_streets: street::WayStreets,
     addresses: Option<Addresses>,
     postcodes: Vec<Postcode>,
     address_streets: Vec<AddressStreet>,
@@ -565,6 +606,7 @@ fn addresses_and_streets(
         Some(m) => street::Table::build(&ways, admin, &m.votes, &m.cities.list),
         None => street::Table::build(&ways, admin, &[], &[]),
     };
+    let way_streets = table.way_streets(&ways);
     drop(ways);
     street::print_stats(&table.stats);
     search.add_streets(&table, admin);
@@ -589,6 +631,7 @@ fn addresses_and_streets(
         return Ok(Streets {
             sections,
             sgrd,
+            way_streets,
             addresses: None,
             postcodes: Vec::new(),
             address_streets: Vec::new(),
@@ -622,6 +665,7 @@ fn addresses_and_streets(
     Ok(Streets {
         sections,
         sgrd,
+        way_streets,
         addresses: Some(addresses),
         postcodes,
         address_streets,
@@ -671,14 +715,16 @@ struct Written {
     dictionaries: usize,
 }
 
-/// Trains the dictionaries on the tile store, then writes `META`, `SCHM`, the tiles and
-/// `sections` into the staging directory, and moves the finished pack into `--out`.
+/// Trains the dictionaries on the tile store, then writes `META`, `SCHM`, the tiles,
+/// `sections` and the routing sections into the staging directory, and moves the finished
+/// pack into `--out`.
 fn write_pack(
     args: &BuildArgs,
     setup: &Setup,
     mut entries: Vec<Entry>,
     meta: Meta,
     sections: Vec<([u8; 4], Vec<u8>)>,
+    route_sections: &routing::Sections,
     t: &mut Timer,
 ) -> Result<Written> {
     let store_path = &setup.store_path;
@@ -750,6 +796,7 @@ fn write_pack(
     for (id, bytes) in sections {
         written.push(w.section(id, &bytes)?);
     }
+    written.extend(route_sections.write(&mut w)?);
     drop(store_file);
     if setup.stages.is_none() {
         let _ = std::fs::remove_file(store_path);

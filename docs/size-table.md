@@ -258,6 +258,23 @@ The CH of [step 3.2](phase3-plan.md#32-contraction-hierarchy), contracted from t
 
 North America's CH is about 10% over phase 0's 3.2 GiB estimate (3,276 MiB at 1.50 CH edges per graph edge): the graph has 2% more edges (3.1's profile) and the parallel rounds about 10% more shortcuts than `fast_paths`' sequential order. The flags cost nothing measurable.
 
+### Phase 3 step 3.3: the routing sections
+
+The routing sections of [step 3.3](phase3-plan.md#33-routing-format-and-core-reader) (format 0.5) as `build --addresses` writes them (North America with `--addresses all --bands 3`), from `inspect`, in `$OMP_WORK/measure/routing/`. MiB:
+
+| | Ohio | Quebec | North America |
+|---|---:|---:|---:|
+| Nodes (at the top) / hierarchy edges | 2.25M (1.64M) / 8.67M | 0.79M (all) / 3.07M | 63.7M (0.53M) / 252.7M |
+| Segments / stored points (2 m) / with a street | 2.79M / 8.06M / 1.36M | 0.97M / 3.60M / 0.58M | 80.2M / 261.1M / 42.5M |
+| `RCHE` (top) | 44.7 (31.9) | 14.6 (14.5) | 1,245.4 (33.7) |
+| `RGEO` | 41.7 | 17.0 | 1,248.4 |
+| `RGRD` / `RCPY` / `RNAM` / `RJCT` | 0.26 / 0.08 / 0.04 / 0.01 | 0.22 / 0.07 / 0.03 / 0.00 | 10.9 / 2.1 / 1.4 / 0.2 |
+| **Routing total** | **86.7** | **31.9** | **2,508.4** |
+| Grid cells / crossings, copies, exit numbers | 32k / 189k, 16k, 1.9k | 72k / 150k, 16k, 1.4k | 2.34M / 7.73M, 512k, 52.6k |
+| Readers' RAM after open (`RCHE` index and others) | 0.3 | 0.1 | 9.0 |
+
+`RCHE` is 5.2 bytes per hierarchy edge on North America, middle nodes included, against the 12 per node and edge phase 0 assumed (3,621 MiB); `RGEO` 16.3 bytes per segment. The North America pack as built is **9,804.5 MiB (9.6 GiB, 10.3 GB) in 3 chunks**, up from 7,210.4 in phase 2: routing adds 2,508 MiB and the tiles 84 MiB. The estimate of about 10,349 MiB with phase 0's 3,276 MiB CH becomes this measured 9,805.
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

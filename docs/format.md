@@ -1,6 +1,6 @@
 # Pack format
 
-*Version 0.4 (draft), 2026-10-26. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom. 0.4 (phase 2 step 2.5): the search, address, admin and street sections are specified, with their readers in `omp-core`; `SGRD` (the spatial grid) is new, and `SAPL` takes the block layout the other sections share.*
+*Version 0.5 (draft), 2026-10-27. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom. 0.4 (phase 2 step 2.5): the search, address, admin and street sections are specified, with their readers in `omp-core`; `SGRD` (the spatial grid) is new, and `SAPL` takes the block layout the other sections share. 0.5 (phase 3 step 3.3): the routing sections are specified, and a blocked section may be spanning.*
 
 A **pack** holds everything the app needs for one region: map tiles, addresses, and later routing and search data. It is built by `omp-builder` and read by `omp-app`, usually from a USB flash drive. This document is the contract between the two.
 
@@ -12,7 +12,7 @@ Status of each part:
 | Metadata and attribution (`META`), schema (`SCHM`) | **Specified.** In `omp-core::meta` and `omp-core::schema`. |
 | Tiles (`TIDX`, `TDIC`, `TDAT`) | **Specified** (encoding V4 from phase 0). Codec in `omp-core::tile`, reader and writer in `omp-core::tiles`, with round-trip tests. |
 | Addresses (`ASTR`, `ASUF`, `AUNI`, `ALSE`, `ARNG`, `APCD`) | **Specified** (0.4; encoding A3 from phase 0, blocked for random access in phase 2 step 2.4). Reader in `omp-core::addr`. |
-| Routing (`RCH*`) | *Provisional*, finalized in Phase 3. |
+| Routing (`RHDR`, `RCHE`, `RGEO`, `RNAM`, `RGRD`, `RCPY`, `RJCT`) | **Specified** (0.5, phase 3 step 3.3). Reader in `omp-core::route`, with a round-trip test against the builder's encoder that compares every route with Dijkstra. |
 | Admin areas (`SADM`, `SAPL`) | **Specified** (0.4, phase 2 step 2.1). Reader in `omp-core::admin`. |
 | Streets (`SSTR`, `SGEO`) and the spatial grid (`SGRD`) | **Specified** (0.4, phase 2 steps 2.2 and 2.5). Readers in `omp-core::street` and `omp-core::grid`. |
 | Search (`SENT`, `STWN`, `SFST`, `SPST`) | **Specified** (0.4, phase 2 step 2.3). Reader in `omp-core::search`, whose `Search` opens all of the above together. Round-trip tests against a test writer in `omp-core` (`search_tests.rs`) and against the builder's encoders. |
@@ -45,7 +45,7 @@ Chunks exist because FAT32, the default format of most USB drives, caps a file a
 - **Contiguous** (flag bit 0 clear): the section lies inside one chunk, so the reader can hand out one `&[u8]` (one `mmap`) for it. If it would cross a boundary, the writer starts it at the next chunk instead. A contiguous section can be at most `chunk_capacity` long.
 - **Spanning** (flag bit 0 set): the section may cross chunk boundaries, but none of its **records** does. The section defines what a record is (one tile for `TDAT`, one zstd block for `ASTR`). The writer pads with zero bytes before a record that would cross a boundary, and the section's own index points past the padding. The reader reads one record at a time and never sees a boundary.
 
-The tile data of a continent is several GiB, so it must be spanning. Every other section specified so far is under 1 GiB for North America and is contiguous.
+The tile data of a continent is several GiB, so it must be spanning. So are the larger routing sections (`RCHE` and `RGEO` are over 1 GiB each for North America), whose records are their blocks, so that none of them pads to the next chunk. The other sections are under 1 GiB for North America and are contiguous.
 
 **Alignment.** Every section starts at a virtual offset that is a multiple of 4096, so it can be memory-mapped. The gap before it is zero-filled.
 
@@ -55,7 +55,7 @@ The tile data of a continent is several GiB, so it must be spanning. Every other
 |---:|---|---|
 | 0 | `[u8; 8]` | Magic `89 4F 4D 50 0D 0A 1A 0A` (`\x89OMP\r\n\x1a\n`). Like PNG's, it catches text-mode and 7-bit transfers. |
 | 8 | `u16` | Major version (currently 0) |
-| 10 | `u16` | Minor version (currently 4) |
+| 10 | `u16` | Minor version (currently 5) |
 | 12 | `u32` | Header length used, in bytes (fields plus strings; the rest of the page is zero) |
 | 16 | `[u8; 16]` | Pack ID: random, chosen at build time. Each chunk header repeats it. |
 | 32 | `u64` | Chunk capacity |
@@ -102,7 +102,7 @@ Each section ID appears at most once. Sections do not overlap. The table itself 
 
 - **Major** version: the reader opens a pack only if the major version equals its own. Any change that an old reader would misread bumps it: a changed field, encoding or meaning.
 - **Minor** version: additions only. New sections, and new fields in space that older versions wrote as zero (the header's tail, reserved flag bits). A reader ignores section IDs it does not know, and accepts any minor version. It may show "built by a newer builder".
-- Version 0.x is the development series. Until 1.0, the app and builder are released together and the major version stays 0. Breaking changes bump the minor version, and the reader requires a minor version it knows: 0.4, and 0.3, since 0.4 only changed sections the 0.3 reader never read (`SAPL`) and added others. A 0.3 pack opens with its tiles; the search readers need 0.4, so the app hides search for older packs.
+- Version 0.x is the development series. Until 1.0, the app and builder are released together and the major version stays 0. Breaking changes bump the minor version, and the reader requires a minor version it knows: 0.5, 0.4, and 0.3, since 0.4 only changed sections the 0.3 reader never read (`SAPL`) and added others, and 0.5 only added the routing sections. A 0.3 pack opens with its tiles; the search readers need 0.4 and the routing reader 0.5, so the app hides what an older pack lacks.
 
 ## Checksums
 
@@ -114,7 +114,7 @@ Every section has an XXH3-64 checksum in the section table. The app does **not**
 ## `META`: metadata and attribution (contiguous)
 
 A UTF-8 JSON object, zstd-compressed (one frame). Fields:
-- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.4"`).
+- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.5"`).
 - `sources`: the `fetch` manifest. For each input: `name`, `url`, `date` (of download, RFC 3339), `sha256`, `license`, and optionally `license_url` and `attribution`. Every OpenAddresses source is listed, including those whose license is `unspecified` (decision 13).
 - `attribution`: the text the app shows on its "About this map" screen, built from `sources` (e.g. "© OpenStreetMap contributors, ODbL", the Statistics Canada NAR licence, each OpenAddresses source's attribution).
 - `settings`: the build options that shaped the data (whitelist version, simplification tolerances, address dedup and attach distances).
@@ -310,14 +310,98 @@ The postcodes the other sections refer to, sorted by bytes, in display form ("45
 block = code:str*
 ```
 
-## Routing — *provisional*
+## Routing
 
-Phase 3 builds its own contraction hierarchy. The size table reserves about 3.2 GiB for North America at 12 bytes per node and per edge in a compact layout (62.5M nodes, 150M edges, about 1.5 CH edges per edge). The expected sections:
-- `RCHN`: nodes in a cache-friendly order, with coordinates.
-- `RCHE`: up and down edges in CSR form, with weights and a shortcut flag.
-- `RCHU`: shortcut unpacking (the middle node of each shortcut).
-- `RGEO`: road geometry for drawing the route and turn-by-turn, possibly shared with the z14 roads tiles.
-- Turn restrictions, and the mapping from tiles to the graph for snapping.
+The car routing sections (0.5, phase 3 step 3.3): a contraction hierarchy over the car graph, the road segments it stands for with their geometry, names and signs, a grid to find segments near a point, the node copies made by turn restrictions, and exit numbers. `omp-core::route` reads them; the builder writes them from its `graph` and `ch` stages. All but `RHDR` are in the [blocked layout](#streets) (`count:u32 nblocks:u32 (first:u32 offset:u32 length:u32)* block*`), and may be **spanning**: then the index is one record and each block another, and `offset` (from the section's start) points past any padding. North America's sizes are in the [size table](size-table.md#phase-3-step-33-the-routing-sections).
+
+**The graph.** Its nodes are intersections, way ends and the ends at blocking barriers (the **plain** nodes), and one **copy** of a node per approach that a turn restriction names, with only the edges out of the node that the approach allows (phase 3 decision 2). A **segment** is a stretch of one way between two plain nodes; each of its one or two directions is an edge of the graph, from a plain node or from one of its copies. Edge weights are driving times in tenths of a second, plus 3,600 s on an edge that enters a road a car may use only to start or end a route on (`access=destination` and the like) from an open one.
+
+**Node IDs** are positions in `RCHE`. The nodes at the top of the hierarchy come first: as many of the last contracted as fit in about 32 MiB (`RHDR` `top_nodes`, `top_bytes`), so that one read brings them into the file cache; almost every long route passes through them. Then the rest. Both parts are ordered along a Hilbert curve of the node's position (`omp_core::tile::hilbert` at z24 of `(x >> 8, y >> 8)`), so a local search and the unpacking of a route read nearby blocks.
+
+### `RHDR`: routing header (contiguous)
+
+A zstd-compressed JSON object: `nodes`, `edges` (of the hierarchy), `segments`, `labels`, `block_nodes` (nodes per `RCHE` block), `top_nodes`, `top_bytes` (the bytes of `RCHE`, index included, that hold the top), and `settings`, the profile constants the graph was built with (speed factor, signal and ferry delays, the restricted-road penalty, the small-component size), for display.
+
+### `RCHE`: the hierarchy (spanning)
+
+`count` is the number of nodes. Block *k* holds nodes *k* × `block_nodes` onwards (32, fewer in the last block), and its `first` is its first node. Blocks are **not compressed**: a block is about 1 KiB, and decoding varints is faster than decompressing.
+
+```
+block = node*
+node  = (nup << 1 | small):varint  ndown:varint  edge*        ; nup up edges, then ndown down edges
+edge  = target:zvarint  (weight << 3 | flags):varint  mid:zvarint
+```
+
+- Each edge of the hierarchy is stored once, at its lower end (the one contracted first). An **up** edge of node *v* runs from *v* to `target`; a **down** edge runs from `target` into *v*. Both lists are sorted by target, then weight.
+- `target` is a delta from the previous edge's target in the same list, the first from *v*.
+- `weight`: tenths of a second, the restricted-road penalty included. `flags`: bit 0 **toll**, bit 1 **ferry**, bit 2 **shortcut**. A shortcut's toll and ferry bits are the union of its halves'.
+- `mid`: for a shortcut, its **middle node**, as a delta from *v*; for a base edge, its **segment direction** (`segment << 1 | reversed`, see `RGEO`), as a delta from the previous base edge's in the block (from 0 at the start of each block). Keeping them in the record means unpacking reads only the middle nodes' blocks (step 3.3 measured 12 pages outside the top per long Ohio route this way, against 99 with them in an array of their own; North America 732 against 1,331).
+- `small`: the node is in a strongly connected component of fewer than 1,000 nodes, so snapping avoids it.
+- **Queries:** search forward from the start on up edges and backward from the end on down edges, skipping edges whose flags are avoided; the best meeting node gives the route. Toll and ferry edges stay in the hierarchy, and a shortcut was only left out where a witness path with no flag it lacked existed, so one hierarchy answers each combination of avoided flags exactly (phase 3 decision 3).
+- **Unpacking** a shortcut from *a* to *b* through *m*: among *m*'s down edges, one from *a*, and among its up edges, one to *b*, whose weights add up to the shortcut's and whose flags together equal its toll and ferry bits; then each half in turn, down to base edges.
+
+### `RGEO`: segments (spanning)
+
+zstd blocks of about 16 KiB uncompressed. `count` is the number of segments; `first` the block's first segment.
+
+```
+block     = segment*
+segment   = a:zvarint  b:zvarint  bits:varint  street:varint  label:varint  decimetres:varint
+            forward  [backward]  npts:varint  (dx:zvarint  dy:zvarint)*
+direction = time:varint  flags:varint  head:varint
+```
+
+- `a` and `b` are its plain end nodes: `a` as a delta from the previous segment's `a` in the block (from 0), `b` as a delta from `a`.
+- `bits`: `class << 3 | roundabout << 2 | small << 1 | oneway`. `class` is the road class as in `SSTR` (0–18), or 19 for a ferry. `roundabout` from `junction=roundabout|circular`. `small`: `a` is in a small component. `oneway`: there is no `backward`.
+- `street`: the street ID + 1 of the way's piece in `SSTR`, for its name and refs; 0 if it has none (an unnamed road, a ferry).
+- `label`: an index into `RNAM`; 0, the empty label, for none.
+- `decimetres`: the way's length between the two nodes, before simplification.
+- `forward` is the way from `a` to `b`, `backward` the way back. Segments are oriented so that `forward` is open: a one-way road tagged against its nodes runs from its last node. `time`: tenths of a second, without the restricted-road penalty. `flags`: 1 toll, 2 ferry, 4 **restricted** (a road to start or end on only), 8 **entry** (it enters restricted roads from an open one: its weight in `RCHE` is `time` + 36,000). `head`: the node a route reaches at the end of the direction when it starts on the segment, 0 for the plain end node, else the copy's node ID + 1.
+- Points run from `a` to `b`, simplified to 2 m, at least two, in units of 2⁶ world units as deltas from a cursor that starts at (0, 0) in each block, as `SGEO`'s.
+- Segments are ordered by the Hilbert key of their first point's z14 cell, then along a z24 Hilbert curve of that point, so each cell's own segments are one run of IDs (`RGRD`) and the segments of a route share blocks.
+
+### `RNAM`: labels (spanning)
+
+zstd blocks of about 16 KiB. `count` is the number of labels, `first` the block's first label.
+
+```
+label = name:str  ref:str  destination:str  destination_ref:str  junction_ref:str
+```
+
+The tags of ways that the street table does not name or that carry signs: a ferry's `name` and `ref`, and for any way with `destination`, `destination:ref` or `junction:ref`, those and its `name` and `ref`. Each label is stored once; label 0 is the empty one.
+
+### `RGRD`: segment grid (spanning)
+
+As [`SGRD`](#sgrd-spatial-grid-contiguous), per z14 cell in Hilbert order, the segments to try when snapping a point. zstd blocks of about 16 KiB; `count` is the number of cells, `first` the block's first cell's key.
+
+```
+block = first_home:varint  cell*
+cell  = key_delta:varint  nhome:varint  ncross:varint  [first:zvarint  delta:varint*]
+```
+
+- A cell's **home** segments are those whose first point is in it: `nhome` consecutive IDs, starting at `first_home` for the block's first cell and running on from cell to cell.
+- Its **crossing** segments are the others with a stored segment through the cell, ascending: the first as a delta from the previous cell's first crossing (from 0 at the start of each block), the rest from the one before.
+- `key_delta` is from the previous cell, or from `first` for the block's first (so 0). Cells with neither are not stored.
+
+### `RCPY`: node copies (spanning)
+
+zstd blocks of about 16 KiB; `count` is the number of copies, `first` the plain node of the block's first entry. A plain node's copies are never split across blocks.
+
+```
+entry = plain_delta:varint  copy:zvarint  nleaves:varint  leaf:varint  leaf_delta:varint*
+```
+
+Sorted by plain node, then copy. `plain_delta` is from the previous entry's plain node (from `first`); `copy` is the copy's node ID as a delta from its plain node; the leaves are the segment directions (`segment << 1 | reversed`) the copy has an edge along, ascending, the first in full. A route that ends partway along a segment direction may arrive at its start node or any copy of it that lists the direction.
+
+### `RJCT`: exit numbers (spanning)
+
+zstd blocks; `count` is the number of entries, `first` the block's first node.
+
+```
+entry = node_delta:varint  ref:str
+```
+
+The `ref` of each `highway=motorway_junction` node that is a graph node, for the node and each of its copies, sorted by node; `node_delta` is from the previous entry (from `first`).
 
 ## Admin areas
 

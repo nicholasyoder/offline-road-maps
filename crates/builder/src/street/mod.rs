@@ -129,6 +129,21 @@ pub fn point_at(parts: &[Vec<P>], along: &Along, m: f64) -> P {
     [lerp(a[0], b[0]), lerp(a[1], b[1])]
 }
 
+/// Which street each piece of a way is in: `(OSM way ID, first vertex, street)`, sorted, so
+/// routing can name its segments once the table is gone. Vertex indices count the way's
+/// nodes that have a location, as both the street and the graph reads do.
+#[derive(Default)]
+pub struct WayStreets(pub Vec<(i64, u32, u32)>);
+
+impl WayStreets {
+    /// The street of way `way` at its vertex `vertex`.
+    pub fn street(&self, way: i64, vertex: u32) -> Option<u32> {
+        let i = self.0.partition_point(|&(w, v, _)| (w, v) <= (way, vertex));
+        let &(w, _, s) = self.0.get(i.checked_sub(1)?)?;
+        (w == way).then_some(s)
+    }
+}
+
 /// Where a point lies relative to a street.
 #[derive(Clone, Copy, Debug)]
 pub struct Spot {
@@ -169,6 +184,8 @@ fn project(part: &[P], cum: &[f64], mpu: f64, lo: usize, hi: usize, p: P) -> (f6
 /// A run of a way's vertices inside one street part, between stored points `lo..=hi` of the
 /// part.
 struct Piece {
+    /// Its first vertex in its way.
+    from: u32,
     street: u32,
     part: u32,
     lo: u32,
@@ -793,6 +810,7 @@ impl Table {
             let b = slots[i as usize].take().unwrap();
             for (m, part, lo, hi) in b.placed {
                 pieces[m as usize] = Some(Piece {
+                    from: cuts[m as usize].from,
                     street: id as u32,
                     part,
                     lo,
@@ -827,6 +845,19 @@ impl Table {
             way_start,
             stats,
         }
+    }
+
+    /// The street of each piece of `ways` (the ways the table was built from), for routing.
+    pub fn way_streets(&self, ways: &[StreetWay]) -> WayStreets {
+        let mut v = Vec::with_capacity(self.pieces.len());
+        for (w, way) in ways.iter().enumerate() {
+            let (a, b) = (self.way_start[w], self.way_start[w + 1]);
+            for p in &self.pieces[a as usize..b as usize] {
+                v.push((way.id, p.from, p.street));
+            }
+        }
+        v.par_sort_unstable();
+        WayStreets(v)
     }
 
     /// Where `p` lies on the street holding way `w` (the input index): the nearest of the

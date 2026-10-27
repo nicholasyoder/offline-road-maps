@@ -1,7 +1,8 @@
-//! The layout every street, search, address, admin polygon and grid section shares
+//! The layout every street, search, address, admin polygon, grid and routing section shares
 //! (`docs/format.md`): `count:u32 nblocks:u32 (first:u32 offset:u32 length:u32)* block*`,
-//! each block one zstd frame, offsets from the section's start. Also a small cache of decoded
-//! blocks, shared by the readers.
+//! each block one zstd frame, offsets from the section's start. A
+//! section may span chunks: then the index and each block are records ([`write_spanning`]).
+//! Also a small cache of decoded blocks, shared by the readers.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -11,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use zstd::zstd_safe::DCtx;
 
-use crate::pack::{Pack, Section};
+use crate::pack::{Pack, Section, Writer};
 use crate::varint::{Reader, invalid};
 use crate::zframe;
 
@@ -32,7 +33,7 @@ impl Blocked {
             return Ok(None);
         };
         let name = String::from_utf8_lossy(&id).into_owned();
-        if section.spanning() || section.len < 8 || section.len > u32::MAX.into() {
+        if section.len < 8 || section.len > u32::MAX.into() {
             return Err(invalid(format!("bad {name} section")));
         }
         let head = pack.read(section.offset, 8)?;
@@ -88,12 +89,46 @@ impl Blocked {
         let (offset, len) = self.frames[block];
         let frame = pack.read(self.section.offset + u64::from(offset), len as usize)?;
         let raw = zframe::decompress(&mut DCtx::create(), &frame, None)?;
-        Ok((raw, u64::from(len)))
+        Ok((raw, frame.len() as u64))
     }
 
     pub fn heap_bytes(&self) -> usize {
         self.firsts.capacity() * 4 + self.frames.capacity() * 8
     }
+}
+
+/// Writes a blocked section as a spanning one: the index is one record and each block
+/// another, so none crosses a chunk boundary. `blocks` are `(first, bytes)`, already
+/// compressed where the section's blocks are.
+pub fn write_spanning(
+    w: &mut Writer,
+    id: [u8; 4],
+    count: u32,
+    blocks: &[(u32, Vec<u8>)],
+) -> io::Result<Section> {
+    let head_len = 8 + 12 * blocks.len() as u64;
+    let lens = std::iter::once(head_len).chain(blocks.iter().map(|(_, b)| b.len() as u64));
+    let offsets = w.spanning_offsets(lens);
+    let too_big = || invalid(format!("{} is over 4 GiB", String::from_utf8_lossy(&id)));
+    let mut head = Vec::with_capacity(head_len as usize);
+    head.extend_from_slice(&count.to_le_bytes());
+    head.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+    for ((first, b), &offset) in blocks.iter().zip(&offsets[1..]) {
+        head.extend_from_slice(&first.to_le_bytes());
+        head.extend_from_slice(&u32::try_from(offset).map_err(|_| too_big())?.to_le_bytes());
+        head.extend_from_slice(&(b.len() as u32).to_le_bytes());
+    }
+    w.begin_spanning(id);
+    let start = w.record(&head)?;
+    for ((_, b), &offset) in blocks.iter().zip(&offsets[1..]) {
+        let at = w.record(b)?;
+        debug_assert_eq!(at - start, offset);
+    }
+    let s = w.end_spanning();
+    if s.len > u32::MAX.into() {
+        return Err(too_big());
+    }
+    Ok(s)
 }
 
 pub fn string(r: &mut Reader) -> io::Result<String> {

@@ -8,8 +8,7 @@ fn edge(to: u32, time_ds: u32, flags: u8) -> Edge {
     Edge {
         to,
         time_ds,
-        metres: 0.0,
-        way: 0,
+        seg: 0,
         flags,
     }
 }

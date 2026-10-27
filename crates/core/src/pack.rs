@@ -11,9 +11,10 @@ use crate::varint::invalid;
 
 pub const MAGIC: [u8; 8] = *b"\x89OMP\r\n\x1a\n";
 pub const MAJOR: u16 = 0;
-pub const MINOR: u16 = 4;
+pub const MINOR: u16 = 5;
 /// The oldest minor version the reader opens: 0.4 only added sections (`SGRD`) and
-/// changed provisional ones that the 0.3 reader did not read.
+/// changed provisional ones that the 0.3 reader did not read; 0.5 added the routing
+/// sections.
 pub const MIN_MINOR: u16 = 3;
 /// Chunk pages and section alignment.
 pub const PAGE: u64 = 4096;
@@ -257,6 +258,24 @@ impl Writer {
             offset: self.pos,
             hash: Xxh3::new(),
         });
+    }
+
+    /// Where records of lengths `lens` would land if a spanning section began now: offsets
+    /// from its start, with the padding [`Writer::record`] adds before a record that would
+    /// cross a chunk boundary. So a section can hold an index of its own records.
+    pub fn spanning_offsets(&self, lens: impl IntoIterator<Item = u64>) -> Vec<u64> {
+        let start = round_up(self.pos, PAGE);
+        let mut at = start;
+        lens.into_iter()
+            .map(|len| {
+                if len > self.room(at) {
+                    at = round_up(at, self.capacity);
+                }
+                let offset = at - start;
+                at += len;
+                offset
+            })
+            .collect()
     }
 
     /// Appends one record to the open spanning section and returns its virtual offset. A

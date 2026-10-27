@@ -2366,6 +2366,7 @@ dependencies = [
  "fst",
  "hex",
  "jiff",
+ "libc",
  "md-5",
  "memmap2 0.9.12",
  "omp-core",
