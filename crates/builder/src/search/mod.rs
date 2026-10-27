@@ -217,6 +217,8 @@ enum Layer {
 #[derive(Serialize, Deserialize)]
 struct Feat {
     layer: Layer,
+    /// The whitelist layer, for [`Builder::finish`]'s order.
+    wl_layer: u8,
     id: i64,
     class: u16,
     name: String,
@@ -296,6 +298,7 @@ impl Collector {
             }
             self.feats.push(Feat {
                 layer,
+                wl_layer: f.layer,
                 id: f.id,
                 class: f.class,
                 name: name.to_owned(),
@@ -470,7 +473,10 @@ impl Builder {
     ) -> Result<Index> {
         let start = Instant::now();
         let mut stats = Stats::default();
-        let (feats, alts) = (collected.feats, collected.alts);
+        let (mut feats, alts) = (collected.feats, collected.alts);
+        // Each band's features come sorted by layer and ID; sorting them all the same way
+        // makes the entries independent of the number of bands.
+        feats.sort_unstable_by_key(|f| (f.wl_layer, f.id));
         eprintln!(
             "  search: {} features, {} with alternative names",
             feats.len(),

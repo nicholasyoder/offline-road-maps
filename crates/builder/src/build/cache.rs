@@ -18,7 +18,7 @@ use xxhash_rust::xxh3::xxh3_128;
 /// The admin areas as read ([`crate::admin::read::AdminData`]).
 pub const ADMIN: u32 = 1;
 /// The band reads and tile cut: the tile store, its entries, and what the bands collect.
-pub const TILES: u32 = 1;
+pub const TILES: u32 = 2;
 /// The OSM addresses and street ways, and their merge.
 pub const ADDRESSES: u32 = 1;
 

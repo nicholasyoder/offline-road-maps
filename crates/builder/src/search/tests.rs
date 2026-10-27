@@ -190,3 +190,70 @@ fn alternative_names_drop_repeats() {
     );
     assert_eq!(alts, ["Ville-Marie"]);
 }
+
+/// The same features collected over one band or over several, in another order, give the
+/// same search sections.
+#[test]
+fn entries_do_not_depend_on_the_bands() {
+    use crate::admin::read::{AdminData, ReadStats};
+    use crate::pbf::features::Feature;
+
+    let wl = Whitelist::parse(omp_core::whitelist::DEFAULT).unwrap();
+    let admin = Admin::build(AdminData {
+        areas: Vec::new(),
+        places: Vec::new(),
+        stats: ReadStats::default(),
+    });
+    let feature = |layer: &str, id: i64, class: u16, name: &str| {
+        let l = wl.layer_index(layer).unwrap();
+        let name_prop = wl.layers[l].props.iter().position(|p| p == "name").unwrap();
+        Feature {
+            id,
+            layer: l as u8,
+            class,
+            geom: Geometry::Point(project(40.0, -83.0)),
+            props: vec![(name_prop as u8, name.into())],
+            minzoom: None,
+        }
+    };
+    // Pairs with the same name, class and point, so their entries sort the same; the first
+    // of each has an alternative name.
+    let places = [
+        feature("places", 4, 3, "Springfield"),
+        feature("places", 8, 3, "Springfield"),
+    ];
+    let pois = [
+        feature("pois", 12, 1, "Main Library"),
+        feature("pois", 16, 1, "Main Library"),
+    ];
+    let kept: HashMap<i64, Vec<(String, String)>> = [
+        (4, vec![("old_name".into(), "Old Springfield".into())]),
+        (12, vec![("alt_name".into(), "Carnegie Library".into())]),
+    ]
+    .into();
+    let index = |bands: &[Vec<&Feature>]| {
+        let mut c = Collector::new(&wl);
+        for band in bands {
+            let mut band: Vec<Feature> = band
+                .iter()
+                .map(|f| Feature {
+                    props: f.props.clone(),
+                    geom: f.geom.clone(),
+                    ..**f
+                })
+                .collect();
+            band.sort_unstable_by_key(|f| (f.layer, f.id, f.class));
+            c.add(&band, &kept);
+        }
+        let index = Builder::new().finish(&admin, &wl, c, &[], &[]).unwrap();
+        sections(&index, 16 << 10).unwrap().0.list()
+    };
+    let all: Vec<&Feature> = places.iter().chain(&pois).collect();
+    let one = index(&[all]);
+    // Band 0 has the second of each pair, band 1 the first; band 1 also has band 0's again.
+    let two = index(&[
+        vec![&places[1], &pois[1]],
+        vec![&places[0], &places[1], &pois[0]],
+    ]);
+    assert_eq!(one, two);
+}
