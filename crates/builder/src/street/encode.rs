@@ -3,7 +3,7 @@
 use std::io;
 
 use anyhow::Result;
-use omp_core::varint::{Reader, put, zigzag};
+use omp_core::varint::{Reader, invalid, put, put_str, zigzag};
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -27,11 +27,6 @@ pub struct Sizes {
     pub sgeo_raw: u64,
     pub sgeo: u64,
     pub sgeo_blocks: u64,
-}
-
-pub fn put_str(out: &mut Vec<u8>, s: &str) {
-    put(out, s.len() as u64);
-    out.extend_from_slice(s.as_bytes());
 }
 
 pub fn source_code(s: Source) -> u8 {
@@ -157,10 +152,6 @@ pub struct Record {
     pub length_m: u64,
     pub alt_names: Vec<String>,
     pub refs: Vec<String>,
-}
-
-pub fn invalid(msg: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
 pub fn string(r: &mut Reader) -> io::Result<String> {

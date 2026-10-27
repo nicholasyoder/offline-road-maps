@@ -10,6 +10,12 @@ pub fn put(out: &mut Vec<u8>, mut v: u64) {
     out.push(v as u8);
 }
 
+/// A string as its byte length, then its UTF-8 bytes.
+pub fn put_str(out: &mut Vec<u8>, s: &str) {
+    put(out, s.len() as u64);
+    out.extend_from_slice(s.as_bytes());
+}
+
 pub fn len(mut v: u64) -> u64 {
     let mut n = 1;
     while v >= 0x80 {
@@ -27,7 +33,8 @@ pub fn unzigzag(v: u64) -> i32 {
     ((v >> 1) as i32) ^ -((v & 1) as i32)
 }
 
-pub(crate) fn invalid(msg: impl Into<String>) -> io::Error {
+/// An `InvalidData` error: the bytes do not decode.
+pub fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
 }
 

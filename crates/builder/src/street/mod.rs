@@ -18,6 +18,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Args;
+use omp_core::geo::dist;
 use omp_core::normalize::street_key;
 use rayon::prelude::*;
 use serde::Serialize;
@@ -101,10 +102,6 @@ impl Along {
             .copied()
             .unwrap_or(0.0)
     }
-}
-
-fn dist(a: P, b: P) -> f64 {
-    (f64::from(b[0]) - f64::from(a[0])).hypot(f64::from(b[1]) - f64::from(a[1]))
 }
 
 /// The point `m` metres along `parts`: on the last part that starts at or before `m`,
@@ -261,43 +258,6 @@ fn cut_way(w: u32, way: &StreetWay, admin: &Admin) -> (Vec<Cut>, [u64; 2]) {
         length_m: len,
     });
     (out, counts)
-}
-
-/// Kept indices of a Douglas–Peucker simplification of `pts`, with the endpoints.
-fn simplify(pts: &[P], tolerance: f64) -> Vec<usize> {
-    if pts.len() <= 2 {
-        return (0..pts.len()).collect();
-    }
-    let mut keep = vec![false; pts.len()];
-    keep[0] = true;
-    keep[pts.len() - 1] = true;
-    let mut stack = vec![(0, pts.len() - 1)];
-    let tol2 = tolerance * tolerance;
-    let f = |p: P| [f64::from(p[0]), f64::from(p[1])];
-    while let Some((a, b)) = stack.pop() {
-        let (pa, pb) = (f(pts[a]), f(pts[b]));
-        let (dx, dy) = (pb[0] - pa[0], pb[1] - pa[1]);
-        let len2 = dx * dx + dy * dy;
-        let (mut best, mut best_d) = (0, 0.0);
-        for (i, &p) in pts.iter().enumerate().take(b).skip(a + 1) {
-            let q = f(p);
-            let t = if len2 > 0.0 {
-                (((q[0] - pa[0]) * dx + (q[1] - pa[1]) * dy) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let d = (pa[0] + t * dx - q[0]).powi(2) + (pa[1] + t * dy - q[1]).powi(2);
-            if d > best_d {
-                (best, best_d) = (i, d);
-            }
-        }
-        if best_d > tol2 {
-            keep[best] = true;
-            stack.push((a, best));
-            stack.push((best, b));
-        }
-    }
-    (0..pts.len()).filter(|&i| keep[i]).collect()
 }
 
 /// One street's geometry: parts of `(piece, reversed)` and the pieces' stored ranges.
@@ -473,7 +433,7 @@ fn build_street(ways: &[StreetWay], cuts: &[Cut], members: &[u32], key: &str) ->
             qi.push(q.len() - 1);
         }
         let tolerance = SIMPLIFY_M / geom::metres_per_unit(q[0]);
-        let kept = simplify(&q, tolerance);
+        let kept = geom::simplify_kept(&q, tolerance);
         let stored: Vec<P> = kept.iter().map(|&i| q[i]).collect();
         for (m, a, b) in spans {
             let (qa, qb) = (qi[a], qi[b]);

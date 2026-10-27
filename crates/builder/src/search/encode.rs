@@ -4,13 +4,13 @@
 use std::io;
 
 use anyhow::Result;
-use omp_core::varint::{Reader, put, zigzag};
+use omp_core::varint::{Reader, invalid, put, put_str, zigzag};
 use serde::Serialize;
 
 use super::{Entry, Index, Kind};
 use crate::measure::geom::P;
 use crate::street::SHIFT;
-use crate::street::encode::{Blocks, blocked, invalid, put_str, read_blocks, string};
+use crate::street::encode::{Blocks, blocked, read_blocks, string};
 
 pub const SENT: [u8; 4] = *b"SENT";
 pub const STWN: [u8; 4] = *b"STWN";

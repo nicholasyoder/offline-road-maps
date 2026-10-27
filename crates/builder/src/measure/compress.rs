@@ -13,6 +13,7 @@ use zstd::bulk::{Compressor, Decompressor};
 use zstd::zstd_safe::CParameter;
 
 use super::tiles::{Cell, Entry, Variant};
+use omp_core::pack::read_at;
 use omp_core::tile::{BAND_NAMES, Dictionaries, Layer, hilbert, zoom_band};
 use omp_core::varint::{len as varint_len, put as put_varint};
 
@@ -70,25 +71,6 @@ pub fn read(file: &File, e: &Entry) -> Vec<u8> {
     let mut buf = vec![0; e.len as usize];
     read_at(file, &mut buf, e.offset).expect("read tile store");
     buf
-}
-
-#[cfg(unix)]
-fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
-    std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
-}
-
-#[cfg(windows)]
-fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    use std::os::windows::fs::FileExt;
-    while !buf.is_empty() {
-        let n = file.seek_read(buf, offset)?;
-        if n == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-        }
-        buf = &mut buf[n..];
-        offset += n as u64;
-    }
-    Ok(())
 }
 
 fn compressor(level: i32, dict: &[u8]) -> Compressor<'static> {

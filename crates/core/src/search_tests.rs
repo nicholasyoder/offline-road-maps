@@ -12,12 +12,7 @@ use crate::grid::{self, Cell};
 use crate::pack::{Info, PAGE, Pack, Writer};
 use crate::search::{self, Entry, Found, Kind, NearAddress, Search};
 use crate::street::{self, Geometry, STEP_M, Street, TownSource};
-use crate::varint::{put, zigzag};
-
-fn put_str(out: &mut Vec<u8>, s: &str) {
-    put(out, s.len() as u64);
-    out.extend_from_slice(s.as_bytes());
-}
+use crate::varint::{put, put_str, zigzag};
 
 fn frame(raw: &[u8]) -> Vec<u8> {
     zstd::bulk::compress(raw, 3).unwrap()

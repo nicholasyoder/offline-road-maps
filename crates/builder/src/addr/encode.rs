@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::streets::morton;
 use super::tiger::RangeSrc;
 use crate::measure::geom::P;
-use omp_core::varint::put as put_varint;
+use omp_core::varint::{put as put_varint, put_str};
 
 /// An address attached to a street component.
 pub struct Entry {
@@ -88,11 +88,6 @@ pub struct RangeEncRow {
 
 fn zigzag(v: i64) -> u64 {
     ((v << 1) ^ (v >> 63)) as u64
-}
-
-fn put_str(out: &mut Vec<u8>, s: &str) {
-    put_varint(out, s.len() as u64);
-    out.extend_from_slice(s.as_bytes());
 }
 
 fn zstd_len(data: &[u8], level: i32) -> Result<u64> {

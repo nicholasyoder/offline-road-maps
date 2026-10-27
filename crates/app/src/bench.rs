@@ -25,9 +25,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use omp_core::geo;
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{Camera, Vec2, lonlat_to_world};
+use crate::camera::{Camera, Vec2};
 use crate::here::HereTaken;
 use crate::loader::Done;
 use crate::search::{BenchKey, Taken};
@@ -293,7 +294,7 @@ impl Bench {
     fn target(&self, i: usize, cam: &Camera) -> (Vec2, f64) {
         let s = &self.flight.steps[i];
         let [lon, lat] = cam.lonlat();
-        let c = lonlat_to_world(s.lon.unwrap_or(lon), s.lat.unwrap_or(lat));
+        let c = geo::lonlat_to_unit(s.lon.unwrap_or(lon), s.lat.unwrap_or(lat));
         (c, s.zoom.unwrap_or(cam.zoom))
     }
 

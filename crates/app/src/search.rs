@@ -31,7 +31,7 @@ use eframe::egui::{
     StrokeKind, Vec2,
 };
 use omp_core::find::{self, Hit, HitKind, Request};
-use omp_core::geo::P;
+use omp_core::geo;
 use omp_core::pack::Pack;
 use omp_core::schema::Schema;
 use omp_core::search::Kind;
@@ -39,6 +39,7 @@ use omp_core::search::Kind;
 use crate::camera::{self, Camera, TILE_PX};
 use crate::here::{HereAnswer, HereQuery};
 use crate::scale::Units;
+use crate::theme::{APPROX, INK, WEAK};
 
 /// Suggestions shown while typing.
 pub const SUGGESTIONS: usize = 8;
@@ -53,18 +54,12 @@ pub const PAUSE: Duration = Duration::from_millis(150);
 const ADDRESS_ZOOM: f64 = 17.0;
 /// The most a place or street is zoomed in to, and the least.
 const FIT_ZOOM: [f64; 2] = [4.0, 17.0];
-const EARTH_RADIUS_M: f64 = 6_371_008.8;
-const CIRCUMFERENCE_M: f64 = 40_075_016.686;
-const WORLD: f64 = 4_294_967_296.0;
 
 /// Shown while the deeper search levels run.
 const SEARCHING_MORE: &str = "Searching smaller towns and more names…";
 
 const BOX_WIDTH: f32 = 320.0;
 const PANEL_WIDTH: f32 = 360.0;
-const INK: Color32 = Color32::from_gray(40);
-const WEAK: Color32 = Color32::from_gray(105);
-const APPROX: Color32 = Color32::from_rgb(176, 96, 0);
 const PIN: Color32 = Color32::from_rgb(208, 52, 44);
 
 /// Where the worker is.
@@ -375,7 +370,7 @@ fn work(
         } else if let Some(q) = new {
             let req = Request {
                 text: &q.text,
-                near: Some(to_p(q.near)),
+                near: Some(geo::from_unit(q.near)),
                 zoom: q.zoom,
                 limit: q.limit,
                 // Typed, Enter included: Enter on a word still being typed means what its
@@ -444,37 +439,18 @@ fn work(
     }
 }
 
-/// A pack point in the app's world coordinates (0‥1).
-pub fn world(p: P) -> camera::Vec2 {
-    [f64::from(p[0]) / WORLD, f64::from(p[1]) / WORLD]
-}
-
-/// A world point (0‥1) as a pack point.
-pub fn to_p(w: camera::Vec2) -> P {
-    w.map(|v| (v * WORLD).round().clamp(0.0, f64::from(u32::MAX)) as u32)
-}
-
 /// The view to fly to for a hit: an address at z17, anything else zoomed so its radius
 /// takes 40% of the shorter side of the window.
 pub fn view_for(hit: &Hit, size: camera::Vec2) -> (camera::Vec2, f64) {
-    let w = world(hit.p);
+    let w = geo::to_unit(hit.p);
     if hit.kind == HitKind::Address {
         return (w, ADDRESS_ZOOM);
     }
-    let lat = camera::world_to_lonlat(w)[1];
-    let radius = hit.radius_m.max(50.0) / (CIRCUMFERENCE_M * lat.to_radians().cos());
+    let lat = geo::unit_to_lonlat(w)[1];
+    let radius = hit.radius_m.max(50.0) / (geo::EARTH_CIRCUMFERENCE_M * lat.to_radians().cos());
     let side = size[0].min(size[1]).max(100.0);
     let zoom = (0.4 * side / (radius * TILE_PX)).log2();
     (w, zoom.clamp(FIT_ZOOM[0], FIT_ZOOM[1]))
-}
-
-/// Great-circle distance between two world points, in metres.
-pub fn distance_m(a: camera::Vec2, b: camera::Vec2) -> f64 {
-    let [lon1, lat1] = camera::world_to_lonlat(a).map(f64::to_radians);
-    let [lon2, lat2] = camera::world_to_lonlat(b).map(f64::to_radians);
-    let h = ((lat2 - lat1) / 2.0).sin().powi(2)
-        + lat1.cos() * lat2.cos() * ((lon2 - lon1) / 2.0).sin().powi(2);
-    2.0 * EARTH_RADIUS_M * h.sqrt().min(1.0).asin()
 }
 
 /// "450 m", "3.2 km", "32 km"; "500 ft", "3.2 mi", "32 mi"; both for [`Units::Both`].
@@ -1276,7 +1252,7 @@ impl SearchUi {
                 if !h.units.is_empty() {
                     context += &format!(" · units {}", h.units.join(", "));
                 }
-                let d = distance_text(distance_m(cam.center, world(h.p)), units);
+                let d = distance_text(geo::distance_m(cam.center, geo::to_unit(h.p)), units);
                 (self.icons.of(h), h.name.clone(), tag, context, d)
             }
         };
@@ -1373,7 +1349,7 @@ fn one_line(
 /// The marker of a picked result: a pin at its point, with its name, where it is, and
 /// "Approximate" for interpolated and blockface addresses.
 pub fn draw_marker(painter: &egui::Painter, origin: Pos2, cam: &Camera, hit: &Hit) {
-    let s = cam.world_to_screen(world(hit.p));
+    let s = cam.world_to_screen(geo::to_unit(hit.p));
     let tip = Pos2::new(origin.x + s[0] as f32, origin.y + s[1] as f32);
     if !painter.clip_rect().expand(300.0).contains(tip) {
         return;
@@ -1574,16 +1550,16 @@ mod tests {
         let (_, z) = view_for(&hit(HitKind::Entry(Kind::Admin), 40.0, -83.0, 2e6), size);
         assert_eq!(z, FIT_ZOOM[0]);
         let (w, _) = view_for(&hit(HitKind::Entry(Kind::Street), 40.0, -83.0, 500.0), size);
-        let [lon, lat] = camera::world_to_lonlat(w);
+        let [lon, lat] = geo::unit_to_lonlat(w);
         assert!((lat - 40.0).abs() < 1e-6 && (lon + 83.0).abs() < 1e-6);
     }
 
     #[test]
     fn distances() {
-        let a = camera::lonlat_to_world(-83.0, 40.0);
-        let b = camera::lonlat_to_world(-82.0, 40.0);
+        let a = geo::lonlat_to_unit(-83.0, 40.0);
+        let b = geo::lonlat_to_unit(-82.0, 40.0);
         // A degree of longitude at 40° N: 85.2 km on the great circle.
-        assert!((distance_m(a, b) - 85_180.0).abs() < 10.0);
+        assert!((geo::distance_m(a, b) - 85_180.0).abs() < 10.0);
         assert_eq!(distance_text(437.0, Units::Kilometres), "440 m");
         assert_eq!(distance_text(3_240.0, Units::Kilometres), "3.2 km");
         assert_eq!(distance_text(85_180.0, Units::Miles), "53 mi");

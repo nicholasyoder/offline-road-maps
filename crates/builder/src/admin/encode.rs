@@ -1,7 +1,7 @@
 //! `SADM` (admin table) and `SAPL` (admin polygons), as in `docs/format.md`.
 
 use anyhow::Result;
-use omp_core::varint::{put, zigzag};
+use omp_core::varint::{put, put_str, zigzag};
 use serde::Serialize;
 
 use super::{Admin, PACK_TOLERANCE_M, abbreviation, index};
@@ -29,11 +29,6 @@ pub struct Sizes {
     /// Per area, the vertices stored in `SAPL`.
     #[serde(skip)]
     pub pack_vertices: Vec<u64>,
-}
-
-fn put_str(out: &mut Vec<u8>, s: &str) {
-    put(out, s.len() as u64);
-    out.extend_from_slice(s.as_bytes());
 }
 
 /// The two sections' bytes and their sizes.

@@ -49,7 +49,7 @@ const VARIANTS: [&str; 6] = ["v0", "v1", "v2", "v3", "v4", "v5"];
 /// The variant used for the per-layer and per-zoom tables.
 const MAIN: &str = "v4";
 
-fn mib(b: f64) -> String {
+fn mib_text(b: f64) -> String {
     let m = (b / f64::from(1 << 20)).max(0.0);
     if m >= 100.0 {
         format!("{m:.0}")
@@ -137,7 +137,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
         out.push('\n');
     };
     row(&mut out, "Input PBF (MiB)", &|r| {
-        mib(num(&r["input_bytes"]))
+        mib_text(num(&r["input_bytes"]))
     });
     row(&mut out, "Wall time (s)", &|r| {
         format!("{:.0}", num(&r["build"]["wall_s"]))
@@ -156,10 +156,10 @@ pub fn run(args: ReportArgs) -> Result<()> {
         });
     }
     row(&mut out, "Node index on disk (MiB)", &|r| {
-        mib(num(&r["build"]["node_index_disk_bytes"]))
+        mib_text(num(&r["build"]["node_index_disk_bytes"]))
     });
     row(&mut out, "Tile store temp (MiB)", &|r| {
-        mib(num(&r["build"]["tile_store_bytes"]))
+        mib_text(num(&r["build"]["tile_store_bytes"]))
     });
 
     let _ = writeln!(out, "\n## Tiles z0–z14 by variant (MiB)\n");
@@ -168,7 +168,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
         let _ = write!(out, "| {} |", v.to_uppercase());
         for c in &cells {
             let total: f64 = c.iter().filter(|(k, _)| k.0 == v).map(|(_, b)| b).sum();
-            let _ = write!(out, " {} |", mib(total));
+            let _ = write!(out, " {} |", mib_text(total));
         }
         out.push('\n');
     }
@@ -180,7 +180,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
             .flatten()
             .map(|d| num(&d["dict_bytes"]))
             .sum();
-        let _ = write!(out, " {} |", mib(d));
+        let _ = write!(out, " {} |", mib_text(d));
     }
     let _ = write!(out, "\n| MVT + gzip (V2 geometry) |");
     for r in &runs {
@@ -190,7 +190,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
             .flatten()
             .map(|m| num(&m["gzip_bytes"]))
             .sum();
-        let _ = write!(out, " {} |", mib(gz));
+        let _ = write!(out, " {} |", mib_text(gz));
     }
     out.push('\n');
 
@@ -210,7 +210,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
                 .filter(|(k, _)| k.0 == MAIN && &k.1 == l)
                 .map(|(_, b)| b)
                 .sum();
-            let _ = write!(out, " {} |", mib(total));
+            let _ = write!(out, " {} |", mib_text(total));
         }
         out.push('\n');
     }
@@ -229,7 +229,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
                 .filter(|(k, _)| k.0 == MAIN && k.2 == z)
                 .map(|(_, b)| b)
                 .sum();
-            let _ = write!(out, " {} |", mib(total));
+            let _ = write!(out, " {} |", mib_text(total));
         }
         out.push('\n');
     }
@@ -254,23 +254,23 @@ pub fn run(args: ReportArgs) -> Result<()> {
         &mut out,
         "CH, compact layout (MiB)",
         &|r| match ch_bytes(r, ratio) {
-            Some((b, false)) => mib(b),
+            Some((b, false)) => mib_text(b),
             Some((b, true)) => format!(
                 "~{} (est., {:.2} CH edges per edge)",
-                mib(b),
+                mib_text(b),
                 ratio.unwrap_or_default()
             ),
             None => "–".into(),
         },
     );
     row(&mut out, "Search fst (MiB)", &|r| {
-        mib(num(&r["search"]["fst_bytes"]))
+        mib_text(num(&r["search"]["fst_bytes"]))
     });
     row(&mut out, "Search postings (MiB)", &|r| {
-        mib(num(&r["search"]["postings_bytes"]))
+        mib_text(num(&r["search"]["postings_bytes"]))
     });
     row(&mut out, "Search entries (MiB)", &|r| {
-        mib(num(&r["search"]["entries_bytes"]))
+        mib_text(num(&r["search"]["entries_bytes"]))
     });
     print!("{out}");
     Ok(())
@@ -493,7 +493,7 @@ fn size_table(runs: &[Value], args: &ReportArgs) -> Result<String> {
         if m >= 1000.0 {
             count(&Value::from(m.round() as u64))
         } else {
-            mib(b)
+            mib_text(b)
         }
     };
     let millions = |n: f64| format!("{:.1}M", n / 1e6);
@@ -951,7 +951,7 @@ fn addr_report(runs: &[Value]) -> String {
             find(&r["encoding"]["variants"], "variant", &vv).map_or_else(dash, |x| {
                 format!(
                     "{} ({:.2})",
-                    mib(num(&x["total"])),
+                    mib_text(num(&x["total"])),
                     num(&x["bytes_per_address"])
                 )
             })
@@ -966,14 +966,14 @@ fn addr_report(runs: &[Value]) -> String {
     ] {
         row(&mut out, label, &|r| {
             find(&r["encoding"]["variants"], "variant", &a3)
-                .map_or_else(dash, |x| mib(num(&x[field])))
+                .map_or_else(dash, |x| mib_text(num(&x[field])))
         });
     }
     row(&mut out, "TIGER fallback ranges (zstd)", &|r| {
         find(&r["encoding"]["ranges"], "source", &Value::from("tiger")).map_or_else(dash, |x| {
             format!(
                 "{} ({:.1} B/range)",
-                mib(num(&x["zstd"])),
+                mib_text(num(&x["zstd"])),
                 num(&x["zstd"]) / num(&x["ranges"]).max(1.0)
             )
         })

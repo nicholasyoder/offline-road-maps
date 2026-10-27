@@ -825,7 +825,7 @@ impl<'a> Run<'a> {
 
     /// How far "near the view" reaches: three tile widths at the view's zoom.
     fn view_scale_m(&self) -> f64 {
-        3.0 * 40_075_016.0 / 2f64.powf(self.zoom.clamp(0.0, 20.0))
+        3.0 * geo::EARTH_CIRCUMFERENCE_M / 2f64.powf(self.zoom.clamp(0.0, 20.0))
     }
 
     /// The candidates of reading `r`, scored, best first.

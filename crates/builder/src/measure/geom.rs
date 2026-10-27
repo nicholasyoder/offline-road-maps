@@ -1,46 +1,9 @@
-//! Geometry in Web Mercator world coordinates: projection, clipping, simplification and
-//! multipolygon ring assembly.
+//! Geometry in Web Mercator world coordinates: clipping, simplification and multipolygon
+//! ring assembly. The projection is `omp_core::geo`'s, re-exported here.
 
 use std::collections::HashMap;
 
-/// A point in world coordinates: Web Mercator scaled to `0..2^32` on both axes, y down.
-/// One unit is under 1 cm at the equator.
-pub type P = [u32; 2];
-
-pub const WORLD: f64 = 4_294_967_296.0;
-const MAX_LAT: f64 = 85.051_128_779_806_59;
-const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
-
-pub fn project(lat: f64, lon: f64) -> P {
-    let lat = lat.clamp(-MAX_LAT, MAX_LAT).to_radians();
-    let x = (lon + 180.0) / 360.0;
-    let y = (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0;
-    [to_world(x), to_world(y)]
-}
-
-pub fn project_e7(lat: i32, lon: i32) -> P {
-    project(f64::from(lat) * 1e-7, f64::from(lon) * 1e-7)
-}
-
-fn to_world(v: f64) -> u32 {
-    (v * WORLD).round().clamp(0.0, f64::from(u32::MAX)) as u32
-}
-
-/// `(lat, lon)` in degrees.
-pub fn unproject(p: P) -> (f64, f64) {
-    let x = f64::from(p[0]) / WORLD;
-    let y = f64::from(p[1]) / WORLD;
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * y))
-        .sinh()
-        .atan()
-        .to_degrees();
-    (lat, x * 360.0 - 180.0)
-}
-
-/// Metres per world unit at the latitude of `p`.
-pub fn metres_per_unit(p: P) -> f64 {
-    EARTH_CIRCUMFERENCE_M / WORLD * unproject(p).0.to_radians().cos()
-}
+pub use omp_core::geo::{P, metres_per_unit, project, project_e7, unproject};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BBox {
@@ -351,18 +314,30 @@ pub fn simplify(pts: &[[i32; 2]], tolerance: f64) -> Vec<[i32; 2]> {
     if pts.len() <= 2 || tolerance <= 0.0 {
         return pts.to_vec();
     }
+    simplify_kept(pts, tolerance)
+        .into_iter()
+        .map(|i| pts[i])
+        .collect()
+}
+
+/// The indices a Douglas–Peucker simplification of `pts` keeps, ascending, with the endpoints.
+pub fn simplify_kept<T: Copy + Into<f64>>(pts: &[[T; 2]], tolerance: f64) -> Vec<usize> {
+    if pts.len() <= 2 {
+        return (0..pts.len()).collect();
+    }
+    let f = |p: [T; 2]| [p[0].into(), p[1].into()];
     let mut keep = vec![false; pts.len()];
     keep[0] = true;
     keep[pts.len() - 1] = true;
     let mut stack = vec![(0, pts.len() - 1)];
     let tol2 = tolerance * tolerance;
     while let Some((a, b)) = stack.pop() {
+        let (pa, pb) = (f(pts[a]), f(pts[b]));
         let (mut best, mut best_d) = (0, 0.0);
-        for i in a + 1..b {
-            let d = seg_dist2(pts[i], pts[a], pts[b]);
+        for (i, &p) in pts.iter().enumerate().take(b).skip(a + 1) {
+            let d = seg_dist2(f(p), pa, pb);
             if d > best_d {
-                best = i;
-                best_d = d;
+                (best, best_d) = (i, d);
             }
         }
         if best_d > tol2 {
@@ -371,24 +346,7 @@ pub fn simplify(pts: &[[i32; 2]], tolerance: f64) -> Vec<[i32; 2]> {
             stack.push((best, b));
         }
     }
-    pts.iter()
-        .zip(keep)
-        .filter_map(|(p, k)| k.then_some(*p))
-        .collect()
-}
-
-fn seg_dist2(p: [i32; 2], a: [i32; 2], b: [i32; 2]) -> f64 {
-    let (px, py) = (f64::from(p[0]), f64::from(p[1]));
-    let (ax, ay) = (f64::from(a[0]), f64::from(a[1]));
-    let (dx, dy) = (f64::from(b[0]) - ax, f64::from(b[1]) - ay);
-    let len2 = dx * dx + dy * dy;
-    let t = if len2 == 0.0 {
-        0.0
-    } else {
-        (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
-    };
-    let (ex, ey) = (ax + t * dx - px, ay + t * dy - py);
-    ex * ex + ey * ey
+    (0..pts.len()).filter(|&i| keep[i]).collect()
 }
 
 /// Area centroid of the largest outer ring, or the bbox centre for degenerate rings.
@@ -548,7 +506,7 @@ fn signed_distance(p: [f64; 2], rings: &[Vec<[f64; 2]>]) -> f64 {
             {
                 inside = !inside;
             }
-            best = best.min(seg_dist2_f(p, a, b));
+            best = best.min(seg_dist2(p, a, b));
             j = i;
         }
     }
@@ -556,7 +514,7 @@ fn signed_distance(p: [f64; 2], rings: &[Vec<[f64; 2]>]) -> f64 {
     if inside { d } else { -d }
 }
 
-fn seg_dist2_f(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+fn seg_dist2(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let len2 = dx * dx + dy * dy;
     let t = if len2 == 0.0 {

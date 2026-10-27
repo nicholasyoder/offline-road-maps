@@ -13,9 +13,7 @@ use omp_core::grid;
 use omp_core::pack::Pack;
 use omp_core::search::{Found, Kind, NearAddress, Search};
 
-fn mib(b: u64) -> f64 {
-    b as f64 / (1u64 << 20) as f64
-}
+use crate::mib;
 
 /// Every `n / want`-th index of `0..n`, about `want` of them.
 fn sample(n: usize, want: usize) -> impl Iterator<Item = usize> {

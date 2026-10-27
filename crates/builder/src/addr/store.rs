@@ -14,14 +14,14 @@ use std::io;
 use std::time::Instant;
 
 use anyhow::Result;
-use omp_core::varint::{Reader, put, zigzag};
+use omp_core::varint::{Reader, invalid, put, put_str, zigzag};
 use rayon::prelude::*;
 use serde::Serialize;
 
 use super::merge::{APPROX, Attached, Merged, OSM, UNATTACHED};
 use super::streets::morton;
 use crate::measure::geom::P;
-use crate::street::encode::{Blocks, blocked, invalid, put_str, read_blocks, string};
+use crate::street::encode::{Blocks, blocked, read_blocks, string};
 use crate::street::{STEP_M, Table};
 
 pub const ASTR: [u8; 4] = *b"ASTR";

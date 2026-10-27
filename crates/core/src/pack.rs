@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 
+use crate::varint::invalid;
+
 pub const MAGIC: [u8; 8] = *b"\x89OMP\r\n\x1a\n";
 pub const MAJOR: u16 = 0;
 pub const MINOR: u16 = 4;
@@ -22,10 +24,6 @@ pub const SPANNING: u32 = 1;
 
 const ENTRY_LEN: usize = 32;
 const MAX_STR: usize = 255;
-
-fn invalid(msg: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, msg.into())
-}
 
 /// What the pack header says about the region and build.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,6 +77,28 @@ pub fn chunk_path(dir: &Path, name: &str, index: u32) -> PathBuf {
     dir.join(format!("{name}.omp.{index:03}"))
 }
 
+/// Whether `p` is a pack's first chunk: a file named `<name>.omp.000`.
+pub fn is_first_chunk(p: &Path) -> bool {
+    p.is_file()
+        && p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".omp.000"))
+}
+
+/// The first chunks in `dir` (not in its subfolders), sorted; none if it can't be read.
+pub fn first_chunks(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_first_chunk(p))
+        .collect();
+    out.sort();
+    out
+}
+
 fn put_str(out: &mut Vec<u8>, s: &str) -> io::Result<()> {
     if s.len() > MAX_STR {
         return Err(io::Error::new(
@@ -95,13 +115,14 @@ fn round_up(v: u64, to: u64) -> u64 {
     v.div_ceil(to) * to
 }
 
+/// Writes all of `buf` at `offset`, without moving the file's cursor.
 #[cfg(unix)]
-fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+pub fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
 }
 
 #[cfg(windows)]
-fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+pub fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
     while !buf.is_empty() {
         let n = std::os::windows::fs::FileExt::seek_write(file, buf, offset)?;
         buf = &buf[n..];
@@ -110,13 +131,14 @@ fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Fills `buf` from `offset`, without moving the file's cursor.
 #[cfg(unix)]
-fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+pub fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
 }
 
 #[cfg(windows)]
-fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+pub fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
     while !buf.is_empty() {
         let n = std::os::windows::fs::FileExt::seek_read(file, buf, offset)?;
         if n == 0 {

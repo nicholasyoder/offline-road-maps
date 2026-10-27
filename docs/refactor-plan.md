@@ -27,7 +27,7 @@ None of this changes the pack format or what the app shows.
 | Step | Status | Notes |
 |---|---|---|
 | R1 Bug fixes | **Done** 2026-10-26 | `build` writes into `<out>/.building` and swaps the chunks in on success; `--addresses` keeps each subdivision once; resumes send `If-Range` from `<file>.part.meta`; `Pack::open` checks section bounds without wrapping; `OMP_BENCH_NO_MAP` read once; `wanted` deduped with a `HashSet`. Delaware `--deterministic` pack byte-identical to `master`'s. |
-| R2 Shared geometry and small helpers | Not started | |
+| R2 Shared geometry and small helpers | **Done** 2026-10-26 | One Web Mercator in `omp_core::geo` (with the app's `0..1` form and `distance_m`); one Douglas–Peucker (`geom::simplify_kept`); `put_str`, `invalid`, `read_at`/`write_at`, `mib`, first-chunk lookup and the UI colours each in one place. Ohio and Quebec `--deterministic` packs byte-identical; renders pixel-identical; `search --check` unchanged. |
 | R3 Builder structure: production code out of the spikes | Not started | |
 | R4 Build time | Not started | |
 | R5 Split the app's search UI | Not started | |
@@ -87,6 +87,13 @@ Small and independent. One session, one commit per fix or one for all.
 **Done when:** a `build` killed partway through leaves the old pack openable; `--addresses US-OH --addresses all` merges Ohio once; a resumed download whose server copy changed starts over; `Pack::open` rejects a section table whose offset plus length overflows (unit test); CI passes.
 
 ## R2 Shared geometry and small helpers
+
+> **Done 2026-10-26** (the commit "Refactor R2: shared geometry and small helpers"). What was done, and how it was checked:
+> - **Projection:** `omp_core::geo` now has `WORLD`, `EARTH_CIRCUMFERENCE_M`, `EARTH_RADIUS_M` (pub), `project_e7` (moved from the builder), the app's form as `Unit = [f64; 2]` with `lonlat_to_unit`/`unit_to_lonlat` and `to_unit`/`from_unit`, and the haversine `distance_m`. `project` and `unproject` are written on top of the unit form, with the same operations as before, so the `u32` output is unchanged. [measure/geom.rs](../crates/builder/src/measure/geom.rs) re-exports core's `P`, `project`, `project_e7`, `unproject` and `metres_per_unit`, so its callers did not change. The app's `camera::lonlat_to_world`/`world_to_lonlat` and `search::world`/`to_p`/`distance_m` are gone; callers use `geo::*`. The app's y used to be `0.5 − ln(…)/2π` and is now core's `(1 − ln(…)/π)/2`: equal up to the last bit, and the renders below are pixel-identical. The camera's round-trip test moved to core's `projection_round_trips`. `scale.rs` and `find::view_scale_m` use `EARTH_CIRCUMFERENCE_M`; the latter had `40_075_016.0`, and `search --check` gives the same results with `.686`.
+> - **Douglas–Peucker:** `geom::simplify_kept` (generic over `u32`/`i32` points, returns kept indices) is the one implementation, using `geom`'s single `seg_dist2` (the integer copy is gone too); `geom::simplify` and the street table call it. Street sections stay byte-identical.
+> - **Helpers:** `dist` from core in `street/`; `omp_core::varint::put_str` for the street, admin and address encoders and core's search tests (`pack.rs` keeps its own header `put_str`, a different format: a `u8` length, at most 255 bytes); `omp_core::pack::{read_at, write_at}` are `pub` and `measure/compress.rs` uses them; `omp_core::varint::invalid` is `pub` and the only copy (`pack.rs` and the builder's encoders use it); one builder `mib` in `main.rs` (`report.rs`'s, which formats text, is renamed `mib_text`); `omp_core::pack::{is_first_chunk, first_chunks}`, used by `build::first_chunk` (still errors on several packs) and `app::packs::find` (still looks one level down).
+> - **Theme:** [app/src/theme.rs](../crates/app/src/theme.rs) holds `INK`, `WEAK` and `APPROX` (`app.rs` had a third `INK`, now also from there).
+> - **Checks:** Ohio (`12c70434…`) and Quebec (`df133861…`) `--deterministic` packs have the same SHA-256 with `master`'s builder and this one. `omp-app --render` of Ohio at Columbus, z5, z10 and z15: decoded pixels identical (the PNG files differ only in their compressed bytes). `search --check --level 9` with all the query sets: the same pass counts on both packs. CI checks pass.
 
 Mechanical: no behaviour change, and the deterministic packs stay byte-identical. One session.
 

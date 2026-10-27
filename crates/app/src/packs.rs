@@ -3,46 +3,30 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use omp_core::geo;
 use omp_core::meta::{self, Meta};
-use omp_core::pack::Pack;
+use omp_core::pack::{self, Pack};
 use omp_core::schema::{self, Schema};
 use omp_core::tiles::TileReader;
 
-use crate::camera::lonlat_to_world;
 use crate::scale::Units;
 
 /// First-chunk files (`<name>.omp.000`) in `dir` and its direct subfolders, sorted. `dir` may
 /// also be a first-chunk file itself.
 pub fn find(dir: &Path) -> Vec<PathBuf> {
-    if is_first_chunk(dir) {
+    if pack::is_first_chunk(dir) {
         return vec![dir.to_path_buf()];
     }
-    let mut out = Vec::new();
-    let mut scan = |d: &Path, deeper: &mut Vec<PathBuf>| {
-        let Ok(rd) = std::fs::read_dir(d) else { return };
+    let mut out = pack::first_chunks(dir);
+    if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
-            let p = e.path();
-            if is_first_chunk(&p) {
-                out.push(p);
-            } else if p.is_dir() {
-                deeper.push(p);
+            if e.path().is_dir() {
+                out.extend(pack::first_chunks(&e.path()));
             }
         }
-    };
-    let mut subdirs = Vec::new();
-    scan(dir, &mut subdirs);
-    for d in subdirs {
-        scan(&d, &mut Vec::new());
     }
     out.sort();
     out
-}
-
-fn is_first_chunk(p: &Path) -> bool {
-    p.is_file()
-        && p.file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.ends_with(".omp.000"))
 }
 
 /// The folder a pack is known by: the one holding its chunks.
@@ -74,8 +58,8 @@ pub fn open(first_chunk: &Path) -> Result<Opened, String> {
     };
     let pack = Pack::open(first_chunk).map_err(err)?;
     let [w, s, e, n] = pack.info.bbox.map(|v| f64::from(v) * 1e-7);
-    let [x0, y0] = lonlat_to_world(w, n);
-    let [x1, y1] = lonlat_to_world(e, s);
+    let [x0, y0] = geo::lonlat_to_unit(w, n);
+    let [x1, y1] = geo::lonlat_to_unit(e, s);
     let section = pack
         .section(schema::ID)
         .copied()

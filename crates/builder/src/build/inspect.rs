@@ -14,6 +14,7 @@ use omp_core::tile::{Feature, Geom, Layer, MAX_ZOOM, hilbert_xy};
 use omp_core::tiles::TileReader;
 
 use super::first_chunk;
+use crate::mib;
 
 #[derive(Args)]
 pub struct InspectArgs {
@@ -49,10 +50,6 @@ pub struct InspectArgs {
 pub struct VerifyArgs {
     /// Pack directory or its `.omp.000` file.
     pack: PathBuf,
-}
-
-fn mib(b: u64) -> f64 {
-    b as f64 / (1u64 << 20) as f64
 }
 
 /// `inspect --search`: entry counts, then the entries posted to each token of `query`.

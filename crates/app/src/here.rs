@@ -9,12 +9,13 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Id, Pos2, Rect, Stroke, Vec2};
-use omp_core::geo::P;
+use omp_core::geo::{self, P};
 use omp_core::here::Shown;
 
 use crate::camera::{self, Camera};
 use crate::scale::{self, Units};
 use crate::search::{self, Icons, SearchUi, Status};
+use crate::theme::{APPROX, INK, WEAK};
 
 /// Places and POIs this far from the point, in screen points, are "nearby".
 pub const NEARBY_PX: f64 = 30.0;
@@ -23,9 +24,6 @@ const NEARBY_M: [f64; 2] = [15.0, 300.0];
 /// Nearby places and POIs shown.
 const NEARBY_SHOWN: usize = 5;
 const PANEL_WIDTH: f32 = 300.0;
-const INK: Color32 = Color32::from_gray(40);
-const WEAK: Color32 = Color32::from_gray(105);
-const APPROX: Color32 = Color32::from_rgb(176, 96, 0);
 const DOT: Color32 = Color32::from_rgb(30, 110, 220);
 
 /// A "what's here" request, as sent to the search worker.
@@ -74,10 +72,10 @@ impl HereUi {
     /// Asks what is at `at` (world coordinates) and opens the panel there.
     pub fn ask(&mut self, search: &SearchUi, at: camera::Vec2, cam: &Camera) {
         self.next_id += 1;
-        let mpp = scale::metres_per_point(camera::world_to_lonlat(at)[1], cam.scale());
+        let mpp = scale::metres_per_point(geo::unit_to_lonlat(at)[1], cam.scale());
         let q = HereQuery {
             id: self.next_id,
-            p: search::to_p(at),
+            p: geo::from_unit(at),
             entries_m: (NEARBY_PX * mpp).clamp(NEARBY_M[0], NEARBY_M[1]),
             asked: Instant::now(),
         };
@@ -148,7 +146,7 @@ impl HereUi {
                 _ => {}
             }
             ui.separator();
-            let [lon, lat] = camera::world_to_lonlat(at);
+            let [lon, lat] = geo::unit_to_lonlat(at);
             let r = ui
                 .button(lonlat_text(lon, lat))
                 .on_hover_text(format!("Copy as {}", copy_text(lon, lat)));
@@ -184,7 +182,7 @@ impl HereUi {
             address: Some(a), ..
         })) = &panel.answer
         {
-            let p = screen(search::world(a.p));
+            let p = screen(geo::to_unit(a.p));
             if p.distance(at) > 8.0 {
                 let stroke = Stroke::new(1.5, DOT);
                 painter.line_segment([at, p], Stroke::new(1.0, DOT.gamma_multiply(0.6)));
@@ -242,7 +240,7 @@ impl HereUi {
                         Some(Ok(shown)) => shown_ui(ui, shown, units, icons),
                     }
                     ui.add_space(2.0);
-                    let [lon, lat] = camera::world_to_lonlat(panel.at);
+                    let [lon, lat] = geo::unit_to_lonlat(panel.at);
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(lonlat_text(lon, lat))
@@ -448,7 +446,7 @@ mod tests {
         // "What's here?" asks the worker, looking about 30 px around for places and POIs.
         here.ask(&search, w, &cam);
         let q = search.take_here().unwrap();
-        assert_eq!(q.p, search::to_p(w));
+        assert_eq!(q.p, geo::from_unit(w));
         assert!((NEARBY_M[0]..=NEARBY_M[1]).contains(&q.entries_m));
         // A stale answer is dropped; the panel's own is taken.
         here.ask(&search, w, &cam);

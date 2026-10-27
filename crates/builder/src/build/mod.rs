@@ -51,6 +51,7 @@ use crate::measure::peak_rss_mib;
 use crate::measure::poly::Poly;
 use crate::measure::tiles::{self, Band, Entry, Store};
 use crate::measure::water;
+use crate::mib;
 use crate::search::{self, encode as search_encode};
 use crate::street::{self, encode as street_encode, grid};
 
@@ -1004,10 +1005,6 @@ fn print_address_rows(rows: &[merge::SubRow], streets: &[search::AddressStreet],
     );
 }
 
-fn mib(b: u64) -> f64 {
-    b as f64 / (1u64 << 20) as f64
-}
-
 fn file_label(p: &Path) -> String {
     p.file_name()
         .unwrap_or_default()
@@ -1065,11 +1062,7 @@ pub fn first_chunk(path: &Path) -> Result<PathBuf> {
     if !path.is_dir() {
         return Ok(path.to_owned());
     }
-    let mut found: Vec<PathBuf> = std::fs::read_dir(path)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.to_str().is_some_and(|s| s.ends_with(".omp.000")))
-        .collect();
-    found.sort();
+    let mut found = pack::first_chunks(path);
     match found.len() {
         1 => Ok(found.remove(0)),
         0 => bail!("no .omp.000 file in {}", path.display()),

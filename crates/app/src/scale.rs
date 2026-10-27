@@ -1,9 +1,8 @@
 //! The scale bar (phase1-plan.md 1.9): its units, and a round length that fits.
 
+use omp_core::geo;
 use serde::{Deserialize, Serialize};
 
-/// The Earth's circumference at the equator in Web Mercator, metres.
-const CIRCUMFERENCE: f64 = 40_075_016.686;
 const FOOT: f64 = 0.3048;
 const MILE: f64 = 1609.344;
 
@@ -33,7 +32,7 @@ impl Units {
 /// Metres per point at latitude `lat` (degrees), for a camera `scale` in points per world
 /// unit.
 pub fn metres_per_point(lat: f64, scale: f64) -> f64 {
-    CIRCUMFERENCE * lat.to_radians().cos() / scale
+    geo::EARTH_CIRCUMFERENCE_M * lat.to_radians().cos() / scale
 }
 
 /// The longest round length no longer than `max` points, as (its length in points, its

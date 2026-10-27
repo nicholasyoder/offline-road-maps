@@ -5,29 +5,16 @@
 //! World coordinates are Web Mercator scaled to 0‥1 in both axes, y down, as in tile
 //! numbering. Screen coordinates are egui points from the map's top-left corner.
 
+use omp_core::geo;
+
 /// Points per tile at an integer zoom; the tiles' `area` prop assumes 512 (format.md).
 pub const TILE_PX: f64 = 512.0;
 pub const MIN_ZOOM: f64 = 0.0;
 /// z14 is the deepest tile zoom; z15–z18 overzoom it.
 pub const MAX_ZOOM: f64 = 18.0;
-const MAX_LAT: f64 = 85.051_128_779_806_59;
 
+/// A world point ([`geo::Unit`]) or a screen point.
 pub type Vec2 = [f64; 2];
-
-pub fn lonlat_to_world(lon: f64, lat: f64) -> Vec2 {
-    let lat = lat.clamp(-MAX_LAT, MAX_LAT).to_radians();
-    let x = (lon + 180.0) / 360.0;
-    let y = 0.5 - (lat.tan() + 1.0 / lat.cos()).ln() / (2.0 * std::f64::consts::PI);
-    [x, y]
-}
-
-/// `[lon, lat]` of a world point.
-pub fn world_to_lonlat(p: Vec2) -> Vec2 {
-    let lon = p[0] * 360.0 - 180.0;
-    let n = std::f64::consts::PI * (1.0 - 2.0 * p[1]);
-    let lat = n.sinh().atan().to_degrees();
-    [lon, lat]
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Camera {
@@ -99,13 +86,13 @@ impl Camera {
     }
 
     pub fn set_lonlat(&mut self, lon: f64, lat: f64, zoom: f64) {
-        self.center = lonlat_to_world(lon, lat);
+        self.center = geo::lonlat_to_unit(lon, lat);
         self.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
         self.clamp();
     }
 
     pub fn lonlat(&self) -> Vec2 {
-        world_to_lonlat(self.center)
+        geo::unit_to_lonlat(self.center)
     }
 
     /// Centres the bounds and zooms so they fill the viewport.
@@ -286,16 +273,6 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
-    }
-
-    #[test]
-    fn mercator_round_trip() {
-        for (lon, lat) in [(0.0, 0.0), (-81.7, 41.5), (-123.1, 49.3), (179.9, -60.0)] {
-            let [lon2, lat2] = world_to_lonlat(lonlat_to_world(lon, lat));
-            assert!(close(lon, lon2) && close(lat, lat2), "{lon},{lat}");
-        }
-        assert!(close(lonlat_to_world(0.0, 0.0)[1], 0.5));
-        assert!(lonlat_to_world(0.0, 89.0)[1] >= 0.0);
     }
 
     #[test]

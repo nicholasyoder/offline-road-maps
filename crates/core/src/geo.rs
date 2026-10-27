@@ -3,32 +3,69 @@
 /// A point in world coordinates.
 pub type P = [u32; 2];
 
-const WORLD: f64 = 4_294_967_296.0;
-const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
+/// World units per axis: one unit is under 1 cm at the equator.
+pub const WORLD: f64 = 4_294_967_296.0;
+/// The Earth's circumference at the equator in Web Mercator, metres.
+pub const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
+/// Mean Earth radius, metres, for great-circle distances.
+pub const EARTH_RADIUS_M: f64 = 6_371_008.8;
 const MAX_LAT: f64 = 85.051_128_779_806_59;
 
-pub fn project(lat: f64, lon: f64) -> P {
+/// A world point scaled to `0..1` on both axes, y south: the app's `f64` form of [`P`].
+pub type Unit = [f64; 2];
+
+pub fn lonlat_to_unit(lon: f64, lat: f64) -> Unit {
     let lat = lat.clamp(-MAX_LAT, MAX_LAT).to_radians();
     let x = (lon + 180.0) / 360.0;
     let y = (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0;
-    let w = |v: f64| (v * WORLD).round().clamp(0.0, f64::from(u32::MAX)) as u32;
-    [w(x), w(y)]
+    [x, y]
+}
+
+/// `[lon, lat]` in degrees.
+pub fn unit_to_lonlat(u: Unit) -> [f64; 2] {
+    let lat = (std::f64::consts::PI * (1.0 - 2.0 * u[1]))
+        .sinh()
+        .atan()
+        .to_degrees();
+    [u[0] * 360.0 - 180.0, lat]
+}
+
+pub fn to_unit(p: P) -> Unit {
+    [f64::from(p[0]) / WORLD, f64::from(p[1]) / WORLD]
+}
+
+/// Rounded to the nearest world unit, clamped to the world.
+pub fn from_unit(u: Unit) -> P {
+    u.map(|v| (v * WORLD).round().clamp(0.0, f64::from(u32::MAX)) as u32)
+}
+
+pub fn project(lat: f64, lon: f64) -> P {
+    from_unit(lonlat_to_unit(lon, lat))
+}
+
+/// [`project`] of OSM's 10⁻⁷ degree coordinates.
+pub fn project_e7(lat: i32, lon: i32) -> P {
+    project(f64::from(lat) * 1e-7, f64::from(lon) * 1e-7)
 }
 
 /// `(lat, lon)` in degrees.
 pub fn unproject(p: P) -> (f64, f64) {
-    let x = f64::from(p[0]) / WORLD;
-    let y = f64::from(p[1]) / WORLD;
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * y))
-        .sinh()
-        .atan()
-        .to_degrees();
-    (lat, x * 360.0 - 180.0)
+    let [lon, lat] = unit_to_lonlat(to_unit(p));
+    (lat, lon)
 }
 
 /// Metres per world unit at the latitude of `p`.
 pub fn metres_per_unit(p: P) -> f64 {
     EARTH_CIRCUMFERENCE_M / WORLD * unproject(p).0.to_radians().cos()
+}
+
+/// Great-circle distance between two unit points, in metres.
+pub fn distance_m(a: Unit, b: Unit) -> f64 {
+    let [lon1, lat1] = unit_to_lonlat(a).map(f64::to_radians);
+    let [lon2, lat2] = unit_to_lonlat(b).map(f64::to_radians);
+    let h = ((lat2 - lat1) / 2.0).sin().powi(2)
+        + lat1.cos() * lat2.cos() * ((lon2 - lon1) / 2.0).sin().powi(2);
+    2.0 * EARTH_RADIUS_M * h.sqrt().min(1.0).asin()
 }
 
 /// Distance in world units.
@@ -124,6 +161,16 @@ mod tests {
         let e = metres_per_unit(project(0.0, 0.0));
         assert!((e - 0.009_330).abs() < 1e-5, "{e}");
         assert!((metres_per_unit(project(60.0, 0.0)) / e - 0.5).abs() < 1e-3);
+        for (lon, lat) in [(0.0, 0.0), (-81.7, 41.5), (-123.1, 49.3), (179.9, -60.0)] {
+            let [lo, la] = unit_to_lonlat(lonlat_to_unit(lon, lat));
+            assert!(
+                (lo - lon).abs() < 1e-9 && (la - lat).abs() < 1e-9,
+                "{lon},{lat}"
+            );
+        }
+        assert!((lonlat_to_unit(0.0, 0.0)[1] - 0.5).abs() < 1e-9);
+        assert!(lonlat_to_unit(0.0, 89.0)[1] >= 0.0);
+        assert_eq!(from_unit(to_unit([123, u32::MAX])), [123, u32::MAX]);
         assert_eq!(morton([0b11, 0b01]), 0b0111);
     }
 

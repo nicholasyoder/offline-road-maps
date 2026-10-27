@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use super::Rec;
 use crate::measure::geom::{self, P};
+use crate::mib;
 use crate::street::Table;
 
 /// A postcode as a search entry: the median of its addresses and the distance from there
@@ -208,7 +209,6 @@ pub(super) fn measure(
     report.per_street_bytes = compressed(&per_street)?;
     report.exception_bytes = compressed(&exceptions)?;
     report.per_address_bytes = compressed(&per_address)?;
-    let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
     eprintln!(
         "  postcodes: {} of {} addresses, {} codes ({} numeric, {} Canadian), radius p50/p90 \
          {:.0}/{:.0} m; {} of {} streets with addresses have one ({} several), the street's \

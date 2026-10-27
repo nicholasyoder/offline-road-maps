@@ -52,6 +52,11 @@ enum Command {
     Report(report::ReportArgs),
 }
 
+/// Bytes in MiB, for reports.
+fn mib(b: u64) -> f64 {
+    b as f64 / (1u64 << 20) as f64
+}
+
 fn work_dir(cli: &Cli) -> PathBuf {
     cli.work_dir
         .clone()

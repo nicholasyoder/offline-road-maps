@@ -26,6 +26,7 @@ use crate::render::{self, GpuMesh, MapCallback, Renderer};
 use crate::scale::{self, Units};
 use crate::search::{self, SearchUi, Status};
 use crate::style::{Style, StyleFile};
+use crate::theme::INK;
 use crate::tiles::{self, Cover, Known, Resolved, TileId};
 use crate::verify::{Outcome, Verify};
 
@@ -773,7 +774,7 @@ impl eframe::App for App {
                             f64::from(p.x - rect.min.x),
                             f64::from(p.y - rect.min.y),
                         ]);
-                        crate::camera::world_to_lonlat(w)
+                        omp_core::geo::unit_to_lonlat(w)
                     });
                 }
                 // The bench draws every layer and no overlay, whatever the config says.
@@ -1465,8 +1466,6 @@ enum Action {
     About,
 }
 
-/// Text and lines over the map.
-const INK: Color32 = Color32::from_gray(40);
 const ERROR: Color32 = Color32::from_rgb(180, 30, 30);
 
 /// One bar per unit, at most 120 points long: miles with its ticks up, kilometres below it
