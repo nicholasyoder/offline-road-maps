@@ -123,6 +123,8 @@ Detailed plan: [phase2-plan.md](phase2-plan.md).
 ### Between phases 2 and 3: code review fixes
 Detailed plan: [refactor-plan.md](refactor-plan.md). Bug fixes, shared code, the builder's production modules out of the Phase 0 spikes, faster builds, and splitting the app's search UI and the search engine. No format change.
 
+- [x] **Done 2026-10-27:** all six steps ([status](refactor-plan.md#status)). Two bugs fixed; shared geometry and helpers in one place each; the builder's production code out of the spikes; North America `build --addresses all` 52.6 → 36.7 min (−30.4%) at a 47 GiB peak; the app's search UI and the search engine split into modules. Packs byte-identical and search results unchanged throughout. Left open: profiling the address merge (R4.5), now the largest build stage.
+
 ### Phase 3: Car routing
 - [ ] Builder: road graph, car profile, turn restrictions and contraction hierarchies.
 - [ ] App: A to B and multi-stop routing, a directions list, distance and time, a route overlay, and avoid options.

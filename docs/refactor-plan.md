@@ -2,6 +2,8 @@
 
 *Draft 1, 2026-10-26. From a review of the whole workspace after phase 2. Done between phases 2 and 3, before routing adds to `build`. Each step below is sized for one session.*
 
+**Done 2026-10-27:** every step and exit criterion met (see [Status](#status)); only R4.5, profiling the address merge, was left open.
+
 ## Purpose
 
 Phase 2 left the code working and well tested (163 tests), but with three structural problems:
