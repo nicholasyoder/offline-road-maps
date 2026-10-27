@@ -6,7 +6,7 @@ use std::io::Write;
 use omp_core::tile::{EXTENT_BITS, Enc, Geom, Point};
 use omp_core::varint::{put as put_varint, zigzag};
 
-use super::geom::{self, Geometry, P};
+use crate::geom::{self, Geometry, P};
 
 /// World to tile-local coordinates. Consecutive duplicate points (from the grid) are dropped.
 pub fn quantize(g: &Geometry, z: u8, x: u32, y: u32) -> Option<Geom> {

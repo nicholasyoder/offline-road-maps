@@ -9,7 +9,8 @@ use serde::Serialize;
 
 use super::{SHIFT, Street, Table};
 use crate::admin::towns::Source;
-use crate::measure::geom::P;
+#[cfg(test)]
+use crate::geom::P;
 
 pub const SSTR: [u8; 4] = *b"SSTR";
 pub const SGEO: [u8; 4] = *b"SGEO";
@@ -142,6 +143,7 @@ pub fn sections(table: &Table, block: usize) -> Result<(Vec<u8>, Vec<u8>, Sizes)
 }
 
 /// A street record as decoded from `SSTR`.
+#[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub struct Record {
     pub class: u8,
@@ -185,7 +187,9 @@ pub fn read_blocks(section: &[u8]) -> io::Result<(usize, Blocks)> {
     Ok((count, out))
 }
 
-/// Every street in `SSTR` and `SGEO`, in order.
+/// Every street in `SSTR` and `SGEO`, in order (for tests; the app reads them with
+/// `omp_core`).
+#[cfg(test)]
 pub fn decode(sstr: &[u8], sgeo: &[u8]) -> io::Result<Vec<(Record, Vec<Vec<P>>)>> {
     let (count, blocks) = read_blocks(sstr)?;
     let mut records = Vec::with_capacity(count);

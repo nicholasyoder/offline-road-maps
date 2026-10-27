@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result, ensure};
 use memmap2::MmapMut;
 
-use super::geom::P;
+use crate::geom::P;
 
 /// Room for node IDs below 2^34 (about 17 billion; the highest in 2026 is around 13.5 billion).
 const DENSE_CAPACITY: u64 = 1 << 34;

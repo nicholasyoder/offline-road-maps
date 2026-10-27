@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use super::Table;
 use super::encode::{Blocks, blocked};
-use crate::measure::geom::P;
+use crate::geom::P;
 
 pub const SGRD: [u8; 4] = omp_core::grid::SGRD;
 /// Uncompressed bytes per block, about.

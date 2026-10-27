@@ -1,4 +1,4 @@
-//! `omp-builder report`: turns `measure` or `addr-spike` JSON files into Markdown tables.
+//! `omp-builder report`: turns `measure` JSON files into Markdown tables.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -10,25 +10,13 @@ use serde_json::Value;
 
 #[derive(Args)]
 pub struct ReportArgs {
-    /// JSON files written by `measure` (or all by `addr-spike`), one per region.
+    /// JSON files written by `measure`, one per region (or per band).
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
-
-    /// Sum `addr-spike` runs (e.g. one per state and province) into one column with this name.
-    #[arg(long)]
-    sum: Option<String>,
-
-    /// With `--sum`, also write the summed run here, to report it next to other runs.
-    #[arg(long, requires = "sum")]
-    sum_json: Option<PathBuf>,
 
     /// Print only the headline size table: one column per `measure` region, with totals.
     #[arg(long)]
     size_table: bool,
-
-    /// With `--size-table`: the `addr-spike` JSON (e.g. from `--sum-json`) for a region.
-    #[arg(long, value_name = "REGION=FILE", requires = "size_table")]
-    addr: Vec<String>,
 
     /// With `--size-table`: extrapolate a planet column from REGION by the planet PBF's size
     /// over REGION's.
@@ -70,19 +58,10 @@ pub fn run(args: ReportArgs) -> Result<()> {
             serde_json::from_str(&text).with_context(|| format!("parse {}", p.display()))?;
         runs.push(v);
     }
-    if runs.iter().all(|r| r["kind"] == "addr") {
-        if let Some(name) = &args.sum {
-            let total = sum_addr_runs(&runs, name);
-            if let Some(p) = &args.sum_json {
-                std::fs::write(p, serde_json::to_string_pretty(&total)?)
-                    .with_context(|| format!("write {}", p.display()))?;
-            }
-            runs = vec![total];
-        }
-        print!("{}", addr_report(&runs));
-        return Ok(());
-    }
-    anyhow::ensure!(args.sum.is_none(), "--sum only applies to addr-spike runs");
+    anyhow::ensure!(
+        runs.iter().all(|r| r["kind"] != "addr"),
+        "addr-spike runs are no longer reported (the spike was retired in refactor step R3)"
+    );
     let runs = merge_bands(runs)?;
     if args.size_table {
         print!("{}", size_table(&runs, &args)?);
@@ -303,7 +282,7 @@ fn ch_bytes(r: &Value, ratio: Option<f64>) -> Option<(f64, bool)> {
     }
 }
 
-/// The headline sizes of one region, in bytes (graph and address sizes in counts).
+/// The headline sizes of one region, in bytes (graph sizes in counts).
 #[derive(Clone, Default)]
 struct Sizes {
     tiles: f64,
@@ -316,19 +295,11 @@ struct Sizes {
     ch: Option<f64>,
     ch_estimated: bool,
     search: f64,
-    addresses: Option<f64>,
-    a3: Option<f64>,
-    tiger: Option<f64>,
 }
 
 impl Sizes {
     fn total(&self) -> f64 {
-        self.tiles
-            + self.tile_index
-            + self.ch.unwrap_or(0.0)
-            + self.search
-            + self.a3.unwrap_or(0.0)
-            + self.tiger.unwrap_or(0.0)
+        self.tiles + self.tile_index + self.ch.unwrap_or(0.0) + self.search
     }
 
     fn scaled(&self, k: f64) -> Self {
@@ -344,9 +315,6 @@ impl Sizes {
             ch: m(self.ch),
             ch_estimated: true,
             search: self.search * k,
-            addresses: m(self.addresses),
-            a3: m(self.a3),
-            tiger: m(self.tiger),
         }
     }
 }
@@ -383,18 +351,10 @@ fn comaps_bytes(tree: &Value, ids: &str) -> Result<f64> {
     Ok(sum)
 }
 
-/// The headline table: tiles, routing, search and addresses per region, their total, a
+/// The headline table: tiles, routing and search per region, their total, a
 /// planet extrapolation and the CoMaps maps that cover the same ground.
 fn size_table(runs: &[Value], args: &ReportArgs) -> Result<String> {
     let region = |r: &Value| r["region"].as_str().unwrap_or("?").to_owned();
-    let mut addr = BTreeMap::new();
-    for a in &args.addr {
-        let (name, path) = region_arg(a)?;
-        let text = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
-        let v: Value = serde_json::from_str(&text).with_context(|| format!("parse {path}"))?;
-        anyhow::ensure!(v["kind"] == "addr", "{path}: not an addr-spike run");
-        addr.insert(name.to_owned(), v);
-    }
     let ratio = ch_ratio(runs);
     let mut cols: Vec<(String, Sizes)> = runs
         .iter()
@@ -409,9 +369,6 @@ fn size_table(runs: &[Value], args: &ReportArgs) -> Result<String> {
                     .sum::<f64>()
             };
             let s = &r["search"];
-            let a = addr.get(&region(r));
-            let a3 = a.and_then(|a| find(&a["encoding"]["variants"], "variant", &"a3".into()));
-            let tiger = a.and_then(|a| find(&a["encoding"]["ranges"], "source", &"tiger".into()));
             let ch = ch_bytes(r, ratio);
             let sizes = Sizes {
                 tiles: layer(""),
@@ -429,19 +386,10 @@ fn size_table(runs: &[Value], args: &ReportArgs) -> Result<String> {
                 ch: ch.map(|c| c.0),
                 ch_estimated: ch.is_some_and(|c| c.1),
                 search: num(&s["fst_bytes"]) + num(&s["postings_bytes"]) + num(&s["entries_bytes"]),
-                addresses: a.map(|a| num(&a["encoding"]["addresses"])),
-                a3: a3.map(|x| num(&x["total"])),
-                tiger: tiger.map(|x| num(&x["zstd"])),
             };
             (region(r), sizes)
         })
         .collect();
-    for name in addr.keys() {
-        anyhow::ensure!(
-            cols.iter().any(|c| &c.0 == name),
-            "--addr {name}: no such region"
-        );
-    }
     if let Some(p) = &args.planet {
         let (name, bytes) = region_arg(p)?;
         let bytes: f64 = bytes.parse().context("--planet: bytes")?;
@@ -523,18 +471,6 @@ fn size_table(runs: &[Value], args: &ReportArgs) -> Result<String> {
         })
     });
     row("Search: fst + postings + entries (MiB)", &|s| big(s.search));
-    row("Addresses", &|s| s.addresses.map_or_else(dash, millions));
-    row(
-        "Addresses A3 + TIGER fallback ranges (MiB)",
-        &|s| match (s.a3, s.tiger) {
-            (None, None) => dash(),
-            (a, t) => format!(
-                "{} + {}",
-                a.map_or_else(dash, big),
-                t.map_or_else(dash, big)
-            ),
-        },
-    );
     row("**Total (MiB)**", &|s| format!("**{}**", big(s.total())));
     row("Total (GiB / GB)", &|s| {
         format!(
@@ -575,14 +511,6 @@ fn count(v: &Value) -> String {
         out.push(c);
     }
     out
-}
-
-fn pct(a: f64, b: f64) -> String {
-    if b > 0.0 {
-        format!("{:.1}%", a / b * 100.0)
-    } else {
-        "–".into()
-    }
 }
 
 /// Fields that identify a row in a list; rows with the same values are summed together.
@@ -721,302 +649,9 @@ fn merge_bands(runs: Vec<Value>) -> Result<Vec<Value>> {
     Ok(out)
 }
 
-/// One run that adds up `runs`, with ratios recomputed from the sums.
-fn sum_addr_runs(runs: &[Value], name: &str) -> Value {
-    let mut total = runs[0].clone();
-    for r in &runs[1..] {
-        add_value(&mut total, r, "");
-    }
-    total["region"] = Value::from(name);
-    let regions: Vec<Value> = runs.iter().map(|r| r["region"].clone()).collect();
-    total["summed_regions"] = Value::from(regions);
-    let addresses = num(&total["encoding"]["addresses"]).max(1.0);
-    for v in total["encoding"]["variants"]
-        .as_array_mut()
-        .into_iter()
-        .flatten()
-    {
-        v["bytes_per_address"] = Value::from(num(&v["total"]) / addresses);
-    }
-    // Runs differ in their sources (no NAR in the US), so cumulative counts are re-added.
-    if let Some(cov) = total["coverage"].as_array_mut() {
-        let pos = |r: &Value| ADDR_SOURCES.iter().position(|(id, _)| r["source"] == *id);
-        cov.sort_by_key(pos);
-        let mut cumulative = 0;
-        for r in cov {
-            cumulative += r["new_addresses"].as_u64().unwrap_or(0);
-            r["cumulative"] = Value::from(cumulative);
-        }
-    }
-    for r in total["ranges"].as_array_mut().into_iter().flatten() {
-        let n = num(&r["ranges"]).max(1.0);
-        r["share_with_osm_point"] = Value::from(num(&r["with_osm_point"]) / n);
-        r["share_with_merged_point"] = Value::from(num(&r["with_merged_point"]) / n);
-    }
-    total
-}
-
-fn find<'a>(list: &'a Value, key: &str, value: &Value) -> Option<&'a Value> {
-    list.as_array()?.iter().find(|x| &x[key] == value)
-}
-
-const ADDR_SOURCES: [(&str, &str); 5] = [
-    ("osm", "OSM"),
-    ("open_addresses", "OpenAddresses"),
-    ("nar", "NAR (building point)"),
-    ("oda", "ODA"),
-    ("nar_blockface", "NAR (blockface only)"),
-];
-
-fn addr_report(runs: &[Value]) -> String {
-    let mut out = String::new();
-    let header = |out: &mut String, first: &str| {
-        let _ = write!(out, "| {first} |");
-        for r in runs {
-            let _ = write!(out, " {} |", r["region"].as_str().unwrap_or("?"));
-        }
-        let _ = write!(out, "\n|---|");
-        for _ in runs {
-            out.push_str("---:|");
-        }
-        out.push('\n');
-    };
-    let row = |out: &mut String, label: &str, f: &dyn Fn(&Value) -> String| {
-        let _ = write!(out, "| {label} |");
-        for r in runs {
-            let _ = write!(out, " {} |", f(r));
-        }
-        out.push('\n');
-    };
-    let dash = || "–".to_owned();
-
-    let _ = writeln!(out, "## Build\n");
-    header(&mut out, "");
-    row(&mut out, "Wall time (s)", &|r| {
-        format!("{:.0}", num(&r["wall_s"]))
-    });
-    row(&mut out, "Peak RSS (MiB)", &|r| {
-        format!("{:.0}", num(&r["peak_rss_mib"]))
-    });
-    row(&mut out, "Attach / dedup distance (m)", &|r| {
-        format!("{:.0} / {:.0}", num(&r["attach_m"]), num(&r["dedup_m"]))
-    });
-
-    let _ = writeln!(out, "\n## Records read\n");
-    header(&mut out, "Source");
-    for (id, label) in ADDR_SOURCES {
-        let src = Value::from(id);
-        row(&mut out, label, &|r| {
-            find(&r["sources"], "source", &src).map_or_else(dash, |s| count(&s["records"]))
-        });
-    }
-    row(&mut out, "TIGER ranges", &|r| {
-        find(&r["ranges"], "source", &Value::from("tiger"))
-            .map_or_else(dash, |s| count(&s["ranges"]))
-    });
-    row(&mut out, "OSM interpolation ranges", &|r| {
-        find(&r["ranges"], "source", &Value::from("osm_interpolation"))
-            .map_or_else(dash, |s| count(&s["ranges"]))
-    });
-
-    let _ = writeln!(
-        out,
-        "\n## Normalization exceptions (share of the source's records)\n"
-    );
-    header(&mut out, "Source: empty / unparseable / 0 / no street");
-    for (id, label) in ADDR_SOURCES {
-        let src = Value::from(id);
-        row(&mut out, label, &|r| {
-            find(&r["sources"], "source", &src).map_or_else(dash, |s| {
-                let n = num(&s["records"]);
-                format!(
-                    "{} / {} / {} / {}",
-                    pct(num(&s["no_number"]), n),
-                    pct(num(&s["number_exceptions"]), n),
-                    pct(num(&s["zero_number"]), n),
-                    pct(num(&s["no_street"]), n)
-                )
-            })
-        });
-    }
-
-    let _ = writeln!(
-        out,
-        "\n## Street attach: share attached at 100 / 200 / 500 m (exact key + loose key)\n"
-    );
-    header(&mut out, "Source");
-    for (id, label) in ADDR_SOURCES {
-        let src = Value::from(id);
-        row(&mut out, label, &|r| {
-            find(&r["attach"], "source", &src).map_or_else(dash, |a| {
-                let n = num(&a["records"]);
-                (0..3)
-                    .map(|i| pct(num(&a["strict"][i]) + num(&a["loose"][i]), n))
-                    .collect::<Vec<_>>()
-                    .join(" / ")
-            })
-        });
-        row(&mut out, &format!("  {label}, exact key only"), &|r| {
-            find(&r["attach"], "source", &src).map_or_else(dash, |a| {
-                let n = num(&a["records"]);
-                (0..3)
-                    .map(|i| pct(num(&a["strict"][i]), n))
-                    .collect::<Vec<_>>()
-                    .join(" / ")
-            })
-        });
-    }
-
-    let _ = writeln!(out, "\n## Unique addresses after the merge (cumulative)\n");
-    header(&mut out, "Sources");
-    for (i, (id, label)) in ADDR_SOURCES.iter().enumerate() {
-        let src = Value::from(*id);
-        let name = if i == 0 {
-            format!("{label} only")
-        } else {
-            format!("+ {label}")
-        };
-        row(&mut out, &name, &|r| {
-            find(&r["coverage"], "source", &src).map_or_else(dash, |c| {
-                format!(
-                    "{} (+{})",
-                    count(&c["cumulative"]),
-                    count(&c["new_addresses"])
-                )
-            })
-        });
-    }
-    row(&mut out, "Units (distinct, all sources)", &|r| {
-        count(&r["merged"]["units"])
-    });
-    row(&mut out, "Attached to a street", &|r| {
-        pct(
-            num(&r["merged"]["attached"]),
-            num(&r["merged"]["addresses"]),
-        )
-    });
-    row(&mut out, "Addresses per km of addressed street", &|r| {
-        format!(
-            "{:.0}",
-            num(&r["merged"]["addresses"]) / num(&r["merged"]["street_km_with_addresses"]).max(1.0)
-        )
-    });
-
-    let _ = writeln!(out, "\n## Dedup by distance\n");
-    header(&mut out, "Distance: unique addresses / conflicts");
-    for d in [25.0, 50.0, 100.0, 250.0, 1000.0] {
-        let dv = Value::from(d);
-        row(&mut out, &format!("{d:.0} m"), &|r| {
-            find(&r["dedup"], "dedup_m", &dv).map_or_else(dash, |x| {
-                let c = num(&x["conflicts_attached"]) + num(&x["conflicts_unattached"]);
-                format!(
-                    "{} / {}",
-                    count(&x["addresses"]),
-                    count(&Value::from(c as u64))
-                )
-            })
-        });
-    }
-
-    let _ = writeln!(
-        out,
-        "\n## Ranges: share with at least one point within 100 m\n"
-    );
-    header(
-        &mut out,
-        "Ranges: OSM points / merged points / fallback ranges",
-    );
-    for (id, label) in [
-        ("tiger", "TIGER"),
-        ("osm_interpolation", "OSM interpolation"),
-    ] {
-        let src = Value::from(id);
-        row(&mut out, label, &|r| {
-            find(&r["ranges"], "source", &src).map_or_else(dash, |x| {
-                format!(
-                    "{} / {} / {}",
-                    pct(num(&x["with_osm_point"]), num(&x["ranges"])),
-                    pct(num(&x["with_merged_point"]), num(&x["ranges"])),
-                    count(&x["fallback_ranges"])
-                )
-            })
-        });
-    }
-
-    let _ = writeln!(out, "\n## Address store size (MiB; bytes per address)\n");
-    header(&mut out, "Variant");
-    for v in ["a1", "a2", "a3", "a4"] {
-        let vv = Value::from(v);
-        row(&mut out, &v.to_uppercase(), &|r| {
-            find(&r["encoding"]["variants"], "variant", &vv).map_or_else(dash, |x| {
-                format!(
-                    "{} ({:.2})",
-                    mib_text(num(&x["total"])),
-                    num(&x["bytes_per_address"])
-                )
-            })
-        });
-    }
-    let a3 = Value::from("a3");
-    for (field, label) in [
-        ("streets", "  A3 street runs"),
-        ("units", "  A3 units table"),
-        ("suffixes", "  A3 suffix table"),
-        ("unattached", "  A3 unattached points"),
-    ] {
-        row(&mut out, label, &|r| {
-            find(&r["encoding"]["variants"], "variant", &a3)
-                .map_or_else(dash, |x| mib_text(num(&x[field])))
-        });
-    }
-    row(&mut out, "TIGER fallback ranges (zstd)", &|r| {
-        find(&r["encoding"]["ranges"], "source", &Value::from("tiger")).map_or_else(dash, |x| {
-            format!(
-                "{} ({:.1} B/range)",
-                mib_text(num(&x["zstd"])),
-                num(&x["zstd"]) / num(&x["ranges"]).max(1.0)
-            )
-        })
-    });
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sums_addr_runs() {
-        let us: Value = serde_json::from_str(
-            r#"{"region": "oh", "peak_rss_mib": 10.0, "dedup_m": 250.0,
-                "coverage": [{"source": "osm", "new_addresses": 5, "cumulative": 5},
-                             {"source": "open_addresses", "new_addresses": 10, "cumulative": 15}],
-                "attach": [{"source": "osm", "records": 5, "strict": [1, 2, 3]}],
-                "encoding": {"addresses": 15, "variants": [{"variant": "a3", "total": 30, "bytes_per_address": 2.0}]}}"#,
-        )
-        .unwrap();
-        let ca: Value = serde_json::from_str(
-            r#"{"region": "on", "peak_rss_mib": 20.0, "dedup_m": 250.0,
-                "coverage": [{"source": "osm", "new_addresses": 1, "cumulative": 1},
-                             {"source": "nar", "new_addresses": 4, "cumulative": 5}],
-                "attach": [{"source": "osm", "records": 1, "strict": [1, 1, 1]}],
-                "encoding": {"addresses": 5, "variants": [{"variant": "a3", "total": 20, "bytes_per_address": 4.0}]}}"#,
-        )
-        .unwrap();
-        let t = sum_addr_runs(&[us, ca], "both");
-        assert_eq!(t["region"], "both");
-        assert_eq!(t["peak_rss_mib"], 20.0);
-        assert_eq!(t["dedup_m"], 250.0);
-        let cumulative: Vec<u64> = t["coverage"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| r["cumulative"].as_u64().unwrap())
-            .collect();
-        assert_eq!(cumulative, [6, 16, 20]);
-        assert_eq!(t["attach"][0]["strict"], serde_json::json!([2, 3, 4]));
-        assert_eq!(t["encoding"]["variants"][0]["bytes_per_address"], 2.5);
-    }
 
     #[test]
     fn merges_bands() {

@@ -7,7 +7,7 @@ use omp_core::normalize::{is_direction, loose_key, street_key};
 use rayon::prelude::*;
 
 use super::osm::StreetWay;
-use crate::measure::geom::{self, P};
+use crate::geom::{self, P};
 
 /// Grid cells of 2^17 world units: about 940 m at 40° N and 560 m at 62° N, so the 3 × 3
 /// cells around a point cover every way within 500 m of it.
@@ -67,15 +67,12 @@ pub struct Way {
     pub cum: Vec<f64>,
     /// Strict keys of every name and ref.
     pub keys: Vec<u32>,
-    /// Strict key of `name`.
-    pub primary: u32,
 }
 
 /// A run of ways that share a key and touch: one street record in the address store.
-pub struct Comp {
-    pub key: u32,
-    pub ways: Vec<u32>,
-    pub length_m: f64,
+struct Comp {
+    key: u32,
+    ways: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -83,7 +80,6 @@ pub struct Hit {
     pub way: u32,
     pub dist_m: f64,
     pub along_m: f64,
-    pub left: bool,
 }
 
 pub struct Streets {
@@ -92,12 +88,10 @@ pub struct Streets {
     pub ways: Vec<Way>,
     strict: HashMap<(u32, i32, i32), Vec<u32>>,
     loose: HashMap<(u32, i32, i32), Vec<u32>>,
-    any: HashMap<(i32, i32), Vec<u32>>,
     /// The distinct strict keys of the ways in each cell, for fuzzy matching.
     cell_keys: HashMap<(i32, i32), Vec<u32>>,
-    /// Sorted by the Morton code of their first point, so nearby streets are stored together.
-    pub comps: Vec<Comp>,
-    /// `(way, key)` → (component, offset of the way's start along the component).
+    /// `(way, key)` → (component, offset of the way's start along the component). The
+    /// components are numbered by the Morton code of their first point.
     entry: HashMap<(u32, u32), (u32, f64)>,
 }
 
@@ -139,14 +133,12 @@ impl Streets {
             }
             ways.push(Way {
                 cum,
-                primary: ks[0],
                 keys: ks_sorted,
             });
         }
 
         let mut strict: HashMap<(u32, i32, i32), Vec<u32>> = HashMap::new();
         let mut loose: HashMap<(u32, i32, i32), Vec<u32>> = HashMap::new();
-        let mut any: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         let mut cells = Vec::new();
         for (wi, w) in ways.iter().enumerate() {
             cells.clear();
@@ -164,7 +156,6 @@ impl Streets {
             lk.sort_unstable();
             lk.dedup();
             for &(x, y) in &cells {
-                any.entry((x, y)).or_default().push(wi as u32);
                 for &k in &w.keys {
                     strict.entry((k, x, y)).or_default().push(wi as u32);
                 }
@@ -221,18 +212,7 @@ impl Streets {
                 let mut ws: Vec<u32> = es.iter().map(|&e| entries[e as usize].0).collect();
                 ws.sort_unstable_by_key(|&w| raw[w as usize].id);
                 let start = raw[ws[0] as usize].coords[0];
-                let length_m = ws
-                    .iter()
-                    .map(|&w| *ways[w as usize].cum.last().unwrap())
-                    .sum();
-                (
-                    morton(start),
-                    Comp {
-                        key,
-                        ways: ws,
-                        length_m,
-                    },
-                )
+                (morton(start), Comp { key, ways: ws })
             })
             .collect();
         comps.sort_unstable_by_key(|(m, c)| (*m, c.key, raw[c.ways[0] as usize].id));
@@ -250,20 +230,18 @@ impl Streets {
             ways,
             strict,
             loose,
-            any,
             cell_keys,
-            comps,
             entry,
         }
     }
 
-    /// Distance, offset along the way and side of `p` relative to way `w`.
+    /// Distance and offset along the way of `p` relative to way `w`.
     pub fn project(&self, w: u32, p: P) -> Hit {
         let way = &self.ways[w as usize];
         let coords = &self.raw[w as usize].coords;
         let mpu = geom::metres_per_unit(p);
         let (px, py) = (f64::from(p[0]), f64::from(p[1]));
-        let mut best = (f64::INFINITY, 0.0, false);
+        let mut best = (f64::INFINITY, 0.0);
         for (i, s) in coords.windows(2).enumerate() {
             let (ax, ay) = (f64::from(s[0][0]), f64::from(s[0][1]));
             let (dx, dy) = (f64::from(s[1][0]) - ax, f64::from(s[1][1]) - ay);
@@ -277,16 +255,13 @@ impl Streets {
             let d2 = (px - qx).powi(2) + (py - qy).powi(2);
             if d2 < best.0 {
                 let along = way.cum[i] + t * (way.cum[i + 1] - way.cum[i]);
-                // y grows downward, so a negative cross product is the left side.
-                let left = dx * (py - ay) - dy * (px - ax) < 0.0;
-                best = (d2, along, left);
+                best = (d2, along);
             }
         }
         Hit {
             way: w,
             dist_m: best.0.sqrt() * mpu,
             along_m: best.1,
-            left: best.2,
         }
     }
 
@@ -328,88 +303,5 @@ impl Streets {
         self.entry
             .get(&(hit.way, key))
             .map(|&(c, base)| (c, base + hit.along_m))
-    }
-
-    /// The point `m` metres along way `w`.
-    pub fn point_on_way(&self, w: u32, m: f64) -> P {
-        let way = &self.ways[w as usize];
-        let coords = &self.raw[w as usize].coords;
-        let i = way
-            .cum
-            .partition_point(|&d| d < m)
-            .clamp(1, coords.len() - 1);
-        let (a, b) = (coords[i - 1], coords[i]);
-        let seg = way.cum[i] - way.cum[i - 1];
-        let t = if seg > 0.0 {
-            ((m - way.cum[i - 1]) / seg).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let lerp = |a: u32, b: u32| (f64::from(a) + (f64::from(b) - f64::from(a)) * t) as u32;
-        [lerp(a[0], b[0]), lerp(a[1], b[1])]
-    }
-
-    /// The point `m` metres along component `c`, its ways laid end to end.
-    pub fn point_along(&self, c: u32, m: f64) -> P {
-        let comp = &self.comps[c as usize];
-        let mut left = m;
-        for &w in &comp.ways {
-            let way = &self.ways[w as usize];
-            let coords = &self.raw[w as usize].coords;
-            let len = *way.cum.last().unwrap();
-            if left <= len {
-                let i = way
-                    .cum
-                    .partition_point(|&d| d < left)
-                    .clamp(1, coords.len() - 1);
-                let (a, b) = (coords[i - 1], coords[i]);
-                let seg = way.cum[i] - way.cum[i - 1];
-                let t = if seg > 0.0 {
-                    (left - way.cum[i - 1]) / seg
-                } else {
-                    0.0
-                };
-                let lerp =
-                    |a: u32, b: u32| (f64::from(a) + (f64::from(b) - f64::from(a)) * t) as u32;
-                return [lerp(a[0], b[0]), lerp(a[1], b[1])];
-            }
-            left -= len;
-        }
-        let last = &self.raw[*comp.ways.last().unwrap() as usize];
-        *last.coords.last().unwrap()
-    }
-
-    /// The `name` of way `w` (or its first alternate or ref).
-    pub fn name(&self, w: u32) -> &str {
-        &self.raw[w as usize].names[0]
-    }
-
-    /// Whether component `c` is a street under its ways' own name, not under an alternate
-    /// name or a ref only.
-    pub fn is_primary(&self, c: u32) -> bool {
-        let comp = &self.comps[c as usize];
-        comp.ways
-            .iter()
-            .any(|&w| self.ways[w as usize].primary == comp.key)
-    }
-
-    /// Distinct way names within `radius_m` of `p`, nearest first (for samples).
-    pub fn names_near(&self, p: P, radius_m: f64) -> Vec<(String, f64)> {
-        let (cx, cy) = cell(p);
-        let mut found: Vec<(String, f64)> = Vec::new();
-        for x in cx - 1..=cx + 1 {
-            for y in cy - 1..=cy + 1 {
-                for &w in self.any.get(&(x, y)).into_iter().flatten() {
-                    let h = self.project(w, p);
-                    if h.dist_m <= radius_m {
-                        found.push((self.name(w).to_owned(), h.dist_m));
-                    }
-                }
-            }
-        }
-        found.sort_by(|a, b| a.1.total_cmp(&b.1));
-        let mut seen = std::collections::HashSet::new();
-        found.retain(|(n, _)| seen.insert(n.clone()));
-        found
     }
 }

@@ -6,15 +6,15 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use omp_core::whitelist::{ElementType, GeometryKind, Whitelist};
-use osmpbf::{BlobDecode, BlobReader, Element, PrimitiveBlock, RelMemberType};
+use osmpbf::{Element, PrimitiveBlock, RelMemberType};
 use rayon::prelude::*;
 use serde::Serialize;
 
-use super::geom::{self, Assembly, BBox, Geometry, P};
 use super::nodes::{DenseIndex, NodeSet, RankedLocations};
-use super::poly::Poly;
-use super::routing::RoutingStats;
-use super::tiles::{self, Band};
+use crate::geom::{self, Assembly, BBox, Geometry, P};
+use crate::peak_rss_mib;
+use crate::poly::Poly;
+use crate::tiles::{self, Band};
 
 pub struct Feature {
     /// Source element: OSM id × 4 + 0 node, 1 way, 2 relation, 3 other source. Features are
@@ -390,40 +390,19 @@ fn class_counts(wl: &Whitelist) -> Vec<Vec<ClassCount>> {
         .collect()
 }
 
-/// Runs `f` over every data block of the file in parallel.
-fn pass<F>(path: &Path, wl: &Whitelist, f: F) -> Result<Vec<Block>>
+/// [`super::pass`], each block into a fresh [`Block`].
+fn blocks<F>(path: &Path, wl: &Whitelist, f: F) -> Result<Vec<Block>>
 where
     F: Fn(&PrimitiveBlock, &mut Block) -> Result<()> + Sync,
 {
-    BlobReader::from_path(path)
-        .with_context(|| format!("open {}", path.display()))?
-        .par_bridge()
-        .map(|blob| {
-            let mut out = Block::new(wl);
-            if let BlobDecode::OsmData(block) = blob?.decode()? {
-                f(&block, &mut out)?;
-            }
-            Ok(out)
-        })
-        .collect()
+    super::pass(path, || Block::new(wl), f)
 }
 
 fn header_bbox(path: &Path) -> Result<Option<BBox>> {
-    Ok(header_bounds(path)?.map(|[w, s, e, n]| BBox {
+    Ok(super::header_bounds(path)?.map(|[w, s, e, n]| BBox {
         min: geom::project(n, w),
         max: geom::project(s, e),
     }))
-}
-
-/// The PBF header's bounding box: west, south, east, north in degrees.
-pub fn header_bounds(path: &Path) -> Result<Option<[f64; 4]>> {
-    let mut reader = BlobReader::from_path(path)?;
-    if let Some(blob) = reader.next()
-        && let BlobDecode::OsmHeader(h) = blob?.decode()?
-    {
-        return Ok(h.bbox().map(|b| [b.left, b.bottom, b.right, b.top]));
-    }
-    Ok(None)
 }
 
 fn props(layer: &omp_core::whitelist::Layer, tags: &[(&str, &str)]) -> Vec<(u8, Box<str>)> {
@@ -515,80 +494,25 @@ impl<'a> Ctx<'a> {
     }
 }
 
-/// Counts the car routing graph like [`super::routing::build`] does, without keeping the roads:
-/// two more passes over the ways, one marking nodes that are intersections or way ends and
-/// one counting the edges between them. For a continent, where the roads do not fit next to
-/// everything else.
-pub fn count_road_graph(path: &Path, wl: &Whitelist, restrictions: u64) -> Result<RoutingStats> {
+/// One pass over the ways, calling `f` with each road way's `(refs, oneway, routable)`: for
+/// counting the routing graph without keeping the roads (`measure --routing graph`).
+pub fn road_ways(path: &Path, wl: &Whitelist, f: &(dyn Fn(&[i64], i8, bool) + Sync)) -> Result<()> {
     let ctx = Ctx::new(wl, Band::ALL, &[])?;
     let rels = Rels::default();
-    // `f` sees each road way's `(refs, oneway, routable)`.
-    let roads = |f: &(dyn Fn(&[i64], i8, bool) + Sync)| {
-        pass(path, wl, |block, out| {
-            ways_block(&ctx, block, out, &rels);
-            for rec in out.way_recs.drain(..) {
-                if let Some((_, oneway, _, routable)) = rec.road {
-                    f(&rec.refs, oneway, routable);
-                }
-            }
-            Ok(())
-        })
-    };
-    let routable = |refs: &[i64], ok: bool| ok && refs.len() >= 2;
-    let (seen, graph_nodes) = (NodeSet::new(), NodeSet::new());
-    let [road_ways, routable_ways, edges, oneway_segments] =
-        [(); 4].map(|_| std::sync::atomic::AtomicU64::new(0));
-    let add = |n: &std::sync::atomic::AtomicU64, v: u64| {
-        n.fetch_add(v, std::sync::atomic::Ordering::Relaxed);
-    };
-    roads(&|refs, _, ok| {
-        add(&road_ways, 1);
-        if !routable(refs, ok) {
-            return;
-        }
-        add(&routable_ways, 1);
-        for &id in refs {
-            if seen.insert(id) {
-                graph_nodes.insert(id);
+    blocks(path, wl, |block, out| {
+        ways_block(&ctx, block, out, &rels);
+        for rec in out.way_recs.drain(..) {
+            if let Some((_, oneway, _, routable)) = rec.road {
+                f(&rec.refs, oneway, routable);
             }
         }
-        graph_nodes.insert(refs[0]);
-        graph_nodes.insert(refs[refs.len() - 1]);
+        Ok(())
     })?;
-    drop(seen);
-    roads(&|refs, oneway, ok| {
-        if !routable(refs, ok) {
-            return;
-        }
-        let mut from = refs[0];
-        for &id in &refs[1..] {
-            if !graph_nodes.contains(id) {
-                continue;
-            }
-            if from != id {
-                if oneway == 0 {
-                    add(&edges, 2);
-                } else {
-                    add(&edges, 1);
-                    add(&oneway_segments, 1);
-                }
-            }
-            from = id;
-        }
-    })?;
-    Ok(RoutingStats {
-        road_ways: road_ways.into_inner(),
-        routable_ways: routable_ways.into_inner(),
-        nodes: graph_nodes.len(),
-        edges: edges.into_inner(),
-        oneway_segments: oneway_segments.into_inner(),
-        restriction_relations: restrictions,
-        ch: None,
-    })
+    Ok(())
 }
 
 /// `keep_roads`: also return the road ways with their coordinates, for
-/// [`super::routing::build`]. `band`: keep only the features that band needs. `regions`:
+/// the routing estimate in `measure`. `band`: keep only the features that band needs. `regions`:
 /// the regions [`RouteStats::coverage`] is split by.
 pub fn read(
     path: &Path,
@@ -599,7 +523,7 @@ pub fn read(
     regions: &[(String, Poly)],
 ) -> Result<OsmData> {
     let ctx = Ctx::new(wl, band, regions)?;
-    let progress = |what: &str| eprintln!("    {what}: peak RSS {:.0} MiB", super::peak_rss_mib());
+    let progress = |what: &str| eprintln!("    {what}: peak RSS {:.0} MiB", peak_rss_mib());
     let bbox = header_bbox(path)?;
     let mut stats = ReadStats::default();
     let mut counts = class_counts(wl);
@@ -640,7 +564,7 @@ pub fn read(
     let mut admin = Vec::new();
     let mut index = Rels::default();
     let mut route_ids: HashMap<(Box<str>, Box<str>), u32> = HashMap::new();
-    for mut b in pass(path, wl, |block, out| relations_block(&ctx, block, out))? {
+    for mut b in blocks(path, wl, |block, out| relations_block(&ctx, block, out))? {
         merge_common(&mut b, &mut stats);
         rels.append(&mut b.rels);
         admin.append(&mut b.admin);
@@ -697,7 +621,7 @@ pub fn read(
         Strategy::Dense(index_path) => {
             // Pass 2: every node into the index. Pass 3: ways, resolved as they are read.
             let dense = DenseIndex::create(index_path)?;
-            for mut b in pass(path, wl, |block, out| {
+            for mut b in blocks(path, wl, |block, out| {
                 nodes_block(&ctx, block, out, |id, p| dense.set(id, p))?;
                 out.features.retain(|f| ctx.keeps(f));
                 Ok(())
@@ -706,7 +630,7 @@ pub fn read(
                 collect(&mut b);
             }
             stats.node_index_disk_bytes = dense.disk_bytes();
-            for mut b in pass(path, wl, |block, out| {
+            for mut b in blocks(path, wl, |block, out| {
                 way_pass(block, out)?;
                 for rec in std::mem::take(&mut out.way_recs) {
                     resolve_way(&ctx, rec, |id| dense.get(id), keep_roads, out);
@@ -723,7 +647,7 @@ pub fn read(
             // rank. Pass 4: the ways again, resolved as they are read. Reading the ways twice
             // is cheaper than holding them, since their refs alone are 8 bytes per vertex.
             let needed = NodeSet::new();
-            for mut b in pass(path, wl, |block, out| {
+            for mut b in blocks(path, wl, |block, out| {
                 way_pass(block, out)?;
                 for rec in out.way_recs.drain(..) {
                     for &id in &rec.refs {
@@ -744,7 +668,7 @@ pub fn read(
                 locs.len(),
                 locs.heap_bytes() as f64 / f64::from(1 << 30)
             );
-            for mut b in pass(path, wl, |block, out| {
+            for mut b in blocks(path, wl, |block, out| {
                 nodes_block(&ctx, block, out, |id, p| {
                     locs.set(id, p);
                     Ok(())
@@ -756,7 +680,7 @@ pub fn read(
                 collect(&mut b);
             }
             progress("nodes located");
-            for mut b in pass(path, wl, |block, out| {
+            for mut b in blocks(path, wl, |block, out| {
                 // Tag and class counts were taken in pass 2.
                 let mut ways = Block::new(wl);
                 way_pass(block, &mut ways)?;

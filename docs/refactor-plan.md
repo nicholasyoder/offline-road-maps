@@ -28,7 +28,7 @@ None of this changes the pack format or what the app shows.
 |---|---|---|
 | R1 Bug fixes | **Done** 2026-10-26 | `build` writes into `<out>/.building` and swaps the chunks in on success; `--addresses` keeps each subdivision once; resumes send `If-Range` from `<file>.part.meta`; `Pack::open` checks section bounds without wrapping; `OMP_BENCH_NO_MAP` read once; `wanted` deduped with a `HashSet`. Delaware `--deterministic` pack byte-identical to `master`'s. |
 | R2 Shared geometry and small helpers | **Done** 2026-10-26 | One Web Mercator in `omp_core::geo` (with the app's `0..1` form and `distance_m`); one Douglas–Peucker (`geom::simplify_kept`); `put_str`, `invalid`, `read_at`/`write_at`, `mib`, first-chunk lookup and the UI colours each in one place. Ohio and Quebec `--deterministic` packs byte-identical; renders pixel-identical; `search --check` unchanged. |
-| R3 Builder structure: production code out of the spikes | Not started | |
+| R3 Builder structure: production code out of the spikes | **Done** 2026-10-26 | `addr-spike` retired, `measure` kept (decision 1). New `pbf/` (one `pass`), `geom.rs`, `poly.rs`, `tiles/`, `addr/pipeline.rs`; `build::run` is 91 lines of stages, with `build/meta.rs` and `build/report.rs`; one hidden `--measure-blocks`. Ohio and Quebec `--deterministic` packs byte-identical; `measure` JSON on Delaware unchanged. |
 | R4 Build time | Not started | |
 | R5 Split the app's search UI | Not started | |
 | R6 Split the search engine | Not started | |
@@ -114,6 +114,17 @@ Mechanical: no behaviour change, and the deterministic packs stay byte-identical
 **Done when:** `grep` finds each of these once; Ohio and Quebec `--deterministic` packs are byte-identical to the baseline; `--render` snapshots of Ohio at z5, z10 and z15 match the baseline pixel for pixel; CI passes.
 
 ## R3 Builder structure: production code out of the spikes
+
+> **Done 2026-10-26** (the commit "Refactor R3: builder structure"). What was done, and how it was checked:
+> - **Decision:** keep `measure`, retire `addr-spike` ([decision 1](#decisions)).
+> - **Modules:** `pbf/` holds `pass`, `header_bounds`, `nodes.rs` (was `measure/nodes.rs`) and `features.rs` (was `measure/osm.rs`, the whitelisted feature reader); `geom.rs` and `poly.rs` are top-level (`poly.rs` went there, not into `tiles/`, since the address merge uses it too); `tiles/` holds the pyramid cut and store (`mod.rs`), the layer encodings (`encode.rs`), dictionary training and the compression variants (`compress.rs`) and `water.rs`. `measure/` keeps only the command, `routing.rs` and `search.rs`. `peak_rss_mib` moved to `main.rs` next to `mib`. The moves are `git mv`s, so history follows the files.
+> - **Addresses:** `addr/pipeline.rs` holds the merge stages (`select`, `extract`, `normalize`, `attach_records`, `dedup`, `clusters`, `fallback_ranges`) and their types; `addr/mod.rs` is only the module list. With the spike gone, its measuring went too: the encodings A1–A4 (`addr/encode.rs`), the town and street-table checks (`addr/towns.rs`, `addr/street_check.rs`), the postcode report, the samples, the per-source counters in the readers (`OsmStats`, NAR, ODA, OpenAddresses and TIGER stats), the dedup statistics at five distances, and `addr/osm.rs`'s unindexed `split`. Nothing that decides which record is kept, which cluster it joins or which street it attaches to changed.
+> - **One `pass`:** `pbf::pass(path, init, f)`, with `f` returning `Result`. The copies in `addr/osm.rs`, `admin/read.rs` and `measure/osm.rs` are gone, and search's `read_alts` uses it too. `features.rs` keeps a one-line `blocks` that only picks its block type. `count_road_graph` (for `measure --routing graph`) moved to `measure/routing.rs` as `count_graph`, built on a new `features::road_ways`, so `pbf` imports nothing from `measure`.
+> - **`build::run`:** 91 lines: `Setup::new`, admin, `read_bands`, `addresses_and_streets`, `search_index`, `meta::meta`, `write_pack`, then the summary. Each stage frees what it no longer needs, as before; the admin sections are now encoded before the tiles are written, so `Admin` is freed earlier. `build/meta.rs` holds the provenance, attribution and settings; `build/report.rs` the stage timer, `ChainStats`, `ZoomTotals` and the `print_*` functions. `build` imports nothing from `measure`.
+> - **Measurement options:** `--address-block-kib`, `--search-block-kib` and `--grid-zoom` are replaced by one hidden `--measure-blocks`, which also prints the address and `SENT` sizes at 4 and 32 KiB blocks and the grid at z13 and z15 (the alternatives phase 2 compared). The pack always uses the constants (16 KiB, z14). Checked on Delaware.
+> - **`report`:** keeps the `measure` tables; `--sum`, `--sum-json` and `--size-table --addr` are gone, and it refuses an `addr-spike` JSON with a message.
+> - **Checks:** Ohio (`12c70434…`, 37 s, 6.0 GiB) and Quebec (`df133861…`, 88 s, 8.3 GiB) `--deterministic` packs have the same SHA-256 as R2's. `measure` on Delaware, default and `--routing graph`: the same JSON as the old builder's except timings, and `report` gives the same tables. CI checks pass (164 tests).
+> - Docs: no current doc (CLAUDE.md, format.md, README) named the moved files; the phase plans keep their paths as history.
 
 Moves and splits, with no behaviour change. One session; probably the largest diff of the plan, but mostly moved code.
 
@@ -211,7 +222,7 @@ Split `Run` itself by stage too: its methods move into the files above as `impl 
 
 ## Decisions
 
-*(None yet. R3.1 needs one at the start of that session.)*
+1. **Spike commands (R3.1, 2026-10-26).** `measure` stays, as a thin command over the production modules, for its routing estimate until phase 3 has a real graph, and `report` stays for its JSON. `addr-spike` is retired, with its reports, its samples, and the address half of `report` (`--sum`, `--sum-json`, `--size-table --addr`), since `build --addresses` prints the same coverage numbers. Phase 0 and 2 runs of `addr-spike` stay in the plans as history; rerunning them needs a builder from before R3.
 
 ## Out of scope
 

@@ -100,7 +100,7 @@ fn search(pack: &Pack, schema: Option<&Schema>, query: &str) -> Result<()> {
                 Kind::Feature => layer_class("labels", e.class),
                 Kind::AddressStreet => "from addresses".into(),
             };
-            let (lat, lon) = crate::measure::geom::unproject(e.p);
+            let (lat, lon) = crate::geom::unproject(e.p);
             let town = match e.town {
                 0 => String::new(),
                 t => format!(", {}", towns[t as usize - 1]),

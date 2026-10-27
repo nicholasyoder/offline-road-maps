@@ -7,10 +7,14 @@ mod admin;
 mod build;
 mod fetch;
 mod find;
+mod geom;
 mod measure;
+mod pbf;
+mod poly;
 mod report;
 mod search;
 mod street;
+mod tiles;
 
 /// Builds offline map packs from OSM and address sources.
 #[derive(Parser)]
@@ -46,15 +50,26 @@ enum Command {
     Admin(admin::AdminArgs),
     /// Read a PBF's streets and report the street table's counts and section sizes.
     Streets(street::StreetsArgs),
-    /// Phase 0 spike: merge address sources onto OSM streets and measure coverage and size.
-    AddrSpike(addr::AddrArgs),
-    /// Print Markdown size tables from `measure` or `addr-spike` JSON files.
+    /// Print Markdown size tables from `measure` JSON files.
     Report(report::ReportArgs),
 }
 
 /// Bytes in MiB, for reports.
 fn mib(b: u64) -> f64 {
     b as f64 / (1u64 << 20) as f64
+}
+
+/// Peak resident set size so far, from /proc (Linux only; 0 elsewhere).
+fn peak_rss_mib() -> f64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmHWM:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|kb| kb.parse::<f64>().ok())
+        })
+        .map_or(0.0, |kb| kb / 1024.0)
 }
 
 fn work_dir(cli: &Cli) -> PathBuf {
@@ -81,7 +96,6 @@ fn main() -> anyhow::Result<()> {
         Command::Measure(args) => measure::run(args, &dir)?,
         Command::Admin(args) => admin::run(args)?,
         Command::Streets(args) => street::run(args)?,
-        Command::AddrSpike(args) => addr::run(args, &dir)?,
         Command::Report(args) => report::run(args)?,
     }
     Ok(())

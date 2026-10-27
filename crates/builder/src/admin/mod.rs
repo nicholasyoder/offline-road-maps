@@ -17,8 +17,8 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::addr::streets::morton;
-use crate::measure::geom::{self, BBox, P};
-use crate::measure::peak_rss_mib;
+use crate::geom::{self, BBox, P};
+use crate::peak_rss_mib;
 use index::Index;
 pub use read::{Area, Place, PlaceClass};
 

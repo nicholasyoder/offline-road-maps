@@ -5,17 +5,19 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use omp_core::normalize::{NumberKind, house_number};
-use osmpbf::{BlobDecode, BlobReader, Element, PrimitiveBlock};
+use osmpbf::{Element, PrimitiveBlock};
 use rayon::prelude::*;
-use serde::Serialize;
 
-use super::tiger::{Range, RangeSrc};
+use super::tiger::Range;
 use super::{Raw, Src};
-use crate::measure::geom::{self, BBox, P};
-use crate::measure::nodes::{NodeSet, RankedLocations};
-use crate::measure::poly::Poly;
+use crate::geom::{self, BBox, P};
+use crate::pbf::{
+    self,
+    nodes::{NodeSet, RankedLocations},
+};
+use crate::poly::Poly;
 
 /// A named highway way. Addresses attach to these.
 #[derive(Clone)]
@@ -60,35 +62,10 @@ pub fn highway_class(v: &str) -> u8 {
         .unwrap_or(HIGHWAYS.len()) as u8
 }
 
-#[derive(Default, Serialize)]
-pub struct OsmStats {
-    pub address_nodes: u64,
-    pub address_ways: u64,
-    /// Counted only; multipolygon buildings with addresses are rare.
-    pub address_relations: u64,
-    /// `addr:housenumber` with `addr:place` and no `addr:street`: kept with the place as the
-    /// street name, so they end up unattached.
-    pub place_only: u64,
-    /// Neither `addr:street` nor `addr:place`.
-    pub no_street: u64,
-    /// `addr:housenumber` lists like "12;14", split into one record each.
-    pub number_lists: u64,
-    pub interpolation_ways: u64,
-    /// One per pair of consecutive numbered nodes on an interpolation way.
-    pub interpolation_ranges: u64,
-    /// House numbers those ranges span (what expanding them into points would give).
-    pub interpolation_numbers: u64,
-    /// Pairs that give no range: missing or non-plain numbers, wrong parity, `alphabetic`,
-    /// or more than 10,000 numbers apart.
-    pub interpolation_failed_pairs: u64,
-    pub street_ways: u64,
-}
-
 pub struct OsmAddresses {
     pub raws: Vec<Raw>,
     pub ranges: Vec<Range>,
     pub streets: Vec<StreetWay>,
-    pub stats: OsmStats,
 }
 
 /// Highway values that are not streets an address can be on.
@@ -120,24 +97,6 @@ const NAME_KEYS: &[&str] = &[
 ];
 const MAX_INTERPOLATED: u32 = 10_000;
 
-fn pass<T: Send>(
-    path: &Path,
-    init: impl Fn() -> T + Sync + Send,
-    f: impl Fn(&PrimitiveBlock, &mut T) + Sync + Send,
-) -> Result<Vec<T>> {
-    BlobReader::from_path(path)
-        .with_context(|| format!("open {}", path.display()))?
-        .par_bridge()
-        .map(|blob| {
-            let mut out = init();
-            if let BlobDecode::OsmData(block) = blob?.decode()? {
-                f(&block, &mut out);
-            }
-            Ok(out)
-        })
-        .collect()
-}
-
 fn get<'a>(tags: &[(&'a str, &'a str)], key: &str) -> Option<&'a str> {
     tags.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
 }
@@ -151,19 +110,13 @@ struct Tagged {
     postcode: String,
 }
 
-fn tagged(tags: &[(&str, &str)], stats: &mut OsmStats) -> Option<Tagged> {
+/// `addr:housenumber` with `addr:place` and no `addr:street` is kept with the place as the
+/// street name, so it ends up unattached.
+fn tagged(tags: &[(&str, &str)]) -> Option<Tagged> {
     let numbers = get(tags, "addr:housenumber")?;
-    let street = match (get(tags, "addr:street"), get(tags, "addr:place")) {
-        (Some(s), _) => s,
-        (None, Some(p)) => {
-            stats.place_only += 1;
-            p
-        }
-        (None, None) => {
-            stats.no_street += 1;
-            ""
-        }
-    };
+    let street = get(tags, "addr:street")
+        .or_else(|| get(tags, "addr:place"))
+        .unwrap_or_default();
     Some(Tagged {
         numbers: numbers.to_owned(),
         street: street.to_owned(),
@@ -176,20 +129,16 @@ fn tagged(tags: &[(&str, &str)], stats: &mut OsmStats) -> Option<Tagged> {
     })
 }
 
-fn push_raws(t: Tagged, p: P, out: &mut Vec<Raw>, stats: &mut OsmStats) {
-    let parts: Vec<&str> = t
+/// One record per number of a list like "12;14".
+fn push_raws(t: Tagged, p: P, out: &mut Vec<Raw>) {
+    let parts = t
         .numbers
         .split([';', ','])
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.len() > 1 {
-        stats.number_lists += 1;
-    }
+        .filter(|s| !s.is_empty());
     for n in parts {
         out.push(Raw {
             src: Src::Osm,
-            file: 0,
             number: n.to_owned(),
             street: t.street.clone(),
             unit: t.unit.clone(),
@@ -213,7 +162,6 @@ struct WayBlock {
     streets: Vec<StreetWay>,
     addr_ways: Vec<(Vec<i64>, Tagged)>,
     interps: Vec<Interp>,
-    stats: OsmStats,
 }
 
 #[derive(Default)]
@@ -221,69 +169,62 @@ struct NodeBlock {
     raws: Vec<Raw>,
     /// Numbered nodes on interpolation ways: `(id, number, addr:street)`.
     endpoints: Vec<(i64, String, String)>,
-    stats: OsmStats,
 }
 
 /// `addresses`: also collect addressed ways and interpolation lines, not only streets.
 fn ways_block(block: &PrimitiveBlock, out: &mut WayBlock, addresses: bool) {
     let mut tags = Vec::new();
     for el in block.elements() {
-        match el {
-            Element::Way(w) => {
-                tags.clear();
-                tags.extend(w.tags());
-                if let Some(h) = get(&tags, "highway")
-                    && !NOT_STREETS.contains(&h)
-                {
-                    let split = |vs: &mut dyn Iterator<Item = &str>| {
-                        let mut v: Vec<String> = vs
-                            .flat_map(|v| v.split(';'))
-                            .map(|s| s.trim().to_owned())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        v.dedup();
-                        v
-                    };
-                    let mut names = split(&mut NAME_KEYS.iter().filter_map(|k| get(&tags, k)));
-                    let nnames = names.len();
-                    names.extend(split(&mut get(&tags, "ref").into_iter()));
-                    if !names.is_empty() {
-                        out.streets.push(StreetWay {
-                            id: w.id(),
-                            names,
-                            nnames,
-                            class: highway_class(h),
-                            refs: w.refs().collect(),
-                            coords: Vec::new(),
-                        });
-                    }
-                }
-                if !addresses {
-                    continue;
-                }
-                if let Some(kind) = get(&tags, "addr:interpolation") {
-                    let (step, parity) = match kind {
-                        "odd" => (Some(2), Some(1)),
-                        "even" => (Some(2), Some(0)),
-                        "all" => (Some(1), None),
-                        n => (n.parse().ok().filter(|&s| s > 0), None),
-                    };
-                    out.interps.push(Interp {
-                        id: w.id(),
-                        refs: w.refs().collect(),
-                        step,
-                        parity,
-                        street: get(&tags, "addr:street").map(str::to_owned),
-                    });
-                } else if let Some(t) = tagged(&tags, &mut out.stats) {
-                    out.stats.address_ways += 1;
-                    out.addr_ways.push((w.refs().collect(), t));
-                }
+        let Element::Way(w) = el else {
+            continue;
+        };
+        tags.clear();
+        tags.extend(w.tags());
+        if let Some(h) = get(&tags, "highway")
+            && !NOT_STREETS.contains(&h)
+        {
+            let split = |vs: &mut dyn Iterator<Item = &str>| {
+                let mut v: Vec<String> = vs
+                    .flat_map(|v| v.split(';'))
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                v.dedup();
+                v
+            };
+            let mut names = split(&mut NAME_KEYS.iter().filter_map(|k| get(&tags, k)));
+            let nnames = names.len();
+            names.extend(split(&mut get(&tags, "ref").into_iter()));
+            if !names.is_empty() {
+                out.streets.push(StreetWay {
+                    id: w.id(),
+                    names,
+                    nnames,
+                    class: highway_class(h),
+                    refs: w.refs().collect(),
+                    coords: Vec::new(),
+                });
             }
-            Element::Relation(r) if r.tags().any(|(k, _)| k == "addr:housenumber") => {
-                out.stats.address_relations += 1;
-            }
-            _ => {}
+        }
+        if !addresses {
+            continue;
+        }
+        if let Some(kind) = get(&tags, "addr:interpolation") {
+            let (step, parity) = match kind {
+                "odd" => (Some(2), Some(1)),
+                "even" => (Some(2), Some(0)),
+                "all" => (Some(1), None),
+                n => (n.parse().ok().filter(|&s| s > 0), None),
+            };
+            out.interps.push(Interp {
+                id: w.id(),
+                refs: w.refs().collect(),
+                step,
+                parity,
+                street: get(&tags, "addr:street").map(str::to_owned),
+            });
+        } else if let Some(t) = tagged(&tags) {
+            out.addr_ways.push((w.refs().collect(), t));
         }
     }
 }
@@ -308,9 +249,8 @@ fn nodes_block(
             let street = get(tags, "addr:street").unwrap_or_default();
             out.endpoints.push((id, n.to_owned(), street.to_owned()));
         }
-        if let Some(t) = tagged(tags, &mut out.stats) {
-            out.stats.address_nodes += 1;
-            push_raws(t, p, &mut out.raws, &mut out.stats);
+        if let Some(t) = tagged(tags) {
+            push_raws(t, p, &mut out.raws);
         }
     };
     for el in block.elements() {
@@ -329,57 +269,20 @@ fn nodes_block(
     }
 }
 
-fn merge(into: &mut OsmStats, s: &OsmStats) {
-    into.address_nodes += s.address_nodes;
-    into.address_ways += s.address_ways;
-    into.address_relations += s.address_relations;
-    into.place_only += s.place_only;
-    into.no_street += s.no_street;
-    into.number_lists += s.number_lists;
-}
-
-#[derive(Serialize)]
+/// What [`split_indexed`] did with the points, ranges and streets.
 pub struct SplitStats {
-    /// The whole read; the per-subdivision runs only count streets and interpolation ranges.
-    pub osm: OsmStats,
     pub points: u64,
     pub ranges: u64,
     pub streets: u64,
     /// In no subdivision's boundary (other countries, open water).
     pub points_outside: u64,
     pub ranges_outside: u64,
-    /// Per subdivision, in the order given: points, ranges and streets it got.
-    pub per_subdivision: Vec<[u64; 3]>,
 }
 
 /// Splits `all` by `polys`: each address point and interpolation range (by its first
 /// vertex) goes to the first polygon that contains it, and each street to every polygon
-/// whose bounds, grown by `margin_deg`, its bounds touch.
-pub fn split(
-    all: OsmAddresses,
-    polys: &[Poly],
-    margin_deg: f64,
-) -> (Vec<OsmAddresses>, SplitStats) {
-    let (mut parts, owned, streets, stats) = split_indexed(all, polys, margin_deg);
-    let mut owners: Vec<Vec<usize>> = vec![Vec::new(); streets.len()];
-    for (i, list) in owned.iter().enumerate() {
-        for &s in list {
-            owners[s as usize].push(i);
-        }
-    }
-    for (s, owners) in streets.into_iter().zip(owners) {
-        if let Some((&last, rest)) = owners.split_last() {
-            for &i in rest {
-                parts[i].streets.push(s.clone());
-            }
-            parts[last].streets.push(s);
-        }
-    }
-    (parts, stats)
-}
-
-/// As [`split`], but the streets stay in one list (returned): each part gets the indexes
-/// of its streets instead, in order.
+/// whose bounds, grown by `margin_deg`, its bounds touch. The streets stay in one list
+/// (returned): each part gets the indexes of its streets instead, in order.
 pub fn split_indexed(
     all: OsmAddresses,
     polys: &[Poly],
@@ -411,17 +314,14 @@ pub fn split_indexed(
             raws: Vec::new(),
             ranges: Vec::new(),
             streets: Vec::new(),
-            stats: OsmStats::default(),
         })
         .collect();
     let mut stats = SplitStats {
         points: all.raws.len() as u64,
         ranges: all.ranges.len() as u64,
         streets: all.streets.len() as u64,
-        osm: all.stats,
         points_outside: 0,
         ranges_outside: 0,
-        per_subdivision: Vec::new(),
     };
     for (r, o) in all.raws.into_iter().zip(point_owner) {
         match o {
@@ -431,12 +331,7 @@ pub fn split_indexed(
     }
     for (r, o) in all.ranges.into_iter().zip(range_owner) {
         match o {
-            Some(i) => {
-                let part = &mut parts[i];
-                part.stats.interpolation_ranges += 1;
-                part.stats.interpolation_numbers += r.numbers();
-                part.ranges.push(r);
-            }
+            Some(i) => parts[i].ranges.push(r),
             None => stats.ranges_outside += 1,
         }
     }
@@ -445,14 +340,6 @@ pub fn split_indexed(
         for &i in owners {
             owned[i].push(s as u32);
         }
-    }
-    for (p, o) in parts.iter_mut().zip(&owned) {
-        p.stats.street_ways = o.len() as u64;
-        stats.per_subdivision.push([
-            p.raws.len() as u64,
-            p.ranges.len() as u64,
-            p.stats.street_ways,
-        ]);
     }
     (parts, owned, all.streets, stats)
 }
@@ -467,21 +354,18 @@ pub fn read_streets(path: &Path) -> Result<Vec<StreetWay>> {
 }
 
 fn read_with(path: &Path, addresses: bool) -> Result<OsmAddresses> {
-    let mut stats = OsmStats::default();
     let mut streets = Vec::new();
     let mut addr_ways = Vec::new();
     let mut interps = Vec::new();
-    for mut b in pass(path, WayBlock::default, |block, out| {
-        ways_block(block, out, addresses)
+    for mut b in pbf::pass(path, WayBlock::default, |block, out| {
+        ways_block(block, out, addresses);
+        Ok(())
     })? {
-        merge(&mut stats, &b.stats);
         streets.append(&mut b.streets);
         addr_ways.append(&mut b.addr_ways);
         interps.append(&mut b.interps);
     }
     streets.sort_unstable_by_key(|s| s.id);
-    stats.street_ways = streets.len() as u64;
-    stats.interpolation_ways = interps.len() as u64;
 
     let needed = NodeSet::new();
     let all_refs = streets
@@ -497,10 +381,10 @@ fn read_with(path: &Path, addresses: bool) -> Result<OsmAddresses> {
     let locs = RankedLocations::new(needed);
     let mut raws = Vec::new();
     let mut endpoints: HashMap<i64, (String, String)> = HashMap::new();
-    for mut b in pass(path, NodeBlock::default, |block, out| {
-        nodes_block(block, out, &locs, &endpoint_ids, addresses)
+    for mut b in pbf::pass(path, NodeBlock::default, |block, out| {
+        nodes_block(block, out, &locs, &endpoint_ids, addresses);
+        Ok(())
     })? {
-        merge(&mut stats, &b.stats);
         raws.append(&mut b.raws);
         endpoints.extend(b.endpoints.into_iter().map(|(id, n, s)| (id, (n, s))));
     }
@@ -523,13 +407,13 @@ fn read_with(path: &Path, addresses: bool) -> Result<OsmAddresses> {
             None if !coords.is_empty() => coords[coords.len() / 2],
             None => continue,
         };
-        push_raws(t, p, &mut raws, &mut stats);
+        push_raws(t, p, &mut raws);
     }
 
     interps.sort_unstable_by_key(|i| i.id);
     let mut ranges = Vec::new();
     for i in interps {
-        interpolate(&i, &locs, &endpoints, &mut ranges, &mut stats);
+        interpolate(&i, &locs, &endpoints, &mut ranges);
     }
     // Blocks arrive in any order: sort on everything, so the merge is the same every run.
     raws.sort_unstable_by(|a, b| {
@@ -546,7 +430,6 @@ fn read_with(path: &Path, addresses: bool) -> Result<OsmAddresses> {
         raws,
         ranges,
         streets,
-        stats,
     })
 }
 
@@ -557,7 +440,6 @@ fn interpolate(
     locs: &RankedLocations,
     endpoints: &HashMap<i64, (String, String)>,
     out: &mut Vec<Range>,
-    stats: &mut OsmStats,
 ) {
     let Some(coords) = i
         .refs
@@ -565,7 +447,6 @@ fn interpolate(
         .map(|&id| locs.get(id))
         .collect::<Option<Vec<P>>>()
     else {
-        stats.interpolation_failed_pairs += 1;
         return;
     };
     let numbered: Vec<(usize, &String, &String)> = i
@@ -579,7 +460,6 @@ fn interpolate(
         let (kb, nb, sb) = pair[1];
         let plain = |n: &str| house_number(n).filter(|h| h.kind == NumberKind::Plain);
         let (Some(a), Some(b), Some(step)) = (plain(na), plain(nb), i.step) else {
-            stats.interpolation_failed_pairs += 1;
             continue;
         };
         let (a, b) = (a.number, b.number);
@@ -587,7 +467,6 @@ fn interpolate(
         let parity_ok = i.parity.is_none_or(|p| a % 2 == p && b % 2 == p);
         if span == 0 || span % step != 0 || span / step > MAX_INTERPOLATED || !parity_ok || kb == ka
         {
-            stats.interpolation_failed_pairs += 1;
             continue;
         }
         let street = i
@@ -596,8 +475,6 @@ fn interpolate(
             .or_else(|| [sa, sb].into_iter().find(|s| !s.is_empty()).cloned())
             .unwrap_or_default();
         let range = Range {
-            src: RangeSrc::OsmInterpolation,
-            tlid: i.id as u64,
             right: None,
             from: a,
             to: b,
@@ -609,8 +486,6 @@ fn interpolate(
             street,
             line: coords[ka..=kb].to_vec(),
         };
-        stats.interpolation_ranges += 1;
-        stats.interpolation_numbers += range.numbers();
         out.push(range);
     }
 }

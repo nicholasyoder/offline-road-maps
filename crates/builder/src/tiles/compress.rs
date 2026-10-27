@@ -12,7 +12,7 @@ use serde::Serialize;
 use zstd::bulk::{Compressor, Decompressor};
 use zstd::zstd_safe::CParameter;
 
-use super::tiles::{Cell, Entry, Variant};
+use super::{Cell, Entry, Variant};
 use omp_core::pack::read_at;
 use omp_core::tile::{BAND_NAMES, Dictionaries, Layer, hilbert, zoom_band};
 use omp_core::varint::{len as varint_len, put as put_varint};

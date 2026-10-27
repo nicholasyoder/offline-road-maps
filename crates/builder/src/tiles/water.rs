@@ -8,9 +8,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use super::geom::{self, BBox, Geometry, P, Rect, ring_area};
-use super::osm::Feature;
-use super::poly::Poly;
+use crate::geom::{self, BBox, Geometry, P, Rect, ring_area};
+use crate::pbf::features::Feature;
+use crate::poly::Poly;
 
 /// Reads every polygon whose bbox meets `bbox` (and that meets `clip`, if given) and returns
 /// it as a `layer`/`class` feature, with the number of records scanned and of pieces dropped

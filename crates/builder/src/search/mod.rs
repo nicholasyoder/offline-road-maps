@@ -28,14 +28,14 @@ use serde::Serialize;
 use crate::addr::osm::HIGHWAYS;
 use crate::addr::postcodes::Postcode;
 use crate::addr::streets::morton;
+use crate::admin::Admin;
 use crate::admin::read::{ALT_NAMES, parse_population};
 use crate::admin::towns::{self, FALLBACK, Fallbacks, Located, Source};
-use crate::admin::{self, Admin};
-use crate::measure::geom::{Geometry, P};
-use crate::measure::osm::Feature;
-use crate::measure::peak_rss_mib;
-use crate::measure::tiles;
+use crate::geom::{Geometry, P};
+use crate::pbf::{self, features::Feature};
+use crate::peak_rss_mib;
 use crate::street::{self, Table};
+use crate::tiles;
 
 /// A token in more entries than this is left out of postings when it is
 /// [`is_generic`] ("street", "road", "north", "de"), except for the entries all
@@ -301,7 +301,7 @@ fn alt_keys() -> impl Iterator<Item = &'static str> {
 /// One pass over the PBF for the [`alt_keys`] of the features `ids` (`Feature::id`).
 fn read_alts(path: &Path, ids: &HashSet<i64>) -> Result<HashMap<i64, Vec<(String, String)>>> {
     let keys: Vec<&str> = alt_keys().collect();
-    let blocks = admin::read::pass(path, Vec::new, |block, out| {
+    let blocks = pbf::pass(path, Vec::new, |block, out| {
         let mut visit = |fid: i64, tags: &mut dyn Iterator<Item = (&str, &str)>| {
             if !ids.contains(&fid) {
                 return;
@@ -327,6 +327,7 @@ fn read_alts(path: &Path, ids: &HashSet<i64>) -> Result<HashMap<i64, Vec<(String
                 Element::Relation(r) => visit(r.id() * 4 + 2, &mut r.tags()),
             }
         }
+        Ok(())
     })?;
     Ok(blocks.into_iter().flatten().collect())
 }

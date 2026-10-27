@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::measure::geom::{self, BBox, P};
+use crate::geom::{self, BBox, P};
 
 /// Cells of 2^20 world units: z12 tiles, about 7.5 km at 40° N.
 const CELL_SHIFT: u32 = 20;

@@ -6,6 +6,13 @@
 //! is cut on its own from the features its bbox touches, so memory stays at a few split
 //! tiles' features rather than the whole region's at every low zoom. V2 sections are written
 //! to a temp file for the compression variants in `compress`.
+//!
+//! Also here: the layer encodings ([`encode`]), dictionary training and the compression
+//! variants ([`compress`]), and the ocean polygons ([`water`]).
+
+pub mod compress;
+pub mod encode;
+pub mod water;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -21,9 +28,8 @@ use serde::Serialize;
 
 use omp_core::tile::{EXTENT_BITS, Enc, Geom, Point, encode_layer};
 
-use super::encode;
-use super::geom::{self, BBox, Geometry, Rect};
-use super::osm::Feature;
+use crate::geom::{self, BBox, Geometry, Rect};
+use crate::pbf::features::Feature;
 
 pub const MAX_ZOOM: u8 = 14;
 const SPLIT_ZOOM: u8 = 6;

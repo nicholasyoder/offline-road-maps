@@ -27,8 +27,8 @@ use crate::addr::osm::{self, HIGHWAYS, StreetWay};
 use crate::addr::streets::morton;
 use crate::admin::towns::{self, FALLBACK, Fallbacks, Located, Source};
 use crate::admin::{self, Admin};
-use crate::measure::geom::{self, P};
-use crate::measure::peak_rss_mib;
+use crate::geom::{self, P};
+use crate::peak_rss_mib;
 
 /// Ways are cut into pieces at most about this long, so a long way can be split.
 pub const PIECE_MAX_M: f64 = 5_000.0;

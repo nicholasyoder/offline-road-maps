@@ -6,8 +6,8 @@ use omp_core::normalize;
 use omp_core::whitelist::Whitelist;
 use serde::Serialize;
 
-use super::geom::Geometry;
-use super::osm::Feature;
+use crate::geom::Geometry;
+use crate::pbf::features::Feature;
 use omp_core::varint::{len as varint_len, put as put_varint};
 
 #[derive(Serialize)]

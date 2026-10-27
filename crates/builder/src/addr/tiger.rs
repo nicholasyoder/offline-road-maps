@@ -8,23 +8,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail, ensure};
 use omp_core::normalize::{NumberKind, house_number};
 use rayon::prelude::*;
-use serde::Serialize;
 
-use crate::measure::geom::{self, P};
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RangeSrc {
-    Tiger,
-    OsmInterpolation,
-}
+use crate::geom::{self, P};
 
 /// One side of one TIGER segment, or one stretch of an OSM interpolation way between two
 /// numbered nodes.
 pub struct Range {
-    pub src: RangeSrc,
-    /// TIGER `TLID`, or the OSM way id.
-    pub tlid: u64,
     /// TIGER side relative to the segment's direction; `None` for OSM, where the line itself
     /// lies on one side of the street.
     pub right: Option<bool>,
@@ -37,15 +26,6 @@ pub struct Range {
 }
 
 impl Range {
-    /// House numbers the range could hold.
-    pub fn numbers(&self) -> u64 {
-        let span = u64::from(self.from.abs_diff(self.to));
-        match self.parity {
-            b'O' | b'E' => span / 2 + 1,
-            _ => span + 1,
-        }
-    }
-
     pub fn contains(&self, n: u32) -> bool {
         let (lo, hi) = (self.from.min(self.to), self.from.max(self.to));
         let parity_ok = match self.parity {
@@ -55,16 +35,6 @@ impl Range {
         };
         (lo..=hi).contains(&n) && parity_ok
     }
-}
-
-#[derive(Default, Serialize)]
-pub struct TigerStats {
-    pub files: u64,
-    pub records: u64,
-    pub ranges: u64,
-    pub segments: u64,
-    /// Range ends that are not plain numbers (e.g. "100-01"); the range is dropped.
-    pub number_exceptions: u64,
 }
 
 struct Field {
@@ -164,7 +134,7 @@ fn parse_shp(data: &[u8]) -> Result<Vec<Vec<P>>> {
     Ok(out)
 }
 
-fn read_zip(path: &PathBuf) -> Result<(Vec<Range>, TigerStats)> {
+fn read_zip(path: &PathBuf) -> Result<Vec<Range>> {
     let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut z = zip::ZipArchive::new(f).with_context(|| format!("read {}", path.display()))?;
     let mut read = |ext: &str| -> Result<Vec<u8>> {
@@ -186,16 +156,11 @@ fn read_zip(path: &PathBuf) -> Result<(Vec<Range>, TigerStats)> {
         dbf.records
     );
     let col = |n| dbf.column(n);
-    let (tlid, name) = (col("TLID")?, col("FULLNAME")?);
+    let name = col("FULLNAME")?;
     let sides = [
         (false, col("LFROMHN")?, col("LTOHN")?, col("PARITYL")?),
         (true, col("RFROMHN")?, col("RTOHN")?, col("PARITYR")?),
     ];
-    let mut stats = TigerStats {
-        files: 1,
-        records: dbf.records as u64,
-        ..Default::default()
-    };
     let mut ranges = Vec::new();
     for (rec, line) in lines.into_iter().enumerate() {
         if line.len() < 2 {
@@ -207,13 +172,11 @@ fn read_zip(path: &PathBuf) -> Result<(Vec<Range>, TigerStats)> {
                 continue;
             }
             let plain = |s: &str| house_number(s).filter(|h| h.kind == NumberKind::Plain);
+            // Range ends that are not plain numbers (e.g. "100-01") drop the range.
             let (Some(f), Some(t)) = (plain(f), plain(t)) else {
-                stats.number_exceptions += 1;
                 continue;
             };
             ranges.push(Range {
-                src: RangeSrc::Tiger,
-                tlid: dbf.get(rec, tlid).parse().unwrap_or_default(),
                 right: Some(right),
                 from: f.number,
                 to: t.number,
@@ -223,24 +186,10 @@ fn read_zip(path: &PathBuf) -> Result<(Vec<Range>, TigerStats)> {
             });
         }
     }
-    stats.ranges = ranges.len() as u64;
-    Ok((ranges, stats))
+    Ok(ranges)
 }
 
-pub fn read(files: &[PathBuf]) -> Result<(Vec<Range>, TigerStats)> {
+pub fn read(files: &[PathBuf]) -> Result<Vec<Range>> {
     let parts: Vec<_> = files.par_iter().map(read_zip).collect::<Result<_>>()?;
-    let mut ranges = Vec::new();
-    let mut stats = TigerStats::default();
-    for (mut r, s) in parts {
-        ranges.append(&mut r);
-        stats.files += s.files;
-        stats.records += s.records;
-        stats.number_exceptions += s.number_exceptions;
-    }
-    stats.ranges = ranges.len() as u64;
-    let mut tlids: Vec<u64> = ranges.iter().map(|r| r.tlid).collect();
-    tlids.sort_unstable();
-    tlids.dedup();
-    stats.segments = tlids.len() as u64;
-    Ok((ranges, stats))
+    Ok(parts.into_iter().flatten().collect())
 }

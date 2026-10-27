@@ -1,11 +1,11 @@
-//! The address merge in `build` (phase 2 step 2.4): `addr-spike`'s stages, run once per state
-//! and province as its `--each` does, against one list of OSM street ways. Each merged
+//! The address merge in `build` (phase 2 step 2.4): the [`super::pipeline`] stages, run once per
+//! state and province, against one list of OSM street ways. Each merged
 //! address keeps the way it attached to; once the street table is built with the postal
 //! town votes gathered here, [`crate::street::Table::locate`] turns it into a street and an
 //! offset ([`super::store`]).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -15,23 +15,26 @@ use serde::Serialize;
 
 use super::attach::How;
 use super::osm::{self, OsmAddresses, StreetWay};
+use super::pipeline::{
+    Interner, Normalized, SourceOpts, Src, attach_records, clusters, dedup, extract,
+    fallback_ranges, normalize, select,
+};
 use super::postcodes::{self, Postcode};
 use super::store;
 use super::streets::Streets;
-use super::{
-    Extracted, FileRow, Interner, Normalized, STREET_MARGIN_DEG, SourceOpts, Src, Stages,
-    attach_records, clusters, dedup, extract, fallback_ranges, normalize, select,
-};
 use crate::admin::{Admin, towns};
 use crate::fetch::regions::Subdivision;
-use crate::measure::geom::{self, P};
-use crate::measure::peak_rss_mib;
-use crate::measure::poly::Poly;
+use crate::geom::{self, P};
+use crate::peak_rss_mib;
+use crate::poly::Poly;
 use crate::search::AddressStreet;
 
-/// Attach and dedup distances (phase 0 decision 10), as `addr-spike`'s defaults.
+/// Attach and dedup distances (phase 0 decision 10).
 pub const ATTACH_M: f64 = 200.0;
 pub const DEDUP_M: f64 = 250.0;
+/// Streets this far outside a subdivision's boundary still go to it, for addresses near the
+/// border (about 5 km).
+const STREET_MARGIN_DEG: f64 = 0.05;
 
 pub struct Options {
     pub subdivisions: Vec<Subdivision>,
@@ -131,14 +134,8 @@ pub struct Merged {
     pub rows: Vec<SubRow>,
 }
 
-/// Merges the addresses of `opts.subdivisions` with the OSM records `all` (read from
-/// `osm_file`). Returns the merge and the street ways its addresses refer to.
-pub fn merge(
-    opts: &Options,
-    admin: &Admin,
-    all: OsmAddresses,
-    osm_file: &Path,
-) -> Result<(Merged, Vec<StreetWay>)> {
+/// Merges the addresses of `opts.subdivisions` with the OSM records `all`. Returns the merge and the street ways its addresses refer to.
+pub fn merge(opts: &Options, admin: &Admin, all: OsmAddresses) -> Result<(Merged, Vec<StreetWay>)> {
     let polys: Vec<Poly> = opts
         .subdivisions
         .iter()
@@ -166,7 +163,7 @@ pub fn merge(
         rows: Vec::new(),
     };
     for ((sub, part), idx) in opts.subdivisions.iter().zip(parts).zip(owned) {
-        merge_one(opts, admin, sub, part, &idx, &ways, osm_file, &mut m)?;
+        merge_one(opts, admin, sub, part, &idx, &ways, &mut m)?;
     }
     m.units.sort_unstable();
     m.files.sort_unstable();
@@ -187,33 +184,15 @@ fn merge_one(
     part: OsmAddresses,
     idx: &[u32],
     ways: &[StreetWay],
-    osm_file: &Path,
     m: &mut Merged,
 ) -> Result<()> {
     let start = Instant::now();
-    let mut stages = Stages::quiet();
-    let mut files = vec![FileRow {
-        path: osm_file.display().to_string(),
-        source: "osm".into(),
-        license: "ODbL-1.0".into(),
-        excluded: false,
-        records: 0,
-        kept: 0,
-        conflicts: 0,
-    }];
-    let sel = select(
-        &opts.sources,
-        &opts.inputs,
-        std::slice::from_ref(sub),
-        &mut files,
-    )?;
+    let sel = select(&opts.sources, &opts.inputs, std::slice::from_ref(sub))?;
     let (osm_raws, osm_ranges) = match sel.osm {
         true => (part.raws, part.ranges),
         false => (Vec::new(), Vec::new()),
     };
-    let Extracted {
-        raws, mut ranges, ..
-    } = extract(&sel, osm_raws, &mut stages)?;
+    let (raws, mut ranges) = extract(&sel, osm_raws)?;
     ranges.extend(osm_ranges);
     let Normalized {
         mut recs,
@@ -223,11 +202,10 @@ fn merge_one(
         cities,
         codes,
         mut keys,
-        ..
-    } = normalize(raws, &mut files);
+    } = normalize(raws);
     let local: Vec<StreetWay> = idx.iter().map(|&w| ways[w as usize].clone()).collect();
     let streets = Streets::build(local, &mut keys);
-    let attach = attach_records(
+    attach_records(
         &mut recs,
         &street_names,
         &cities,
@@ -236,14 +214,13 @@ fn merge_one(
         admin,
         opts.attach_m,
     );
-    let (_, merge) = dedup(&recs, &keys, opts.dedup_m, false);
-    let (masks, cluster_units, cluster_codes) = clusters(&recs, &merge);
-    let (_, fallbacks) = fallback_ranges(
+    let merge = dedup(&recs, &keys, opts.dedup_m);
+    let (cluster_units, cluster_codes) = clusters(&recs, &merge);
+    let fallbacks = fallback_ranges(
         &ranges,
         &mut keys,
         &recs,
         &merge.reps,
-        &masks,
         &streets,
         opts.attach_m,
     );
@@ -267,9 +244,7 @@ fn merge_one(
         fallback_ranges: fallbacks.len() as u64,
         ..Default::default()
     };
-    for a in attach.values() {
-        row.unattached_records += a.records;
-    }
+    row.unattached_records = row.records;
     for r in &recs {
         let Some(a) = r.att else { continue };
         let k = match a.how {
@@ -340,13 +315,7 @@ fn merge_one(
         parity: f.parity,
         right: f.right,
     }));
-    m.files.extend(
-        files
-            .iter()
-            .skip(1)
-            .filter(|f| !f.excluded)
-            .map(|f| f.path.clone()),
-    );
+    m.files.extend(sel.files);
     row.secs = start.elapsed().as_secs_f64();
     eprintln!(
         "  addresses {}: {} records ({} strict, {} loose, {} alias, {} fuzzy, {} unattached) → \

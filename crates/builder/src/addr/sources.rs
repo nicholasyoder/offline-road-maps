@@ -8,19 +8,11 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Raw, Src};
-use crate::measure::geom::{self, P};
-
-/// Lines or rows that could not be used.
-#[derive(Default, Serialize)]
-pub struct Skipped {
-    /// Unparseable JSON or CSV, or a geometry that is not a point.
-    pub bad_rows: u64,
-    pub no_location: u64,
-}
+use crate::geom::{self, P};
 
 #[derive(Deserialize)]
 struct OaFeature {
@@ -61,30 +53,27 @@ fn point(geometry: &Option<Value>) -> Option<P> {
         .then(|| geom::project(lat, lon))
 }
 
-/// One gzipped GeoJSON-lines file per `(file index, path)`.
-pub fn openaddresses(files: &[(u32, std::path::PathBuf)]) -> Result<(Vec<Raw>, Skipped)> {
-    let parts: Vec<(Vec<Raw>, Skipped)> = files
+/// One gzipped GeoJSON-lines file per path. Lines that do not parse, and features with no
+/// point, are skipped.
+pub fn openaddresses(files: &[std::path::PathBuf]) -> Result<Vec<Raw>> {
+    let parts: Vec<Vec<Raw>> = files
         .par_iter()
-        .map(|(file, path)| {
+        .map(|path| {
             let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
             let mut raws = Vec::new();
-            let mut skipped = Skipped::default();
             for line in BufReader::new(GzDecoder::new(f)).lines() {
                 let line = line.with_context(|| format!("read {}", path.display()))?;
                 if line.trim().is_empty() {
                     continue;
                 }
                 let Ok(feat) = serde_json::from_str::<OaFeature>(&line) else {
-                    skipped.bad_rows += 1;
                     continue;
                 };
                 let Some(p) = point(&feat.geometry) else {
-                    skipped.no_location += 1;
                     continue;
                 };
                 raws.push(Raw {
                     src: Src::OpenAddresses,
-                    file: *file,
                     number: text(&feat.properties.number),
                     street: text(&feat.properties.street),
                     unit: text(&feat.properties.unit),
@@ -93,17 +82,10 @@ pub fn openaddresses(files: &[(u32, std::path::PathBuf)]) -> Result<(Vec<Raw>, S
                     p,
                 });
             }
-            Ok((raws, skipped))
+            Ok(raws)
         })
         .collect::<Result<_>>()?;
-    let mut raws = Vec::new();
-    let mut skipped = Skipped::default();
-    for (mut r, s) in parts {
-        raws.append(&mut r);
-        skipped.bad_rows += s.bad_rows;
-        skipped.no_location += s.no_location;
-    }
-    Ok((raws, skipped))
+    Ok(parts.into_iter().flatten().collect())
 }
 
 /// Column indexes by header name (a UTF-8 BOM on the first header is ignored).
@@ -197,22 +179,12 @@ fn civic(no: &str, suffix: &str) -> String {
     }
 }
 
-#[derive(Default, Serialize)]
-pub struct NarStats {
-    pub locations: u64,
-    pub address_rows: u64,
-    pub building_point: u64,
-    pub blockface_only: u64,
-    #[serde(flatten)]
-    pub skipped: Skipped,
-}
-
 /// A NAR location: its point and whether it is a building point (else blockface).
 type Loc = (P, bool);
 
 /// The NAR rows of the provinces with these SGC codes (e.g. "35" Ontario, "24" Quebec).
 /// Each address row takes its location's building point, else the blockface point.
-pub fn nar(zip: &Path, codes: &[&str], file: u32) -> Result<(Vec<Raw>, NarStats)> {
+pub fn nar(zip: &Path, codes: &[&str]) -> Result<Vec<Raw>> {
     let entries = zip_entries(zip)?;
     let pick = |dir: &str, stem: &str| -> Vec<String> {
         entries
@@ -267,12 +239,8 @@ pub fn nar(zip: &Path, codes: &[&str], file: u32) -> Result<(Vec<Raw>, NarStats)
     for p in parts {
         locs.extend(p);
     }
-    let mut stats = NarStats {
-        locations: locs.len() as u64,
-        ..Default::default()
-    };
 
-    let parts: Vec<(Vec<Raw>, NarStats)> = addr_files
+    let parts: Vec<Vec<Raw>> = addr_files
         .par_iter()
         .map(|name| {
             with_entry(zip, name, |r| {
@@ -293,32 +261,22 @@ pub fn nar(zip: &Path, codes: &[&str], file: u32) -> Result<(Vec<Raw>, NarStats)
                     name,
                 )?;
                 let mut raws = Vec::new();
-                let mut s = NarStats::default();
                 let quebec = name.contains("_24");
                 for rec in rdr.records() {
-                    s.address_rows += 1;
                     let Ok(rec) = rec else {
-                        s.skipped.bad_rows += 1;
                         continue;
                     };
                     let loc =
                         parse_guid(&rec[guid]).and_then(|id| locs.get(&id).copied().flatten());
                     let Some((p, building)) = loc else {
-                        s.skipped.no_location += 1;
                         continue;
                     };
-                    if building {
-                        s.building_point += 1;
-                    } else {
-                        s.blockface_only += 1;
-                    }
                     raws.push(Raw {
                         src: if building {
                             Src::Nar
                         } else {
                             Src::NarBlockface
                         },
-                        file,
                         number: civic(&rec[no], &rec[suffix]),
                         street: compose_street(&rec[street], &rec[ty], &rec[dir], quebec),
                         unit: rec[apt].trim().to_owned(),
@@ -327,24 +285,15 @@ pub fn nar(zip: &Path, codes: &[&str], file: u32) -> Result<(Vec<Raw>, NarStats)
                         p,
                     });
                 }
-                Ok((raws, s))
+                Ok(raws)
             })
         })
         .collect::<Result<_>>()?;
-    let mut raws = Vec::new();
-    for (mut r, s) in parts {
-        raws.append(&mut r);
-        stats.address_rows += s.address_rows;
-        stats.building_point += s.building_point;
-        stats.blockface_only += s.blockface_only;
-        stats.skipped.bad_rows += s.skipped.bad_rows;
-        stats.skipped.no_location += s.skipped.no_location;
-    }
-    Ok((raws, stats))
+    Ok(parts.into_iter().flatten().collect())
 }
 
 /// One ODA province zip; keeps rows whose `pruid` is the province's SGC code.
-pub fn oda(zip: &Path, abbr: &str, code: &str, file: u32) -> Result<(Vec<Raw>, Skipped)> {
+pub fn oda(zip: &Path, abbr: &str, code: &str) -> Result<Vec<Raw>> {
     let name = format!("ODA_{abbr}_v1.csv");
     with_entry(zip, &name, |r| {
         let mut rdr = csv_reader(r);
@@ -378,23 +327,19 @@ pub fn oda(zip: &Path, abbr: &str, code: &str, file: u32) -> Result<(Vec<Raw>, S
             &name,
         )?;
         let mut raws = Vec::new();
-        let mut skipped = Skipped::default();
         for rec in rdr.records() {
             let Ok(rec) = rec else {
-                skipped.bad_rows += 1;
                 continue;
             };
             if rec[pruid].trim() != code {
                 continue;
             }
             let Some(p) = lat_lon(&rec[lat], &rec[lon]) else {
-                skipped.no_location += 1;
                 continue;
             };
             let full = rec[street].trim();
             raws.push(Raw {
                 src: Src::Oda,
-                file,
                 number: rec[no].trim().to_owned(),
                 street: if full.is_empty() {
                     compose_street(&rec[str_name], &rec[str_type], &rec[str_dir], code == "24")
@@ -407,7 +352,7 @@ pub fn oda(zip: &Path, abbr: &str, code: &str, file: u32) -> Result<(Vec<Raw>, S
                 p,
             });
         }
-        Ok((raws, skipped))
+        Ok(raws)
     })
 }
 

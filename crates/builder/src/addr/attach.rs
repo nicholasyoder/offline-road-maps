@@ -9,15 +9,13 @@
 
 use omp_core::normalize::{is_generic, loose_key, street_key, street_tokens};
 use rayon::prelude::*;
-use serde::Serialize;
 
-use super::Rec;
+use super::pipeline::Rec;
 use super::streets::{Hit, Keys, Streets};
 use crate::admin::Admin;
 
 /// How a record found its street.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum How {
     Strict,
     Loose,
@@ -25,31 +23,12 @@ pub enum How {
     Fuzzy,
 }
 
-impl How {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            How::Strict => "strict",
-            How::Loose => "loose",
-            How::Alias => "alias",
-            How::Fuzzy => "fuzzy",
-        }
-    }
-}
-
-/// One record's search: metres to the nearest way with its strict key and with its loose
-/// key (looked for only when the strict one is further than `loose_from`), and the hit it
-/// attaches to at the attach distance, with the key it was found under.
-pub struct Found {
-    pub strict_m: f64,
-    pub loose_m: f64,
-    pub hit: Option<(Hit, u32, How)>,
-}
-
 /// Admin areas whose names may be dropped from a street name: level 5 (Quebec regions) and up.
 const ALIAS_MIN_LEVEL: u8 = 5;
 
-/// Attaches each record within `attach_m`. `names` and `cities` are the records' street
-/// names and postal towns.
+/// Attaches each record within `attach_m`: the hit for each, with the key it was found
+/// under. The loose key is looked for only when the strict one finds nothing within
+/// `loose_from`. `names` and `cities` are the records' street names and postal towns.
 #[allow(clippy::too_many_arguments)]
 pub fn attach(
     recs: &[Rec],
@@ -60,7 +39,7 @@ pub fn attach(
     admin: &Admin,
     attach_m: f64,
     loose_from: f64,
-) -> Vec<Found> {
+) -> Vec<Option<(Hit, u32, How)>> {
     let area_tokens: Vec<Vec<String>> = admin
         .areas
         .par_iter()
@@ -83,7 +62,7 @@ pub fn attach(
                 None
             };
             let loose_m = hl.map_or(f64::INFINITY, |h| h.dist_m);
-            let hit = if strict_m <= attach_m {
+            if strict_m <= attach_m {
                 hs.map(|h| (h, r.key, How::Strict))
             } else if loose_m <= attach_m {
                 hl.map(|h| (h, lk, How::Loose))
@@ -110,11 +89,6 @@ pub fn attach(
                     .or_else(|| {
                         fuzzy(streets, keys, r.key, r.p, attach_m).map(|(h, k)| (h, k, How::Fuzzy))
                     })
-            };
-            Found {
-                strict_m,
-                loose_m,
-                hit,
             }
         })
         .collect()

@@ -5,13 +5,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use osmpbf::{BlobDecode, BlobReader, Element, PrimitiveBlock, RelMemberType};
+use anyhow::Result;
+use osmpbf::{Element, PrimitiveBlock, RelMemberType};
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::measure::geom::{self, Assembly, P};
-use crate::measure::nodes::{NodeSet, RankedLocations};
+use crate::geom::{self, Assembly, P};
+use crate::pbf::{
+    self,
+    nodes::{NodeSet, RankedLocations},
+};
 
 /// Alternative names kept with each area, for search aliases (decision 6).
 pub const ALT_NAMES: &[&str] = &[
@@ -113,24 +116,6 @@ struct Rel {
     centre: Option<i64>,
 }
 
-pub fn pass<T: Send>(
-    path: &Path,
-    init: impl Fn() -> T + Sync + Send,
-    f: impl Fn(&PrimitiveBlock, &mut T) + Sync + Send,
-) -> Result<Vec<T>> {
-    BlobReader::from_path(path)
-        .with_context(|| format!("open {}", path.display()))?
-        .par_bridge()
-        .map(|blob| {
-            let mut out = init();
-            if let BlobDecode::OsmData(block) = blob?.decode()? {
-                f(&block, &mut out);
-            }
-            Ok(out)
-        })
-        .collect()
-}
-
 /// "12,345" or "12 345" → 12345; anything else that is not a plain number → `None`.
 pub fn parse_population(v: &str) -> Option<u64> {
     let digits: String = v
@@ -201,10 +186,13 @@ struct NodeBlock {
 }
 
 pub fn read(path: &Path) -> Result<AdminData> {
-    let mut rels: Vec<Rel> = pass(path, Vec::new, relations_block)?
-        .into_iter()
-        .flatten()
-        .collect();
+    let mut rels: Vec<Rel> = pbf::pass(path, Vec::new, |block, out| {
+        relations_block(block, out);
+        Ok(())
+    })?
+    .into_iter()
+    .flatten()
+    .collect();
     rels.sort_unstable_by_key(|r| r.id);
     let member_ids: HashSet<i64> = rels.iter().flat_map(|r| &r.ways).map(|w| w.0).collect();
     let label_ids: HashSet<i64> = rels
@@ -213,7 +201,7 @@ pub fn read(path: &Path) -> Result<AdminData> {
         .flatten()
         .collect();
 
-    let way_refs: HashMap<i64, Vec<i64>> = pass(path, Vec::new, |block, out| {
+    let way_refs: HashMap<i64, Vec<i64>> = pbf::pass(path, Vec::new, |block, out| {
         for el in block.elements() {
             if let Element::Way(w) = el
                 && member_ids.contains(&w.id())
@@ -221,6 +209,7 @@ pub fn read(path: &Path) -> Result<AdminData> {
                 out.push((w.id(), w.refs().collect::<Vec<i64>>()));
             }
         }
+        Ok(())
     })?
     .into_iter()
     .flatten()
@@ -233,7 +222,7 @@ pub fn read(path: &Path) -> Result<AdminData> {
     }
     let locs = RankedLocations::new(needed);
 
-    let blocks = pass(path, NodeBlock::default, |block, out| {
+    let blocks = pbf::pass(path, NodeBlock::default, |block, out| {
         let mut visit =
             |id: i64, lat: i32, lon: i32, tags: &mut dyn Iterator<Item = (&str, &str)>| {
                 let p = geom::project_e7(lat, lon);
@@ -272,6 +261,7 @@ pub fn read(path: &Path) -> Result<AdminData> {
                 _ => {}
             }
         }
+        Ok(())
     })?;
     let mut labels: HashMap<i64, (P, Option<String>)> = HashMap::new();
     let mut places = Vec::new();

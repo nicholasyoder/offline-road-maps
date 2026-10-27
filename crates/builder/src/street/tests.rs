@@ -1,6 +1,6 @@
 use super::*;
 use crate::admin::read::{AdminData, Area, ReadStats};
-use crate::measure::geom::project;
+use crate::geom::project;
 use crate::street::grid;
 
 fn area(id: i64, level: u8, name: &str, sw: (f64, f64), ne: (f64, f64)) -> Area {

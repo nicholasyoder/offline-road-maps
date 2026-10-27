@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::Admin;
 use crate::addr::streets::cell;
-use crate::measure::geom::P;
+use crate::geom::P;
 
 /// How far a place node may be from a street and still name its town.
 pub const PLACE_MAX_M: f64 = 25_000.0;

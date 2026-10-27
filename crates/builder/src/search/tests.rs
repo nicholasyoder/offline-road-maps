@@ -1,6 +1,6 @@
 use super::encode::{decode_entries, decode_towns, lookup, sections};
 use super::*;
-use crate::measure::geom::project;
+use crate::geom::project;
 
 fn entry(kind: Kind, importance: u8, name: &str, lat: f64, lon: f64, town: u32) -> Entry {
     Entry {

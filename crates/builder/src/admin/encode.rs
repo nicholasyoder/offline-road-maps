@@ -5,7 +5,7 @@ use omp_core::varint::{put, put_str, zigzag};
 use serde::Serialize;
 
 use super::{Admin, PACK_TOLERANCE_M, abbreviation, index};
-use crate::measure::geom::BBox;
+use crate::geom::BBox;
 
 pub const SADM: [u8; 4] = *b"SADM";
 pub const SAPL: [u8; 4] = *b"SAPL";
@@ -119,7 +119,7 @@ mod tests {
 
     use super::*;
     use crate::admin::read::{AdminData, Area, Place, PlaceClass, ReadStats};
-    use crate::measure::geom::{P, project};
+    use crate::geom::{P, project};
 
     fn area(id: i64, level: u8, name: &str, iso: Option<&str>, sw: P, ne: P) -> Area {
         Area {

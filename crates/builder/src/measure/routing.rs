@@ -1,13 +1,17 @@
 //! Car road graph and an off-the-shelf contraction hierarchy (`fast_paths`), for size numbers only.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Instant;
 
+use anyhow::Result;
 use fast_paths::InputGraph;
+use omp_core::whitelist::Whitelist;
 use serde::Serialize;
 
-use super::geom::{self, P};
-use super::osm::Road;
+use crate::geom::{self, P};
+use crate::pbf::features::{self, Road};
+use crate::pbf::nodes::NodeSet;
 
 #[derive(Serialize)]
 pub struct RoutingStats {
@@ -135,4 +139,63 @@ pub fn build(roads: &[Road], class_names: &[String], restrictions: u64) -> Routi
             ch_bytes_compact: ch_edges * 12 + nodes * 12,
         }),
     }
+}
+
+/// Counts the car routing graph like [`build`] does, without keeping the roads:
+/// two more passes over the ways, one marking nodes that are intersections or way ends and
+/// one counting the edges between them. For a continent, where the roads do not fit next to
+/// everything else.
+pub fn count_graph(path: &Path, wl: &Whitelist, restrictions: u64) -> Result<RoutingStats> {
+    let roads = |f: &(dyn Fn(&[i64], i8, bool) + Sync)| features::road_ways(path, wl, f);
+    let routable = |refs: &[i64], ok: bool| ok && refs.len() >= 2;
+    let (seen, graph_nodes) = (NodeSet::new(), NodeSet::new());
+    let [road_ways, routable_ways, edges, oneway_segments] =
+        [(); 4].map(|_| std::sync::atomic::AtomicU64::new(0));
+    let add = |n: &std::sync::atomic::AtomicU64, v: u64| {
+        n.fetch_add(v, std::sync::atomic::Ordering::Relaxed);
+    };
+    roads(&|refs, _, ok| {
+        add(&road_ways, 1);
+        if !routable(refs, ok) {
+            return;
+        }
+        add(&routable_ways, 1);
+        for &id in refs {
+            if seen.insert(id) {
+                graph_nodes.insert(id);
+            }
+        }
+        graph_nodes.insert(refs[0]);
+        graph_nodes.insert(refs[refs.len() - 1]);
+    })?;
+    drop(seen);
+    roads(&|refs, oneway, ok| {
+        if !routable(refs, ok) {
+            return;
+        }
+        let mut from = refs[0];
+        for &id in &refs[1..] {
+            if !graph_nodes.contains(id) {
+                continue;
+            }
+            if from != id {
+                if oneway == 0 {
+                    add(&edges, 2);
+                } else {
+                    add(&edges, 1);
+                    add(&oneway_segments, 1);
+                }
+            }
+            from = id;
+        }
+    })?;
+    Ok(RoutingStats {
+        road_ways: road_ways.into_inner(),
+        routable_ways: routable_ways.into_inner(),
+        nodes: graph_nodes.len(),
+        edges: edges.into_inner(),
+        oneway_segments: oneway_segments.into_inner(),
+        restriction_relations: restrictions,
+        ch: None,
+    })
 }

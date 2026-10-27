@@ -8,7 +8,7 @@ use omp_core::varint::{Reader, invalid, put, put_str, zigzag};
 use serde::Serialize;
 
 use super::{Entry, Index, Kind};
-use crate::measure::geom::P;
+use crate::geom::P;
 use crate::street::SHIFT;
 use crate::street::encode::{Blocks, blocked, read_blocks, string};
 
@@ -42,6 +42,18 @@ pub struct Sections {
     pub stwn: Vec<u8>,
     pub sfst: Vec<u8>,
     pub spst: Vec<u8>,
+}
+
+impl Sections {
+    /// The sections in pack order.
+    pub fn list(self) -> [([u8; 4], Vec<u8>); 4] {
+        [
+            (SENT, self.sent),
+            (STWN, self.stwn),
+            (SFST, self.sfst),
+            (SPST, self.spst),
+        ]
+    }
 }
 
 /// Appends one entry, its point as a delta from `cur` in units of 2^[`SHIFT`].

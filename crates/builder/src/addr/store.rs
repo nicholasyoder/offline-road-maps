@@ -20,7 +20,7 @@ use serde::Serialize;
 
 use super::merge::{APPROX, Attached, Merged, OSM, UNATTACHED};
 use super::streets::morton;
-use crate::measure::geom::P;
+use crate::geom::P;
 use crate::street::encode::{Blocks, blocked, read_blocks, string};
 use crate::street::{STEP_M, Table};
 
@@ -817,7 +817,7 @@ pub fn decode_codes(apcd: &[u8]) -> io::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::measure::geom;
+    use crate::geom;
 
     fn entry(street: u32, num: u32, suffix: u32, off: i32, code: u32, addr: u32) -> Entry {
         Entry {

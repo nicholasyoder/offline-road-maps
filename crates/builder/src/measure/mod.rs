@@ -1,17 +1,11 @@
 //! `omp-builder measure`: the Phase 0 builder spike. Reads a PBF through the tag whitelist,
 //! cuts a z0–z14 tile pyramid, and reports feature counts, vertex counts and bytes for every
-//! layer × zoom × encoding variant, plus routing and search size estimates.
+//! layer × zoom × encoding variant, plus routing and search size estimates. A thin command
+//! over the production modules ([`crate::pbf`], [`crate::tiles`]); only the routing and
+//! search estimates are its own.
 
-pub(crate) mod compress;
-pub(crate) mod encode;
-pub(crate) mod geom;
-pub(crate) mod nodes;
-pub(crate) mod osm;
-pub(crate) mod poly;
 mod routing;
 mod search;
-pub(crate) mod tiles;
-pub(crate) mod water;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,7 +16,10 @@ use clap::{Args, ValueEnum};
 use omp_core::whitelist::{GeometryKind, Whitelist};
 use serde::Serialize;
 
-use tiles::{Band, Cell, Variant};
+use crate::pbf::features as osm;
+use crate::peak_rss_mib;
+use crate::poly;
+use crate::tiles::{self, Band, Cell, Variant, compress, water};
 
 fn parse_band(s: &str) -> Result<Band, String> {
     Band::parse(s).ok_or_else(|| format!("{s:?} is not k/n with k < n"))
@@ -183,19 +180,6 @@ struct MvtRow {
     gzip_bytes: u64,
 }
 
-/// Peak resident set size so far, from /proc (Linux only; 0 elsewhere).
-pub(crate) fn peak_rss_mib() -> f64 {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("VmHWM:"))
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|kb| kb.parse::<f64>().ok())
-        })
-        .map_or(0.0, |kb| kb / 1024.0)
-}
-
 struct Stages {
     list: Vec<Stage>,
     t: Instant,
@@ -261,7 +245,7 @@ pub fn run(args: MeasureArgs, work_dir: &Path) -> Result<()> {
             let names: Vec<String> = roads.classes.iter().map(|c| c.name.clone()).collect();
             Some(routing::build(&data.roads, &names, restrictions))
         }
-        Routing::Graph => Some(osm::count_road_graph(&args.input, &wl, restrictions)?),
+        Routing::Graph => Some(routing::count_graph(&args.input, &wl, restrictions)?),
         Routing::None => None,
     };
     data.roads = Vec::new();

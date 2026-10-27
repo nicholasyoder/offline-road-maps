@@ -58,8 +58,8 @@ pub fn water() -> Vec<Job> {
 }
 
 /// Boundary polygons (`.poly`) of Geofabrik extracts: the region's own, saved as
-/// `poly/<region id>.poly` (for `measure --clip-poly`), and each subdivision's, saved as
-/// `poly/<ISO code>.poly` (for `addr-spike --each`). Geofabrik publishes only the current
+/// `poly/<region id>.poly` (for `--clip-poly`), and each subdivision's, saved as
+/// `poly/<ISO code>.poly` (for `build --addresses`). Geofabrik publishes only the current
 /// polygons, so they are not date-pinned.
 pub fn polys(index_json: &str, region: &Region) -> Result<Vec<Job>> {
     let job = |r: &Region, path: String| -> Result<Job> {

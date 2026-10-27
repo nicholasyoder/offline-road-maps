@@ -1,12 +1,12 @@
-//! Osmosis `.poly` boundary files, as Geofabrik publishes for each extract. `addr-spike`
-//! splits a continent's OSM addresses by state and province with them, and `measure` keeps
-//! the ocean pieces that meet the extract's polygon.
+//! Osmosis `.poly` boundary files, as Geofabrik publishes for each extract. The address
+//! merge splits a continent's OSM addresses by state and province with them, and
+//! `--clip-poly` keeps the ocean pieces that meet the extract's polygon.
 
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::measure::geom::{self, BBox, P};
+use crate::geom::{self, BBox, P};
 
 pub struct Poly {
     /// Rings of `(lon, lat)`; holes are rings too, since the test is even-odd.
