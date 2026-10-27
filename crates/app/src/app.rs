@@ -475,9 +475,9 @@ impl MapState {
                     match e {
                         egui::Event::MouseWheel { unit, delta, .. } => {
                             let dz = match unit {
-                                egui::MouseWheelUnit::Line => f64::from(delta.y) * 0.5,
-                                egui::MouseWheelUnit::Point => f64::from(delta.y) / 200.0,
-                                egui::MouseWheelUnit::Page => f64::from(delta.y) * 2.0,
+                                egui::MouseWheelUnit::Line => f64::from(delta.y) * 0.25,
+                                egui::MouseWheelUnit::Point => f64::from(delta.y) / 400.0,
+                                egui::MouseWheelUnit::Page => f64::from(delta.y),
                             };
                             self.motion.zoom(dz, anchor);
                         }
