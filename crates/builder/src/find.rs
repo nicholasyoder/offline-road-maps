@@ -26,7 +26,7 @@ pub struct SearchArgs {
     /// What to search for.
     query: Option<String>,
 
-    /// The map view's centre, `lat,lon`.
+    /// The map view's centre, `lat,lon` (with `--check`, for the queries that give none).
     #[arg(long)]
     near: Option<String>,
 
@@ -203,6 +203,7 @@ pub fn search(args: SearchArgs) -> Result<()> {
             &s,
             &args.check,
             &region,
+            args.near.as_deref().map(parse_point).transpose()?,
             args.prefix,
             args.level,
             args.verbose,
@@ -455,6 +456,11 @@ fn line(number: &str, street: &str, town: &str, state: &str, p: P, approx: bool)
             q.push_str(part);
         }
     }
+    // A few source names hold a line break or a tab.
+    let q: String = q
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     format!("{q}\t{lat:.6}\t{lon:.6}\t{}\n", u8::from(approx))
 }
 
@@ -502,6 +508,7 @@ fn check(
     s: &Search,
     files: &[PathBuf],
     region: &str,
+    near: Option<P>,
     prefix: bool,
     level: usize,
     verbose: bool,
@@ -613,7 +620,11 @@ fn check(
             cases.push(Case {
                 category: r[1].to_owned(),
                 query: r[2].to_owned(),
-                near: (r[3] != "-").then(|| parse_point(r[3])).transpose()?,
+                near: if r[3] == "-" {
+                    near
+                } else {
+                    Some(parse_point(r[3])?)
+                },
                 zoom: r[4].parse()?,
                 kinds: if r[5] == "none" {
                     Vec::new()

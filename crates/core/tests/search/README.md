@@ -22,6 +22,11 @@ query times (warm: run it twice, or after another check on the same pack).
   within 10 m (100 m if approximate); "the same address" also counts another point of the
   same number and street within 3 km, since the store keeps two points of one address when
   its sources put them over 250 m apart.
+  `addresses-north-america.tsv` is 1,000 addresses of the North America pack (step 2.9).
+- **On a larger pack** (step 2.9): `--region <name>` runs a region's hand-written lines on
+  another pack, and `--near lat,lon` gives the queries without a view centre one, as a user
+  looking at that region would have. On North America, the `none` lines of a region find
+  their places elsewhere, as they should.
 - `fixture.tsv`: queries on the small test pack of `crates/core/src/search_tests.rs`, run by
   `cargo test` (so in CI).
 

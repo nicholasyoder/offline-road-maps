@@ -43,7 +43,7 @@ The roadmap's items are "search suggestions as you type, ranking by importance a
 | 2.7 Search UI | **Done** 2026-10-26 | Search box, suggestions, results panel, fly-to and marker (`app/src/search.rs`); queries on one worker, stale answers dropped. North America rebuilt to format 0.4 (53 min, 49.4 GiB). Bench keystroke latency p95 53 ms Ohio, 89 ms North America, warm; RSS peak 193 / 239 MiB. The on-map credit is now OpenStreetMap's only. |
 | 2.7b Progressive search | **Done** 2026-10-26 | `find::Session`, 4 levels sharing one run; the worker goes deeper after a 150 ms pause, cancelled by the next keystroke. North America, town cut to 4 letters: 71.3 → **89.3%** first (94.0% in the 8 suggestions), shown within 1.74 s of the pause; level 0 unchanged. Enter after a pause ≤ 8 ms. |
 | 2.8 "What's here" | **Done** 2026-10-26 | Right-click menu ("What's here?", coordinates to copy) and a panel at the point (`app/src/here.rs`), answered by the search worker through `Search::whats_here`, shared with `omp-builder here`. At the address points: North America 99.7%, Ohio / Quebec / Ontario 100 / 100 / 99.7%. Bench: 1.9–9.4 ms from the request to the panel, warm. |
-| 2.9 Performance, accuracy and hardware checks | Not started | |
+| 2.9 Performance, accuracy and hardware checks | In progress | Query set, sizes and the dev machine from the USB 2 stick done; the laptops' runs are next. |
 
 ## Environment notes
 
@@ -402,6 +402,33 @@ As phase 1 step 1.10, with search added:
 - Check binary size (the `fst` crate is new to the app) and that `cargo tree` still has no network crate.
 
 **Done when:** every exit criterion is measured on every machine, with any that miss written up for the owner, as in phase 1.
+
+> **In progress 2026-10-26.** Done so far; the laptops (7490 on Linux and Windows 11, E6430 on Windows 10) are left, then the summary per criterion and roadmap §4 and §6.
+> - **Pack:** not rebuilt. The North America pack of 2.7 (format 0.4, 7,210.4 MiB in 2 chunks) is current: nothing that writes a pack changed since. Search and addresses add **996.6 MiB** (criterion 6: 1.5 GiB): admin 14.3, streets 332.4 (`SSTR` 91.8, `SGEO` 240.6), grid 7.9, search 249.8 (`SENT` 196.3, `STWN` 0.3, `SFST` 5.1, `SPST` 48.2), addresses 392.2 (`ASTR` 198.2, `ASUF` 7.9, `AUNI` 24.1, `ALSE` 106.8, `ARNG` 54.6, `APCD` 0.7). Tiles and index 6,213.8.
+> - **Binary:** `omp-app` 14.5 MB Linux, 12.8 MB Windows (criterion 6: 30 MB). `cargo tree` for Linux, Windows and macOS has no network crate (CI checks it too).
+> - **Query set on North America** (warm, `$OMP_WORK/measure/check29/`). New: `addresses-north-america.tsv`, 1,000 random addresses (`--sample`, which now turns control characters in names into spaces: one source street name holds a line break), and `--check --near`, a view for the queries that give none, so a region's hand-written lines can run on North America as seen by a user looking at that region.
+>   - **Addresses** (criterion 2: 97%): **96.5%** first at their point as typed (level 0), **97.6%** after a pause (level 3); counting another point of the same address, 98.0 / 99.0%. Level 0 p50 / p95 / max 45 / 95 / 269 ms. The 10 still missed at level 3: unit text in the source's street name (3: "Westhollow Dr # 62", "Virgil Ave Apartment 2", "Fairway Glen Dr Unit 204"), no town in the query (2), a number range "2214-2216", Puerto Rico without a state, a bogus "400F 16", and two real misses ("2711 Pass Road, Biloxi", "3705 FM 2668, TX"). Those found only after the pause are small towns that share their name ("62 River Road, Washington, CT" gives a River Road in Utah at level 0; "Mil, IL"; "Riverton Township, MN").
+>   - **"What's here"** at the 1,000 points: **99.5%** (criterion 2: 95%), p95 3.5 ms.
+>   - **Hand-written**, each region's lines with its view (Ohio 40.2,−82.7; Quebec 46.8,−71.6; Ontario 44.0,−79.5): 224/241 first (92.9%), 234 in the top 5 (97.1%). Four `none` lines (Saskatoon, Zzyzx Road, Kalamazoo Michigan, Albuquerque) find those places, as North America should; without them **94.5% first, 98.7% top 5** (criterion 2: 90 / 98%). With no view at all, 90.9 / 93.8%: shared names (Athens, Springfield, Paris, Hamilton) then go to the larger town elsewhere. Wrong first with the view: "Cincinatti" (streets spelled that way, in Illinois and Maryland, beat the fuzzy city; not in the top 5), "Ottawa airport" (Illinois), "Marietta", "London", "Mt Vernon", "St Marys" (the larger town elsewhere still wins at zoom 5 in Ohio), "Quebec City", "Trudeau airport", "Dayton International Airport", "Cleveland Clinic", "5th Ave, Columbus" (East 5th Avenue first). "Concession Road 7, Loretto" gives nothing at level 0 (Ontario's Loretto is the 5th most important of six) and is found at level 3. Per region at level 3 with the view: Ohio 87.8%, Quebec 96.2%, Ontario 97.2% first.
+> - **Bench flight:** the five "what's here" steps now come before the searches, so both read search data cold on a fresh start.
+> - **Stick:** the same 16 GB SanDisk Cruzer Blade (FAT32, USB 2). Copying the pack took 48.6 min (2.6 MB/s); `verify` on the stick after a remount: OK in 203.5 s (35 MiB/s). Phase 1's results moved to `results/1.10/`.
+> - **Dev machine, from the USB 2 stick** (`$OMP_WORK/measure/bench/2.9/`; cold = stick remounted just before):
+>
+>   | | Cold | Warm |
+>   |---|---:|---:|
+>   | Start-up | 2,210 ms | 119 ms |
+>   | Frame p95 | 1.10 ms | 1.12 ms |
+>   | Slowest jump to full detail | 1,034 ms (Manhattan z12) | 29 ms |
+>   | Search readers open (background) | 293 ms | 23 ms |
+>   | Keystrokes p50 / p95 / max | 41 / 313 / 1,088 ms | 28.6 / **99.4** / 163 ms |
+>   | First search ("1100 E 9th St, Cleveland, OH"): first / slowest keystroke | 48 / 1,088 ms | 10 / 163 ms |
+>   | Last search level shown after the last keystroke, max | 7,450 ms | 1,745 ms |
+>   | Enter max | 33.5 ms | 8.5 ms |
+>   | "What's here" request → panel, max | 163 ms | 17.8 ms |
+>   | RSS peak | 244 MiB | 241 MiB |
+>   | Idle CPU | 0.4% | 0.5% |
+>
+>   Every answer is as warm. Cold, the first address search has one keystroke at 1.09 s, just over criterion 3's 1 s for the first query (its other keystrokes are faster; the first keystroke is 48 ms). Start-up is 0.75 s slower cold than in phase 1 (1.46 s), still under 3 s; the slowest jump is the first visit to Manhattan's zooms, as in phase 1 (632 ms).
 
 ---
 

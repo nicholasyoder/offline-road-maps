@@ -137,6 +137,50 @@ lat = 61.2181
 lon = -149.9003
 zoom = 11
 
+# "What's here" (phase2-plan.md 2.8): asked at the view's centre after a jump, as the
+# right-click menu does. Skipped on packs without search. They come before the searches,
+# so that both read search data cold on a fresh start (phase2-plan.md 2.9).
+
+[[step]]
+label = "here: Empire State Building"
+lat = 40.74844
+lon = -73.98566
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: Times Square"
+lat = 40.7580
+lon = -73.9855
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: Vieux-Québec"
+lat = 46.8139
+lon = -71.2080
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: Plateau, Montréal"
+lat = 45.5225
+lon = -73.5800
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: Statehouse, Columbus"
+lat = 39.9612
+lon = -82.9988
+zoom = 17
+here = true
+hold = 0.5
+
 # Searches (phase2-plan.md 2.7): each typed one character at a time from the view the
 # previous step left, then the deeper search levels (2.7b), then Enter, which jumps to the
 # first result. `expect` is part of the name of the result the search should find. Skipped
@@ -187,47 +231,4 @@ hold = 0.5
 [[step]]
 label = "search: street"
 search = "Broadway, New York"
-hold = 0.5
-
-# "What's here" (phase2-plan.md 2.8): asked at the view's centre after a jump, as the
-# right-click menu does. Skipped on packs without search.
-
-[[step]]
-label = "here: Empire State Building"
-lat = 40.74844
-lon = -73.98566
-zoom = 17
-here = true
-hold = 0.5
-
-[[step]]
-label = "here: Times Square"
-lat = 40.7580
-lon = -73.9855
-zoom = 17
-here = true
-hold = 0.5
-
-[[step]]
-label = "here: Vieux-Québec"
-lat = 46.8139
-lon = -71.2080
-zoom = 17
-here = true
-hold = 0.5
-
-[[step]]
-label = "here: Plateau, Montréal"
-lat = 45.5225
-lon = -73.5800
-zoom = 17
-here = true
-hold = 0.5
-
-[[step]]
-label = "here: Statehouse, Columbus"
-lat = 39.9612
-lon = -82.9988
-zoom = 17
-here = true
 hold = 0.5
