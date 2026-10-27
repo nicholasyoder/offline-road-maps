@@ -442,5 +442,5 @@ Open: none.
 - Routing and snapping a route to the street table (phase 3), apart from keeping the street table and grid usable for it.
 - Saved pins and trips, import and export (phase 4). The search marker is not saved.
 - Scripts other than Latin; Spanish street-type normalization for Mexico beyond what the data needs.
-- Builder memory for a 16–32 GB machine (phase 5).
+- Builder memory for a 16–32 GB machine (phase 6).
 - An aerial-imagery check of the conflict sample (still open from phase 0); the query set checks merge quality instead.

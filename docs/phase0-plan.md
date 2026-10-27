@@ -111,7 +111,7 @@ Triggered on push to `master` and on pull requests. Jobs:
 >
 > Raw OA counts overlap: city and county sources cover the same addresses.
 > **OpenAddresses download:** no account or token is needed. `batch.openaddresses.io/api/data?source=<prefix>&layer=addresses` lists the jobs, and `v2.openaddresses.io/batch-prod/job/<id>/source.geojson.gz` redirects to a public, presigned download. The `/api/job/<id>/output/...` path does need a token. Each file's license comes from the source definition at the commit the job ran from, which is recorded as `metadata_url`.
-> **Licenses:** the manifest records what each source states. **79 of the 92 Ohio OA sources state no license** (mostly Ohio LBRS county files) and are recorded as `unspecified`. A further 10 say attribution is required but give no license name. Before Phase 5, the attribution file and license filter (roadmap §7) must decide how to treat `unspecified`.
+> **Licenses:** the manifest records what each source states. **79 of the 92 Ohio OA sources state no license** (mostly Ohio LBRS county files) and are recorded as `unspecified`. A further 10 say attribution is required but give no license name. Before Phase 6, the attribution file and license filter (roadmap §7) must decide how to treat `unspecified`.
 > **ODA vs NAR:** results below; NAR is the default Canadian source.
 > Still open: not yet run for `north-america`; that run belongs to 0.5. (The osmdata.openstreetmap.de water polygons were added to `fetch` in 0.3.)
 
@@ -129,7 +129,7 @@ Both provinces are run because they test different things and together they cost
 
 ### `omp-builder fetch`
 
-A minimal but real subcommand, since Phase 5 needs it anyway:
+A minimal but real subcommand, since Phase 6 needs it anyway:
 
 ```
 omp-builder fetch --region us/ohio --sources osm,openaddresses,tiger,oda,nar --out $OMP_WORK/inputs/
@@ -154,7 +154,7 @@ omp-builder fetch --region us/ohio --sources osm,openaddresses,tiger,oda,nar --o
 
 **Decision:** NAR is the default Canadian source. It covers more in both provinces (2.6× ODA in Quebec), it is current, and it has building coordinates for almost all addresses. `fetch` still downloads ODA by default so 0.4 can measure what it adds. For example, ODA may have building points for some of Ontario's 720k blockface-only NAR addresses. Blockface points are approximate, about the middle of one side of a block. 0.4 should treat them like interpolated addresses, not exact points.
 
-- Write `inputs/manifest.toml`: URL, download date, size, checksum and **license plus attribution text** for every file. This is the seed of the Phase 5 attribution file and of the license filter (roadmap §7).
+- Write `inputs/manifest.toml`: URL, download date, size, checksum and **license plus attribution text** for every file. This is the seed of the Phase 6 attribution file and of the license filter (roadmap §7).
 
 **Done when:** `fetch` reproduces the Ohio input set from scratch and the manifest lists every source's license.
 
@@ -324,7 +324,7 @@ Every variant is computed on every run, since they share the tiling, so there is
 > - OSM alone has 12% of Ohio's merged addresses, 40% of Ontario's and 34% of Quebec's.
 > - Merged totals are close to dwelling counts: Ohio 4.95M civic addresses plus 0.70M units (about 5.2M housing units); Quebec 4.24M.
 > - In Ohio, 70% of TIGER ranges now have a point. The other 30% (420k ranges) stay as approximate interpolation.
-> - **Licensing caveat:** 89 of the 92 Ohio OpenAddresses sources state no license name (79 state nothing; 10 require attribution without naming one). Excluding `unspecified` cuts Ohio to 1.13M addresses (OSM 576k plus 557k from Cuyahoga, Clermont and Medina) and TIGER range coverage to 13%. "Full" US address support depends on how Phase 5 treats those sources.
+> - **Licensing caveat:** 89 of the 92 Ohio OpenAddresses sources state no license name (79 state nothing; 10 require attribution without naming one). Excluding `unspecified` cuts Ohio to 1.13M addresses (OSM 576k plus 557k from Cuyahoga, Clermont and Medina) and TIGER range coverage to 13%. "Full" US address support depends on how Phase 6 treats those sources.
 >
 > **Encoding: A3.**
 > - A3 is A2 (5 m offsets) plus zstd over blocks of streets.
@@ -364,7 +364,7 @@ Every variant is computed on every run, since they share the tiling, so there is
 > Still open:
 > - An aerial-imagery check of the conflict sample (`conflicts.tsv` has OSM links).
 > - Memory: about 0.3 KB per input record (Ontario: 5.8 GB for 20.5M points and ranges; Ohio: 2.7 GB for 8.9M). All of North America in one process would not fit in 62 GB, so 0.5 should run `addr-spike` once per state and province and sum the results. A `--subdivision all` or region option would help.
-> - Fuzzy name matching, and a decision on `unspecified` licenses (Phase 5).
+> - Fuzzy name matching, and a decision on `unspecified` licenses (Phase 6).
 
 ### Pipeline
 
@@ -485,7 +485,7 @@ Exceptions (letter suffixes, units, unmatched points with full coordinates) go i
 >   - 1.62 billion needed nodes take 13.9 GiB of locations.
 >   - The way-marking pass alone peaks at 14.7 GB, because `pass()` keeps every block's tag counters until the pass ends. That is the next memory to cut.
 > - **`addr-spike --each`** over all 66 subdivisions takes 18.7 minutes and peaks at 30.8 GB, of which the shared OSM read is 2.2 minutes and 27.7 GB.
-> - The roadmap's 16–32 GB desktop target is not met yet. Phase 5 needs features spilled to disk by z6 tile, or more bands. Bands trade time for memory: each re-reads the PBF, and none can go below the roughly 16 GB the node locations need.
+> - The roadmap's 16–32 GB desktop target is not met yet. Phase 6 needs features spilled to disk by z6 tile, or more bands. Bands trade time for memory: each re-reads the PBF, and none can go below the roughly 16 GB the node locations need.
 > - **Node locations: needed-nodes-only.** The dense index is not run on North America: it would need about 108 GB of zero-filled writes on exFAT and only 24 GB is free on `/`.
 >
 > **The work to get here** (all checked against the 0.3 and 0.4 JSON; identical except where noted):
@@ -506,13 +506,13 @@ Exceptions (letter suffixes, units, unmatched points with full coordinates) go i
 > - The CH is estimated, not built. `fast_paths` does not fit for a continent, and Phase 3 builds its own.
 > - Lake, stream, protected-area and `service` cut-offs (next: 0.6 or Phase 1).
 > - The two blocked TIGER counties.
-> - The `unspecified` license decision (before Phase 5).
-> - Builder memory for a 16–32 GB machine (Phase 5).
+> - The `unspecified` license decision (before Phase 6).
+> - Builder memory for a 16–32 GB machine (Phase 6).
 
 Run after 0.3 and 0.4 have picked their candidate variants (at most two per layer).
 
 - Check that `$OMP_WORK` is mounted. Fetch North America OSM, OpenAddresses for the US and Canada, all TIGER `ADDRFEAT` counties (about 3,200 files) and NAR (the Canadian source chosen in 0.2) for every province.
-- Run `measure` and the address pipeline on all of it. Record wall time, peak RSS and peak temp disk: these are the first numbers for the Phase 5 `BUILDING.md` hardware section.
+- Run `measure` and the address pipeline on all of it. Record wall time, peak RSS and peak temp disk: these are the first numbers for the Phase 6 `BUILDING.md` hardware section.
 - `addr-spike` needs about 0.3 KB of RAM per input record, so run it per state and province (the extract can stay `north-america`) and sum the results.
 - If the run does not fit in 62 GB RAM, that is itself a finding. Switch to the needed-nodes-only strategy or region tiling and note it.
 
@@ -571,7 +571,7 @@ Run after 0.3 and 0.4 have picked their candidate variants (at most two per laye
 > Still open:
 > - The two manual checks from 0.1 (Windows `.exe`, old laptop).
 > - The CH is still an estimate (Phase 3), and search has no admin hierarchy (Phase 2).
-> - Builder memory for a 16–32 GB machine (Phase 5).
+> - Builder memory for a 16–32 GB machine (Phase 6).
 > - The two blocked TIGER counties.
 
 ### Size table

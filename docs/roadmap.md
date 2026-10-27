@@ -1,6 +1,6 @@
 # Offline Road Maps: Roadmap
 
-*Draft 2. Updated 2026-10-23 with the project owner's answers to the scoping questions.*
+*Draft 2. Updated 2026-10-23 with the project owner's answers to the scoping questions; phase 5 (settings, map styles and polish) added 2026-10-26.*
 
 ## 1. Vision
 
@@ -129,7 +129,16 @@ Detailed plan: [phase2-plan.md](phase2-plan.md).
 - [ ] Saved trips and pushpins, with GPX, CSV and KML import and export.
 - [ ] Print or export directions and the map to PDF.
 
-### Phase 5: Distribution
+### Phase 5: Settings, map styles and polish
+Added 2026-10-26. The settings already in `config.toml` (units, MSAA, layers, the last view) can only be changed in the file or in scattered places in the UI. This phase gives them one home and smooths the rough edges found in real use.
+
+- [ ] A Settings window from the menu, saved to `config.toml` next to the executable: units, zoom speed for the wheel (now a quarter zoom per notch, set 2026-10-26) and for the keys, pan inertia, UI and label size, anti-aliasing, and whether to reopen the last view.
+- [ ] A few built-in map styles chosen in Settings and switched without a restart: the default, a dark or night style, and a light, high-contrast style for printing (phase 4's PDF export). A `style.toml` the user adds next to the executable is listed with them. The UI follows a dark style.
+- [ ] UI polish: a keyboard shortcut list, tooltips, the window size and position remembered, a clear first-run screen when no map is found, and plain error messages.
+- [ ] Map tuning from use: road widths and colours by zoom (widths reworked 2026-10-26: each class is the minor road width plus a small step per rank), label density, and POI and shield priorities.
+- [ ] **Exit criterion:** every setting is reachable from the UI and survives a restart; styles switch at runtime.
+
+### Phase 6: Distribution
 - [ ] `docs/BUILDING.md`: hardware needs, a step-by-step region build, and a custom region from a polygon.
 - [ ] Release layout for physical media: `app/` holding the Windows `.exe`, a Linux AppImage or binary and a macOS build, plus `maps/` and `README.txt`.
 - [ ] Attribution screen and file covering ODbL and each address source.
