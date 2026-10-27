@@ -43,7 +43,7 @@ The roadmap's items are "search suggestions as you type, ranking by importance a
 | 2.7 Search UI | **Done** 2026-10-26 | Search box, suggestions, results panel, fly-to and marker (`app/src/search.rs`); queries on one worker, stale answers dropped. North America rebuilt to format 0.4 (53 min, 49.4 GiB). Bench keystroke latency p95 53 ms Ohio, 89 ms North America, warm; RSS peak 193 / 239 MiB. The on-map credit is now OpenStreetMap's only. |
 | 2.7b Progressive search | **Done** 2026-10-26 | `find::Session`, 4 levels sharing one run; the worker goes deeper after a 150 ms pause, cancelled by the next keystroke. North America, town cut to 4 letters: 71.3 → **89.3%** first (94.0% in the 8 suggestions), shown within 1.74 s of the pause; level 0 unchanged. Enter after a pause ≤ 8 ms. |
 | 2.8 "What's here" | **Done** 2026-10-26 | Right-click menu ("What's here?", coordinates to copy) and a panel at the point (`app/src/here.rs`), answered by the search worker through `Search::whats_here`, shared with `omp-builder here`. At the address points: North America 99.7%, Ohio / Quebec / Ontario 100 / 100 / 99.7%. Bench: 1.9–9.4 ms from the request to the panel, warm. |
-| 2.9 Performance, accuracy and hardware checks | In progress | Query set, sizes and the dev machine from the USB 2 stick done; the laptops' runs are next. |
+| 2.9 Performance, accuracy and hardware checks | **Done** 2026-10-26 | Search and addresses add 997 MiB. North America: addresses 96.5% first (97.6% after a pause), hand-written 94.5% / 98.7%, "what's here" 99.5%. Warm keystroke p95: dev 99 ms, E6430 241 ms; the 7490's CPU runs slow (2× the E6430's decode time). Misses written up: first cold search 1.1–2.6 s, Windows RSS, deep levels and Enter on slow CPUs. |
 
 ## Environment notes
 
@@ -403,7 +403,7 @@ As phase 1 step 1.10, with search added:
 
 **Done when:** every exit criterion is measured on every machine, with any that miss written up for the owner, as in phase 1.
 
-> **In progress 2026-10-26.** Done so far; the laptops (7490 on Linux and Windows 11, E6430 on Windows 10) are left, then the summary per criterion and roadmap §4 and §6.
+> **Done 2026-10-26** (commit `e016ca8` for the query set and the dev machine, and the one that adds this summary). The pre-2012 laptop was not run (owner: low priority, as phase 1 decision 2).
 > - **Pack:** not rebuilt. The North America pack of 2.7 (format 0.4, 7,210.4 MiB in 2 chunks) is current: nothing that writes a pack changed since. Search and addresses add **996.6 MiB** (criterion 6: 1.5 GiB): admin 14.3, streets 332.4 (`SSTR` 91.8, `SGEO` 240.6), grid 7.9, search 249.8 (`SENT` 196.3, `STWN` 0.3, `SFST` 5.1, `SPST` 48.2), addresses 392.2 (`ASTR` 198.2, `ASUF` 7.9, `AUNI` 24.1, `ALSE` 106.8, `ARNG` 54.6, `APCD` 0.7). Tiles and index 6,213.8.
 > - **Binary:** `omp-app` 14.5 MB Linux, 12.8 MB Windows (criterion 6: 30 MB). `cargo tree` for Linux, Windows and macOS has no network crate (CI checks it too).
 > - **Query set on North America** (warm, `$OMP_WORK/measure/check29/`). New: `addresses-north-america.tsv`, 1,000 random addresses (`--sample`, which now turns control characters in names into spaces: one source street name holds a line break), and `--check --near`, a view for the queries that give none, so a region's hand-written lines can run on North America as seen by a user looking at that region.
@@ -429,6 +429,43 @@ As phase 1 step 1.10, with search added:
 >   | Idle CPU | 0.4% | 0.5% |
 >
 >   Every answer is as warm. Cold, the first address search has one keystroke at 1.09 s, just over criterion 3's 1 s for the first query (its other keystrokes are faster; the first keystroke is 48 ms). Start-up is 0.75 s slower cold than in phase 1 (1.46 s), still under 3 s; the slowest jump is the first visit to Manhattan's zooms, as in phase 1 (632 ms).
+> - **Laptops, from the same stick** (`$OMP_WORK/measure/bench/2.9/`; `summarize.py` there prints these from the reports). Cold = stick plugged in fresh. Keystroke and "what's here" latency are level 0, from the keystroke or request to the frame showing the answer.
+>
+>   | Machine | Run | Start-up | Frame p95 | Keystrokes p50 / p95 / max | First search, slowest keystroke | Last level after last key, max | Enter max | "What's here" max | RSS peak |
+>   |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+>   | Dev (Ryzen 7 5700X), Vulkan | cold | 2,210 ms | 1.10 ms | 41 / 313 / 1,088 ms | 1,088 ms | 7.5 s | 34 ms | 163 ms | 244 MiB |
+>   | Dev | warm | 119 ms | 1.12 ms | 29 / **99** / 163 ms | 163 ms | 1.7 s | 8.5 ms | 18 ms | 241 MiB |
+>   | Latitude 7490, Debian 13, Vulkan, 1.67 px/pt | cold | 499 ms | 11.6 ms | 253 / 877 / 2,560 ms | 2,560 ms | 8.5 s† | 4.7 s | 259 ms | 249 MiB |
+>   | 7490, Debian 13 | warm | 252 ms | 12.0 ms | 231 / **717** / 1,244 ms | 1,050 ms | 6.8 s† | 9.3 s | 65 ms | 247 MiB |
+>   | 7490, Windows 11, DX12, 1.25 px/pt | cold | 1,593 ms | 16.2 ms | 237 / 986 / 2,428 ms | 2,428 ms | 9.1 s† | 5.8 s | 335 ms | **471 MiB** |
+>   | 7490, Windows 11 | warm | 1,446 ms | 16.5 ms | 158 / **531** / 942 ms | 810 ms | 9.4 s | 68 ms | 113 ms | **473 MiB** |
+>   | Latitude E6430 (i5-3380M), Windows 10, GL | cold | 793 ms | 18.6 ms | 95 / 460 / 1,335 ms | 1,335 ms | 8.9 s† | 2.8 s | 195 ms | **3,887 MiB** |
+>   | E6430 | warm | 284 ms | 19.1 ms | 69 / **241** / 417 ms | 401 ms | 4.7 s | 25 ms | 46 ms | **2,945 MiB** |
+>
+>   † Some address searches did not finish their last level within the bench's 10 s wait after the last keystroke (6 in all: the two address searches, on the 7490 cold and the E6430 cold, and "8723 River Road, Amar" on the 7490 warm). Enter then ran the remaining levels at once, which is the Enter column. Every search that finished found the same first result as on the dev machine. The owner tried typing on the E6430: a little slower than on the dev machine, not noticeably laggy.
+> - **The 7490's CPU is slow.** Its search is 3× slower than on the 2012 E6430 (find p95 ~1,000 ms warm against ~340), on both OSes. Tile decoding, which is pure CPU work too, shows the same: decode p50 0.65 ms against the E6430's 0.30 (dev 0.13), and so did phase 1's runs (0.75 / 0.34). An i7-8650U should be faster than an i5-3380M, so this looks like the CPU held at a low clock: Dell laptops do this with a charger or battery they do not recognise, or in a power-saving mode. Worth checking on that laptop (on Linux, `grep MHz /proc/cpuinfo` while the bench runs; it should go well past 1,900). Until then its search numbers say little about the app.
+> - **Summary: the exit criteria** (machine-independent ones on the North America pack; cold = from the USB 2 stick):
+>
+>   | Criterion | Dev | 7490 Linux | 7490 Windows 11 | E6430 Windows 10 |
+>   |---|---|---|---|---|
+>   | 1. Coverage | 151.2M addresses (−0.17% against 0.5), units, TIGER and OSM ranges; places, streets and POIs everywhere ✓ (2.4) | | | |
+>   | 2. Addresses first (97%) | 96.5% as typed, **97.6%** after a pause; 98.0 / 99.0% counting another point of the same address | | | |
+>   | 2. Hand-written first / top 5 (90 / 98%) | **94.5 / 98.7%** with each region's view, out-of-region "nothing" lines left out | | | |
+>   | 2. "What's here" (95%) | **99.5%** | | | |
+>   | 3. Keystroke p95, warm (dev 100 ms, E6430 250 ms) | 99 ms ✓ | 717 ms ✗ (slow CPU) | 531 ms ✗ (slow CPU) | 241 ms ✓ |
+>   | 3. First query, cold (1 s) | first keystroke 48 ms; slowest of the first search 1.09 s ✗ | 2.56 s ✗ | 2.43 s ✗ | 1.34 s ✗ |
+>   | 3. "What's here" warm (200 ms) / cold (1 s) | 18 / 163 ms ✓ | 65 / 259 ms ✓ | 113 / 335 ms ✓ | 46 / 195 ms ✓ |
+>   | 3. Search off the UI thread | frame p95 1.1 ms through the searches ✓ | 12.0 ms ✓ | 16.5 ms ✓ | 19.1 ms ✓ |
+>   | 4. Peak RSS (300 MB) | 244 MiB ✓ | 249 MiB ✓ | 473 MiB ✗ (phase 1: 373, accepted) | 3.9 GB ✗ (GL driver leak per frame, phase 1) |
+>   | 5. Cold start-up (3 s) | 2.21 s ✓ | 0.50 s ✓ | 1.59 s ✓ | 0.79 s ✓ |
+>   | 6. Size (+1.5 GiB; app 30 MB) | +997 MiB ✓; 14.5 MB Linux, 12.8 MB Windows ✓ | | | |
+>   | 7. Builder | 53.0 min, peak 49.4 GiB under the 56 GB cap ✓ (2.7) | | | |
+>
+> - **For the owner, what misses:**
+>   - **The first address search from a cold stick** takes 1.1 s on the dev machine and 1.3 s on the E6430 at its slowest keystroke (2.4–2.6 s on the 7490). Other first queries are fast (first keystroke 48–163 ms, "Springfield, IL" 110 ms on the dev machine cold); an address search reads postings, entries, streets and address blocks that are all still on the stick. Options: accept it; or read the search sections' hot parts in the background after start-up (`SPST` is 48 MiB, about 1.5 s at the stick's 35 MiB/s, which could make start-up's own reads slower); or prefetch around the view.
+>   - **Memory on Windows**, as phase 1 accepted: the 7490 on DX12 rises from 373 to 473 MiB, by about the ~100 MiB that search adds on every machine (dev 144 → 244). The E6430's GL leak grows with frames presented (0.35 MiB each); this flight presents 2.8× as many frames as phase 1's (it waits for the search levels), so 3.9 GB. Linux stays under 250 MiB.
+>   - **Deep levels and Enter on slower CPUs:** the last level takes up to 4.7 s on the E6430 warm and 8.9 s cold, and up to 9.4 s on the throttled 7490. That runs only while the user pauses, and a keystroke cancels it, but Enter runs the remaining levels at once, so Enter right after typing an address can take 2.8 s (E6430 cold) to 9.3 s (7490). Options: lower the level 3 bounds (2.7b: level 3 adds 3.6 of the 18 points gained with the town cut short), or have Enter fly to the current first result at once and let the results panel fill in as the levels finish.
+>   - **Ranking on North America** (query set above): fuzzy matches losing to names spelled that way elsewhere ("Cincinatti"), airports named after another town ("Ottawa airport", "Trudeau airport"), and the larger of two same-named towns winning even with the view on the smaller one's region at zoom 5 ("Marietta", "London", "Mt Vernon"). From 2.7: "45201" gives a fuzzy 05201, "Tim Hortons Kingston" a McDonald's, and "Rue Sainte-Catherine Ouest" shows three times. These went into no criterion miss.
 
 ---
 

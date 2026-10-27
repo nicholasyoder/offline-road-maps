@@ -196,6 +196,22 @@ The North America total moves from about 10,284 to **about 10,341 MiB** (address
 
 The North America total moves from about 10,341 to **about 10,349 MiB** (the grid, +8; a little more with unattached-only cells once rebuilt with addresses).
 
+### Phase 2 step 2.9: the pack as built
+
+North America as `build --addresses all` wrote it in step 2.7 (format 0.4, 2 chunks), from `omp-builder inspect`. MiB:
+
+| Part | Sections | MiB |
+|---|---|---:|
+| Tiles and index | `TDAT` 6,145.8, `TIDX` 65.7, `TDIC` 2.1, `META` + `SCHM` 0.2 | 6,213.8 |
+| Admin | `SADM` 1.7, `SAPL` 12.5 | 14.3 |
+| Streets | `SSTR` 91.8, `SGEO` 240.6 | 332.4 |
+| Grid | `SGRD` (unattached-only cells now in) | 7.9 |
+| Search | `SENT` 196.3, `STWN` 0.3, `SFST` 5.1, `SPST` 48.2 | 249.8 |
+| Addresses | `ASTR` 198.2, `ASUF` 7.9, `AUNI` 24.1, `ALSE` 106.8, `ARNG` 54.6, `APCD` 0.7 | 392.2 |
+| **Pack** | | **7,210.4** |
+
+Phase 2 adds 996.6 MiB (admin, streets, grid, search, addresses), within the 1.5 GiB of its exit criterion 6. With the routing estimate, the North America total stays at **about 10,349 MiB** (10.1 GiB, 10.9 GB).
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.
