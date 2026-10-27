@@ -633,18 +633,7 @@ fn select(
 pub fn run(args: AddrArgs, work_dir: &Path) -> Result<()> {
     let start = Instant::now();
     let mut stages = Stages::new();
-    let mut subs: Vec<Subdivision> = Vec::new();
-    for s in &args.subdivisions {
-        if s.eq_ignore_ascii_case("all") {
-            subs.extend(Subdivision::all());
-            continue;
-        }
-        subs.push(
-            Subdivision::from_iso(&s.to_uppercase())
-                .with_context(|| format!("unknown subdivision {s:?}; use e.g. US-OH or CA-QC"))?,
-        );
-    }
-    subs.dedup();
+    let subs = Subdivision::parse_list(&args.subdivisions)?;
     let inputs = args
         .inputs
         .clone()

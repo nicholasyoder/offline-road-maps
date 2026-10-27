@@ -453,10 +453,12 @@ impl Pack {
             .iter()
             .map(|b| Section::decode(b))
             .collect();
-        let end = u64::from(chunks) * capacity;
+        // Checked, so a crafted table cannot wrap around and pass.
+        let end = u64::from(chunks).checked_mul(capacity);
         for s in &pack.sections {
-            let in_chunk = s.spanning() || s.offset % capacity + s.len <= capacity;
-            if !s.offset.is_multiple_of(PAGE) || s.offset + s.len > end || !in_chunk {
+            let fits = |limit: Option<u64>, at: u64| matches!((at.checked_add(s.len), limit), (Some(e), Some(l)) if e <= l);
+            let in_chunk = s.spanning() || fits(Some(capacity), s.offset % capacity);
+            if !s.offset.is_multiple_of(PAGE) || !fits(end, s.offset) || !in_chunk {
                 return Err(invalid(format!(
                     "section {} is out of bounds",
                     String::from_utf8_lossy(&s.id)
@@ -478,7 +480,10 @@ impl Pack {
     /// contiguous section and every record does.
     pub fn read(&self, v: u64, len: usize) -> io::Result<Vec<u8>> {
         let (chunk, local) = (v / self.capacity, v % self.capacity);
-        if local + len as u64 > self.capacity {
+        if local
+            .checked_add(len as u64)
+            .is_none_or(|e| e > self.capacity)
+        {
             return Err(invalid("read crosses a chunk boundary"));
         }
         let f = self
@@ -671,6 +676,42 @@ mod tests {
         assert!(Pack::open(&a[0]).is_ok());
         std::fs::copy(&b[1], &a[1]).unwrap();
         assert!(Pack::open(&a[0]).is_err());
+    }
+
+    #[test]
+    fn refuses_section_bounds_that_overflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = Writer::create(dir.path(), "t", 4 * PAGE).unwrap();
+        w.section(*b"META", &[1; 100]).unwrap();
+        w.section(*b"TIDX", &[2; 100]).unwrap();
+        let paths = w.finish(&info()).unwrap();
+        assert!(Pack::open(&paths[0]).is_ok());
+
+        // Give TIDX a length that wraps `offset + len`, with valid checksums.
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&paths[0])
+            .unwrap();
+        let mut page = vec![0; PAGE as usize];
+        read_at(&f, &mut page, 0).unwrap();
+        let u64_at = |p: &[u8], i: usize| u64::from_le_bytes(p[i..i + 8].try_into().unwrap());
+        let (t_off, t_len) = (u64_at(&page, 48), u64_at(&page, 56));
+        let mut table = vec![0; t_len as usize];
+        read_at(&f, &mut table, PAGE + t_off).unwrap();
+        let tidx = &mut table[ENTRY_LEN..2 * ENTRY_LEN];
+        assert_eq!(&tidx[0..4], b"TIDX");
+        assert_ne!(u64_at(tidx, 8), 0);
+        tidx[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+        write_at(&f, &table, PAGE + t_off).unwrap();
+        page[64..72].copy_from_slice(&xxh3_64(&table).to_le_bytes());
+        let len = u32::from_le_bytes(page[12..16].try_into().unwrap()) as usize;
+        let h = xxh3_64(&page[..len - 8]);
+        page[len - 8..len].copy_from_slice(&h.to_le_bytes());
+        write_at(&f, &page, 0).unwrap();
+
+        let err = Pack::open(&paths[0]).err().unwrap();
+        assert!(err.to_string().contains("TIDX is out of bounds"), "{err}");
     }
 
     #[test]

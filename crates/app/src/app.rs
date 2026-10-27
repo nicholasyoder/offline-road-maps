@@ -3,7 +3,7 @@
 //! picker, About this map, Verify pack, errors) and the debug overlay (F3, with tile
 //! outlines).
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -112,6 +112,8 @@ struct MapState {
     error_suggested: bool,
     search: SearchUi,
     here: HereUi,
+    /// `OMP_BENCH_NO_MAP`: everything but drawing the map, to see what the rest costs.
+    no_map: bool,
 }
 
 /// What the last frame showed, for the overlay.
@@ -284,6 +286,7 @@ impl App {
             error_suggested: false,
             search,
             here: HereUi::default(),
+            no_map: std::env::var_os("OMP_BENCH_NO_MAP").is_some(),
         });
         self.first_full = None;
         if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
@@ -563,11 +566,8 @@ impl MapState {
             })
             .collect();
         let mut wanted = plan.need.clone();
-        for t in margin {
-            if !wanted.contains(&t) {
-                wanted.push(t);
-            }
-        }
+        let mut seen: HashSet<TileId> = wanted.iter().copied().collect();
+        wanted.extend(margin.into_iter().filter(|&t| seen.insert(t)));
         self.loader.request(&wanted);
         // Keep what this frame uses, absent tiles included, from being evicted.
         for &t in sel.visible.iter().chain(&sel.margin) {
@@ -637,8 +637,7 @@ impl MapState {
         view.candidates = placed.candidates;
         view.fading = placed.fading;
         view.label_time = t0.elapsed();
-        // OMP_BENCH_NO_MAP: everything but drawing the map, to see what the rest costs.
-        if std::env::var_os("OMP_BENCH_NO_MAP").is_none() {
+        if !self.no_map {
             painter.add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 MapCallback(frame),

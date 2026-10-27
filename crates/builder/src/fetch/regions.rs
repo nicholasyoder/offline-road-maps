@@ -52,6 +52,27 @@ impl Subdivision {
         }
     }
 
+    /// Parses `--addresses`-style codes (`US-OH`, `ca-qc`, `all`), each subdivision kept
+    /// once, where it first appears.
+    pub fn parse_list(codes: &[String]) -> Result<Vec<Self>> {
+        let mut subs: Vec<Self> = Vec::new();
+        for c in codes {
+            let found = if c.eq_ignore_ascii_case("all") {
+                Self::all()
+            } else {
+                vec![Self::from_iso(&c.to_uppercase()).with_context(|| {
+                    format!("unknown subdivision {c:?}; use e.g. US-OH or CA-QC")
+                })?]
+            };
+            for s in found {
+                if !subs.contains(&s) {
+                    subs.push(s);
+                }
+            }
+        }
+        Ok(subs)
+    }
+
     pub fn from_iso(code: &str) -> Option<Self> {
         if let Some(abbr) = code.strip_prefix("US-") {
             US_STATE_FIPS
@@ -208,6 +229,26 @@ mod tests {
         {"properties": {"id": "us/delaware", "parent": "north-america", "iso3166-2": ["US-DE"], "urls": {"pbf": "https://d/north-america/us/delaware-latest.osm.pbf"}}},
         {"properties": {"id": "ontario", "parent": "canada", "iso3166-2": ["CA-ON"], "urls": {"pbf": "https://d/north-america/canada/ontario-latest.osm.pbf"}}}
     ]}"#;
+
+    #[test]
+    fn subdivision_lists_keep_each_once() {
+        let codes = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let isos = |c: &[&str]| -> Vec<String> {
+            let subs = Subdivision::parse_list(&codes(c)).unwrap();
+            subs.into_iter().map(Subdivision::iso).collect()
+        };
+        let all: Vec<String> = Subdivision::all()
+            .into_iter()
+            .map(Subdivision::iso)
+            .collect();
+        assert_eq!(isos(&["all"]), all);
+        assert_eq!(isos(&["all", "us-oh"]), all);
+        let oh_all = isos(&["US-OH", "all"]);
+        assert_eq!(oh_all.len(), all.len());
+        assert_eq!(oh_all.iter().filter(|s| *s == "US-OH").count(), 1);
+        assert_eq!(isos(&["CA-QC", "US-OH", "CA-QC"]), ["CA-QC", "US-OH"]);
+        assert!(Subdivision::parse_list(&codes(&["US-XX"])).is_err());
+    }
 
     #[test]
     fn single_state() {

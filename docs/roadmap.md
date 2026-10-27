@@ -120,6 +120,9 @@ Detailed plan: [phase2-plan.md](phase2-plan.md).
 - [x] App: search suggestions as you type, ranking by importance and distance from the map view, address lookup (with "approximate" marking for interpolated addresses), and a "what's here" lookup on click. Done 2026-10-26: [phase 2 steps 2.6–2.8](phase2-plan.md#28-whats-here).
   Measured 2026-10-26 ([phase 2 step 2.9](phase2-plan.md#29-performance-accuracy-and-hardware-checks)), North America: random addresses 96.5% first as typed and 97.6% after a pause, hand-written queries 94.5% first and 98.7% in the top 5, "what's here" 99.5%. Search and addresses add 997 MiB. Keystroke p95 warm 99 ms on the dev machine and 241 ms on the Latitude E6430; "what's here" within 335 ms cold everywhere. Not met: the first address search from a cold USB 2 stick takes 1.1–1.3 s (2.4–2.6 s on the 7490, whose CPU runs slow), the 7490 on Windows peaks at 473 MiB, and the E6430's GL leak remains. Accepted 2026-10-26 by the owner as small issues ([decision 9](phase2-plan.md#decisions)); the 7490's slow CPU was its low battery.
 
+### Between phases 2 and 3: code review fixes
+Detailed plan: [refactor-plan.md](refactor-plan.md). Bug fixes, shared code, the builder's production modules out of the Phase 0 spikes, faster builds, and splitting the app's search UI and the search engine. No format change.
+
 ### Phase 3: Car routing
 - [ ] Builder: road graph, car profile, turn restrictions and contraction hierarchies.
 - [ ] App: A to B and multi-stop routing, a directions list, distance and time, a route overlay, and avoid options.

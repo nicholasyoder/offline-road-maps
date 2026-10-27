@@ -283,7 +283,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let temp = args.temp.clone().unwrap_or_else(|| work_dir.join("tmp"));
     std::fs::create_dir_all(&temp)?;
     std::fs::create_dir_all(&args.out).with_context(|| format!("create {}", args.out.display()))?;
-    remove_old_chunks(&args.out, &file_name)?;
+    let staging = staging_dir(&args.out)?;
 
     // Provenance, from the fetch manifest.
     let manifest_path = args
@@ -338,18 +338,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     }
     let clip = args.clip_poly.as_deref().map(Poly::read).transpose()?;
 
-    let mut subs: Vec<Subdivision> = Vec::new();
-    for s in &args.addresses {
-        if s.eq_ignore_ascii_case("all") {
-            subs.extend(Subdivision::all());
-            continue;
-        }
-        subs.push(
-            Subdivision::from_iso(&s.to_uppercase())
-                .with_context(|| format!("unknown subdivision {s:?}; use e.g. US-OH or CA-QC"))?,
-        );
-    }
-    subs.dedup();
+    let subs = Subdivision::parse_list(&args.addresses)?;
     let address_opts = merge::Options {
         subdivisions: subs,
         sources: SourceOpts {
@@ -568,7 +557,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         settings,
     };
 
-    let mut w = Writer::create(&args.out, &file_name, args.chunk_capacity)?;
+    let mut w = Writer::create(&staging, &file_name, args.chunk_capacity)?;
     let mut sections = vec![
         w.section(meta::ID, &meta.encode()?)?,
         w.section(schema::ID, &Schema::from_whitelist(&wl).encode()?)?,
@@ -687,6 +676,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         snapshot: snap,
     };
     let paths = w.finish(&info)?;
+    let paths = replace_pack(&staging, &args.out, &file_name, &paths)?;
     log_stage("write", &mut t);
 
     let total: u64 = paths
@@ -1025,21 +1015,48 @@ fn file_label(p: &Path) -> String {
         .into_owned()
 }
 
-/// Deletes `<dir>/<name>.omp.NNN` left by an earlier build, so a smaller pack does not leave
-/// stale chunks behind.
-fn remove_old_chunks(dir: &Path, name: &str) -> Result<()> {
+/// `<out>/.building`, emptied: the new pack is written there and moved into `<out>` only
+/// once it is complete, so a build that fails leaves the old pack as it was. A failed build's
+/// leftovers are cleared here, by the next one.
+fn staging_dir(out: &Path) -> Result<PathBuf> {
+    let dir = out.join(".building");
+    match std::fs::remove_dir_all(&dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("clear {}", dir.display()));
+        }
+        _ => {}
+    }
+    std::fs::create_dir(&dir).with_context(|| format!("create {}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Moves the finished chunks `new` from `staging` into `out`, over the old pack's, then deletes
+/// the old pack's extra chunks, so a smaller pack does not leave stale ones behind. Returns
+/// the chunks' new paths.
+fn replace_pack(staging: &Path, out: &Path, name: &str, new: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut moved = Vec::with_capacity(new.len());
+    for p in new {
+        let to = out.join(p.file_name().context("chunk without a file name")?);
+        std::fs::rename(p, &to)
+            .with_context(|| format!("move {} to {}", p.display(), to.display()))?;
+        moved.push(to);
+    }
     let prefix = format!("{name}.omp.");
-    for e in std::fs::read_dir(dir)? {
+    for e in std::fs::read_dir(out)? {
         let e = e?;
         let file = e.file_name();
         let Some(rest) = file.to_str().and_then(|f| f.strip_prefix(&prefix)) else {
             continue;
         };
-        if rest.len() == 3 && rest.bytes().all(|b| b.is_ascii_digit()) {
+        let index = Some(rest)
+            .filter(|r| r.len() == 3)
+            .and_then(|r| r.parse::<usize>().ok());
+        if index.is_some_and(|i| i >= new.len()) {
             std::fs::remove_file(e.path())?;
         }
     }
-    Ok(())
+    std::fs::remove_dir(staging).with_context(|| format!("remove {}", staging.display()))?;
+    Ok(moved)
 }
 
 /// The first chunk of the pack at `path`: the `.omp.000` file itself, or the only one in a
@@ -1085,6 +1102,48 @@ pub fn test_pack(dir: &Path, sections: &[([u8; 4], &[u8])]) -> std::sync::Arc<pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_build_keeps_the_old_pack() {
+        let out = tempfile::tempdir().unwrap();
+        let out = out.path();
+        let build = |chunks: usize| {
+            let staging = staging_dir(out).unwrap();
+            let mut w = Writer::create(&staging, "p", pack::PAGE).unwrap();
+            for i in 0..chunks {
+                w.section([b'A', b'B', b'C', b'0' + i as u8], &[i as u8; 4000])
+                    .unwrap();
+            }
+            let info = Info {
+                pack_id: [chunks as u8; 16],
+                bbox: [0; 4],
+                build_time: 0,
+                name: "P".into(),
+                snapshot: String::new(),
+            };
+            (staging, w.finish(&info).unwrap())
+        };
+        let open = || pack::Pack::open(&out.join("p.omp.000")).unwrap();
+
+        let (staging, paths) = build(3);
+        replace_pack(&staging, out, "p", &paths).unwrap();
+        assert_eq!(open().chunks(), 4);
+
+        // A build that stops before `replace_pack` leaves the old pack openable...
+        let _ = build(1);
+        assert_eq!(open().info.pack_id, [3; 16]);
+
+        // ...and the next one clears its leftovers, and the old pack's extra chunks.
+        let (staging, paths) = build(1);
+        replace_pack(&staging, out, "p", &paths).unwrap();
+        assert_eq!(open().info.pack_id, [1; 16]);
+        let mut left: Vec<String> = std::fs::read_dir(out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["p.omp.000", "p.omp.001"]);
+    }
 
     #[test]
     fn names_from_file_names() {
