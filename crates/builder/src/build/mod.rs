@@ -19,14 +19,15 @@
 //!    it is dropped, its places, POIs and labels from the bands, and its postcodes and the
 //!    streets known only from their addresses from the merge.
 //! 5. The car routing graph ([`graph::make`], step 3.1), its own PBF passes after the
-//!    address and search stages have freed their memory. Only counted for now; step 3.3
-//!    writes it into the pack.
+//!    address and search stages have freed their memory, and its contraction hierarchy
+//!    ([`ch::contract`], step 3.2). Only counted for now; step 3.3 writes them into the
+//!    pack.
 //! 6. [`write_pack`]: dictionaries trained once from the whole tile store, then tiles
 //!    compressed and written in zoom, then Hilbert order, then the other sections.
 //!
 //! The PBF is read through one [`Pbf`], so each pass reads only the blobs of the element
-//! types it needs. With `--reuse-stages`, the admin areas, the bands, the address merge and
-//! the routing graph are saved in and reused from a cache ([`cache`]).
+//! types it needs. With `--reuse-stages`, the admin areas, the bands, the address merge,
+//! the routing graph and its hierarchy are saved in and reused from a cache ([`cache`]).
 //!
 //! `META`'s sources and settings are in [`meta`], and what `build` prints in [`report`].
 
@@ -58,7 +59,6 @@ use crate::addr::postcodes::{self, Postcode};
 use crate::addr::{self, Input, SourceOpts, merge, store};
 use crate::admin::{self, Admin, encode as admin_encode};
 use crate::fetch::regions::Subdivision;
-use crate::graph;
 use crate::mib;
 use crate::pbf::{self, Pbf, features};
 use crate::peak_rss_mib;
@@ -66,6 +66,7 @@ use crate::poly::Poly;
 use crate::search::{self, AddressStreet, encode as search_encode};
 use crate::street::{self, encode as street_encode, grid};
 use crate::tiles::{self, Band, Entry, Store, compress, water};
+use crate::{ch, graph};
 use cache::{Cache, Key};
 use meta::Provenance;
 use report::{ChainStats, Timer, ZoomTotals};
@@ -210,6 +211,7 @@ struct Stages {
     tiles: Key,
     addresses: Key,
     graph: Key,
+    ch: Key,
 }
 
 impl Stages {
@@ -241,6 +243,7 @@ impl Stages {
             tiles: cache.key("tiles", &tiles),
             addresses: cache.key("addresses", &addresses),
             graph: cache.key("graph", &format!("{}", cache::GRAPH)),
+            ch: cache.key("ch", &format!("{} {}", cache::GRAPH, cache::CH)),
             cache,
         })
     }
@@ -373,8 +376,13 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         graph::make(&setup.pbf)
     })?;
     graph::print_stats(&routing.stats);
-    drop(routing);
     t.stage("routing graph");
+    let hierarchy = cache::stage(Stages::at(&setup.stages, |s| &s.ch), || {
+        Ok(ch::contract(&routing.csr, &ch::Params::default()))
+    })?;
+    ch::print_stats(&hierarchy.stats);
+    drop((routing, hierarchy));
+    t.stage("routing CH");
     let build_time = match args.deterministic {
         true => 0,
         false => jiff::Timestamp::now().as_second(),

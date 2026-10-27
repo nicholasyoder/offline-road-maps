@@ -42,7 +42,7 @@ The roadmap's items are "road graph, car profile, turn restrictions and contract
 | Step | Status | Notes |
 |---|---|---|
 | 3.1 Car profile and road graph | **Done** 2026-10-27 | North America 63.7M nodes / 152.7M edges, 511k restrictions applied (+0.8% nodes), stage 231 s, build peak 47.4 GiB. OSRM 6.0.0 runs on Ohio and Quebec; coverage differs only where the profile table says |
-| 3.2 Contraction hierarchy | Not started | |
+| 3.2 Contraction hierarchy | **Done** 2026-10-27 | Exact against Dijkstra (0 mismatches; Ohio and Quebec 10,000 pairs × 4 avoid combinations); flag overhead 0.005%, so decision 3 stands; North America 1.65 CH edges per base edge (about 3.5 GiB), stage 293 s, build peak unchanged at 47.7 GiB |
 | 3.3 Routing format and core reader | Not started | |
 | 3.4 Queries, snapping and multi-stop (`omp-core`) | Not started | |
 | 3.5 Directions and the route set | Not started | |
@@ -134,6 +134,15 @@ Build the car graph in the builder from OSM, as its own stage, and measure it. N
 ## 3.2 Contraction hierarchy
 
 Contract the graph in the builder with our own CH (decision 1).
+
+> **Done 2026-10-27.** Done: the builder's `ch` module. It contracts in parallel rounds of independent nodes, and the witness searches skip the whole round. A shortcut carries the union of its flags; a witness counts only if its flags are a subset. Parallel arcs are kept while neither dominates (shorter with fewer flags). `build` runs it as its own stage after the graph (cached under `--reuse-stages`). `omp-builder ch <graph|pbf> [--check N] [--fast-paths] [--no-flags] [--priority a,b,c] [--settled n] [--share f] [--json]` runs it alone on a graph saved by `graph --save`. Unit tests compare every pair and every avoid combination with Dijkstra on random grids with tolls and ferries. They also unpack every route to base edges, and cover a toll road beside a free road, equal paths contracted in one round, and pruned parallel edges.
+>
+> - **Flag overhead** (same parameters, with and without flags): Ohio 8,671,809 against 8,671,344 CH edges (+0.005%), Quebec 3,072,557 against 3,072,585 (noise). The flagged edges are too few to matter, far under the 10% line, so the avoid approach stands as planned (decision 3) and `RCHE` keeps the flags.
+> - **Tuning on Ohio** (CH edges per base edge, mean nodes a query settles): weights 2,1,1 for edge difference, contracted neighbours and depth gave 1.75 and 770 when every local minimum was contracted each round. Allowing only the lowest-priority 1% of the remaining nodes per round gave 1.63 and 634 (5%: 1.65; 0.2%: no better). The weights matter less: 8,2,4 gives 1.60 and 634; 16,1,4 gives 1.56 but 773. Chosen: 8,2,4, 1%, witness searches up to 500 settled nodes (100 or 2,000 change little). `fast_paths` (sequential, lazy updates) gets 1.45 on Ohio and 1.51 on Quebec, so ours has about 10% more edges, the price of parallel rounds. Worth another look in 3.3 if size is tight.
+> - **Check against Dijkstra and `fast_paths`:** 10,000 random pairs (outside small components) × 4 avoid combinations. Ohio and Quebec: **0 mismatches, 0 bad paths** (unpacked routes that do not chain, use an avoided flag or do not add up). `fast_paths` gives the same weight for all 10,000 pairs on both. North America: 200 pairs × 4, 0 mismatches. Quebec's 314 unreachable pairs are islands and other large components with no road link, and Dijkstra agrees.
+> - **North America:** 288 s, peak 19.6 GiB alone (graph loaded from `graph --save`); 1.65 CH edges per base edge, about 3.5 GiB at 12 bytes per node and edge, against phase 0's 3.2 GiB estimate. In `build --addresses all --bands 3`: the stage takes 293 s, the same CH (contraction is deterministic), and the build peak stays at 47.7 GiB, set earlier by the graph read and the address merge, so contraction fits beside what is left. Wall time 46.0 min (3.1: 40.5). Log in `$OMP_WORK/measure/ch/`. Counts are in the [size table](size-table.md#phase-3-step-32-the-contraction-hierarchy).
+>
+> Left for 3.3 and 3.4: the query here (in `ch::check`) is a plain bidirectional search with no stall-on-demand, and it unpacks a shortcut by finding its two halves at the middle node. The longest CH edge is 75 h (North America), inside the planned 24-bit weights.
 
 - **Node order:** by the usual priority (edge difference, contracted neighbours, depth; the weights to tune on Ohio), with lazy updates.
 - **Parallel contraction:** contract an independent set of nodes in each round across threads, as in the CH literature, so North America takes minutes, not hours. Single-threaded `fast_paths` took 20.5 s for Ohio's 2.2M nodes; North America's 62.5M would be well over an hour on one thread.

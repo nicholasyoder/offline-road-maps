@@ -23,6 +23,8 @@ pub const TILES: u32 = 2;
 pub const ADDRESSES: u32 = 1;
 /// The car routing graph, with the profile it was built with.
 pub const GRAPH: u32 = 1;
+/// The contraction hierarchy of the graph; its key also holds the graph's version.
+pub const CH: u32 = 1;
 
 pub struct Cache {
     dir: PathBuf,

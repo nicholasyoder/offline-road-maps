@@ -157,7 +157,7 @@ impl Csr {
     }
 
     /// From edges in any order, with their source nodes.
-    fn from_edges(nodes: usize, list: Vec<(u32, Edge)>) -> Csr {
+    pub(crate) fn from_edges(nodes: usize, list: Vec<(u32, Edge)>) -> Csr {
         let mut first = vec![0u32; nodes + 1];
         for (from, _) in &list {
             first[*from as usize + 1] += 1;

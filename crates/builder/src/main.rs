@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 mod addr;
 mod admin;
 mod build;
+mod ch;
 mod fetch;
 mod find;
 mod geom;
@@ -53,6 +54,8 @@ enum Command {
     Streets(street::StreetsArgs),
     /// Build a PBF's car routing graph and report its counts.
     Graph(graph::GraphArgs),
+    /// Contract a car graph into a contraction hierarchy and check it against Dijkstra.
+    Ch(ch::check::ChArgs),
     /// Print Markdown size tables from `measure` JSON files.
     Report(report::ReportArgs),
 }
@@ -100,6 +103,7 @@ fn main() -> anyhow::Result<()> {
         Command::Admin(args) => admin::run(args)?,
         Command::Streets(args) => street::run(args)?,
         Command::Graph(args) => graph::run(args)?,
+        Command::Ch(args) => ch::check::run(args)?,
         Command::Report(args) => report::run(args)?,
     }
     Ok(())

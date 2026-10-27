@@ -235,6 +235,29 @@ The car routing graph of [step 3.1](phase3-plan.md#31-car-profile-and-road-graph
 
 Phase 0 counted 2.21M / 5.28M nodes and edges for Ohio and 62.5M / 149.6M for North America with a simpler profile (no ferries, barriers or restrictions, and only `access=no|private` read). Restrictions add under 1% of the nodes on Ohio and North America, as decision 2 expected. The longest edge is a ferry of 38 h (137,400 s), within the 24-bit weights (466 h) planned for `RCHE`. Quebec's many restricted edges are parking lots (`access=customers`, 43,014 ways).
 
+### Phase 3 step 3.2: the contraction hierarchy
+
+The CH of [step 3.2](phase3-plan.md#32-contraction-hierarchy), contracted from the step 3.1 graphs (`omp-builder ch`, parameters 8,2,4, 1% per round, 500 settled nodes). Nothing is in the pack yet; step 3.3 sets the layout, so the bytes here are phase 0's 12 bytes per node and per edge.
+
+| | Ohio | Quebec | North America |
+|---|---:|---:|---:|
+| Nodes / base edges | 2,254,008 / 5,403,268 | 785,367 / 1,829,231 | 63,669,618 / 152,707,629 |
+| Arcs after pruning loops and dominated parallel edges | 5,241,951 | 1,782,540 | 148,910,190 |
+| CH edges, up + down (per base edge) | 8,671,809 (1.60) | 3,072,557 (1.68) | 252,725,166 (1.65) |
+| — shortcuts | 3,432,354 | 1,290,912 | 103,881,627 |
+| — with a toll or ferry flag (shortcuts) | 5,789 (4,166) | 2,268 (1,833) | 374,967 (286,242) |
+| CH edges without the flags | 8,671,344 (−0.005%) | 3,072,585 (+0.001%) | not run |
+| `fast_paths` CH edges (per base edge) | 7,846,606 (1.45) | 2,767,592 (1.51) | not run |
+| Rounds / depth | 539 / 128 | 476 / 105 | 903 / 245 |
+| Longest CH edge | 16.0 h | 38.3 h | 75.1 h |
+| At 12 bytes per node and edge | 125 MiB | 44 MiB | 3,621 MiB |
+| Contraction time / peak RSS, alone (16 threads) | 8 s / 0.7 GiB | 3.5 s / 0.3 GiB | 288 s / 19.6 GiB |
+| In `build --addresses all --bands 3`: stage / build peak / wall time | | | 293 s / 47.7 GiB (unchanged) / 46.0 min |
+| Check: pairs × 4 avoid combinations, mismatches against Dijkstra | 10,000, 0 | 10,000, 0 | 200, 0 |
+| Mean / most nodes settled per query (no stall-on-demand) | 607 / 1,260 | 306 / 688 | 2,037 / 3,782 |
+
+North America's CH is about 10% over phase 0's 3.2 GiB estimate (3,276 MiB at 1.50 CH edges per graph edge): the graph has 2% more edges (3.1's profile) and the parallel rounds about 10% more shortcuts than `fast_paths`' sequential order. The flags cost nothing measurable.
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.
