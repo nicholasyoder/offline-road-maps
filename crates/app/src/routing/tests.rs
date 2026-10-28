@@ -113,9 +113,9 @@ pub(super) fn answer(r: &Request) -> Answer {
     }
 }
 
-/// The alternatives to `a`'s route: per leg, the quickest and one 4 min and 2 km longer a
-/// little east of it, by "US 33", ranked best on the legs in `best`.
-pub(super) fn alternatives(a: &Answer, best: &[usize]) -> Reply {
+/// The alternatives to `a`'s route, one reply per leg: the quickest and one 4 min and 2 km
+/// longer a little east of it, by "US 33", ranked best on the legs in `best`.
+pub(super) fn alternatives(a: &Answer, best: &[usize]) -> Vec<Reply> {
     let routed = a.routed.as_ref().unwrap();
     let legs = routed
         .trip
@@ -172,12 +172,19 @@ pub(super) fn alternatives(a: &Answer, best: &[usize]) -> Reply {
             })
         })
         .collect();
-    Reply::Alternatives(Alternatives {
-        id: a.request.id,
-        legs: Ok(legs),
-        search: Duration::from_millis(5),
-        directions: Duration::from_millis(7),
-    })
+    let legs: Vec<Option<Choices>> = legs;
+    legs.into_iter()
+        .enumerate()
+        .map(|(leg, choices)| {
+            Reply::Alternatives(Alternatives {
+                id: a.request.id,
+                leg,
+                choices: Ok(choices),
+                search: Duration::from_millis(5),
+                directions: Duration::from_millis(7),
+            })
+        })
+        .collect()
 }
 
 #[test]
@@ -195,34 +202,53 @@ fn alternatives_are_shown_and_picked() {
     tx.send(a.into()).unwrap();
     r.take(&cam);
     cam.set_lonlat(-82.5, 40.5, 9.0);
-    assert!(r.looking && r.alternatives.is_none());
-    assert!(r.overlays.iter().all(|o| o.0 != Look::Alternative));
+    // Nothing is looked for until a leg is opened.
+    assert!(!r.looking() && r.worker.take_alternatives().is_none());
+    assert_eq!(r.expanded, [false, false]);
     let time = r.route.as_ref().unwrap().trip.time_s();
 
-    // They come after the route; the second leg's alternative is ranked best and shown.
-    tx.send(alts).unwrap();
+    // Opening both legs asks for both, in one job; each arrives on its own.
+    r.expand(1, true);
+    assert_eq!(r.worker.take_alternatives(), Some((req.id, vec![1])));
+    r.expand(0, true);
+    assert_eq!(r.worker.take_alternatives(), Some((req.id, vec![0, 1])));
+    assert!(r.looking());
+    let mut alts = alts.into_iter();
+    tx.send(alts.next().unwrap()).unwrap();
     r.take(&cam);
-    assert!(!r.looking);
-    assert_eq!(r.chosen, [0, 1]);
+    assert!(r.looking() && matches!(r.alts[0], LegAlts::Found(_)));
+    tx.send(alts.next().unwrap()).unwrap();
+    r.take(&cam);
+    assert!(!r.looking());
+    // The second leg's alternative ranks best with turn costs, but the quickest stays
+    // shown (decision 23).
+    assert_eq!(r.chosen, [0, 0]);
+    assert_eq!(r.route.as_ref().unwrap().trip.time_s(), time);
+    // Grey: both legs' alternatives.
+    let grey = |r: &RouteUi| {
+        r.overlays
+            .iter()
+            .find(|o| o.0 == Look::Alternative)
+            .map_or(0, |o| o.1.points)
+    };
+    assert_eq!(grey(&r), 8);
+
+    // Picking the second leg's alternative swaps in its line and steps.
+    r.choose(1, 1);
     let shown = r.route.as_ref().unwrap();
     assert_eq!(shown.trip.time_s(), time + 240.0);
     assert_eq!(
         shown.trip.legs[1].as_ref().unwrap().points[0][0],
         req.stops[1].p[0] + 50_000
     );
-    // The second leg's steps are the alternative's, counted on from the first leg's.
+    // Its steps are the alternative's, counted on from the first leg's.
     assert_eq!(shown.steps.len(), 6);
     assert_eq!(shown.steps[3].at_m, 3000.0);
     assert_eq!(shown.steps[5].at_m, 3000.0 + 1500.0 + 2500.0);
     assert!(shown.restricted[1].is_empty());
-    // Grey: the first leg's alternative and the second's quickest.
-    let grey = r
-        .overlays
-        .iter()
-        .find(|o| o.0 == Look::Alternative)
-        .unwrap();
-    assert_eq!(grey.1.points, 8);
     assert_eq!(r.route.as_ref().unwrap().line.points, 8);
+    // Grey: the first leg's alternative and the second's quickest.
+    assert_eq!(grey(&r), 8);
 
     // Clicking near the first leg's grey line picks it; far from both, nothing.
     let alt = &r.not_shown().next().unwrap().2.leg.points;
@@ -232,7 +258,7 @@ fn alternatives_are_shown_and_picked() {
     assert!(r.click(&cam, [on[0] + 3.0, on[1]]));
     assert_eq!(r.chosen, [1, 1]);
     assert_eq!(r.route.as_ref().unwrap().trip.time_s(), time + 480.0);
-    // And its tag the second leg's quickest, whose tag says what it saves.
+    // And the tag of the second leg's quickest, which says what it saves.
     let (li, k, q) = r.not_shown().nth(1).unwrap();
     assert_eq!((li, k), (1, 0));
     assert_eq!(r.tag_text(li, q), "−4 min");
@@ -240,23 +266,41 @@ fn alternatives_are_shown_and_picked() {
     assert!(r.click(&cam, [tag[0] + 20.0, tag[1] - 6.0]));
     assert_eq!(r.chosen, [1, 0]);
 
-    // Answers for another route are dropped; a change of the stops lets go of them.
+    // Closed, a leg's grey line goes and cannot be clicked; the route picked stays.
+    r.expand(0, false);
+    assert_eq!(grey(&r), 4);
+    assert!(!r.click(&cam, [on[0] + 3.0, on[1]]));
+    assert_eq!(r.chosen, [1, 0]);
+    r.expand(1, false);
+    assert_eq!(grey(&r), 0);
+    assert_eq!(r.not_shown().count(), 0);
+    // Opened again: shown at once, nothing asked.
+    r.expand(0, true);
+    assert_eq!(grey(&r), 4);
+    assert!(r.worker.take_alternatives().is_none());
+
+    // Answers for another route are dropped. A change of the stops lets go of the
+    // routes; the leg left open is looked at again.
     let dropped = r.dropped;
-    tx.send(alternatives(
-        &answer(&Request {
-            id: 99,
-            ..req.clone()
-        }),
-        &[],
-    ))
-    .unwrap();
+    let other = Request {
+        id: 99,
+        ..req.clone()
+    };
+    for x in alternatives(&answer(&other), &[]) {
+        tx.send(x).unwrap();
+    }
     r.take(&cam);
-    assert_eq!(r.dropped, dropped + 1);
+    assert_eq!(r.dropped, dropped + 2);
     r.set_avoid(TOLL, true);
+    // Opening a leg while the route is asked for waits for it.
+    r.expand(1, true);
     let req = r.worker.take_request().unwrap();
     tx.send(answer(&req).into()).unwrap();
     r.take(&cam);
-    assert!(r.alternatives.is_none() && r.chosen.is_empty() && r.looking);
+    assert_eq!(r.chosen, [0, 0]);
+    assert_eq!(r.expanded, [true, true]);
+    assert_eq!(r.worker.take_alternatives(), Some((req.id, vec![0, 1])));
+    assert_eq!(grey(&r), 0);
     assert_eq!(delta_text(-20.0), "same time");
     assert_eq!(delta_text(3700.0), "+1 h 02 min");
 }

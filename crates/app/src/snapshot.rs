@@ -3,7 +3,7 @@
 //! With `--route`, it routes through the stops and draws the route as the app does (with
 //! its restricted parts and the lines to stops off the road), fitting the view to it unless
 //! `--center` and `--zoom` say otherwise. With `--alternatives`, each leg's alternatives
-//! (phase 4 step 4.3) are drawn grey under it, the one ranked best shown.
+//! (phase 4 step 4.3) are drawn grey under it, as the app draws an open leg's.
 
 use std::collections::HashMap;
 use std::io::BufWriter;
@@ -336,7 +336,7 @@ impl Snapshot {
         let trip = r.trip(&stops, 0).map_err(|e| e.to_string())?;
         let line = Line::of_trip(&trip);
         let names = streets.as_ref().map(|s| s as &dyn omp_core::route::Names);
-        let (mut routed, roads) =
+        let (routed, roads) =
             routing::Routed::with_roads(&r, streets.as_ref(), &stops, trip, line, &|| false)
                 .map_err(|e| e.to_string())?
                 .expect("never stopped");
@@ -354,10 +354,6 @@ impl Snapshot {
             let legs = routing::choices(&r, names, &stops, &quickest, &|| false, &mut times)
                 .map_err(|e| e.to_string())?
                 .expect("never stopped");
-            let chosen: Vec<usize> = legs
-                .iter()
-                .map(|c| c.as_ref().map_or(0, |c| c.best))
-                .collect();
             for (li, c) in legs.iter().enumerate() {
                 let Some(c) = c else { continue };
                 for (k, x) in c.routes.iter().enumerate() {
@@ -365,7 +361,11 @@ impl Snapshot {
                         "\n  leg {} route {}{}: {:.1} km, {:.0} min, {} turns, {} U-turns, via {}",
                         li + 1,
                         k + 1,
-                        if k == c.best { " (shown)" } else { "" },
+                        match (k, k == c.best) {
+                            (0, _) => " (shown)",
+                            (_, true) => " (ranked best with turn costs)",
+                            _ => "",
+                        },
                         x.leg.metres / 1000.0,
                         x.leg.time_s / 60.0,
                         x.turns.turns,
@@ -380,7 +380,9 @@ impl Snapshot {
                 times[0].as_secs_f64() * 1e3,
                 times[1].as_secs_f64() * 1e3
             );
-            grey = Some(routing::put_choices(&mut routed, &legs, &chosen));
+            // The quickest shown, as in the app (decision 23).
+            let legs: Vec<_> = legs.iter().map(Option::as_ref).collect();
+            grey = Some(routing::grey_line(&legs, &vec![0; legs.len()]));
         }
         let trip = &routed.trip;
         let restricted: f64 = trip

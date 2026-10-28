@@ -786,9 +786,9 @@ impl eframe::App for App {
                     set_stops(&mut m.routing, &stops);
                 }
                 let waiting = m.routing.waiting.is_some();
-                let looking = m.routing.looking;
+                let looking = m.routing.looking();
                 let fit = m.routing.take(&m.camera);
-                if let (Some(b), true, false) = (&mut self.bench, looking, m.routing.looking)
+                if let (Some(b), true, false) = (&mut self.bench, looking, m.routing.looking())
                     && let Some(t) = m.routing.alt_taken
                 {
                     b.alternatives_shown(m.routing.found(), t.latency.as_secs_f64() * 1e3);
@@ -813,6 +813,9 @@ impl eframe::App for App {
                             (_, _, Some(e)) => Err(e.clone()),
                             _ => Err("no route".into()),
                         });
+                        if b.flight.alternatives {
+                            m.routing.expand_all();
+                        }
                     }
                     _ => {}
                 }

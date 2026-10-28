@@ -304,10 +304,12 @@ fn optimize_stop_order() {
 
 #[test]
 fn alternatives_from_the_list() {
+    use crate::routing::LegAlts;
     use crate::routing::tests::alternatives;
     let mut u = Ui::new();
     u.r.apply(StopAction::From, named("a", 40.0));
-    u.r.apply(StopAction::To, named("b", 40.4));
+    u.r.apply(StopAction::Add, named("b", 40.2));
+    u.r.apply(StopAction::To, named("c", 40.4));
     u.frame(Vec::new());
     let req = u.r.worker.take_request().unwrap();
     let a = answer(&req);
@@ -315,60 +317,73 @@ fn alternatives_from_the_list() {
     u.tx.send(a.into()).unwrap();
     u.frame(Vec::new());
     u.frame(Vec::new());
-    // Looking: nothing to pick yet.
-    assert!(u.r.looking);
-    assert!(!u.drawn(Target::Alternative(0, 0)));
-    u.tx.send(alts).unwrap();
-    u.frame(Vec::new());
-    u.frame(Vec::new());
-    assert!(u.drawn(Target::Alternative(0, 0)) && u.drawn(Target::Alternative(0, 1)));
-    assert_eq!(u.r.chosen, [0]);
+    // A row per leg, closed: nothing asked, nothing to pick.
+    assert!(u.drawn(Target::Leg(0)) && u.drawn(Target::Leg(1)));
+    assert!(!u.drawn(Target::Alternative(1, 0)));
+    assert!(u.r.worker.take_alternatives().is_none());
     let steps = |u: &Ui| {
         u.r.targets
             .iter()
             .filter(|t| matches!(t.0, Target::Step(_)))
             .count()
     };
-    assert_eq!(steps(&u), 3);
+    assert_eq!(steps(&u), 6);
+
+    // Opening the second leg's row looks for its routes, then lists them.
+    u.click(Target::Leg(1));
+    assert_eq!(u.r.expanded, [false, true]);
+    assert_eq!(u.r.worker.take_alternatives(), Some((req.id, vec![1])));
+    u.frame(Vec::new());
+    assert!(u.r.looking() && !u.drawn(Target::Alternative(1, 0)));
+    for x in alts {
+        u.tx.send(x).unwrap();
+    }
+    u.frame(Vec::new());
+    u.frame(Vec::new());
+    // The first leg's was not asked for: dropped.
+    assert!(matches!(u.r.alts[0], LegAlts::NotAsked));
+    assert!(u.drawn(Target::Alternative(1, 0)) && u.drawn(Target::Alternative(1, 1)));
+    assert!(!u.drawn(Target::Alternative(0, 0)));
+    assert_eq!(u.r.chosen, [0, 0]);
 
     // Picking the second updates the totals and the directions; the pick of a step goes.
     u.click(Target::Step(1));
     assert_eq!(u.r.picked, Some(1));
-    u.click(Target::Alternative(0, 1));
-    assert_eq!(u.r.chosen, [1]);
+    u.click(Target::Alternative(1, 1));
+    assert_eq!(u.r.chosen, [0, 1]);
     assert!(u.r.picked.is_none());
     let r = u.r.route.as_ref().unwrap();
-    assert_eq!((r.trip.time_s(), r.trip.metres()), (420.0, 5000.0));
-    assert_eq!(r.steps[1].metres, 2500.0);
+    assert_eq!((r.trip.time_s(), r.trip.metres()), (600.0, 8000.0));
+    assert_eq!(r.steps[4].metres, 2500.0);
     assert!(u.r.overlays.iter().any(|o| o.0 == Look::Alternative));
-    assert_eq!(steps(&u), 3);
+    assert_eq!(steps(&u), 6);
     // And back, once the page has been laid out again.
     u.frame(Vec::new());
-    u.click(Target::Alternative(0, 0));
-    assert_eq!(u.r.chosen, [0]);
-    assert_eq!(u.r.route.as_ref().unwrap().trip.time_s(), 180.0);
+    u.click(Target::Alternative(1, 0));
+    assert_eq!(u.r.chosen, [0, 0]);
+    assert_eq!(u.r.route.as_ref().unwrap().trip.time_s(), 360.0);
+    // Closing the row hides the list and the grey line; the route picked stays.
+    u.click(Target::Alternative(1, 1));
+    u.frame(Vec::new());
+    u.click(Target::Leg(1));
+    assert_eq!(u.r.expanded, [false, false]);
+    u.frame(Vec::new());
+    assert!(!u.drawn(Target::Alternative(1, 0)));
+    let grey = u.r.overlays.iter().find(|o| o.0 == Look::Alternative);
+    assert!(grey.is_none_or(|g| g.1.is_empty()));
+    assert_eq!(u.r.chosen, [0, 1]);
 
-    // Ranked best for its turns: shown first, and the page says why.
-    u.click(Target::Reverse);
-    let req = u.r.worker.take_request().unwrap();
-    let a = answer(&req);
-    let mut alts = alternatives(&a, &[0]);
-    if let Reply::Alternatives(x) = &mut alts {
-        let c = x.legs.as_mut().unwrap()[0].as_mut().unwrap();
-        c.routes[0].turns.uturns = 2;
-    }
-    u.tx.send(a.into()).unwrap();
-    u.tx.send(alts).unwrap();
-    u.frame(Vec::new());
-    u.frame(Vec::new());
-    assert_eq!(u.r.chosen, [1]);
+    // Ranked best for its turns: the quickest stays shown, and the list says so.
+    let c = match &u.r.alts[1] {
+        LegAlts::Found(c) => c.clone(),
+        _ => panic!("found"),
+    };
+    let mut c = c;
+    c.best = 1;
+    c.routes[0].turns.uturns = 2;
     assert_eq!(
-        super::ranked_note(
-            &u.r.alternatives.as_ref().unwrap().as_ref().unwrap()[0]
-                .clone()
-                .unwrap()
-        )
-        .unwrap(),
-        "Shown first for its turns: 4 min slower on paper, 2 fewer U-turns."
+        super::ranked_note(&c).unwrap(),
+        "With turn costs, the route via US 33 ranks best: 4 min slower on paper, 2 fewer \
+         U-turns."
     );
 }

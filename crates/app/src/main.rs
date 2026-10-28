@@ -56,8 +56,8 @@ const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
                  --msaa 1 to turn antialiasing off; --route draws the route through
                  the stops, and fits the view to it without --center and --zoom;
                  --step draws step <n> of its directions over it, and fits that;
-                 --alternatives also finds each leg's alternatives, shows the one
-                 ranked best and draws the others grey, as the app does";
+                 --alternatives also finds each leg's alternatives and draws them
+                 grey, as the app does for a leg whose routes are open";
 
 #[derive(Default)]
 struct Args {

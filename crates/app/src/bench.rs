@@ -73,6 +73,10 @@ pub struct Flight {
     pub window: [f32; 2],
     /// Stops to route through, shown for the whole flight: `lat,lon;lat,lon…`.
     pub route: Option<String>,
+    /// Open every leg's routes once a route is shown, as a user would to see them (phase 4
+    /// step 4.3): they are looked for, drawn, and their time recorded.
+    #[serde(default)]
+    pub alternatives: bool,
     #[serde(rename = "step")]
     pub steps: Vec<Step>,
 }
@@ -603,7 +607,7 @@ impl Bench {
     }
 
     /// The alternatives to the latest route are drawn this frame: `n` of them, `ms` after
-    /// it was asked. Recorded for the flight's route and a `route` step's.
+    /// its legs were opened. Recorded for the flight's route and a `route` step's.
     pub fn alternatives_shown(&mut self, n: usize, ms: f64) {
         let log = &mut self.logs[self.step].route;
         let r = match (self.phase == Phase::Route && log.done, &mut log.shown) {

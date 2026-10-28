@@ -9,8 +9,9 @@
 //! would be dropped ([`Line`]), so the UI thread only filters it, and makes the directions
 //! (step 3.7) with the pack's street table, which a newer request stops too. A request may ask for the stops' quickest
 //! order first (phase 4 step 4.1): the trip is then routed in that order, and stopped the
-//! same way. Once the route is sent, the worker looks for each leg's alternatives (step
-//! 4.3) with their own directions, and sends them after it; a newer request stops that too.
+//! same way. The worker keeps the last route it sent, and finds the alternatives to its
+//! legs when asked (step 4.3: when a leg's routes are opened in the route page), with
+//! their own directions, sending each leg's as it is done; a newer request stops that too.
 
 use std::io;
 use std::ops::Range;
@@ -164,17 +165,30 @@ pub struct Choices {
     pub best: usize,
 }
 
-/// The alternatives to a route sent before, per leg; `None` for a leg with no route.
+/// The alternatives to one leg of a route sent before; `None` for a leg with no route.
 pub struct Alternatives {
+    /// The route's request.
     pub id: u64,
-    pub legs: Result<Vec<Option<Choices>>, String>,
+    pub leg: usize,
+    pub choices: Result<Option<Choices>, String>,
     /// Time looking for them, and making their directions and lines.
     pub search: Duration,
     pub directions: Duration,
 }
 
-/// What the worker sends: a route, then its alternatives. A few a request: not worth
-/// boxing the route.
+/// What the worker is asked to do.
+#[derive(Clone, Debug)]
+pub enum Job {
+    Route(Request),
+    /// The alternatives to these legs of route `id`, the last sent.
+    Alternatives {
+        id: u64,
+        legs: Vec<usize>,
+    },
+}
+
+/// What the worker sends: routes, and alternatives to their legs. A few a request: not
+/// worth boxing the route.
 #[allow(clippy::large_enum_variant)]
 pub enum Reply {
     Route(Answer),
@@ -204,7 +218,7 @@ pub struct Answer {
 }
 
 struct Slot {
-    request: Option<Request>,
+    request: Option<Job>,
     quit: bool,
     status: Status,
     /// Bytes of the hierarchy's top read and how long it took, once done.
@@ -263,16 +277,37 @@ impl Worker {
         (Self { shared, rx }, tx)
     }
 
+    /// The route request waiting, taken; an alternatives job is left.
     #[cfg(test)]
     pub fn take_request(&self) -> Option<Request> {
-        self.shared.slot.lock().unwrap().request.take()
+        let mut slot = self.shared.slot.lock().unwrap();
+        match slot.request.take() {
+            Some(Job::Route(r)) => Some(r),
+            other => {
+                slot.request = other;
+                None
+            }
+        }
     }
 
-    /// Replaces the request waiting, if any, and stops the one running.
-    pub fn ask(&self, r: Request) {
+    /// The alternatives job waiting, taken: the route's request and the legs.
+    #[cfg(test)]
+    pub fn take_alternatives(&self) -> Option<(u64, Vec<usize>)> {
+        let mut slot = self.shared.slot.lock().unwrap();
+        match slot.request.take() {
+            Some(Job::Alternatives { id, legs }) => Some((id, legs)),
+            other => {
+                slot.request = other;
+                None
+            }
+        }
+    }
+
+    /// Replaces the job waiting, if any, and stops the one running.
+    pub fn ask(&self, job: Job) {
         let mut slot = self.shared.slot.lock().unwrap();
         self.shared.generation.fetch_add(1, Ordering::Relaxed);
-        slot.request = Some(r);
+        slot.request = Some(job);
         drop(slot);
         self.shared.ready.notify_one();
     }
@@ -353,6 +388,16 @@ fn work(
     serve(shared, &reader, streets.as_ref(), tx, &*wake);
 }
 
+/// The last route sent, kept for its legs' alternatives.
+struct Kept {
+    id: u64,
+    stops: Vec<Stop>,
+    trip: Trip,
+    steps: Vec<Step>,
+    restricted: Vec<Vec<Range<usize>>>,
+    roads: Vec<Vec<Road>>,
+}
+
 /// Answers requests until the worker is dropped.
 fn serve(
     shared: &Arc<Shared>,
@@ -361,8 +406,9 @@ fn serve(
     tx: &Sender<Reply>,
     wake: &dyn Fn(),
 ) {
+    let mut kept: Option<Kept> = None;
     loop {
-        let (mut request, generation) = {
+        let (job, generation) = {
             let mut slot = shared.slot.lock().unwrap();
             loop {
                 if slot.quit {
@@ -375,114 +421,144 @@ fn serve(
             }
         };
         let stop = || shared.generation.load(Ordering::Relaxed) != generation;
-        let t = Instant::now();
-        let mut order = None;
-        if let Some(ends) = request.optimize {
-            match reader.optimize_until(&request.stops, request.avoid, ends, &stop) {
-                Ok(None) => continue,
-                Ok(Some(o)) => {
-                    let mut stops: Vec<Stop> = o.order.iter().map(|&i| request.stops[i]).collect();
-                    if ends.round_trip {
-                        stops.push(stops[0]);
-                    }
-                    request.stops = stops;
-                    order = Some(Ok(o.order));
-                }
-                Err(e) => {
-                    let e = e.to_string();
-                    let answer = Answer {
-                        request,
-                        routed: Err(e.clone()),
-                        order: Some(Err(e)),
-                        optimize: t.elapsed(),
-                        trip: Duration::ZERO,
-                        directions: Duration::ZERO,
-                        line: Duration::ZERO,
-                    };
-                    if tx.send(answer.into()).is_err() {
-                        return;
-                    }
-                    wake();
-                    continue;
-                }
-            }
-        }
-        let optimize = t.elapsed();
-        let t = Instant::now();
-        let trip = match reader.trip_until(&request.stops, request.avoid, &stop) {
-            // Stopped by a newer request, which is waiting.
-            Ok(None) => continue,
-            Ok(Some(trip)) => Ok(trip),
-            Err(e) => Err(e.to_string()),
+        let sent = match job {
+            Job::Route(request) => route(reader, streets, request, &stop, &mut kept, tx),
+            Job::Alternatives { id, legs } => match kept.as_ref().filter(|k| k.id == id) {
+                Some(k) => alternatives(reader, streets, k, &legs, &stop, tx, wake),
+                // Not the last route: the UI has a newer one coming.
+                None => Ok(()),
+            },
         };
-        let trip_time = t.elapsed();
-        let t = Instant::now();
-        let trip = trip.map(|trip| {
-            let line = Line::of_trip(&trip);
-            (trip, line)
-        });
-        let line = t.elapsed();
-        let t = Instant::now();
-        let routed = trip.and_then(|(trip, line)| {
-            Routed::with_roads(reader, streets, &request.stops, trip, line, &stop)
-                .map_err(|e| e.to_string())
-        });
-        let directions = t.elapsed();
-        // What the alternatives start from, kept before the route goes.
-        let (routed, base) = match routed {
-            // Stopped by a newer request, which is waiting.
-            Ok(None) => continue,
-            Ok(Some((r, roads))) => {
-                let any = r.trip.legs.iter().any(Option::is_some);
-                let base = any.then(|| {
-                    let (trip, steps) = (r.trip.clone(), r.steps.clone());
-                    (trip, steps, r.restricted.clone(), roads)
-                });
-                (Ok(r), base)
-            }
-            Err(e) => (Err(e), None),
-        };
-        let (id, stops) = (request.id, request.stops.clone());
-        let answer = Answer {
-            request,
-            routed,
-            order,
-            optimize,
-            trip: trip_time,
-            directions,
-            line,
-        };
-        if tx.send(answer.into()).is_err() {
-            return;
-        }
-        wake();
-        let Some((trip, steps, restricted, roads)) = base else {
-            continue;
-        };
-        let names = streets.map(|s| s as &dyn Names);
-        let mut times = [Duration::ZERO; 2];
-        let quickest = Quickest {
-            trip: &trip,
-            steps: &steps,
-            restricted: &restricted,
-            roads: &roads,
-        };
-        let legs = match choices(reader, names, &stops, &quickest, &stop, &mut times) {
-            Ok(None) => continue,
-            Ok(Some(legs)) => Ok(legs),
-            Err(e) => Err(e.to_string()),
-        };
-        let alts = Alternatives {
-            id,
-            legs,
-            search: times[0],
-            directions: times[1],
-        };
-        if tx.send(Reply::Alternatives(alts)).is_err() {
+        if sent.is_err() {
             return;
         }
         wake();
     }
+}
+
+/// Routes `request` and sends it; keeps it in `kept`. `Err` once the UI is gone.
+fn route(
+    reader: &route::Routing,
+    streets: Option<&Streets>,
+    mut request: Request,
+    stop: &dyn Fn() -> bool,
+    kept: &mut Option<Kept>,
+    tx: &Sender<Reply>,
+) -> Result<(), ()> {
+    let t = Instant::now();
+    let mut order = None;
+    if let Some(ends) = request.optimize {
+        match reader.optimize_until(&request.stops, request.avoid, ends, stop) {
+            Ok(None) => return Ok(()),
+            Ok(Some(o)) => {
+                let mut stops: Vec<Stop> = o.order.iter().map(|&i| request.stops[i]).collect();
+                if ends.round_trip {
+                    stops.push(stops[0]);
+                }
+                request.stops = stops;
+                order = Some(Ok(o.order));
+            }
+            Err(e) => {
+                let e = e.to_string();
+                let answer = Answer {
+                    request,
+                    routed: Err(e.clone()),
+                    order: Some(Err(e)),
+                    optimize: t.elapsed(),
+                    trip: Duration::ZERO,
+                    directions: Duration::ZERO,
+                    line: Duration::ZERO,
+                };
+                return tx.send(answer.into()).map_err(drop);
+            }
+        }
+    }
+    let optimize = t.elapsed();
+    let t = Instant::now();
+    let trip = match reader.trip_until(&request.stops, request.avoid, stop) {
+        // Stopped by a newer request, which is waiting.
+        Ok(None) => return Ok(()),
+        Ok(Some(trip)) => Ok(trip),
+        Err(e) => Err(e.to_string()),
+    };
+    let trip_time = t.elapsed();
+    let t = Instant::now();
+    let trip = trip.map(|trip| {
+        let line = Line::of_trip(&trip);
+        (trip, line)
+    });
+    let line = t.elapsed();
+    let t = Instant::now();
+    let routed = trip.and_then(|(trip, line)| {
+        Routed::with_roads(reader, streets, &request.stops, trip, line, stop)
+            .map_err(|e| e.to_string())
+    });
+    let directions = t.elapsed();
+    let routed = match routed {
+        // Stopped by a newer request, which is waiting.
+        Ok(None) => return Ok(()),
+        Ok(Some((r, roads))) => {
+            *kept = Some(Kept {
+                id: request.id,
+                stops: request.stops.clone(),
+                trip: r.trip.clone(),
+                steps: r.steps.clone(),
+                restricted: r.restricted.clone(),
+                roads,
+            });
+            Ok(r)
+        }
+        Err(e) => Err(e),
+    };
+    let answer = Answer {
+        request,
+        routed,
+        order,
+        optimize,
+        trip: trip_time,
+        directions,
+        line,
+    };
+    tx.send(answer.into()).map_err(drop)
+}
+
+/// Finds the alternatives to `legs` of the route `k`, sending each leg's as it is done.
+/// `Err` once the UI is gone.
+fn alternatives(
+    reader: &route::Routing,
+    streets: Option<&Streets>,
+    k: &Kept,
+    legs: &[usize],
+    stop: &dyn Fn() -> bool,
+    tx: &Sender<Reply>,
+    wake: &dyn Fn(),
+) -> Result<(), ()> {
+    let names = streets.map(|s| s as &dyn Names);
+    let quickest = Quickest {
+        trip: &k.trip,
+        steps: &k.steps,
+        restricted: &k.restricted,
+        roads: &k.roads,
+    };
+    for &leg in legs.iter().filter(|&&l| l < k.trip.legs.len()) {
+        let mut times = [Duration::ZERO; 2];
+        let choices = match leg_choices(reader, names, &k.stops, &quickest, leg, stop, &mut times) {
+            // Stopped: the UI asks again for what it still wants.
+            Ok(None) => return Ok(()),
+            Ok(Some(c)) => Ok(c),
+            Err(e) => Err(e.to_string()),
+        };
+        let alts = Alternatives {
+            id: k.id,
+            leg,
+            choices,
+            search: times[0],
+            directions: times[1],
+        };
+        tx.send(Reply::Alternatives(alts)).map_err(drop)?;
+        wake();
+    }
+    Ok(())
 }
 
 /// A trip as routed, with what [`Routed::with_roads`] made of it.
@@ -494,9 +570,7 @@ pub struct Quickest<'a> {
     pub roads: &'a [Vec<Road>],
 }
 
-/// Each routed leg's routes: its quickest (with the trip's own directions) and its
-/// alternatives, each with its directions, line and tag. `None` once `stop` returns true.
-/// `times` gets the time in the searches and in the rest.
+/// Each routed leg's routes ([`leg_choices`]); `None` once `stop` returns true.
 pub fn choices(
     reader: &route::Routing,
     names: Option<&dyn Names>,
@@ -505,6 +579,29 @@ pub fn choices(
     stop: &dyn Fn() -> bool,
     times: &mut [Duration; 2],
 ) -> io::Result<Option<Vec<Option<Choices>>>> {
+    let mut out = Vec::with_capacity(quickest.trip.legs.len());
+    for li in 0..quickest.trip.legs.len() {
+        match leg_choices(reader, names, stops, quickest, li, stop, times)? {
+            Some(c) => out.push(c),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Leg `li`'s routes: its quickest (with the trip's own directions) and its alternatives,
+/// each with its directions, line and tag; `Some(None)` for a leg with no route. `None`
+/// once `stop` returns true. `times` gets the time in the search and in the rest.
+#[allow(clippy::too_many_arguments)]
+pub fn leg_choices(
+    reader: &route::Routing,
+    names: Option<&dyn Names>,
+    stops: &[Stop],
+    quickest: &Quickest,
+    li: usize,
+    stop: &dyn Fn() -> bool,
+    times: &mut [Duration; 2],
+) -> io::Result<Option<Option<Choices>>> {
     let Quickest {
         trip,
         steps,
@@ -512,83 +609,79 @@ pub fn choices(
         roads,
     } = *quickest;
     let params = AltParams::default();
-    let mut out = Vec::with_capacity(trip.legs.len());
-    for (li, leg) in trip.legs.iter().enumerate() {
-        let (Some(leg), Some(a), Some(b)) = (leg, &trip.snaps[li], &trip.snaps[li + 1]) else {
-            out.push(None);
-            continue;
-        };
-        let t = Instant::now();
-        let Some(alts) = reader.alternatives_until(a, b, leg, trip.avoid, &params, stop)? else {
-            return Ok(None);
-        };
-        times[0] += t.elapsed();
-        let t = Instant::now();
-        // Quickest first, then by time; the best keeps its place.
-        let mut order: Vec<usize> = (0..alts.routes.len()).collect();
-        order[1..].sort_by(|&i, &j| {
-            let (x, y) = (&alts.routes[i].leg, &alts.routes[j].leg);
-            x.time_s.total_cmp(&y.time_s)
-        });
-        let legs: Vec<&Leg> = order.iter().map(|&k| &alts.routes[k].leg).collect();
-        let mut routes = Vec::with_capacity(order.len());
-        for (n, &k) in order.iter().enumerate() {
-            let x = &alts.routes[k];
-            let others: Vec<&Leg> = (0..legs.len())
-                .filter(|&j| j != n)
-                .map(|j| legs[j])
-                .collect();
-            let (mut own, runs, pieces) = match k {
-                0 => (
-                    steps.iter().filter(|s| s.leg == li).cloned().collect(),
-                    restricted[li].clone(),
-                    roads[li].clone(),
-                ),
-                _ => {
-                    // The trip with this leg only, so its steps are numbered as the trip's.
-                    let one = Trip {
-                        snaps: trip.snaps.clone(),
-                        legs: (0..trip.legs.len())
-                            .map(|j| (j == li).then(|| x.leg.clone()))
-                            .collect(),
-                        avoid: trip.avoid,
-                    };
-                    let found = reader.directions_roads_until(&one, stops, names, stop)?;
-                    let Some((s, mut r)) = found else {
-                        return Ok(None);
-                    };
-                    (s, x.leg.restricted(), std::mem::take(&mut r[li]))
-                }
-            };
-            if let Some(f) = own.first().map(|s| (s.at_m, s.at_s)) {
-                for s in &mut own {
-                    s.at_m -= f.0;
-                    s.at_s -= f.1;
-                }
+    let (Some(leg), Some(a), Some(b)) = (&trip.legs[li], &trip.snaps[li], &trip.snaps[li + 1])
+    else {
+        return Ok(Some(None));
+    };
+    let t = Instant::now();
+    let Some(alts) = reader.alternatives_until(a, b, leg, trip.avoid, &params, stop)? else {
+        return Ok(None);
+    };
+    times[0] += t.elapsed();
+    let t = Instant::now();
+    // Quickest first, then by time; the best keeps its place.
+    let mut order: Vec<usize> = (0..alts.routes.len()).collect();
+    order[1..].sort_by(|&i, &j| {
+        let (x, y) = (&alts.routes[i].leg, &alts.routes[j].leg);
+        x.time_s.total_cmp(&y.time_s)
+    });
+    let legs: Vec<&Leg> = order.iter().map(|&k| &alts.routes[k].leg).collect();
+    let mut routes = Vec::with_capacity(order.len());
+    for (n, &k) in order.iter().enumerate() {
+        let x = &alts.routes[k];
+        let others: Vec<&Leg> = (0..legs.len())
+            .filter(|&j| j != n)
+            .map(|j| legs[j])
+            .collect();
+        let (mut own, runs, pieces) = match k {
+            0 => (
+                steps.iter().filter(|s| s.leg == li).cloned().collect(),
+                restricted[li].clone(),
+                roads[li].clone(),
+            ),
+            _ => {
+                // The trip with this leg only, so its steps are numbered as the trip's.
+                let one = Trip {
+                    snaps: trip.snaps.clone(),
+                    legs: (0..trip.legs.len())
+                        .map(|j| (j == li).then(|| x.leg.clone()))
+                        .collect(),
+                    avoid: trip.avoid,
+                };
+                let found = reader.directions_roads_until(&one, stops, names, stop)?;
+                let Some((s, mut r)) = found else {
+                    return Ok(None);
+                };
+                (s, x.leg.restricted(), std::mem::take(&mut r[li]))
             }
-            // From the roads its directions found: walking a long leg again would decode
-            // its geometry again, as it does not stay in the segment cache.
-            let road =
-                route::via_road_of(&x.leg, &pieces, &others).map_or(String::new(), |r| r.short());
-            routes.push(Route {
-                turns: x.turns,
-                via: x.via,
-                road,
-                steps: own,
-                restricted: runs,
-                line: Line::new([x.leg.points.as_slice()]),
-                tag: tag_point(&x.leg, &others),
-                leg: x.leg.clone(),
-            });
-            if stop() {
-                return Ok(None);
+        };
+        if let Some(f) = own.first().map(|s| (s.at_m, s.at_s)) {
+            for s in &mut own {
+                s.at_m -= f.0;
+                s.at_s -= f.1;
             }
         }
-        let best = order.iter().position(|&k| k == alts.picked).unwrap_or(0);
-        times[1] += t.elapsed();
-        out.push(Some(Choices { routes, best }));
+        // From the roads its directions found: walking a long leg again would decode its
+        // geometry again, as it does not stay in the segment cache.
+        let road =
+            route::via_road_of(&x.leg, &pieces, &others).map_or(String::new(), |r| r.short());
+        routes.push(Route {
+            turns: x.turns,
+            via: x.via,
+            road,
+            steps: own,
+            restricted: runs,
+            line: Line::new([x.leg.points.as_slice()]),
+            tag: tag_point(&x.leg, &others),
+            leg: x.leg.clone(),
+        });
+        if stop() {
+            return Ok(None);
+        }
     }
-    Ok(Some(out))
+    let best = order.iter().position(|&k| k == alts.picked).unwrap_or(0);
+    times[1] += t.elapsed();
+    Ok(Some(Some(Choices { routes, best })))
 }
 
 /// The middle, by metres, of the longest run of `leg`'s pieces on segments none of

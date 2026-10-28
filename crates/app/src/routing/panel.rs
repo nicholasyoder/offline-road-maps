@@ -3,16 +3,20 @@
 //! the distance and driving time in all and per leg, notices about the route, and the
 //! directions. Clicking a step flies to it and draws its stretch over the route; Escape
 //! lets go of it. *Optimize stop order* (phase 4 step 4.1) reorders the stops, keeping the
-//! ends checked, says what it saved and offers Undo. Each leg's alternatives (step 4.3) are
-//! listed under the totals, the one shown selected; clicking another shows it. The rest of
-//! phase 4's trip planning has its places here, disabled.
+//! ends checked, says what it saved and offers Undo. Under the totals, each leg has a row
+//! with its distance and time that opens to its routes (step 4.3): they are looked for
+//! then, listed with the one shown selected, and drawn grey on the map until the row is
+//! closed; clicking another shows it. The rest of phase 4's trip planning has its places
+//! here, disabled.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use omp_core::geo;
 use omp_core::route::{FERRY, Kind, Modifier, Step, TOLL};
 
 use super::worker::Choices;
-use super::{END, Place, Reordered, RouteUi, START, StopAction, VIA, delta_text, duration_text};
+use super::{
+    END, LegAlts, Place, Reordered, RouteUi, START, StopAction, VIA, delta_text, duration_text,
+};
 use crate::camera::{self, Camera};
 use crate::scale::Units;
 use crate::search::distance_text;
@@ -42,7 +46,9 @@ pub enum Target {
     KeepLast,
     RoundTrip,
     Undo,
-    /// A leg's route in the list of alternatives.
+    /// A leg's row, which opens and closes its routes.
+    Leg(usize),
+    /// A leg's route in its list.
     Alternative(usize, usize),
     Step(usize),
 }
@@ -57,6 +63,7 @@ enum Edit {
     Optimize,
     CancelOptimize,
     Undo,
+    Expand(usize, bool),
     Choose(usize, usize),
     Pick(usize),
 }
@@ -91,8 +98,7 @@ impl RouteUi {
         }
         self.options(ui, units, &mut edits);
         ui.separator();
-        self.summary(ui, units);
-        self.alternatives_list(ui, units, &mut edits);
+        self.summary(ui, units, &mut edits);
         if self.route.is_some() {
             ui.horizontal_wrapped(|ui| {
                 later(
@@ -120,6 +126,7 @@ impl RouteUi {
                 Edit::Optimize => self.optimize(),
                 Edit::CancelOptimize => self.cancel_optimize(),
                 Edit::Undo => self.undo_optimize(),
+                Edit::Expand(leg, open) => self.expand(leg, open),
                 Edit::Choose(leg, k) => self.choose(leg, k),
                 Edit::Pick(i) => {
                     self.pick(Some(i));
@@ -343,8 +350,8 @@ impl RouteUi {
         });
     }
 
-    /// The totals, per leg when there are stops between, and the notices.
-    fn summary(&self, ui: &mut egui::Ui, units: Units) {
+    /// The totals, each leg's row, and the notices.
+    fn summary(&mut self, ui: &mut egui::Ui, units: Units, edits: &mut Vec<Edit>) {
         let Some(r) = &self.route else {
             let text = match (&self.error, self.from.is_some() && self.to.is_some()) {
                 (None, _) if !self.has_stops() => {
@@ -372,98 +379,132 @@ impl RouteUi {
             .strong()
             .color(INK),
         );
-        if trip.legs.len() > 1 {
-            for (i, l) in trip.legs.iter().enumerate() {
-                let text = match l {
-                    Some(l) => format!(
-                        "{} to {}: {} · {}",
-                        i + 1,
-                        i + 2,
-                        distance_text(l.metres, units),
-                        duration_text(l.time_s)
-                    ),
-                    None => format!("{} to {}: no route", i + 1, i + 2),
-                };
-                ui.label(egui::RichText::new(text).size(12.0).color(WEAK));
-            }
-        }
+        self.leg_rows(ui, units, edits);
         for n in self.notices(units) {
             ui.label(egui::RichText::new(format!("⚠ {n}")).color(APPROX));
         }
     }
 
-    /// Each leg's routes, the one shown selected: time, distance, against the quickest, and
-    /// the road it takes that the others do not.
-    fn alternatives_list(&mut self, ui: &mut egui::Ui, units: Units, edits: &mut Vec<Edit>) {
-        if self.route.is_none() {
-            return;
-        }
-        if self.looking {
-            ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().size(12.0).color(WEAK));
-                ui.label(egui::RichText::new("Looking for other routes…").color(WEAK));
+    /// Each leg's row, "1 to 2: 285 mi · 4 h 10 min", with a triangle: clicked, it opens
+    /// the leg's routes or closes them.
+    fn leg_rows(&mut self, ui: &mut egui::Ui, units: Units, edits: &mut Vec<Edit>) {
+        let Some(r) = &self.route else { return };
+        let legs: Vec<Option<(f64, f64)>> = r
+            .trip
+            .legs
+            .iter()
+            .map(|l| l.as_ref().map(|l| (l.metres, l.time_s)))
+            .collect();
+        for (li, leg) in legs.into_iter().enumerate() {
+            let open = self.expanded.get(li).copied().unwrap_or(false);
+            let via = match self.alts.get(li) {
+                Some(LegAlts::Found(c)) if c.routes.len() > 1 => {
+                    let road = &c.routes[self.chosen[li]].road;
+                    match road.is_empty() {
+                        true => String::new(),
+                        false => format!(" · via {road}"),
+                    }
+                }
+                _ => String::new(),
+            };
+            let text = match leg {
+                Some((m, t)) => format!(
+                    "{} to {}: {} · {}{via}",
+                    li + 1,
+                    li + 2,
+                    distance_text(m, units),
+                    duration_text(t)
+                ),
+                None => format!("{} to {}: no route", li + 1, li + 2),
+            };
+            let row = ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(12.0, 16.0), Sense::hover());
+                if leg.is_some() {
+                    triangle(ui.painter(), rect.center(), open, WEAK);
+                }
+                ui.add(egui::Label::new(egui::RichText::new(text).color(INK)).truncate());
             });
-            return;
+            let rect = row.response.rect;
+            self.targets.push((Target::Leg(li), rect));
+            if leg.is_none() {
+                continue;
+            }
+            let resp = ui
+                .interact(rect, ui.scope_id().with(("leg", li)), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(match open {
+                    true => "Hide the other routes",
+                    false => "Show other routes for this leg",
+                });
+            if resp.hovered() {
+                ui.painter()
+                    .rect_filled(rect, 3.0, Color32::from_black_alpha(8));
+            }
+            if resp.clicked() {
+                edits.push(Edit::Expand(li, !open));
+            }
+            if open {
+                ui.indent(("routes", li), |ui| self.leg_routes(ui, li, units, edits));
+            }
         }
-        let legs = match &self.alternatives {
-            None => return,
-            Some(Err(e)) => {
+    }
+
+    /// An open leg's routes, the one shown selected: time, distance, against the quickest,
+    /// and the road it takes that the others do not.
+    fn leg_routes(&mut self, ui: &mut egui::Ui, li: usize, units: Units, edits: &mut Vec<Edit>) {
+        let c = match &self.alts[li] {
+            LegAlts::NotAsked => return,
+            LegAlts::Looking(_) => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(12.0).color(WEAK));
+                    ui.label(egui::RichText::new("Checking for other routes…").color(WEAK));
+                });
+                return;
+            }
+            LegAlts::Failed(e) => {
                 let text = format!("Other routes could not be found: {e}");
                 ui.label(egui::RichText::new(text).color(APPROX));
                 return;
             }
-            Some(Ok(legs)) => legs,
+            LegAlts::Found(c) => c,
         };
-        if !legs.iter().flatten().any(|c| c.routes.len() > 1) {
+        if c.routes.len() < 2 {
             let text = "No other route within a quarter of the quickest's time.";
-            ui.label(egui::RichText::new(text).color(WEAK));
+            ui.label(egui::RichText::new(text).size(12.0).color(WEAK));
             return;
         }
-        ui.label(egui::RichText::new("Routes").strong().color(INK));
-        let many = legs.len() > 1;
-        for (li, c) in legs.iter().enumerate() {
-            let Some(c) = c else { continue };
-            if many {
-                let text = match c.routes.len() {
-                    1 => format!("{} to {}: no other route", li + 1, li + 2),
-                    _ => format!("{} to {}", li + 1, li + 2),
-                };
-                ui.label(egui::RichText::new(text).size(12.0).color(WEAK));
-            }
-            if c.routes.len() < 2 {
-                continue;
-            }
-            let quickest = c.routes[0].leg.time_s;
-            for (k, x) in c.routes.iter().enumerate() {
-                let against = match k {
-                    0 => "quickest".to_string(),
-                    _ => delta_text(x.leg.time_s - quickest),
-                };
-                let via = match x.road.is_empty() {
-                    true => String::new(),
-                    false => format!(" · via {}", x.road),
-                };
-                let text = format!(
-                    "{} · {} · {against}{via}",
-                    duration_text(x.leg.time_s),
-                    distance_text(x.leg.metres, units)
-                );
-                let shown = self.chosen.get(li) == Some(&k);
-                let r = ui
-                    .selectable_label(shown, egui::RichText::new(text).color(INK))
-                    .on_hover_text(format!(
-                        "{} turns, {} U-turns",
-                        x.turns.turns, x.turns.uturns
-                    ));
-                self.targets.push((Target::Alternative(li, k), r.rect));
-                if r.clicked() && !shown {
-                    edits.push(Edit::Choose(li, k));
-                }
-            }
-            if let Some(why) = ranked_note(c) {
-                ui.label(egui::RichText::new(why).size(12.0).color(WEAK));
+        let quickest = c.routes[0].leg.time_s;
+        let mut targets = Vec::new();
+        for (k, x) in c.routes.iter().enumerate() {
+            let against = match k {
+                0 => "quickest".to_string(),
+                _ => delta_text(x.leg.time_s - quickest),
+            };
+            let via = match x.road.is_empty() {
+                true => String::new(),
+                false => format!(" · via {}", x.road),
+            };
+            let text = format!(
+                "{} · {} · {against}{via}",
+                duration_text(x.leg.time_s),
+                distance_text(x.leg.metres, units)
+            );
+            let shown = self.chosen.get(li) == Some(&k);
+            let r = ui
+                .selectable_label(shown, egui::RichText::new(text).color(INK))
+                .on_hover_text(format!(
+                    "{} turns, {} U-turns",
+                    x.turns.turns, x.turns.uturns
+                ));
+            targets.push((Target::Alternative(li, k), r.rect));
+            if r.clicked() && !shown {
+                edits.push(Edit::Choose(li, k));
             }
         }
+        if let Some(why) = ranked_note(c) {
+            ui.label(egui::RichText::new(why).size(12.0).color(WEAK));
+        }
+        self.targets.extend(targets);
     }
 
     /// The steps, only those in view laid out and drawn: a long route has hundreds.
@@ -518,8 +559,9 @@ impl RouteUi {
     }
 }
 
-/// Why turn costs ranked another route than the quickest best: "Shown first for its turns:
-/// 1 min slower on paper, 2 fewer U-turns."
+/// Which route turn costs rank best when it is not the quickest (decisions 3 and 23):
+/// "With turn costs, the route via US 33 ranks best: 1 min slower on paper, 2 fewer
+/// U-turns."
 fn ranked_note(c: &Choices) -> Option<String> {
     if c.best == 0 {
         return None;
@@ -537,7 +579,30 @@ fn ranked_note(c: &Choices) -> Option<String> {
         0.0 => "the same time on paper".to_string(),
         _ => format!("{} slower on paper", duration_text(slower)),
     };
-    Some(format!("Shown first for its turns: {paper}, {why}."))
+    let which = match b.road.is_empty() {
+        true => format!("route {}", c.best + 1),
+        false => format!("the route via {}", b.road),
+    };
+    Some(format!(
+        "With turn costs, {which} ranks best: {paper}, {why}."
+    ))
+}
+
+/// A small triangle at `c`: pointing right when closed, down when open.
+fn triangle(p: &egui::Painter, c: Pos2, open: bool, color: Color32) {
+    let pts = match open {
+        true => vec![
+            c + Vec2::new(-4.0, -2.0),
+            c + Vec2::new(4.0, -2.0),
+            c + Vec2::new(0.0, 3.0),
+        ],
+        false => vec![
+            c + Vec2::new(-2.0, -4.0),
+            c + Vec2::new(3.0, 0.0),
+            c + Vec2::new(-2.0, 4.0),
+        ],
+    };
+    p.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
 }
 
 /// The directions' rows as laid out for a width: their heights, and the distance and time

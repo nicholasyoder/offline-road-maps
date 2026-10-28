@@ -16,12 +16,12 @@
 //! roads and the step picked in the directions, and dashed lines join each stop to where
 //! the route meets its road.
 //!
-//! Each leg's alternatives (phase 4 step 4.3) come from the worker after the route, drawn
-//! grey under it with a tag giving the time against the route shown. Clicking a grey line
-//! or its tag, or a row of the route page's list, picks it: the leg, its directions and
-//! the totals are swapped for its own. If turn costs rank an alternative best (decision
-//! 3), it is shown when it arrives and the page says why. The choice holds until the stops
-//! or avoid options change.
+//! Each leg's alternatives (phase 4 step 4.3) are looked for when the leg's row in the
+//! route page is opened (decision 23), and drawn grey under the route with a tag giving the
+//! time against the route shown, while it stays open. Clicking a grey line or its tag, or
+//! a route in the leg's list, picks it: the leg, its directions and the totals are swapped
+//! for its own. Closing the row leaves only the route picked on the map. The choice holds
+//! until the stops or avoid options change; a leg left open is looked at again then.
 
 mod line;
 mod panel;
@@ -42,9 +42,8 @@ use crate::scale::Units;
 use crate::search::{self, distance_text};
 
 pub use line::{GpuBand, Line, LineDraw, Look, RouteDraw, RouteSegment, band_for};
-use worker::Reply;
 pub use worker::{Choices, Quickest, choices};
-use worker::{Request, Worker};
+use worker::{Job, Reply, Request, Worker};
 pub use worker::{Routed, Status};
 
 /// The most the view zooms in to fit a route, and the share of the map it fills.
@@ -167,7 +166,6 @@ pub fn stop_buttons(ui: &mut egui::Ui, state: &MenuState) -> (Option<StopAction>
 /// Timings of the last answer, for the overlay.
 #[derive(Clone, Copy, Debug)]
 pub struct Taken {
-    pub asked: Instant,
     /// From the request to the answer reaching the UI.
     pub latency: Duration,
     /// In the matrix and the order, for an optimize request.
@@ -178,13 +176,23 @@ pub struct Taken {
     pub points: usize,
 }
 
-/// Time to the alternatives, for the overlay.
+/// Time to a leg's alternatives, for the overlay.
 #[derive(Clone, Copy, Debug)]
 pub struct AltTaken {
     pub search: Duration,
     pub directions: Duration,
-    /// From the request to the alternatives reaching the UI.
+    /// From the leg's row being opened to its alternatives reaching the UI.
     pub latency: Duration,
+}
+
+/// What is known of a leg's alternatives.
+#[derive(Clone)]
+pub enum LegAlts {
+    NotAsked,
+    /// Asked of the worker, since then.
+    Looking(Instant),
+    Found(Choices),
+    Failed(String),
 }
 
 /// "+4 min", "−1 h 02 min", "same time": `s` seconds more or less.
@@ -243,13 +251,23 @@ pub fn overlay_lines(routed: &Routed, stops: &[P], picked: Option<usize>) -> Vec
     out
 }
 
-/// Puts route `chosen[i]` of each leg's `legs[i]` in `r`: its leg, directions, restricted
-/// runs and line. Returns the line of the routes not chosen.
-pub fn put_choices(r: &mut Routed, legs: &[Option<Choices>], chosen: &[usize]) -> Line {
+/// Puts route `chosen[i]` of each leg's `legs[i]` in `r`, for the legs that have them:
+/// its leg, directions, restricted runs and line.
+pub fn put_choices(r: &mut Routed, legs: &[Option<&Choices>], chosen: &[usize]) {
     let mut steps = Vec::with_capacity(r.steps.len());
     let mut lines = Vec::new();
-    for (li, c) in legs.iter().enumerate() {
-        match c {
+    let own: Vec<Line> = r
+        .trip
+        .legs
+        .iter()
+        .enumerate()
+        .map(|(li, l)| match (l, legs.get(li).copied().flatten()) {
+            (Some(l), None) => Line::new([l.points.as_slice()]),
+            _ => Line::new(std::iter::empty()),
+        })
+        .collect();
+    for (li, own) in own.iter().enumerate() {
+        match legs.get(li).copied().flatten() {
             Some(c) => {
                 let x = &c.routes[chosen[li]];
                 r.trip.legs[li] = Some(x.leg.clone());
@@ -257,7 +275,10 @@ pub fn put_choices(r: &mut Routed, legs: &[Option<Choices>], chosen: &[usize]) -
                 steps.extend(x.steps.iter().cloned());
                 lines.push(&x.line);
             }
-            None => steps.extend(r.steps.iter().filter(|s| s.leg == li).cloned()),
+            None => {
+                steps.extend(r.steps.iter().filter(|s| s.leg == li).cloned());
+                lines.push(own);
+            }
         }
     }
     let (mut at_m, mut at_s) = (0.0, 0.0);
@@ -269,8 +290,12 @@ pub fn put_choices(r: &mut Routed, legs: &[Option<Choices>], chosen: &[usize]) -
     }
     r.steps = steps;
     r.line = Line::join(lines);
+}
+
+/// The line of each leg's routes other than `chosen[i]`.
+pub fn grey_line(legs: &[Option<&Choices>], chosen: &[usize]) -> Line {
     let others = legs.iter().zip(chosen).flat_map(|(c, &k)| {
-        let routes = c.as_ref().map_or(&[][..], |c| &c.routes[..]);
+        let routes = c.map_or(&[][..], |c| &c.routes[..]);
         routes
             .iter()
             .enumerate()
@@ -332,13 +357,12 @@ pub struct RouteUi {
     pub opened: bool,
     /// The step of the directions picked: drawn over the route.
     pub picked: Option<usize>,
-    /// The request the route shown answered, whose alternatives are awaited or shown.
+    /// The request the route shown answered, whose alternatives are asked for.
     shown: Option<u64>,
-    /// The alternatives to the route shown are being looked for.
-    pub looking: bool,
-    /// Per leg of the route shown, its routes; `Err` if they could not be found.
-    pub alternatives: Option<Result<Vec<Option<Choices>>, String>>,
-    /// Per leg, the route shown, in its [`Choices`].
+    /// Per leg of the route shown: its alternatives, whether its row is open (its grey
+    /// lines drawn), and the route shown, in its [`Choices`].
+    pub alts: Vec<LegAlts>,
+    pub expanded: Vec<bool>,
     pub chosen: Vec<usize>,
     pub alt_taken: Option<AltTaken>,
     /// The directions' rows, laid out once per route and width.
@@ -386,8 +410,8 @@ impl RouteUi {
             opened: false,
             picked: None,
             shown: None,
-            looking: false,
-            alternatives: None,
+            alts: Vec::new(),
+            expanded: Vec::new(),
             chosen: Vec::new(),
             alt_taken: None,
             rows: None,
@@ -535,13 +559,13 @@ impl RouteUi {
         self.next_id += 1;
         self.waiting = Some(self.next_id);
         self.reordered = None;
-        self.worker.ask(Request {
+        self.worker.ask(Job::Route(Request {
             id: self.next_id,
             stops: places.iter().map(Place::stop).collect(),
             avoid: self.avoid,
             asked: Instant::now(),
             optimize: Some(self.ends),
-        });
+        }));
         self.optimizing = Some((before, places));
     }
 
@@ -550,6 +574,7 @@ impl RouteUi {
         if self.optimizing.take().is_some() {
             self.worker.cancel();
             self.waiting = None;
+            self.ask_alternatives();
         }
     }
 
@@ -673,8 +698,8 @@ impl RouteUi {
             self.bands = Default::default();
             self.picked = None;
             self.shown = None;
-            self.looking = false;
-            self.alternatives = None;
+            self.alts.clear();
+            self.expanded.clear();
             self.chosen.clear();
             return;
         };
@@ -685,13 +710,13 @@ impl RouteUi {
             .collect();
         self.next_id += 1;
         self.waiting = Some(self.next_id);
-        self.worker.ask(Request {
+        self.worker.ask(Job::Route(Request {
             id: self.next_id,
             stops,
             avoid: self.avoid,
             asked: Instant::now(),
             optimize: None,
-        });
+        }));
     }
 
     /// Takes the worker's answers to the latest request, dropping the others. Returns the
@@ -703,24 +728,24 @@ impl RouteUi {
             let a = match reply {
                 Reply::Route(a) => a,
                 Reply::Alternatives(x) => {
-                    if self.shown != Some(x.id) || !self.looking {
-                        self.dropped += 1;
-                        continue;
-                    }
-                    self.looking = false;
+                    let asked = match self.alts.get(x.leg) {
+                        Some(LegAlts::Looking(t)) if self.shown == Some(x.id) => *t,
+                        _ => {
+                            self.dropped += 1;
+                            continue;
+                        }
+                    };
                     self.alt_taken = Some(AltTaken {
                         search: x.search,
                         directions: x.directions,
-                        latency: self.last.map_or(Duration::ZERO, |t| t.asked.elapsed()),
+                        latency: asked.elapsed(),
                     });
-                    if let Ok(legs) = &x.legs {
-                        self.chosen = legs
-                            .iter()
-                            .map(|c| c.as_ref().map_or(0, |c| c.best))
-                            .collect();
-                    }
-                    self.alternatives = Some(x.legs);
-                    self.show_choices();
+                    self.alts[x.leg] = match x.choices {
+                        Ok(Some(c)) => LegAlts::Found(c),
+                        Ok(None) => LegAlts::Failed("this leg has no route".into()),
+                        Err(e) => LegAlts::Failed(e),
+                    };
+                    self.refresh_grey();
                     continue;
                 }
             };
@@ -735,9 +760,10 @@ impl RouteUi {
                 };
                 match order {
                     Ok(order) => self.put_order(before, &sent, order, &a.routed),
-                    // The route shown stays.
+                    // The route shown stays, and what its legs were looking for.
                     Err(e) => {
                         self.reordered = Some(Reordered::Failed(e.clone()));
+                        self.ask_alternatives();
                         continue;
                     }
                 }
@@ -745,18 +771,20 @@ impl RouteUi {
             self.picked = None;
             self.rows = None;
             self.overlays.clear();
-            self.alternatives = None;
-            self.chosen.clear();
             self.alt_taken = None;
-            self.looking = false;
             self.shown = None;
+            // Rows left open stay open, for as many legs.
+            let n = a.routed.as_ref().map_or(0, |r| r.trip.legs.len());
+            if self.expanded.len() != n {
+                self.expanded = vec![false; n];
+            }
+            self.alts = vec![LegAlts::NotAsked; n];
+            self.chosen = vec![0; n];
             match a.routed {
                 Ok(routed) => {
                     let line = &routed.line;
                     self.shown = Some(a.request.id);
-                    self.looking = routed.trip.legs.iter().any(Option::is_some);
                     self.last = Some(Taken {
-                        asked: a.request.asked,
                         latency: a.request.asked.elapsed(),
                         optimize: a.optimize,
                         trip: a.trip,
@@ -780,54 +808,126 @@ impl RouteUi {
                 }
             }
             self.bands = Default::default();
+            for leg in 0..self.expanded.len() {
+                if self.expanded[leg] {
+                    self.look_for(leg);
+                }
+            }
+            self.ask_alternatives();
         }
         fit
     }
 
     /// The alternatives found to the route shown, over every leg.
     pub fn found(&self) -> usize {
-        match &self.alternatives {
-            Some(Ok(legs)) => legs.iter().flatten().map(|c| c.routes.len() - 1).sum(),
-            _ => 0,
+        self.found_legs()
+            .iter()
+            .flatten()
+            .map(|c| c.routes.len() - 1)
+            .sum()
+    }
+
+    /// Some leg's alternatives are being looked for.
+    pub fn looking(&self) -> bool {
+        self.alts.iter().any(|a| matches!(a, LegAlts::Looking(_)))
+    }
+
+    fn found_legs(&self) -> Vec<Option<&Choices>> {
+        found_in(&self.alts)
+    }
+
+    /// Opens every leg's row (the bench's flights with `alternatives = true`).
+    pub fn expand_all(&mut self) {
+        for leg in 0..self.expanded.len() {
+            self.expand(leg, true);
+        }
+    }
+
+    /// Opens or closes leg `leg`'s row: open, its alternatives are looked for if they have
+    /// not been, and drawn grey; closed, only the route picked is drawn.
+    pub fn expand(&mut self, leg: usize, open: bool) {
+        if leg >= self.expanded.len() || self.expanded[leg] == open {
+            return;
+        }
+        self.expanded[leg] = open;
+        if open && self.look_for(leg) {
+            self.ask_alternatives();
+        }
+        self.refresh_grey();
+    }
+
+    /// Marks leg `leg`'s alternatives as looked for, if it has a route and they were not
+    /// asked for yet. Returns whether it did.
+    fn look_for(&mut self, leg: usize) -> bool {
+        let routed = self
+            .route
+            .as_ref()
+            .is_some_and(|r| r.trip.legs.get(leg).is_some_and(Option::is_some));
+        if routed && matches!(self.alts.get(leg), Some(LegAlts::NotAsked)) {
+            self.alts[leg] = LegAlts::Looking(Instant::now());
+            return true;
+        }
+        false
+    }
+
+    /// Asks the worker for the alternatives of every leg looking for them. Not while a
+    /// route is waiting: the job would replace it, and its answer starts again anyway.
+    fn ask_alternatives(&mut self) {
+        let legs: Vec<usize> = (0..self.alts.len())
+            .filter(|&i| matches!(self.alts[i], LegAlts::Looking(_)))
+            .collect();
+        if let (Some(id), None, false) = (self.shown, self.waiting, legs.is_empty()) {
+            self.worker.ask(Job::Alternatives { id, legs });
         }
     }
 
     /// Shows route `k` of leg `leg`'s alternatives.
     pub fn choose(&mut self, leg: usize, k: usize) {
-        let Some(Ok(legs)) = &self.alternatives else {
-            return;
+        let ok = match self.alts.get(leg) {
+            Some(LegAlts::Found(c)) => k < c.routes.len(),
+            _ => false,
         };
-        let ok = legs
-            .get(leg)
-            .and_then(Option::as_ref)
-            .is_some_and(|c| k < c.routes.len());
         if ok && self.chosen[leg] != k {
             self.chosen[leg] = k;
             self.show_choices();
         }
     }
 
-    /// Puts the chosen routes in the route shown, and the others in grey.
+    /// Puts the chosen routes in the route shown, and the others of the open legs in grey.
     fn show_choices(&mut self) {
-        let (Some(r), Some(Ok(legs))) = (&mut self.route, &self.alternatives) else {
-            return;
-        };
-        let grey = put_choices(r, legs, &self.chosen);
+        let legs = found_in(&self.alts);
+        let Some(r) = &mut self.route else { return };
+        put_choices(r, &legs, &self.chosen);
         self.picked = None;
         self.rows = None;
         self.overlays = overlay_lines(r, &self.routed_stops, None);
-        self.overlays.push((Look::Alternative, grey));
         self.bands = Default::default();
+        self.refresh_grey();
     }
 
-    /// The legs' routes not shown, each with its leg and place in its [`Choices`].
+    /// The grey line again: the routes not shown of the open legs.
+    fn refresh_grey(&mut self) {
+        let legs: Vec<Option<&Choices>> = self
+            .found_legs()
+            .into_iter()
+            .zip(&self.expanded)
+            .map(|(c, &open)| c.filter(|_| open))
+            .collect();
+        let grey = grey_line(&legs, &self.chosen);
+        self.overlays.retain(|(l, _)| *l != Look::Alternative);
+        if self.route.is_some() {
+            self.overlays.push((Look::Alternative, grey));
+        }
+        self.bands[Look::Alternative as usize] = None;
+    }
+
+    /// The open legs' routes not shown, each with its leg and place in its [`Choices`].
     fn not_shown(&self) -> impl Iterator<Item = (usize, usize, &worker::Route)> {
-        let legs = match &self.alternatives {
-            Some(Ok(legs)) => &legs[..],
-            _ => &[],
-        };
-        legs.iter().enumerate().flat_map(move |(li, c)| {
-            let routes = c.as_ref().map_or(&[][..], |c| &c.routes[..]);
+        self.alts.iter().enumerate().flat_map(move |(li, a)| {
+            let routes = match a {
+                LegAlts::Found(c) if self.expanded[li] => &c.routes[..],
+                _ => &[],
+            };
             let k = self.chosen.get(li).copied().unwrap_or(0);
             routes
                 .iter()
@@ -1030,10 +1130,10 @@ impl RouteUi {
                 t.latency.as_secs_f64() * 1e3
             ));
         }
-        if let (Some(t), Some(Ok(_))) = (&self.alt_taken, &self.alternatives) {
+        if let Some(t) = &self.alt_taken {
             let found = self.found();
             lines.push(format!(
-                "alternatives: {found} found in {:.1} ms, their directions and lines {:.1} ms, shown {:.1} ms after the route was asked",
+                "alternatives: {found} found; the last leg's search {:.1} ms, directions and lines {:.1} ms, shown {:.1} ms after its row was opened",
                 t.search.as_secs_f64() * 1e3,
                 t.directions.as_secs_f64() * 1e3,
                 t.latency.as_secs_f64() * 1e3
@@ -1041,7 +1141,7 @@ impl RouteUi {
         }
         if self.waiting.is_some() {
             lines.push("routing…".into());
-        } else if self.looking {
+        } else if self.looking() {
             lines.push("looking for alternatives…".into());
         }
         if let Some(e) = &self.error {
@@ -1049,6 +1149,16 @@ impl RouteUi {
         }
         lines
     }
+}
+
+/// Per leg, its routes once found.
+fn found_in(alts: &[LegAlts]) -> Vec<Option<&Choices>> {
+    alts.iter()
+        .map(|a| match a {
+            LegAlts::Found(c) => Some(c),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `s` with its first letter in capitals.

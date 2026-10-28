@@ -1,12 +1,13 @@
 # Alternatives on the North America pack (phase 4 step 4.3): New York, Los Angeles and
-# Seattle, asked as the pack opens, then held over the continent so the alternatives come
-# in and are drawn grey with their tags. With OMP_BENCH_SHOTS, the route page shows the
-# list of each leg's routes.
+# Seattle, asked as the pack opens, then held over the continent. Once the route is shown,
+# every leg's routes are opened (`alternatives = true`), so they are looked for and drawn
+# grey with their tags. With OMP_BENCH_SHOTS, the route page shows each leg's list.
 # omp-app --bench crates/app/bench/na-alternatives.toml --pack $OMP_WORK/packs/north-america
 name = "na-alternatives"
 window = [1280, 800]
 # New York, Los Angeles, Seattle.
 route = "40.7128,-74.0060;34.0522,-118.2437;47.6062,-122.3321"
+alternatives = true
 
 [[step]]
 label = "USA"
