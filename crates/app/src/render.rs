@@ -12,6 +12,10 @@
 //! in that tile from its source, the stored tile at the cap zoom, with the source's transform
 //! and the tile's scissor.
 //!
+//! The route (phase 3 step 3.6) goes over the tiles and under the labels, so they stay
+//! readable: its halo, then its line, as line segments in pieces placed like tiles
+//! (routing/line.rs), in the paint after the style's.
+//!
 //! Labels go on top, as glyph quads from the distance field atlas (text.rs, `text.wgsl`).
 
 use std::collections::HashMap;
@@ -25,7 +29,8 @@ use crate::camera::Camera;
 use crate::layers::Hidden;
 use crate::mesh::{Mesh, Segment, Vertex};
 use crate::pool::{Alloc, Kind, Pool};
-use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, Rgba, Style};
+use crate::routing::{RouteDraw, RouteSegment};
+use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, ROUTE_PAINT, Rgba, Style};
 use crate::text::{ATLAS, Upload};
 use crate::tiles::TileId;
 
@@ -38,6 +43,12 @@ pub fn samples(requested: Option<u32>) -> u32 {
     if requested == Some(1) { 1 } else { MSAA }
 }
 const EXTENT: f64 = (1u32 << omp_core::tile::EXTENT_BITS) as f64;
+
+/// The route's line and its halo on each side, in points, and their colours.
+const ROUTE_WIDTH: f32 = 5.0;
+const ROUTE_HALO: f32 = 1.5;
+const ROUTE_COLOR: Rgba = [36, 104, 224, 255];
+const ROUTE_HALO_COLOR: Rgba = [255, 255, 255, 255];
 
 /// A tile's vertex data on the GPU, in ranges of the pool's slabs.
 pub struct GpuMesh {
@@ -98,6 +109,8 @@ pub struct Frame {
     pub paints: Vec<GpuPaint>,
     pub tiles: Vec<TileDraw>,
     pub sources: Vec<SourceDraw>,
+    /// The route, drawn over the tiles and under the labels.
+    pub route: Option<RouteDraw>,
     /// Label glyphs, drawn over the map.
     pub glyphs: Vec<GlyphInstance>,
     /// Glyphs new to the atlas.
@@ -162,7 +175,7 @@ pub fn gpu_color(c: Rgba, srgb_target: bool) -> [f32; 4] {
     [f(c[0]), f(c[1]), f(c[2]), f32::from(c[3]) / 255.0]
 }
 
-/// The style's paints at a zoom, in pixels.
+/// The style's paints at a zoom, in pixels, then the route's at [`ROUTE_PAINT`].
 pub fn paints(
     style: &Style,
     hidden: &Hidden,
@@ -201,6 +214,14 @@ pub fn paints(
                 _pad: [0.0; 2],
             }
         })
+        .chain(std::iter::repeat(GpuPaint::default()))
+        .take(ROUTE_PAINT)
+        .chain(std::iter::once(GpuPaint {
+            color: color(ROUTE_COLOR),
+            casing: color(ROUTE_HALO_COLOR),
+            width: [ROUTE_WIDTH * ppp, (ROUTE_WIDTH + 2.0 * ROUTE_HALO) * ppp],
+            ..GpuPaint::default()
+        }))
         .collect()
 }
 
@@ -268,6 +289,7 @@ pub fn layout(
         paints,
         tiles,
         sources,
+        route: None,
         glyphs: Vec::new(),
         atlas: Vec::new(),
     }
@@ -278,6 +300,8 @@ pub struct Renderer {
     fill: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
     casing: wgpu::RenderPipeline,
+    route: wgpu::RenderPipeline,
+    route_halo: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     paints: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
@@ -371,6 +395,14 @@ impl Renderer {
         let fill = pipeline("map fill", "vs_fill", fill_buf, "fs_fill");
         let line = pipeline("map line", "vs_line", line_buf.clone(), "fs_line");
         let casing = pipeline("map casing", "vs_casing", line_buf, "fs_line");
+        let route_attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
+        let route_buf = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<RouteSegment>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &route_attrs,
+        };
+        let route = pipeline("route line", "vs_route", route_buf.clone(), "fs_line");
+        let route_halo = pipeline("route halo", "vs_route_halo", route_buf, "fs_line");
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("map globals"),
@@ -421,6 +453,8 @@ impl Renderer {
             fill,
             line,
             casing,
+            route,
+            route_halo,
             glyph,
             halo,
             atlas,
@@ -612,7 +646,8 @@ impl Renderer {
 
     /// Uploads the frame's uniforms.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
-        let n_transforms = frame.tiles.len() + frame.sources.len();
+        let route = frame.route.as_ref().map_or(&[][..], |r| &r.pieces[..]);
+        let n_transforms = frame.tiles.len() + frame.sources.len() + route.len();
         if n_transforms > self.capacity {
             self.capacity = n_transforms.next_power_of_two();
             (self.transforms, self.transforms_bg) =
@@ -657,13 +692,14 @@ impl Renderer {
         if glyph_bytes > 0 {
             queue.write_buffer(&self.glyphs, 0, bytemuck::cast_slice(&frame.glyphs));
         }
-        if frame.tiles.is_empty() {
+        if n_transforms == 0 {
             return;
         }
-        // The tiles' transforms, then the sources'.
+        // The tiles' transforms, then the sources', then the route pieces'.
         let mut data = vec![0u8; self.stride as usize * n_transforms];
         let placed = frame.tiles.iter().map(|t| (t.origin, t.scale));
         let placed = placed.chain(frame.sources.iter().map(|s| (s.origin, s.scale)));
+        let placed = placed.chain(route.iter().map(|p| (p.1, p.2)));
         for (i, (origin, scale)) in placed.enumerate() {
             let tr = TileTransform {
                 origin,
@@ -780,6 +816,24 @@ impl Renderer {
                             pass.draw(0..6, 0..r.len() as u32);
                         }
                     });
+                }
+            }
+        }
+        if let Some(route) = &frame.route
+            && clip[2] > clip[0]
+            && clip[3] > clip[1]
+        {
+            pass.set_scissor_rect(clip[0], clip[1], clip[2] - clip[0], clip[3] - clip[1]);
+            let first = frame.tiles.len() + frame.sources.len();
+            let size = std::mem::size_of::<RouteSegment>() as u64;
+            for pl in [&self.route_halo, &self.route] {
+                pass.set_pipeline(pl);
+                for (k, (r, _, _)) in route.pieces.iter().enumerate() {
+                    let offset = ((first + k) as u64 * self.stride) as u32;
+                    pass.set_bind_group(1, &self.transforms_bg, &[offset]);
+                    let bytes = u64::from(r.start) * size..u64::from(r.end) * size;
+                    pass.set_vertex_buffer(0, route.band.segments.slice(bytes));
+                    pass.draw(0..6, 0..r.len() as u32);
                 }
             }
         }

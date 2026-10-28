@@ -1,0 +1,153 @@
+# The Ohio flight (ohio.toml) with a route shown all the way (phase 3 step 3.6): Toledo to
+# Cincinnati by Columbus and Cleveland, so most steps have it on screen. Its frame times
+# against ohio.toml's on the same pack are the cost of drawing the route.
+# omp-app --bench crates/app/bench/ohio-route.toml --pack $OMP_WORK/packs/ohio
+#
+# Each step moves to lat/lon/zoom at once (seconds = 0, a jump, which then waits until the
+# view is fully detailed) or linearly over `seconds`. `hold` stays put afterwards.
+name = "ohio-route"
+window = [1280, 800]
+# Toledo, Cleveland, Akron, Columbus, Cincinnati.
+route = "41.6528,-83.5379;41.4993,-81.6944;41.0814,-81.5190;39.9612,-82.9988;39.1031,-84.5120"
+
+[[step]]
+label = "Ohio"
+lat = 40.2
+lon = -82.7
+zoom = 6.5
+hold = 1
+
+[[step]]
+label = "Columbus z11"
+lat = 39.9612
+lon = -82.9988
+zoom = 11
+
+[[step]]
+label = "Columbus zoom to z14"
+zoom = 14
+seconds = 3
+
+[[step]]
+label = "Columbus pan east"
+lon = -82.90
+seconds = 4
+
+[[step]]
+label = "zoom to z17"
+zoom = 17
+seconds = 2
+
+[[step]]
+label = "zoom out to z8"
+zoom = 8
+seconds = 4
+
+[[step]]
+label = "Cleveland z12"
+lat = 41.4993
+lon = -81.6944
+zoom = 12
+
+[[step]]
+label = "Cleveland to Akron z12"
+lat = 41.0814
+lon = -81.519
+seconds = 5
+
+[[step]]
+label = "Cincinnati z15"
+lat = 39.1031
+lon = -84.512
+zoom = 15
+
+[[step]]
+label = "Cincinnati zoom out to z7"
+zoom = 7
+seconds = 5
+
+[[step]]
+label = "Toledo z10"
+lat = 41.6528
+lon = -83.5379
+zoom = 10
+
+[[step]]
+label = "Toledo to Dayton z10"
+lat = 39.7589
+lon = -84.1916
+seconds = 5
+wait = true
+
+# Searches (phase2-plan.md 2.7): each typed one character at a time from the view the
+# previous step left, then the deeper search levels (2.7b), then Enter, which jumps to the
+# first result. `expect` is part of the name of the result the search should find. Skipped
+# on packs without search.
+
+[[step]]
+label = "search: address"
+search = "333 W Broad St, Columbus, OH"
+hold = 0.5
+
+[[step]]
+label = "search: typo"
+search = "Cincinatti"
+hold = 0.5
+
+[[step]]
+label = "search: approximate"
+search = "7777 Columbus-Lancaster Rd, Carroll"
+expect = "7777 Columbus-Lancaster"
+hold = 0.5
+
+[[step]]
+label = "search: unit"
+search = "1710 N High St Unit 3, Columbus"
+hold = 0.5
+
+[[step]]
+label = "search: POI"
+search = "Cleveland Hopkins airport"
+hold = 0.5
+
+[[step]]
+label = "search: postcode"
+search = "43215"
+hold = 0.5
+
+[[step]]
+label = "search: shared name"
+search = "Springfield"
+hold = 0.5
+
+[[step]]
+label = "search: brand near view"
+search = "Speedway"
+hold = 0.5
+
+# "What's here" (phase2-plan.md 2.8): asked at the view's centre after a jump, as the
+# right-click menu does. Skipped on packs without search.
+
+[[step]]
+label = "here: Statehouse, Columbus"
+lat = 39.9612
+lon = -82.9988
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: approximate, Butler County"
+lat = 39.3846
+lon = -84.4600
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: farmland, no address"
+lat = 40.2650
+lon = -83.4400
+zoom = 15
+here = true
+hold = 0.5

@@ -1,5 +1,7 @@
 // The map: polygon fills, and lines widened to screen-width quads with round ends.
 // Positions are tile-local (4096 per tile edge); `tile` places them in viewport pixels.
+// The route is drawn with the same lines, from float positions local to a piece of it,
+// which `tile` places the same way, in the paint after the style's.
 
 struct Globals {
     // Viewport size in pixels.
@@ -27,6 +29,8 @@ struct TileTransform {
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var<uniform> paints: array<Paint, 128>;
+// The route's paint: the last (style.rs, ROUTE_PAINT).
+const ROUTE_PAINT: u32 = 127u;
 @group(1) @binding(0) var<uniform> tile: TileTransform;
 
 fn to_clip(px: vec2<f32>) -> vec4<f32> {
@@ -66,7 +70,8 @@ struct LineOut {
     @location(3) dist: f32,
 }
 
-fn line(vi: u32, a: vec2<i32>, b: vec2<i32>, s: u32, dist: f32, casing: bool) -> LineOut {
+// A segment from `pa` to `pb`, in viewport pixels.
+fn line(vi: u32, pa: vec2<f32>, pb: vec2<f32>, s: u32, dist: f32, casing: bool) -> LineOut {
     let paint = paints[s];
     var w = paint.width.x;
     var color = paint.color;
@@ -76,8 +81,6 @@ fn line(vi: u32, a: vec2<i32>, b: vec2<i32>, s: u32, dist: f32, casing: bool) ->
         color = paint.casing;
         dash = paint.casing_dash;
     }
-    let pa = tile.origin + vec2<f32>(a) * tile.scale;
-    let pb = tile.origin + vec2<f32>(b) * tile.scale;
     let d = pb - pa;
     let len = length(d);
     var dir = vec2<f32>(1.0, 0.0);
@@ -104,6 +107,10 @@ fn line(vi: u32, a: vec2<i32>, b: vec2<i32>, s: u32, dist: f32, casing: bool) ->
     return out;
 }
 
+fn place(p: vec2<i32>) -> vec2<f32> {
+    return tile.origin + vec2<f32>(p) * tile.scale;
+}
+
 @vertex
 fn vs_line(
     @builtin(vertex_index) vi: u32,
@@ -112,7 +119,7 @@ fn vs_line(
     @location(2) s: vec2<u32>,
     @location(3) dist: f32,
 ) -> LineOut {
-    return line(vi, a, b, s.x, dist, false);
+    return line(vi, place(a), place(b), s.x, dist, false);
 }
 
 @vertex
@@ -123,7 +130,17 @@ fn vs_casing(
     @location(2) s: vec2<u32>,
     @location(3) dist: f32,
 ) -> LineOut {
-    return line(vi, a, b, s.x, dist, true);
+    return line(vi, place(a), place(b), s.x, dist, true);
+}
+
+@vertex
+fn vs_route(@builtin(vertex_index) vi: u32, @location(0) a: vec2<f32>, @location(1) b: vec2<f32>) -> LineOut {
+    return line(vi, tile.origin + a * tile.scale, tile.origin + b * tile.scale, ROUTE_PAINT, 0.0, false);
+}
+
+@vertex
+fn vs_route_halo(@builtin(vertex_index) vi: u32, @location(0) a: vec2<f32>, @location(1) b: vec2<f32>) -> LineOut {
+    return line(vi, tile.origin + a * tile.scale, tile.origin + b * tile.scale, ROUTE_PAINT, 0.0, true);
 }
 
 @fragment

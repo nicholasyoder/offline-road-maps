@@ -17,6 +17,15 @@ use std::io;
 use super::{AVOID, ChEdge, Path, Routing, SHORTCUT};
 use crate::varint::invalid;
 
+/// How often a search or a leg's assembly asks whether to stop: in nodes settled, or in
+/// pieces.
+pub(super) const STOP_EVERY: usize = 64;
+
+/// The error a search stopped by its caller returns, so `?` carries it out.
+pub(super) fn stopped() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "route stopped")
+}
+
 /// A node where a search starts or ends, and the weight already driven to reach it (or
 /// still to drive from it).
 pub type Seed = (u32, u32);
@@ -130,6 +139,18 @@ impl Routing {
         targets: &[Seed],
         avoid: u8,
     ) -> io::Result<Option<Path>> {
+        self.search_until(sources, targets, avoid, &|| false)
+    }
+
+    /// [`Self::search`], giving up with [`stopped`] once `stop` returns true; it is asked
+    /// every [`STOP_EVERY`] nodes settled.
+    pub(super) fn search_until(
+        &self,
+        sources: &[Seed],
+        targets: &[Seed],
+        avoid: u8,
+        stop: &dyn Fn() -> bool,
+    ) -> io::Result<Option<Path>> {
         let (mut f, mut b) = (Side::new(sources), Side::new(targets));
         let (mut best, mut meet, mut settled) = (u32::MAX, u32::MAX, 0);
         loop {
@@ -149,6 +170,9 @@ impl Routing {
                 continue;
             }
             settled += 1;
+            if settled % STOP_EVERY == 0 && stop() {
+                return Err(stopped());
+            }
             if let Some(o) = other.dist(u)
                 && d + o < best
             {

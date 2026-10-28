@@ -13,6 +13,7 @@ use super::session::{RESULTS, Session, Taken, remember};
 use super::worker::{Answer, Stats, Status, Worker};
 use crate::camera::Camera;
 use crate::here::{HereAnswer, HereQuery};
+use crate::routing::{self, MenuState, StopAction};
 use crate::scale::Units;
 use crate::theme::{INK, WEAK};
 
@@ -36,6 +37,8 @@ pub struct Out {
     /// A result picked: fly there.
     pub fly: Option<Hit>,
     pub taken: Vec<Taken>,
+    /// A route item picked in a result's right-click menu.
+    pub route: Option<(StopAction, Hit)>,
 }
 
 /// The search box over the map, its suggestions and results, for one open pack.
@@ -55,6 +58,8 @@ pub struct SearchUi {
     /// The box had the focus at the end of the last frame.
     was_focused: bool,
     icons: Icons,
+    /// For the route items of the results' right-click menu; set before each frame.
+    pub route_menu: MenuState,
 }
 
 impl SearchUi {
@@ -78,6 +83,7 @@ impl SearchUi {
             popup_rect: None,
             was_focused: false,
             icons: Icons::new(schema),
+            route_menu: MenuState::default(),
         }
     }
 
@@ -486,15 +492,18 @@ impl SearchUi {
             self.selected = None;
         }
 
-        if let Some(f) = self.results_panel(ctx, map_rect, box_area, cam, units) {
+        let (clicked, route) = self.results_panel(ctx, map_rect, box_area, cam, units);
+        if let Some(f) = clicked {
             self.session.marker = Some(f.clone());
             out.fly = Some(f);
         }
+        out.route = route;
         self.was_focused = ctx.memory(|m| m.has_focus(id));
         out
     }
 
-    /// The results of Enter, under the box; returns a result clicked.
+    /// The results of Enter, under the box; returns a result clicked, and a route item
+    /// picked in a result's right-click menu.
     fn results_panel(
         &mut self,
         ctx: &egui::Context,
@@ -502,10 +511,13 @@ impl SearchUi {
         box_area: Rect,
         cam: &Camera,
         units: Units,
-    ) -> Option<Hit> {
-        let res = self.session.results.as_ref()?;
+    ) -> (Option<Hit>, Option<(StopAction, Hit)>) {
+        let Some(res) = self.session.results.as_ref() else {
+            return (None, None);
+        };
         let mut close = false;
         let mut clicked = None;
+        let mut route = None;
         let panel = egui::Frame::popup(&ctx.global_style())
             .inner_margin(egui::Margin::symmetric(6, 6))
             .fill(Color32::from_white_alpha(240));
@@ -545,18 +557,28 @@ impl SearchUi {
                                 if r.clicked() {
                                     clicked = Some(i);
                                 }
+                                r.context_menu(|ui| {
+                                    if let Some(a) = routing::menu_items(ui, &self.route_menu) {
+                                        route = Some((a, h.clone()));
+                                        ui.close();
+                                    }
+                                });
                             }
                         });
                 });
             });
-        let res = self.session.results.as_mut()?;
+        let Some(res) = self.session.results.as_mut() else {
+            return (None, route);
+        };
         if close {
             self.session.results = None;
-            return None;
+            return (None, route);
         }
-        let i = clicked?;
+        let Some(i) = clicked else {
+            return (None, route);
+        };
         res.selected = Some(i);
-        res.hits.get(i).cloned()
+        (res.hits.get(i).cloned(), route)
     }
 }
 

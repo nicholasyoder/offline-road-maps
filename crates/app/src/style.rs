@@ -303,8 +303,10 @@ pub struct RoadProps {
     pub tunnel: Option<u8>,
 }
 
-/// The GPU style table holds this many entries (render.rs).
+/// The GPU style table holds this many entries (render.rs): the style's, then the route's.
 pub const MAX_PAINTS: usize = 128;
+/// The route overlay's paint, the table's last entry (`ROUTE_PAINT` in `map.wgsl`).
+pub const ROUTE_PAINT: usize = MAX_PAINTS - 1;
 
 impl Style {
     /// Resolves `file` against `schema`. Also returns warnings: rules for layers and classes
@@ -336,9 +338,9 @@ impl Style {
             let cs = match &rule.draw {
                 Some(d) => {
                     let n = 1 + usize::from(d.tunnel.is_some()) + usize::from(d.bridge.is_some());
-                    if paints.len() + n > MAX_PAINTS {
+                    if paints.len() + n > ROUTE_PAINT {
                         warnings.push(format!(
-                            "style: more than {MAX_PAINTS} paints; {}/{} is not drawn",
+                            "style: more than {ROUTE_PAINT} paints; {}/{} is not drawn",
                             rule.layer, rule.classes[0]
                         ));
                         None
@@ -932,7 +934,7 @@ mod tests {
         assert_eq!(style.pass_cap[Pass::WaterLines as usize], None);
         assert_eq!(style.caps_below(14), vec![13]);
         assert!(style.caps_below(13).is_empty());
-        assert!(style.paints.len() <= MAX_PAINTS);
+        assert!(style.paints.len() <= ROUTE_PAINT);
     }
 
     const SMALL: &str = r##"

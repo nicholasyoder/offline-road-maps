@@ -3,8 +3,8 @@
 //! ```text
 //! omp-app [--pack <dir>] [--style <file>]
 //! omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
-//! omp-app --render --pack <dir> --center <lat,lon> --zoom <z> [--size <w>x<h>] [--scale <s>]
-//!         [--msaa <n>] [--style <file>] <out.png>
+//! omp-app --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
+//!         [--size <w>x<h>] [--scale <s>] [--msaa <n>] [--style <file>] <out.png>
 //! ```
 
 mod app;
@@ -41,8 +41,8 @@ use eframe::egui;
 
 const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
        omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
-       omp-app --render --pack <dir> --center <lat,lon> --zoom <z> [--size <w>x<h>] [--scale <s>]
-               [--msaa <n>] [--style <file>] <out.png>
+       omp-app --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
+               [--size <w>x<h>] [--scale <s>] [--msaa <n>] [--style <file>] <out.png>
 
   --pack <dir>   open the pack in <dir> (or the first chunk file itself); default:
                  maps/ next to the executable, else the pack used last
@@ -52,7 +52,8 @@ const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
                  built-in style (debug builds reload it when it changes)
   --render       draw one view offscreen to <out.png>, without a window; --size in
                  pixels (default 1200x800), --scale in pixels per point (default 1),
-                 --msaa 1 to turn antialiasing off";
+                 --msaa 1 to turn antialiasing off; --route draws the route through
+                 the stops, and fits the view to it without --center and --zoom";
 
 #[derive(Default)]
 struct Args {
@@ -62,6 +63,7 @@ struct Args {
     render: bool,
     center: Option<String>,
     zoom: Option<String>,
+    route: Option<String>,
     size: Option<String>,
     scale: Option<String>,
     msaa: Option<String>,
@@ -87,6 +89,7 @@ fn parse_args() -> Result<Args, String> {
             Some("--render") => a.render = true,
             Some("--center") => a.center = Some(text(value("--center")?)),
             Some("--zoom") => a.zoom = Some(text(value("--zoom")?)),
+            Some("--route") => a.route = Some(text(value("--route")?)),
             Some("--size") => a.size = Some(text(value("--size")?)),
             Some("--scale") => a.scale = Some(text(value("--scale")?)),
             Some("--msaa") => a.msaa = Some(text(value("--msaa")?)),
@@ -273,16 +276,15 @@ fn main() -> ExitCode {
 }
 
 fn render(args: &Args, style: style::StyleFile) -> ExitCode {
-    let (Some(pack), Some(center), Some(zoom), Some(file)) =
-        (&args.pack, &args.center, &args.zoom, &args.file)
-    else {
-        eprintln!("--render needs --pack, --center, --zoom and an output file\n{USAGE}");
+    let (Some(pack), Some(file)) = (&args.pack, &args.file) else {
+        eprintln!("--render needs --pack and an output file\n{USAGE}");
         return ExitCode::from(2);
     };
     let snap = snapshot::Snapshot::parse(
         pack.clone(),
-        center,
-        zoom,
+        args.center.as_deref(),
+        args.zoom.as_deref(),
+        args.route.as_deref(),
         args.size.as_deref(),
         args.scale.as_deref(),
         args.msaa.as_deref(),

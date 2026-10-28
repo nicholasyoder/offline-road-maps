@@ -1,5 +1,7 @@
 //! `omp-app --render`: draws one view offscreen to a PNG, without a window. For reviewing
 //! renderer and style changes, and for the reference screenshots in `docs/screenshots/`.
+//! With `--route`, it routes through the stops and draws the route, fitting the view to
+//! it unless `--center` and `--zoom` say otherwise.
 
 use std::collections::HashMap;
 use std::io::BufWriter;
@@ -13,6 +15,7 @@ use crate::labels::{self, Placer, TileLabels};
 use crate::layers::Hidden;
 use crate::pool::Pool;
 use crate::render::{self, GpuMesh, Renderer};
+use crate::routing::{self, GpuBand, Line, RouteDraw};
 use crate::style::{Style, StyleFile};
 use crate::tiles::{self, Known, TileId};
 use crate::{loader, mesh, packs};
@@ -22,9 +25,11 @@ type Loaded = Option<(Arc<GpuMesh>, Arc<TileLabels>)>;
 
 pub struct Snapshot {
     pub pack: PathBuf,
-    pub lat: f64,
-    pub lon: f64,
-    pub zoom: f64,
+    /// `None` with a route: fitted to it.
+    pub center: Option<(f64, f64)>,
+    pub zoom: Option<f64>,
+    /// Stops to route through, `(lat, lon)`.
+    pub route: Vec<(f64, f64)>,
     /// In pixels.
     pub size: [u32; 2],
     pub pixels_per_point: f32,
@@ -34,12 +39,14 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// From `--center <lat,lon>`, `--zoom <z>`, `--size <w>x<h>`, `--scale <ppp>` and
-    /// `--msaa <samples>`.
+    /// From `--center <lat,lon>`, `--zoom <z>`, `--route <lat,lon;lat,lon…>`, `--size
+    /// <w>x<h>`, `--scale <ppp>` and `--msaa <samples>`.
+    #[allow(clippy::too_many_arguments)]
     pub fn parse(
         pack: PathBuf,
-        center: &str,
-        zoom: &str,
+        center: Option<&str>,
+        zoom: Option<&str>,
+        route: Option<&str>,
         size: Option<&str>,
         scale: Option<&str>,
         msaa: Option<&str>,
@@ -50,9 +57,25 @@ impl Snapshot {
                 .parse::<f64>()
                 .map_err(|_| format!("bad {what}: {s}"))
         };
-        let (lat, lon) = center
-            .split_once(',')
-            .ok_or_else(|| format!("--center wants <lat,lon>, got {center}"))?;
+        let lat_lon = |s: &str, what: &str| -> Result<(f64, f64), String> {
+            let (lat, lon) = s
+                .split_once(',')
+                .ok_or_else(|| format!("{what} wants <lat,lon>, got {s}"))?;
+            Ok((num(lat, "latitude")?, num(lon, "longitude")?))
+        };
+        let route = match route {
+            Some(r) => r
+                .split(';')
+                .map(|s| lat_lon(s, "a --route stop"))
+                .collect::<Result<Vec<_>, _>>()?,
+            None => Vec::new(),
+        };
+        if route.len() == 1 {
+            return Err("--route needs two stops or more".into());
+        }
+        if route.is_empty() && (center.is_none() || zoom.is_none()) {
+            return Err("--render needs --center and --zoom, or --route".into());
+        }
         let size = match size {
             Some(s) => {
                 let (w, h) = s
@@ -64,9 +87,9 @@ impl Snapshot {
         };
         Ok(Self {
             pack,
-            lat: num(lat, "latitude")?,
-            lon: num(lon, "longitude")?,
-            zoom: num(zoom, "zoom")?,
+            center: center.map(|c| lat_lon(c, "--center")).transpose()?,
+            zoom: zoom.map(|z| num(z, "zoom")).transpose()?,
+            route,
             size,
             pixels_per_point: scale.map_or(Ok(1.0), |s| num(s, "scale"))?.clamp(0.25, 8.0) as f32,
             msaa: render::samples(msaa.map(|s| num(s, "msaa")).transpose()?.map(|v| v as u32)),
@@ -90,7 +113,18 @@ impl Snapshot {
         let ppp = f64::from(self.pixels_per_point);
         let mut cam = Camera::new(opened.bounds);
         cam.size = self.size.map(|v| f64::from(v) / ppp);
-        cam.set_lonlat(self.lon, self.lat, self.zoom);
+        let (route, route_msg) = self.route(&first)?;
+        let fitted = route
+            .as_ref()
+            .map(|l| routing::view_for(l.bounds, cam.size));
+        let center = match (self.center, fitted) {
+            (Some((lat, lon)), _) => omp_core::geo::lonlat_to_unit(lon, lat),
+            (None, Some((c, _))) => c,
+            (None, None) => cam.center,
+        };
+        cam.center = center;
+        cam.zoom = self.zoom.or(fitted.map(|f| f.1)).unwrap_or(cam.zoom);
+        cam.clamp();
         let z = tiles::tile_zoom(cam.zoom);
         let visible = tiles::select(z, cam.visible(), opened.bounds).visible;
 
@@ -184,6 +218,19 @@ impl Snapshot {
             capped,
             &style.pass_cap,
         );
+        let mut route_msg = route_msg;
+        if let Some(line) = &route {
+            let t = Instant::now();
+            let band = line.band(routing::band_for(cam.zoom));
+            let (z, n) = (band.band, band.segments.len());
+            frame.route = GpuBand::upload(&pool, band)
+                .map(|b| RouteDraw::layout(Arc::new(b), &cam, self.pixels_per_point, 8.0));
+            route_msg += &format!(
+                "; line at z{z}: {n} segments, {} pieces drawn, in {:.2} ms",
+                frame.route.as_ref().map_or(0, |r| r.pieces.len()),
+                t.elapsed().as_secs_f64() * 1e3
+            );
+        }
         let t1 = Instant::now();
         let sources: Vec<labels::Source> = plan
             .labels
@@ -229,6 +276,7 @@ impl Snapshot {
             info.name,
             info.backend,
         );
+        msg += &route_msg;
         let failed = failed.into_inner();
         if failed > 0 {
             msg += &format!("\n  {failed} polygons could not be tessellated");
@@ -237,6 +285,41 @@ impl Snapshot {
             msg += &format!("\n  error: {e}");
         }
         Ok(msg)
+    }
+}
+
+impl Snapshot {
+    /// The route through `--route`'s stops, and a line about it.
+    fn route(&self, first: &Path) -> Result<(Option<Line>, String), String> {
+        if self.route.is_empty() {
+            return Ok((None, String::new()));
+        }
+        let t = Instant::now();
+        let pack = omp_core::pack::Pack::open(first).map_err(|e| e.to_string())?;
+        let r = omp_core::route::Routing::open(Arc::new(pack))
+            .map_err(|e| e.to_string())?
+            .ok_or("the pack has no routing")?;
+        let stops: Vec<omp_core::route::Stop> = self
+            .route
+            .iter()
+            .map(|&(lat, lon)| {
+                let p = omp_core::geo::from_unit(omp_core::geo::lonlat_to_unit(lon, lat));
+                omp_core::route::Stop::at(p)
+            })
+            .collect();
+        let trip = r.trip(&stops, 0).map_err(|e| e.to_string())?;
+        let line = Line::new(trip.legs.iter().flatten().map(|l| l.points.as_slice()));
+        let mut msg = format!(
+            "\n  route: {:.1} km, {:.0} min, {} points, in {:.0} ms",
+            trip.metres() / 1000.0,
+            trip.time_s() / 60.0,
+            line.points,
+            t.elapsed().as_secs_f64() * 1e3
+        );
+        if !trip.complete() {
+            msg += " (some stops not reached)";
+        }
+        Ok((Some(line).filter(|l| !l.is_empty()), msg))
     }
 }
 

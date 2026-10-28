@@ -1,6 +1,6 @@
 #!/bin/sh
-# Renders the reference screenshots (phase1-plan.md 1.5 to 1.8) from the North America pack,
-# with the built-in style.
+# Renders the reference screenshots (phase1-plan.md 1.5 to 1.8, phase3-plan.md 3.6) from the
+# North America pack, with the built-in style.
 #
 #   docs/screenshots/render.sh [pack dir]
 #
@@ -29,3 +29,13 @@ shot manhattan-z17 40.7505,-73.9934 17
 shot columbus-z10 39.96,-83.0 10
 shot toronto-z10.5 43.72,-79.45 10.5
 shot montreal-z10.5 45.52,-73.65 10.5
+# Routes, the view fitted to each (phase 3 step 3.6). They need a pack with routing (format
+# 0.5), so they come last.
+route() { # name stop;stop…
+    "$app" --render --pack "$pack" --route "$2" --size 1000x700 "$1.png"
+}
+route route-cincinnati-cleveland "39.1031,-84.5120;41.4993,-81.6944"
+route route-columbus-z14 "39.9612,-82.9988;39.9800,-83.0300"
+route route-quebec-tadoussac "46.8139,-71.2080;48.1400,-69.7200"
+route route-montreal "45.5017,-73.5673;45.5300,-73.6200"
+route route-miami-seattle "25.7617,-80.1918;47.6062,-122.3321"

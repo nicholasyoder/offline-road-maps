@@ -19,7 +19,7 @@ use omp_core::geo;
 use crate::camera::{self, TILE_PX};
 use crate::scale::Units;
 
-pub use draw::{Icons, draw_marker};
+pub use draw::{Icons, draw_marker, draw_pin};
 pub use session::Taken;
 pub use ui::{BenchKey, SearchUi};
 pub use worker::Status;

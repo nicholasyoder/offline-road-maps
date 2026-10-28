@@ -4,7 +4,7 @@
 //! [`NEARBY_PX`] and the areas holding the point ([`omp_core::search::Search::whats_here`],
 //! as `omp-builder here` prints it), and shows them in a panel next to a marker at the
 //! point. Escape, the panel's × or a click on the map closes it. Left click stays free for
-//! panning; phase 3 adds "Route from here / to here" to the same menu.
+//! panning. The same menu has the route items (phase 3 step 3.6, [`crate::routing`]).
 
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,7 @@ use omp_core::geo::{self, P};
 use omp_core::here::Shown;
 
 use crate::camera::{self, Camera};
+use crate::routing::{self, MenuState, StopAction};
 use crate::scale::{self, Units};
 use crate::search::{self, Icons, SearchUi, Status};
 use crate::theme::{APPROX, INK, WEAK};
@@ -107,14 +108,17 @@ impl HereUi {
     }
 
     /// The map's right-click menu, and a left click closing the panel. `origin` is the
-    /// map's top left on screen.
+    /// map's top left on screen. Returns a route item picked, and the point (world) it is
+    /// for.
     pub fn map_input(
         &mut self,
         resp: &egui::Response,
         origin: Pos2,
         cam: &Camera,
         search: &SearchUi,
-    ) {
+        route: &MenuState,
+    ) -> Option<(StopAction, camera::Vec2)> {
+        let mut picked = None;
         if resp.clicked() {
             self.panel = None;
         }
@@ -146,6 +150,11 @@ impl HereUi {
                 _ => {}
             }
             ui.separator();
+            if let Some(a) = routing::menu_items(ui, route) {
+                picked = Some((a, at));
+                ui.close();
+            }
+            ui.separator();
             let [lon, lat] = geo::unit_to_lonlat(at);
             let r = ui
                 .button(lonlat_text(lon, lat))
@@ -155,6 +164,7 @@ impl HereUi {
                 ui.close();
             }
         });
+        picked
     }
 
     /// Escape closes the panel; true if it did. Called before the search box, so Escape
@@ -409,7 +419,7 @@ mod tests {
             };
             let mut full = ctx.run_ui(raw, |ui| {
                 let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-                here.map_input(&resp, rect.min, &cam, &search);
+                here.map_input(&resp, rect.min, &cam, &search, &MenuState::default());
                 let ctx = ui.ctx().clone();
                 here.escape(&ctx);
                 here.ui(&ctx, rect, &cam, Units::Kilometres, search.icons());

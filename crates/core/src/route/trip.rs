@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::io;
 use std::ops::Range;
 
+use super::query::{STOP_EVERY, stopped};
 use super::{AVOID, FERRY_CLASS, Path, Routing, Seed, Segment};
 use crate::geo::{self, P};
 
@@ -307,10 +308,20 @@ impl Routing {
 
     /// The route from `from` to `to` on edges without the flags in `avoid`, or `None`.
     pub fn leg_between(&self, from: &Snap, to: &Snap, avoid: u8) -> io::Result<Option<Leg>> {
+        self.leg_between_until(from, to, avoid, &|| false)
+    }
+
+    fn leg_between_until(
+        &self,
+        from: &Snap,
+        to: &Snap,
+        avoid: u8,
+        stop: &dyn Fn() -> bool,
+    ) -> io::Result<Option<Leg>> {
         let (a, b) = (self.segment(from.segment)?, self.segment(to.segment)?);
         let sources = Self::sources(from, &a);
         let (targets, reversed) = self.targets(to, &b)?;
-        let path = self.search(&sources, &targets, avoid)?;
+        let path = self.search_until(&sources, &targets, avoid, stop)?;
         let mut settled = 0;
         let mut best: Option<(u32, Vec<Span>)> = None;
         if let Some(Path {
@@ -355,13 +366,13 @@ impl Routing {
         let Some((weight, pieces)) = best else {
             return Ok(None);
         };
-        let mut leg = self.leg(weight, &pieces)?;
+        let mut leg = self.leg(weight, &pieces, stop)?;
         leg.settled = settled;
         Ok(Some(leg))
     }
 
     /// A leg's totals and line from its pieces.
-    fn leg(&self, weight: u32, pieces: &[Span]) -> io::Result<Leg> {
+    fn leg(&self, weight: u32, pieces: &[Span], stop: &dyn Fn() -> bool) -> io::Result<Leg> {
         let mut leg = Leg {
             weight,
             time_s: 0.0,
@@ -373,7 +384,10 @@ impl Routing {
             settled: 0,
         };
         let only = pieces.len() == 1;
-        for &(dir, start, end) in pieces {
+        for (i, &(dir, start, end)) in pieces.iter().enumerate() {
+            if i % STOP_EVERY == STOP_EVERY - 1 && stop() {
+                return Err(stopped());
+            }
             // Nothing driven: a stop at the segment's end.
             if end <= start && !only {
                 continue;
@@ -418,6 +432,16 @@ impl Routing {
     /// them if it can, else with the fewest broken (the quicker route of those that break
     /// as few), else `None`.
     pub fn leg_avoiding(&self, from: &Snap, to: &Snap, avoid: u8) -> io::Result<Option<Leg>> {
+        self.leg_avoiding_until(from, to, avoid, &|| false)
+    }
+
+    fn leg_avoiding_until(
+        &self,
+        from: &Snap,
+        to: &Snap,
+        avoid: u8,
+        stop: &dyn Fn() -> bool,
+    ) -> io::Result<Option<Leg>> {
         let avoid = avoid & AVOID;
         // Subsets of `avoid`, most kept first.
         let mut subsets: Vec<u8> = (0..=avoid).filter(|s| s & !avoid == 0).collect();
@@ -428,7 +452,7 @@ impl Routing {
             let ones = subsets[i].count_ones();
             let mut best: Option<Leg> = None;
             while i < subsets.len() && subsets[i].count_ones() == ones {
-                if let Some(l) = self.leg_between(from, to, subsets[i])? {
+                if let Some(l) = self.leg_between_until(from, to, subsets[i], stop)? {
                     settled += l.settled;
                     if best.as_ref().is_none_or(|b| l.weight < b.weight) {
                         best = Some(l);
@@ -447,18 +471,42 @@ impl Routing {
 
     /// Routes through `stops` in order, each leg avoiding what it can of `avoid`.
     pub fn trip(&self, stops: &[Stop], avoid: u8) -> io::Result<Trip> {
-        let snaps = stops
-            .iter()
-            .map(|s| self.snap(s))
-            .collect::<io::Result<Vec<_>>>()?;
+        let trip = self.trip_until(stops, avoid, &|| false)?;
+        Ok(trip.expect("a trip that is never stopped"))
+    }
+
+    /// [`Self::trip`], given up within milliseconds once `stop` returns true (a newer
+    /// request in the app's worker): `None` then. Asked between legs, and every
+    /// [`STOP_EVERY`] nodes settled or pieces put together.
+    pub fn trip_until(
+        &self,
+        stops: &[Stop],
+        avoid: u8,
+        stop: &dyn Fn() -> bool,
+    ) -> io::Result<Option<Trip>> {
+        let mut snaps = Vec::with_capacity(stops.len());
+        for s in stops {
+            if stop() {
+                return Ok(None);
+            }
+            snaps.push(self.snap(s)?);
+        }
         let mut legs = Vec::new();
         for w in snaps.windows(2) {
-            legs.push(match (&w[0], &w[1]) {
-                (Some(a), Some(b)) => self.leg_avoiding(a, b, avoid)?,
-                _ => None,
-            });
+            if stop() {
+                return Ok(None);
+            }
+            let leg = match (&w[0], &w[1]) {
+                (Some(a), Some(b)) => self.leg_avoiding_until(a, b, avoid, stop),
+                _ => Ok(None),
+            };
+            match leg {
+                Ok(l) => legs.push(l),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(None),
+                Err(e) => return Err(e),
+            }
         }
-        Ok(Trip { snaps, legs, avoid })
+        Ok(Some(Trip { snaps, legs, avoid }))
     }
 }
 

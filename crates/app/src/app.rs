@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use eframe::egui_wgpu::{self, wgpu};
 
-use crate::bench::{Bench, FrameSample, Poll, ReportContext, SearchContext};
+use crate::bench::{Bench, FrameSample, Poll, ReportContext, RouteReport, SearchContext};
 use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
 use crate::config::{self, Config, Location, View};
@@ -23,7 +23,7 @@ use crate::mesh;
 use crate::packs::{self, Opened};
 use crate::pool::Pool;
 use crate::render::{self, GpuMesh, MapCallback, Renderer};
-use crate::routing::Routing;
+use crate::routing::{Place, RouteUi, StopAction};
 use crate::scale::{self, Units};
 use crate::search::{self, SearchUi, Status};
 use crate::style::{Style, StyleFile};
@@ -114,7 +114,7 @@ struct MapState {
     error_suggested: bool,
     search: SearchUi,
     here: HereUi,
-    routing: Routing,
+    routing: RouteUi,
     /// `OMP_BENCH_NO_MAP`: everything but drawing the map, to see what the rest costs.
     no_map: bool,
 }
@@ -272,10 +272,7 @@ impl App {
         self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
         let units = packs::default_units(opened.meta.as_ref().ok());
         let search = SearchUi::start(opened.first_chunk.clone(), &opened.schema, ctx);
-        let repaint = ctx.clone();
-        let routing = Routing::start(opened.first_chunk.clone(), move || {
-            repaint.request_repaint()
-        });
+        let routing = RouteUi::start(opened.first_chunk.clone(), ctx);
         self.map = Some(MapState {
             opened,
             style,
@@ -302,6 +299,17 @@ impl App {
             m.camera.size = [f64::from(w[0]), f64::from(w[1])];
             m.fit_on_first_frame = false;
             b.start(&mut m.camera, m.opened.reader.bytes_read());
+            // Checked when the flight was loaded.
+            let stops = b.flight.route_stops().unwrap_or_default();
+            let last = stops.len().saturating_sub(1);
+            for (i, &w) in stops.iter().enumerate() {
+                let a = match i {
+                    0 => StopAction::From,
+                    i if i == last => StopAction::To,
+                    _ => StopAction::Add,
+                };
+                m.routing.apply(a, Place::at(w));
+            }
         }
     }
 
@@ -536,8 +544,9 @@ impl MapState {
         })
     }
 
-    /// Picks, requests and draws the tiles for the current camera, with what `layers` shows;
-    /// with `outlines`, also the tile outlines and their numbers.
+    /// Picks, requests and draws the tiles and the route for the current camera, with what
+    /// `layers` shows; with `outlines`, also the tile outlines and their numbers.
+    #[allow(clippy::too_many_arguments)]
     fn draw(
         &mut self,
         painter: &egui::Painter,
@@ -546,6 +555,7 @@ impl MapState {
         srgb: bool,
         layers: &Layers,
         outlines: bool,
+        pool: &Arc<Pool>,
     ) {
         if self.hidden_for.as_ref() != Some(layers) {
             self.hidden = Hidden::new(layers, &self.style, &self.opened.schema);
@@ -615,6 +625,7 @@ impl MapState {
         }
         let paints = render::paints(&self.style, &self.hidden, cam.zoom, ppp, srgb);
         let mut frame = render::layout(cam, ppp, paints, draws, capped, &self.style.pass_cap);
+        frame.route = self.routing.layout(pool, cam, ppp);
         let t0 = Instant::now();
         let sources: Vec<labels::Source> = plan
             .labels
@@ -771,9 +782,34 @@ impl eframe::App for App {
                     m.error_suggested = true;
                     self.tile_error = m.stats.last_error.clone();
                 }
+                let fit = m.routing.take(&m.camera);
+                match (&mut self.bench, fit) {
+                    (None, Some((c, z))) => m.motion.fly_to(&m.camera, c, z),
+                    (Some(b), _) => {
+                        if let (Some(t), Some(s)) = (&m.routing.last, &m.routing.route) {
+                            b.route_shown(RouteReport {
+                                stops: s.trip.snaps.len(),
+                                latency_ms: t.latency.as_secs_f64() * 1e3,
+                                trip_ms: t.trip.as_secs_f64() * 1e3,
+                                km: s.trip.metres() / 1000.0,
+                                minutes: s.trip.time_s() / 60.0,
+                                points: t.points,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
                 if self.bench.is_none() {
                     m.input(ui, &resp, rect.min, dt);
-                    m.here.map_input(&resp, rect.min, &m.camera, &m.search);
+                    let menu = m.routing.menu_state();
+                    let picked = m
+                        .here
+                        .map_input(&resp, rect.min, &m.camera, &m.search, &menu);
+                    if let Some((a, at)) = picked {
+                        let place = marker_at(&m.search, &m.camera, at)
+                            .map_or_else(|| Place::at(at), Place::of_hit);
+                        m.routing.apply(a, place);
+                    }
                     m.motion.step(&mut m.camera, dt);
                     animate = m.motion.moving() || MapState::keys_held(ui) || m.view.fading;
                     self.cursor = resp.hover_pos().map(|p| {
@@ -790,17 +826,21 @@ impl eframe::App for App {
                     Some(_) => Layers::default(),
                     None => self.cfg.layers,
                 };
-                m.draw(
-                    &painter,
-                    rect,
-                    ctx.pixels_per_point(),
-                    self.srgb,
-                    &layers,
-                    outlines,
-                );
+                if let Some(pool) = &self.pool {
+                    m.draw(
+                        &painter,
+                        rect,
+                        ctx.pixels_per_point(),
+                        self.srgb,
+                        &layers,
+                        outlines,
+                        pool,
+                    );
+                }
                 if let Some(h) = &m.search.session.marker {
                     search::draw_marker(&painter, rect.min, &m.camera, h);
                 }
+                m.routing.draw_markers(&painter, rect.min, &m.camera);
                 m.here.draw_marker(&painter, rect.min, &m.camera);
                 if m.view.detailed && self.first_full.is_none() {
                     self.first_full = Some(self.started.elapsed());
@@ -977,7 +1017,7 @@ impl App {
                 lines.push(format!("last error: {e}"));
             }
             lines.extend(m.search.overlay_lines());
-            lines.push(m.routing.overlay_line());
+            lines.extend(m.routing.overlay_lines());
             lines.extend(m.here.overlay_line());
         }
         if let Some(u) = crate::memory::usage() {
@@ -1095,6 +1135,7 @@ impl App {
         // Top left: search. The bench types into it as a user would, and jumps to what it
         // picks itself.
         let key = self.bench.as_mut().and_then(|b| b.search_key(available));
+        m.search.route_menu = m.routing.menu_state();
         let out = m.search.ui(
             ctx,
             map_rect,
@@ -1111,6 +1152,9 @@ impl App {
         } else if let Some(h) = out.fly {
             let (c, z) = search::view_for(&h, m.camera.size);
             m.motion.fly_to(&m.camera, c, z);
+        }
+        if let Some((a, h)) = out.route {
+            m.routing.apply(a, Place::of_hit(&h));
         }
         m.here.ui(ctx, map_rect, &m.camera, units, m.search.icons());
 
@@ -1465,6 +1509,24 @@ impl App {
             self.notices.clear();
         }
     }
+}
+
+/// The search marker's result, when `at` (world) is on its pin: a route item picked there
+/// is for the result, with its street.
+fn marker_at<'a>(
+    search: &'a SearchUi,
+    cam: &Camera,
+    at: [f64; 2],
+) -> Option<&'a omp_core::find::Hit> {
+    let h = search.session.marker.as_ref()?;
+    let tip = cam.world_to_screen(omp_core::geo::to_unit(h.p));
+    let p = cam.world_to_screen(at);
+    let (dx, dy) = (p[0] - tip[0], p[1] - tip[1]);
+    // The pin: its tip, and its head 22 points above it.
+    let on = dx.hypot(dy) < 8.0
+        || dx.hypot(dy + 22.0) < 11.0
+        || (dx.abs() < 6.0 && (-22.0..0.0).contains(&dy));
+    on.then_some(h)
 }
 
 /// What a click in the controls asks for, done once their UI is drawn.

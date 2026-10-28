@@ -21,6 +21,11 @@
 //! A step with `here = true` asks "what's here" (2.8) at the view's centre after the move,
 //! as the right-click menu does, and records the time from the request to the frame that
 //! shows the panel, and what the panel shows (saved as a PNG too, with `OMP_BENCH_SHOTS`).
+//!
+//! A flight with `route = "lat,lon;lat,lon…"` asks for the route through those stops when
+//! the pack opens (phase 3 step 3.6), as the right-click menu does, and shows it for the
+//! whole flight, so frame times include drawing it; the time to the frame showing it is
+//! recorded, and with `OMP_BENCH_SHOTS` that frame is saved.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -54,6 +59,8 @@ pub struct Flight {
     /// Window size in points.
     #[serde(default = "default_window")]
     pub window: [f32; 2],
+    /// Stops to route through, shown for the whole flight: `lat,lon;lat,lon…`.
+    pub route: Option<String>,
     #[serde(rename = "step")]
     pub steps: Vec<Step>,
 }
@@ -95,6 +102,12 @@ impl Flight {
         if f.steps.is_empty() {
             return Err(format!("{}: the flight has no steps", path.display()));
         }
+        if f.route_stops().is_err() {
+            return Err(format!(
+                "{}: `route` wants two stops or more, as lat,lon;lat,lon",
+                path.display()
+            ));
+        }
         if f.steps.iter().any(|s| s.here && s.search.is_some()) {
             return Err(format!(
                 "{}: a step has both `search` and `here`",
@@ -102,6 +115,27 @@ impl Flight {
             ));
         }
         Ok(f)
+    }
+}
+
+impl Flight {
+    /// `route`'s stops as world points; empty without one.
+    pub fn route_stops(&self) -> Result<Vec<Vec2>, ()> {
+        let Some(r) = &self.route else {
+            return Ok(Vec::new());
+        };
+        let stops: Vec<Vec2> = r
+            .split(';')
+            .map(|s| {
+                let (lat, lon) = s.split_once(',').ok_or(())?;
+                let n = |v: &str| v.trim().parse::<f64>().map_err(|_| ());
+                Ok(geo::lonlat_to_unit(n(lon)?, n(lat)?))
+            })
+            .collect::<Result<_, ()>>()?;
+        if stops.len() < 2 {
+            return Err(());
+        }
+        Ok(stops)
     }
 }
 
@@ -221,6 +255,8 @@ pub struct Bench {
     keystrokes: Vec<f64>,
     /// Every "what's here" latency.
     heres: Vec<f64>,
+    /// The flight's route, once shown.
+    route: Option<RouteReport>,
     first_keystroke_ms: Option<f64>,
     startup_ms: Option<f64>,
     cache_peak: usize,
@@ -268,6 +304,7 @@ impl Bench {
             labels: Vec::new(),
             keystrokes: Vec::new(),
             heres: Vec::new(),
+            route: None,
             first_keystroke_ms: None,
             startup_ms: None,
             cache_peak: 0,
@@ -481,6 +518,14 @@ impl Bench {
                 });
             }
             Err(e) => log.error = Some(e.clone()),
+        }
+    }
+
+    /// The flight's route reached the UI and is drawn this frame; only the first counts.
+    pub fn route_shown(&mut self, r: RouteReport) {
+        if self.route.is_none() {
+            self.route = Some(r);
+            self.shot("route");
         }
     }
 
@@ -751,6 +796,7 @@ impl Bench {
                     bytes_read: c.bytes_read,
                 }),
             here_ms: (!self.heres.is_empty()).then(|| Summary::of(&mut self.heres)),
+            route: self.route.clone(),
             steps,
         }
     }
@@ -843,7 +889,23 @@ pub struct Report {
     /// Every "what's here" step's latency, from the request to the frame showing it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub here_ms: Option<Summary>,
+    /// The flight's route.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<RouteReport>,
     pub steps: Vec<StepReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RouteReport {
+    pub stops: usize,
+    /// From the request, when the pack opened, to the frame showing the route; this waits
+    /// for the routing readers to open.
+    pub latency_ms: f64,
+    /// Time in `trip`.
+    pub trip_ms: f64,
+    pub km: f64,
+    pub minutes: f64,
+    pub points: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -986,6 +1048,12 @@ impl Report {
                 sr.latency_ms.max,
                 mib(sr.heap_bytes as u64),
                 mib(sr.bytes_read),
+            );
+        }
+        if let Some(r) = &self.route {
+            s += &format!(
+                "route: {} stops, {:.1} km, {:.0} min, {} points; shown after {:.0} ms (trip {:.1} ms)\n",
+                r.stops, r.km, r.minutes, r.points, r.latency_ms, r.trip_ms
             );
         }
         if let Some(h) = &self.here_ms {

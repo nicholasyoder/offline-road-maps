@@ -317,6 +317,18 @@ fn legs_honour_restrictions_one_ways_and_avoid_options() {
     ];
     let t = r.trip(&lost, 0).unwrap();
     assert!(!t.complete() && t.legs.iter().all(Option::is_none));
+
+    // Stopped by its caller, at once or after the first stop's snap, a trip gives up;
+    // never stopped, it is the plain trip.
+    assert_eq!(r.trip_until(&stops, 0, &|| true).unwrap(), None);
+    let asked = std::cell::Cell::new(0);
+    let later = || {
+        asked.set(asked.get() + 1);
+        asked.get() > 1
+    };
+    assert_eq!(r.trip_until(&stops, 0, &later).unwrap(), None);
+    let whole = r.trip_until(&stops, 0, &|| false).unwrap();
+    assert_eq!(whole, Some(r.trip(&stops, 0).unwrap()));
 }
 
 /// Street names for directions, without a street table.

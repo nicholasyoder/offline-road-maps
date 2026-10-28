@@ -181,6 +181,48 @@ fn one_line(
     p.layout_job(job)
 }
 
+/// A pin with its tip at `tip`: a white dot in its head, or `label` (a stop's number).
+/// Returns the head's centre and radius.
+pub fn draw_pin(
+    painter: &egui::Painter,
+    tip: Pos2,
+    fill: Color32,
+    label: Option<&str>,
+) -> (Pos2, f32) {
+    let head = tip - Vec2::new(0.0, 22.0);
+    let r = if label.is_some() { 9.0 } else { 8.0 };
+    if !painter.clip_rect().expand(30.0).contains(tip) {
+        return (head, r);
+    }
+    let outline = Stroke::new(1.5, fill.gamma_multiply(0.55).to_opaque());
+    painter.circle_filled(tip, 2.5, Color32::from_black_alpha(90));
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            tip,
+            head + Vec2::new(r * 0.85, 4.0),
+            head + Vec2::new(-r * 0.85, 4.0),
+        ],
+        fill,
+        Stroke::NONE,
+    ));
+    painter.circle(head, r, fill, outline);
+    match label {
+        Some(t) => {
+            painter.text(
+                head,
+                Align2::CENTER_CENTER,
+                t,
+                FontId::proportional(11.5),
+                Color32::WHITE,
+            );
+        }
+        None => {
+            painter.circle_filled(head, 3.0, Color32::WHITE);
+        }
+    }
+    (head, r)
+}
+
 /// The marker of a picked result: a pin at its point, with its name, where it is, and
 /// "Approximate" for interpolated and blockface addresses.
 pub fn draw_marker(painter: &egui::Painter, origin: Pos2, cam: &Camera, hit: &Hit) {
@@ -189,21 +231,7 @@ pub fn draw_marker(painter: &egui::Painter, origin: Pos2, cam: &Camera, hit: &Hi
     if !painter.clip_rect().expand(300.0).contains(tip) {
         return;
     }
-    let head = tip - Vec2::new(0.0, 22.0);
-    let r = 8.0;
-    let outline = Stroke::new(1.5, Color32::from_rgb(120, 20, 16));
-    painter.circle_filled(tip, 2.5, Color32::from_black_alpha(90));
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            tip,
-            head + Vec2::new(r * 0.85, 4.0),
-            head + Vec2::new(-r * 0.85, 4.0),
-        ],
-        PIN,
-        Stroke::NONE,
-    ));
-    painter.circle(head, r, PIN, outline);
-    painter.circle_filled(head, 3.0, Color32::WHITE);
+    let (head, r) = draw_pin(painter, tip, PIN, None);
 
     let mut lines = vec![(hit.name.clone(), FontId::proportional(13.5), INK)];
     let mut context = hit.context.clone();
