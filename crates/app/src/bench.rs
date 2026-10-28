@@ -27,6 +27,10 @@
 //! whole flight, so frame times include drawing it; the time to the frame showing it is
 //! recorded, and with `OMP_BENCH_SHOTS` that frame is saved.
 //!
+//! A step with `route = "lat,lon;lat,lon…"` replaces the stops with those after the move
+//! (phase 3 step 3.9), and records the time from the request to the answer reaching the UI,
+//! with its directions, and what the route is. The route stays shown for the steps after.
+//!
 //! The side panel (phase 3 step 3.8) is open throughout, at its default width, and shows
 //! what a user's actions would show: the route page once the route is asked for, the search
 //! page while typing and for "what's here". With `OMP_BENCH_SHOTS`, each page is saved once
@@ -53,6 +57,8 @@ pub const SETTLE: Duration = Duration::from_secs(2);
 pub const IDLE: Duration = Duration::from_secs(10);
 /// Longest wait for a search answer.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest wait for a route.
+const ROUTE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default time between keystrokes.
 const KEYSTROKE_MS: f64 = 150.0;
 /// With `OMP_BENCH_SHOTS`, the least time from the last keystroke to Enter.
@@ -99,6 +105,9 @@ pub struct Step {
     /// Ask "what's here" at the view's centre after the move (not with `search`).
     #[serde(default)]
     pub here: bool,
+    /// Stops to route through after the move, `lat,lon;lat,lon…`, replacing the route
+    /// shown (not with `search` or `here`).
+    pub route: Option<String>,
 }
 
 impl Flight {
@@ -120,6 +129,21 @@ impl Flight {
                 path.display()
             ));
         }
+        for s in &f.steps {
+            let Some(r) = &s.route else { continue };
+            if s.here || s.search.is_some() {
+                return Err(format!(
+                    "{}: a step has `route` with `search` or `here`",
+                    path.display()
+                ));
+            }
+            if parse_stops(r).is_err() {
+                return Err(format!(
+                    "{}: a step's `route` wants two stops or more, as lat,lon;lat,lon",
+                    path.display()
+                ));
+            }
+        }
         Ok(f)
     }
 }
@@ -127,22 +151,24 @@ impl Flight {
 impl Flight {
     /// `route`'s stops as world points; empty without one.
     pub fn route_stops(&self) -> Result<Vec<Vec2>, ()> {
-        let Some(r) = &self.route else {
-            return Ok(Vec::new());
-        };
-        let stops: Vec<Vec2> = r
-            .split(';')
-            .map(|s| {
-                let (lat, lon) = s.split_once(',').ok_or(())?;
-                let n = |v: &str| v.trim().parse::<f64>().map_err(|_| ());
-                Ok(geo::lonlat_to_unit(n(lon)?, n(lat)?))
-            })
-            .collect::<Result<_, ()>>()?;
-        if stops.len() < 2 {
-            return Err(());
-        }
-        Ok(stops)
+        self.route.as_deref().map_or(Ok(Vec::new()), parse_stops)
     }
+}
+
+/// `lat,lon;lat,lon…` as world points; two at least.
+fn parse_stops(r: &str) -> Result<Vec<Vec2>, ()> {
+    let stops: Vec<Vec2> = r
+        .split(';')
+        .map(|s| {
+            let (lat, lon) = s.split_once(',').ok_or(())?;
+            let n = |v: &str| v.trim().parse::<f64>().map_err(|_| ());
+            Ok(geo::lonlat_to_unit(n(lon)?, n(lat)?))
+        })
+        .collect::<Result<_, ()>>()?;
+    if stops.len() < 2 {
+        return Err(());
+    }
+    Ok(stops)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -153,6 +179,8 @@ enum Phase {
     Type,
     /// Waiting for the step's "what's here".
     Here,
+    /// Waiting for the step's route.
+    Route,
     Hold,
 }
 
@@ -183,6 +211,16 @@ struct StepLog {
     rss_end: Option<u64>,
     search: SearchLog,
     here: HereLog,
+    route: RouteLog,
+}
+
+#[derive(Default)]
+struct RouteLog {
+    asked: Option<Instant>,
+    done: bool,
+    shown: Option<RouteReport>,
+    error: Option<String>,
+    timed_out: bool,
 }
 
 #[derive(Default)]
@@ -531,9 +569,34 @@ impl Bench {
         }
     }
 
-    /// The flight's route reached the UI and is drawn this frame; only the first counts.
-    pub fn route_shown(&mut self, r: RouteReport) {
-        if self.route.is_none() {
+    /// The stops to route through now: once, in a `route` step after its move.
+    pub fn route_ask(&mut self) -> Option<Vec<Vec2>> {
+        if self.phase != Phase::Route {
+            return None;
+        }
+        let log = &mut self.logs[self.step].route;
+        if log.asked.is_some() {
+            return None;
+        }
+        log.asked = Some(Instant::now());
+        // Checked when the flight was loaded.
+        parse_stops(self.flight.steps[self.step].route.as_deref()?).ok()
+    }
+
+    /// The answer to the latest route request reached the UI and is drawn this frame: the
+    /// flight's route if it is the first, else the `route` step's.
+    pub fn route_answer(&mut self, r: Result<RouteReport, String>) {
+        let log = &mut self.logs[self.step].route;
+        if self.phase == Phase::Route && log.asked.is_some() && !log.done {
+            log.done = true;
+            match r {
+                Ok(r) => log.shown = Some(r),
+                Err(e) => log.error = Some(e),
+            }
+            self.shot("route");
+        } else if self.route.is_none()
+            && let Ok(r) = r
+        {
             self.route = Some(r);
             self.shot("route");
         }
@@ -594,6 +657,8 @@ impl Bench {
                 Phase::Type
             } else if step.here {
                 Phase::Here
+            } else if step.route.is_some() {
+                Phase::Route
             } else {
                 Phase::Hold
             };
@@ -618,6 +683,8 @@ impl Bench {
                 Phase::Type
             } else if step.here {
                 Phase::Here
+            } else if step.route.is_some() {
+                Phase::Route
             } else {
                 Phase::Hold
             };
@@ -656,6 +723,19 @@ impl Bench {
                     return None;
                 }
                 self.shot("here");
+            }
+            self.phase = Phase::Hold;
+            self.phase_start = now;
+            return None;
+        }
+        if self.phase == Phase::Route {
+            let r = &mut log.route;
+            if !r.done {
+                if r.asked.is_none_or(|a| now - a < ROUTE_TIMEOUT) {
+                    return None;
+                }
+                r.timed_out = true;
+                r.done = true;
             }
             self.phase = Phase::Hold;
             self.phase_start = now;
@@ -787,6 +867,11 @@ impl Bench {
                     error: l.here.error.clone(),
                     timed_out: l.here.timed_out,
                     skipped: l.here.skipped,
+                }),
+                route: s.route.as_ref().map(|_| RouteStepReport {
+                    shown: l.route.shown.clone(),
+                    error: l.route.error.clone(),
+                    timed_out: l.route.timed_out,
                 }),
             })
             .collect::<Vec<_>>();
@@ -938,11 +1023,30 @@ pub struct RouteReport {
     /// From the request, when the pack opened, to the frame showing the route; this waits
     /// for the routing readers to open.
     pub latency_ms: f64,
-    /// Time in `trip`.
+    /// Time in `trip`, and making the directions after it; parts of the latency.
     pub trip_ms: f64,
+    pub directions_ms: f64,
+    /// Steps of the directions.
+    pub steps: usize,
     pub km: f64,
     pub minutes: f64,
     pub points: usize,
+}
+
+impl RouteReport {
+    fn line(&self) -> String {
+        format!(
+            "{} stops, {:.1} km, {:.0} min, {} points, {} steps; shown after {:.0} ms (trip {:.1} ms, directions {:.1} ms)",
+            self.stops,
+            self.km,
+            self.minutes,
+            self.points,
+            self.steps,
+            self.latency_ms,
+            self.trip_ms,
+            self.directions_ms
+        )
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -982,6 +1086,13 @@ pub struct SearchStepReport {
     pub timed_out: bool,
     /// The pack has no search.
     pub skipped: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RouteStepReport {
+    pub shown: Option<RouteReport>,
+    pub error: Option<String>,
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1032,6 +1143,8 @@ pub struct StepReport {
     pub search: Option<SearchStepReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub here: Option<HereStepReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<RouteStepReport>,
 }
 
 impl Report {
@@ -1088,10 +1201,7 @@ impl Report {
             );
         }
         if let Some(r) = &self.route {
-            s += &format!(
-                "route: {} stops, {:.1} km, {:.0} min, {} points; shown after {:.0} ms (trip {:.1} ms)\n",
-                r.stops, r.km, r.minutes, r.points, r.latency_ms, r.trip_ms
-            );
+            s += &format!("route: {}\n", r.line());
         }
         if let Some(h) = &self.here_ms {
             s += &format!(
@@ -1137,6 +1247,13 @@ impl Report {
                         top.as_deref().unwrap_or("nothing"),
                         if q.timed_out { " (timed out)" } else { "" },
                     ),
+                };
+            }
+            if let Some(r) = &st.route {
+                s += &match (&r.shown, &r.error) {
+                    (Some(r), _) => format!("    route: {}\n", r.line()),
+                    (None, Some(e)) => format!("    route: {e}\n"),
+                    (None, None) => "    route: timed out\n".to_string(),
                 };
             }
             if let Some(h) = &st.here {

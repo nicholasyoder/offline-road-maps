@@ -6,6 +6,9 @@
 # view is fully detailed) or linearly over `seconds`. `hold` stays put afterwards.
 name = "north-america"
 window = [1280, 800]
+# Miami to Seattle (phase3-plan.md 3.9), asked as the pack opens, so on a fresh start it is
+# the first route from a cold stick; shown until the route steps at the end.
+route = "25.7617,-80.1918;47.6062,-122.3321"
 
 [[step]]
 label = "continent z3"
@@ -232,3 +235,48 @@ hold = 0.5
 label = "search: street"
 search = "Broadway, New York"
 hold = 0.5
+
+# Routes (phase3-plan.md 3.9): each replaces the stops after the move, as the right-click
+# menu does, and records the time to the route and its directions being shown.
+
+[[step]]
+label = "route: short, Columbus"
+lat = 40.02
+lon = -83.03
+zoom = 11
+route = "39.9612,-82.9988;40.0992,-83.1141"
+hold = 1
+
+[[step]]
+label = "route: short, Montreal"
+lat = 45.53
+lon = -73.62
+zoom = 11
+route = "45.5019,-73.5674;45.5576,-73.7517"
+hold = 1
+
+[[step]]
+label = "route: Cincinnati-Cleveland"
+lat = 40.3
+lon = -82.9
+zoom = 7
+route = "39.1031,-84.5120;41.4993,-81.6944"
+hold = 1
+
+[[step]]
+label = "route: Halifax-Los Angeles"
+lat = 40.0
+lon = -98.0
+zoom = 4
+route = "44.6488,-63.5752;34.0522,-118.2437"
+hold = 2
+
+[[step]]
+label = "route: 10 stops, Northeast"
+lat = 41.0
+lon = -76.5
+zoom = 6
+# Boston, Hartford, New York, Philadelphia, Baltimore, Washington, Richmond, Pittsburgh,
+# Cleveland, Columbus.
+route = "42.3601,-71.0589;41.7658,-72.6734;40.7128,-74.0060;39.9526,-75.1652;39.2904,-76.6122;38.9072,-77.0369;37.5407,-77.4360;40.4406,-79.9959;41.4993,-81.6944;39.9612,-82.9988"
+hold = 2

@@ -305,16 +305,7 @@ impl App {
             m.fit_on_first_frame = false;
             b.start(&mut m.camera, m.opened.reader.bytes_read());
             // Checked when the flight was loaded.
-            let stops = b.flight.route_stops().unwrap_or_default();
-            let last = stops.len().saturating_sub(1);
-            for (i, &w) in stops.iter().enumerate() {
-                let a = match i {
-                    0 => StopAction::From,
-                    i if i == last => StopAction::To,
-                    _ => StopAction::Add,
-                };
-                m.routing.apply(a, Place::at(w));
-            }
+            set_stops(&mut m.routing, &b.flight.route_stops().unwrap_or_default());
         }
     }
 
@@ -791,20 +782,29 @@ impl eframe::App for App {
                     m.error_suggested = true;
                     self.tile_error = m.stats.last_error.clone();
                 }
+                if let Some(stops) = self.bench.as_mut().and_then(Bench::route_ask) {
+                    set_stops(&mut m.routing, &stops);
+                }
+                let waiting = m.routing.waiting.is_some();
                 let fit = m.routing.take(&m.camera);
                 match (&mut self.bench, fit) {
                     (None, Some((c, z))) => m.motion.fly_to(&m.camera, c, z),
-                    (Some(b), _) => {
-                        if let (Some(t), Some(s)) = (&m.routing.last, &m.routing.route) {
-                            b.route_shown(RouteReport {
+                    (Some(b), _) if waiting && m.routing.waiting.is_none() => {
+                        let r = &m.routing;
+                        b.route_answer(match (&r.last, &r.route, &r.error) {
+                            (Some(t), Some(s), _) => Ok(RouteReport {
                                 stops: s.trip.snaps.len(),
                                 latency_ms: t.latency.as_secs_f64() * 1e3,
                                 trip_ms: t.trip.as_secs_f64() * 1e3,
+                                directions_ms: t.directions.as_secs_f64() * 1e3,
+                                steps: s.steps.len(),
                                 km: s.trip.metres() / 1000.0,
                                 minutes: s.trip.time_s() / 60.0,
                                 points: t.points,
-                            });
-                        }
+                            }),
+                            (_, _, Some(e)) => Err(e.clone()),
+                            _ => Err("no route".into()),
+                        });
                     }
                     _ => {}
                 }
@@ -1525,6 +1525,23 @@ struct SideOut {
     tabs: [Rect; 4],
     #[cfg_attr(not(test), allow(dead_code))]
     hide: Rect,
+}
+
+/// The bench's stops, set as the right-click menu would: the first as the start, the last
+/// as the destination. Replaces any stops there were.
+fn set_stops(routing: &mut RouteUi, stops: &[crate::camera::Vec2]) {
+    if routing.has_stops() {
+        routing.apply(StopAction::Clear, Place::at([0.0, 0.0]));
+    }
+    let last = stops.len().saturating_sub(1);
+    for (i, &w) in stops.iter().enumerate() {
+        let a = match i {
+            0 => StopAction::From,
+            i if i == last => StopAction::To,
+            _ => StopAction::Add,
+        };
+        routing.apply(a, Place::at(w));
+    }
 }
 
 /// The side panel, on the left when open: the search box with the ☰ menu, the tabs, and the
