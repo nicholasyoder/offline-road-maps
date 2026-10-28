@@ -145,8 +145,16 @@ fn keyboard() {
     );
     let (_, focused) = frame(&mut s, &mut recent, vec![key(Key::ArrowDown, none)]);
     assert!(focused && s.selected == Some(0));
-    // Enter on a recent search runs it.
+    // Enter on a recent search fills the box and asks it as if typed: its suggestions
+    // show, nothing flies, and the box keeps the focus.
     frame(&mut s, &mut recent, vec![key(Key::Enter, none)]);
     assert_eq!(s.text, "Col");
-    assert!(s.worker.take_query().unwrap().submit);
+    let (out, focused) = frame(&mut s, &mut recent, Vec::new());
+    assert!(focused && out.fly.is_none());
+    let q = s.worker.take_query().unwrap();
+    assert!(!q.submit);
+    tx.send(answer(&q, hits.clone())).unwrap();
+    let (out, focused) = frame(&mut s, &mut recent, Vec::new());
+    assert!(focused && out.fly.is_none() && !s.dismissed);
+    assert_eq!(s.session.hits.len(), 2);
 }

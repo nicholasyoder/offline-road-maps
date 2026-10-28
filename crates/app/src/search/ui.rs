@@ -482,7 +482,7 @@ impl SearchUi {
         }
         self.list_rect = None;
         if let Some(i) = chosen {
-            self.choose(&ctx, &rows, i, cam, recent, out);
+            self.choose(&ctx, &rows, i, recent, out);
         }
         self.list = List {
             open: open && !escape && !enter,
@@ -493,24 +493,25 @@ impl SearchUi {
         self.was_focused = ctx.memory(|m| m.has_focus(id));
     }
 
-    /// A suggestion picked: a hit flies there; a recent search is run again.
+    /// A suggestion picked: a hit flies there; a recent search fills the box and is asked
+    /// again as if typed, its suggestions shown as they come.
     fn choose(
         &mut self,
         ctx: &egui::Context,
         rows: &[Row],
         i: usize,
-        cam: &Camera,
         recent: &mut Vec<String>,
         out: &mut Out,
     ) {
         match rows.get(i) {
             Some(Row::Hit(h)) => out.fly = Some(self.pick(ctx, h, recent)),
             Some(Row::Recent(r)) => {
+                // The box asks next frame, as the text differs from what was sent.
                 self.text = r.clone();
-                self.sent = self.text.clone();
+                self.dismissed = false;
                 cursor_to_end(ctx, &self.text);
-                self.submit(cam);
-                ctx.memory_mut(|m| m.surrender_focus(box_id()));
+                ctx.memory_mut(|m| m.request_focus(box_id()));
+                ctx.request_repaint();
             }
             None => {}
         }
@@ -575,7 +576,7 @@ impl SearchUi {
         self.list_rect = Some(r.response.rect);
         if let Some(i) = chosen {
             let ctx = ui.ctx().clone();
-            self.choose(&ctx, &rows, i, cam, recent, out);
+            self.choose(&ctx, &rows, i, recent, out);
             self.was_focused = ctx.memory(|m| m.has_focus(box_id()));
         }
         true
