@@ -35,7 +35,7 @@ fn keyboard() {
             if !s.box_was_focused() {
                 s.escape(&ctx);
             }
-            s.box_ui(ui, &cam, 0.0, recent, None, &mut o);
+            s.box_ui(ui, &cam, recent, None, &mut o);
             if !s.suggestions_ui(ui, &cam, Units::Kilometres, recent, &mut o) {
                 s.results_ui(ui, &cam, Units::Kilometres, &mut o);
             }

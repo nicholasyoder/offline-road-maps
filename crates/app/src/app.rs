@@ -1613,29 +1613,28 @@ fn side_panel(
         .frame(frame)
         .show(ui, |ui| {
             let had_focus = p.search.box_was_focused();
-            ui.horizontal(|ui| {
-                p.search.box_ui(
-                    ui,
-                    p.camera,
-                    2.0 * crate::theme::HEADER_H + 16.0,
-                    recent,
-                    key,
-                    &mut o.out,
-                );
-                o.action = side::menu(ui, debug);
+            // From the right: hide, the menu, and the box in what is left.
+            let row = egui::Layout::right_to_left(egui::Align::Center);
+            let size = Vec2::new(ui.available_width(), crate::theme::HEADER_H);
+            ui.allocate_ui_with_layout(size, row, |ui| {
                 let hide = glyph_button(ui, Glyph::Hide, crate::theme::HEADER_H)
                     .on_hover_text("Hide the panel  (Ctrl+B)");
                 o.hide = hide.rect;
                 if hide.clicked() {
                     side.open = false;
                 }
+                o.action = side::menu(ui, debug);
+                p.search.box_ui(ui, p.camera, recent, key, &mut o.out);
             });
             // A click in the box shows the search page.
             if p.search.focused(&ctx) && !had_focus {
                 *p.page = Page::Search;
             }
+            // More room above the tabs than below them.
+            ui.add_space(5.0);
             o.tabs = side::tabs(ui, p.page);
-            ui.separator();
+            ui.add(egui::Separator::default().spacing(2.0));
+            ui.add_space(3.0);
             match p.page {
                 Page::Search => {
                     if !p

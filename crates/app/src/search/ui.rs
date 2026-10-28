@@ -284,14 +284,13 @@ impl SearchUi {
         self.list_rect = None;
     }
 
-    /// The box and its clear button, across `ui` but for `reserve` points, with its keys: the arrows move through the
+    /// The box with its clear button, across what is left of `ui`, with its keys: the arrows move through the
     /// suggestions, Enter picks one or searches, Escape closes them and then lets go of the
     /// box. What the suggestions are is kept for [`Self::suggestions_ui`].
     pub fn box_ui(
         &mut self,
         ui: &mut egui::Ui,
         cam: &Camera,
-        reserve: f32,
         recent: &mut Vec<String>,
         bench: Option<BenchKey>,
         out: &mut Out,
@@ -347,7 +346,9 @@ impl SearchUi {
             None => {}
         }
 
-        ui.horizontal(|ui| {
+        // In the caller's row, which is as tall as the box: a row of its own would start
+        // at the default height and leave the box below the buttons beside it.
+        ui.scope(|ui| {
             // A press on the suggestions must not take the focus away before the click
             // lands.
             let keep = self
@@ -374,7 +375,7 @@ impl SearchUi {
             let edit = egui::TextEdit::singleline(&mut self.text)
                 .id(id)
                 .hint_text(hint)
-                .desired_width((ui.available_width() - reserve - 12.0).max(80.0))
+                .desired_width(ui.available_width().max(80.0))
                 .min_size(Vec2::new(0.0, HEADER_H))
                 .align(egui::Align2::LEFT_CENTER)
                 .suffix(egui::Atom::custom(slot, Vec2::splat(CLEAR)))
