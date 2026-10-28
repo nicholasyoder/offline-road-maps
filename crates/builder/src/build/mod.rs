@@ -36,7 +36,7 @@
 mod cache;
 pub mod inspect;
 mod meta;
-mod readers;
+pub(crate) mod readers;
 mod report;
 mod route_readers;
 

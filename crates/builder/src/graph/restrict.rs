@@ -254,21 +254,21 @@ impl Trie {
     }
 }
 
-/// The graph with the restrictions applied, and the node each added copy is of.
+/// The graph with the restrictions applied, the node each added copy is of, and the
+/// forbidden node paths.
 pub fn apply(
     g: Csr,
     seqs: &HashMap<i64, Vec<u32>>,
     via_rank: impl Fn(i64) -> Option<u32>,
     list: &[RestrictionIn],
     st: &mut RestrictionStats,
-) -> (Csr, Vec<u32>) {
+) -> (Csr, Vec<u32>, Vec<Vec<u32>>) {
     let paths = forbidden(&g, seqs, via_rank, list, st);
     if paths.is_empty() {
-        return (g, Vec::new());
+        return (g, Vec::new(), paths);
     }
     let n = g.nodes() as u32;
     let trie = Trie::new(n, &paths);
-    drop(paths);
 
     // Copies reached from a plain node, then from each other.
     let mut id: Vec<u32> = vec![u32::MAX; trie.node.len()];
@@ -314,5 +314,5 @@ pub fn apply(
         }
         first.push(edges.len() as u32);
     }
-    (Csr { first, edges }, copy_of)
+    (Csr { first, edges }, copy_of, paths)
 }

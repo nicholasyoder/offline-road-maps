@@ -192,12 +192,21 @@ impl<K: Copy + Eq + Hash, V> Cache<K, V> {
             c.held -= old;
         }
         c.held += bytes;
-        // Keep the newest value even when it alone is over the budget.
-        while c.held > self.budget && c.map.len() > 1 {
-            let oldest = c.map.iter().min_by_key(|(_, e)| e.2).map(|(k, _)| *k);
-            let Some(k) = oldest else { break };
-            let (_, b, _) = c.map.remove(&k).unwrap();
-            c.held -= b;
+        // Over the budget, drop the oldest down to 3/4 of it in one pass, so a cache of
+        // thousands of blocks does not scan them all on every miss. Keep the newest value
+        // even when it alone is over the budget.
+        if c.held > self.budget {
+            let mut by_age: Vec<(u64, K, usize)> =
+                c.map.iter().map(|(k, e)| (e.2, *k, e.1)).collect();
+            by_age.sort_unstable_by_key(|e| e.0);
+            let target = self.budget / 4 * 3;
+            for (_, k, b) in by_age.into_iter().take(c.map.len() - 1) {
+                if c.held <= target {
+                    break;
+                }
+                c.map.remove(&k);
+                c.held -= b;
+            }
         }
         Ok(v)
     }

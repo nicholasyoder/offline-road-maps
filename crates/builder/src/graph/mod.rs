@@ -286,6 +286,10 @@ pub struct Graph {
     /// Exit numbers at base nodes, sorted.
     pub junctions: Vec<(u32, String)>,
     pub stats: Stats,
+    /// The node paths the turn restrictions forbid, over base nodes, for `route --check`
+    /// (step 3.4). Not saved: a graph read back from `graph --save` has none.
+    #[serde(skip)]
+    pub forbidden: Vec<Vec<u32>>,
 }
 
 /// A stretch of a way between two graph nodes.
@@ -643,7 +647,7 @@ pub fn build(mut input: Input) -> Graph {
     let way_info: Vec<WayInfo> = ways.iter().map(|w| w.info).collect();
     drop(ways);
     let via_rank = |id: i64| ranks.rank(id).map(|r| r as u32);
-    let (csr, copy_of) = restrict::apply(
+    let (csr, copy_of, forbidden) = restrict::apply(
         base,
         &seqs,
         via_rank,
@@ -683,6 +687,7 @@ pub fn build(mut input: Input) -> Graph {
         geo_end,
         junctions,
         stats,
+        forbidden,
     }
 }
 

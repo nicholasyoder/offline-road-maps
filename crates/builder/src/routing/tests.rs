@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use omp_core::pack::{self, Info, Pack, Writer};
 use omp_core::profile::Restriction;
-use omp_core::route::{AVOID, FERRY, FERRY_CLASS, Routing, TOLL, cell_xy};
+use omp_core::route::{AVOID, FERRY, FERRY_CLASS, Routing, Stop, TOLL, cell_xy};
 
 use super::*;
 use crate::ch::check::dijkstra;
 use crate::graph::Via;
-use crate::graph::tests::{In, grid, way_id};
+use crate::graph::tests::{In, grid, pos, way_id};
 use crate::street::WayStreets;
 
 /// The grid of `graph::tests`, with a toll motorway, a ferry, a long way with inner nodes,
@@ -45,17 +45,16 @@ fn plain(g: &Graph, v: u32) -> u32 {
     }
 }
 
-#[test]
-fn sections_read_back_through_the_app_reader() {
-    let g = network().build();
-    assert!(!g.copy_of.is_empty(), "the restriction makes copies");
+/// The routing sections of `g` written to a pack and opened: the reader, the layout's
+/// order and sizes, and the pack's directory.
+fn reader(g: &Graph) -> (Routing, Order, Sizes, tempfile::TempDir) {
     let h = ch::contract(&g.csr, &ch::Params::default());
     let streets = WayStreets(vec![(302, 0, 7), (302, 2, 8)]);
     let p = Params {
         block_nodes: 4,
         top_mib: 0.0001,
     };
-    let (s, sizes, o, _) = sections(&g, &h, &streets, &p).unwrap();
+    let (s, sizes, o, _) = sections(g, &h, &streets, &p).unwrap();
     assert!(o.top > 0 && o.top < g.csr.nodes() as u32, "top {}", o.top);
 
     // Small chunks and a section in front, so the routing records cross chunk boundaries.
@@ -75,6 +74,14 @@ fn sections_read_back_through_the_app_reader() {
     let r = Routing::open(Arc::new(Pack::open(&paths[0]).unwrap()))
         .unwrap()
         .unwrap();
+    (r, o, sizes, dir)
+}
+
+#[test]
+fn sections_read_back_through_the_app_reader() {
+    let g = network().build();
+    assert!(!g.copy_of.is_empty(), "the restriction makes copies");
+    let (r, o, sizes, _dir) = reader(&g);
     let n = g.csr.nodes() as u32;
     assert_eq!(r.header.nodes, n);
     assert_eq!(r.header.segments as usize, g.segments.len());
@@ -119,7 +126,7 @@ fn sections_read_back_through_the_app_reader() {
 
     // Exit numbers on the node and its copies; copies and the ways out of them.
     let exit = (0..g.base_nodes)
-        .find(|&v| g.coords[v as usize] == crate::graph::tests::pos(13))
+        .find(|&v| g.coords[v as usize] == pos(13))
         .unwrap();
     assert_eq!(
         r.junction(o.id[exit as usize]).unwrap().as_deref(),
@@ -173,4 +180,137 @@ fn sections_read_back_through_the_app_reader() {
         }
     }
     assert!(routed > 4 * n as usize);
+}
+
+/// A point `t` of the way from node `a` to node `b`, moved `east_m` metres east.
+fn between(a: i64, b: i64, t: f64, east_m: f64) -> omp_core::geo::P {
+    let (p, q) = (pos(a), pos(b));
+    let lerp = |x: u32, y: u32| (f64::from(x) + t * (f64::from(y) - f64::from(x))).round() as u32;
+    let mut out = [lerp(p[0], q[0]), lerp(p[1], q[1])];
+    out[0] += (east_m / omp_core::geo::metres_per_unit(out)) as u32;
+    out
+}
+
+fn stop(a: i64, b: i64, t: f64) -> Stop {
+    Stop::at(between(a, b, t, 0.0))
+}
+
+/// The segment under the snap of a point of the way from `a` to `b`.
+fn segment_at(r: &Routing, a: i64, b: i64) -> u32 {
+    r.snap(&stop(a, b, 0.5)).unwrap().unwrap().segment
+}
+
+#[test]
+fn snaps_to_the_nearest_road_or_the_stops_own_street() {
+    let g = network().build();
+    let (r, ..) = reader(&g);
+    let s = r
+        .snap(&Stop::at(between(21, 22, 0.25, 10.0)))
+        .unwrap()
+        .unwrap();
+    assert!((s.dist_m - 10.0).abs() < 0.5, "{}", s.dist_m);
+    let seg = r.segment(s.segment).unwrap();
+    assert!((s.along - 0.25).abs() < 0.01 || (s.along - 0.75).abs() < 0.01);
+    assert_eq!(seg.points.len(), 2);
+    assert!(!s.on_street);
+
+    // Beside 32-33, but asking for Long Rd's street: its own street wins.
+    let p = between(32, 33, 0.5, -20.0);
+    let near = r.snap(&Stop::at(p)).unwrap().unwrap();
+    assert_ne!(r.segment(near.segment).unwrap().street, Some(7));
+    let own = r.snap(&Stop { p, street: Some(7) }).unwrap().unwrap();
+    assert!(own.on_street && own.dist_m > near.dist_m);
+    assert_eq!(r.segment(own.segment).unwrap().street, Some(7));
+
+    // Nothing within reach, and never a ferry.
+    let far = omp_core::geo::project(10.0, -30.0);
+    assert_eq!(r.snap(&Stop::at(far)).unwrap(), None);
+    let on_ferry = r.snap(&stop(41, 43, 0.5)).unwrap().unwrap();
+    assert_ne!(r.segment(on_ferry.segment).unwrap().class, FERRY_CLASS);
+}
+
+#[test]
+fn legs_start_and_end_partway_along_segments() {
+    let g = network().build();
+    let (r, ..) = reader(&g);
+    // Along one two-way street, both ways, without the graph.
+    for (from, to) in [(0.2, 0.8), (0.8, 0.2)] {
+        let t = r.trip(&[stop(21, 22, from), stop(21, 22, to)], 0).unwrap();
+        let l = t.legs[0].as_ref().unwrap();
+        assert_eq!(l.pieces.len(), 1);
+        assert!((l.metres - 60.0).abs() < 1.0, "{}", l.metres);
+        assert_eq!(l.points.len(), 2);
+    }
+    // Across the grid: the line runs from snap to snap, and the pieces add up.
+    let t = r.trip(&[stop(11, 12, 0.5), stop(32, 33, 0.5)], 0).unwrap();
+    assert!(t.complete());
+    let l = t.legs[0].as_ref().unwrap();
+    assert_eq!(l.points[0], t.snaps[0].as_ref().unwrap().point);
+    assert_eq!(
+        *l.points.last().unwrap(),
+        t.snaps[1].as_ref().unwrap().point
+    );
+    // Half a block, two blocks across, and half a block: 300 m, or more.
+    assert!(l.metres >= 299.0 && l.metres < 500.0, "{}", l.metres);
+    let sum: f64 = l.pieces.iter().map(|p| p.time_s).sum();
+    assert!((sum - l.time_s).abs() < 1e-6);
+    assert!((f64::from(l.weight) / 10.0 - l.time_s).abs() < 1.0);
+    for w in l.pieces.windows(2) {
+        assert_eq!(w[0].points.end - 1, w[1].points.start);
+    }
+    assert_eq!(l.pieces.last().unwrap().points.end, l.points.len());
+}
+
+#[test]
+fn legs_honour_restrictions_one_ways_and_avoid_options() {
+    let g = network().build();
+    let (r, ..) = reader(&g);
+    // No turn from 12-22 onto 22-23: the leg goes round instead.
+    let banned = segment_at(&r, 22, 23);
+    let t = r.trip(&[stop(12, 22, 0.5), stop(22, 23, 0.5)], 0).unwrap();
+    let l = t.legs[0].as_ref().unwrap();
+    assert!(l.pieces.len() > 2, "{:?}", l.pieces);
+    assert_ne!(l.pieces[1].dir >> 1, banned);
+    // Back to 12, on to 13 and 23: 300 m, against 100 m through the banned turn.
+    assert!(l.metres > 250.0, "{}", l.metres);
+    // The turn the other way is allowed: 50 m to 22, 50 m on.
+    let t = r.trip(&[stop(12, 22, 0.5), stop(22, 32, 0.5)], 0).unwrap();
+    assert!((t.legs[0].as_ref().unwrap().metres - 100.0).abs() < 1.0);
+
+    // Back along the one-way 31-41: out of 41 only by the ferry, so avoiding ferries
+    // breaks the option, and says so.
+    let back = [stop(31, 41, 0.8), stop(31, 41, 0.2)];
+    let t = r.trip(&back, FERRY).unwrap();
+    let l = t.legs[0].as_ref().unwrap();
+    assert_eq!((l.uses & FERRY, l.broken), (FERRY, FERRY));
+    assert_eq!(t.broken(), FERRY);
+    assert!(
+        r.leg_between(
+            t.snaps[0].as_ref().unwrap(),
+            t.snaps[1].as_ref().unwrap(),
+            FERRY
+        )
+        .unwrap()
+        .is_none()
+    );
+    // Forward along it, nothing to break.
+    let t = r
+        .trip(&[stop(31, 41, 0.2), stop(31, 41, 0.8)], AVOID)
+        .unwrap();
+    assert_eq!(t.legs[0].as_ref().unwrap().broken, 0);
+
+    // Three stops, two legs; a stop with no road leaves its legs out.
+    let stops = [stop(11, 12, 0.5), stop(22, 32, 0.5), stop(13, 23, 0.5)];
+    let t = r.trip(&stops, 0).unwrap();
+    assert_eq!(t.legs.len(), 2);
+    assert!(t.complete());
+    let total: f64 = t.legs.iter().flatten().map(|l| l.metres).sum();
+    assert_eq!(total, t.metres());
+    let lost = [
+        stops[0],
+        Stop::at(omp_core::geo::project(10.0, -30.0)),
+        stops[2],
+    ];
+    let t = r.trip(&lost, 0).unwrap();
+    assert!(!t.complete() && t.legs.iter().all(Option::is_none));
 }

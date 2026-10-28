@@ -117,7 +117,7 @@ fn open(pack: &Path) -> Result<(Arc<Pack>, Search)> {
     Ok((pack, s))
 }
 
-fn parse_point(s: &str) -> Result<P> {
+pub(crate) fn parse_point(s: &str) -> Result<P> {
     let (lat, lon) = s
         .split_once(',')
         .with_context(|| format!("expected lat,lon, not {s:?}"))?;

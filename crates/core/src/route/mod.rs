@@ -4,12 +4,12 @@
 //! turn restrictions (`RCPY`) and exit numbers (`RJCT`), with `RHDR` saying how they fit.
 //!
 //! [`Routing`] reads them with positioned reads and budgeted caches of decoded blocks
-//! (phase 1 decision 1). [`Routing::shortest`] is a plain bidirectional search over the
-//! hierarchy, enough to check the sections; step 3.4 adds stall-on-demand, snapping and
-//! multi-stop routes on top.
+//! (phase 1 decision 1). [`query`] searches the hierarchy between nodes (step 3.4), and
+//! [`trip`] snaps points to segments and routes the legs of a trip between them.
 
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+mod query;
+mod trip;
+
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
@@ -23,6 +23,8 @@ use crate::pack::Pack;
 use crate::tile::hilbert;
 use crate::varint::{Reader, invalid};
 use crate::zframe;
+pub use query::Seed;
+pub use trip::{FAR_SNAP_M, Leg, Piece, Snap, Stop, Trip};
 
 /// The first minor version with routing sections; older packs have no routing.
 pub const MIN_MINOR: u16 = 5;
@@ -53,9 +55,13 @@ pub const SHIFT: u32 = 6;
 /// The grid's cells are tiles of this zoom, as `SGRD`'s.
 pub const GRID_ZOOM: u8 = 14;
 
-/// Decoded blocks kept, in bytes.
-const NODE_CACHE: usize = 8 << 20;
-const SEGMENT_CACHE: usize = 4 << 20;
+/// Decoded blocks kept, in bytes. Step 3.4 measured North America routes: 16 MiB of
+/// nodes holds a continental search (8 took short routes from 2.5 to 8.6 ms when asked
+/// first); 16 MiB of segments holds a route of a few hundred km (4 took Cincinnati to
+/// Cleveland from 0.7 to 14 ms), and more does not help a coast-to-coast route, whose
+/// thousand blocks are decoded each time.
+const NODE_CACHE: usize = 16 << 20;
+const SEGMENT_CACHE: usize = 16 << 20;
 const SMALL_CACHE: usize = 1 << 20;
 
 /// `RHDR`: counts and how the hierarchy is laid out. A zstd-compressed JSON object.
@@ -277,6 +283,9 @@ pub struct Path {
     pub legs: Vec<u32>,
     /// Nodes the search settled.
     pub settled: usize,
+    /// The start and end [`Seed`]s it runs between, by index.
+    pub source: usize,
+    pub target: usize,
 }
 
 /// Bytes the routing readers have read from the pack, for the F3 overlay and checks.
@@ -392,6 +401,18 @@ impl Routing {
         Ok(Some(r))
     }
 
+    /// The same reader with `bytes` for decoded `RCHE` blocks instead of the default.
+    pub fn with_node_cache(mut self, bytes: usize) -> Self {
+        self.nodes = Cache::new(bytes);
+        self
+    }
+
+    /// The same reader with `bytes` for decoded `RGEO` blocks instead of the default.
+    pub fn with_segment_cache(mut self, bytes: usize) -> Self {
+        self.segments = Cache::new(bytes);
+        self
+    }
+
     /// Reads the top of the hierarchy once, so the system's file cache holds it: almost
     /// every long route passes through it. Returns the bytes read.
     pub fn warm_top(&self) -> io::Result<u64> {
@@ -443,6 +464,19 @@ impl Routing {
 
     /// Segment `s`.
     pub fn segment(&self, s: u32) -> io::Result<Segment> {
+        self.with_segment(s, Segment::clone)
+    }
+
+    /// `f` of segment `s`, without copying it out of the cache.
+    pub fn with_segment<T>(&self, s: u32, f: impl FnOnce(&Segment) -> T) -> io::Result<T> {
+        let (b, segs) = self.segment_block(s)?;
+        segs.get((s - self.rgeo.first(b)) as usize)
+            .map(f)
+            .ok_or_else(|| invalid(format!("RGEO block {b} is short")))
+    }
+
+    /// The `RGEO` block holding segment `s`, and its index.
+    fn segment_block(&self, s: u32) -> io::Result<(usize, Arc<Vec<Segment>>)> {
         let Some(b) = self.rgeo.find(s).filter(|_| s < self.rgeo.count) else {
             return Err(invalid(format!("segment {s} out of range")));
         };
@@ -452,9 +486,7 @@ impl Routing {
             let bytes = v.iter().map(Segment::heap_bytes).sum();
             Ok((v, bytes, read))
         })?;
-        segs.get((s - self.rgeo.first(b)) as usize)
-            .cloned()
-            .ok_or_else(|| invalid(format!("RGEO block {b} is short")))
+        Ok((b, segs))
     }
 
     /// Calls `f` for every segment in order, reading each block once.
@@ -603,101 +635,6 @@ impl Routing {
         self.rjct.count
     }
 
-    /// The shortest route from node `s` to node `t` on edges without the flags in
-    /// `avoid`, unpacked to segment directions; `None` if there is none.
-    pub fn shortest(&self, s: u32, t: u32, avoid: u8) -> io::Result<Option<Path>> {
-        let (mut f, mut b) = (Side::default(), Side::default());
-        f.start(s);
-        b.start(t);
-        let (mut best, mut meet, mut settled) = (u32::MAX, u32::MAX, 0);
-        while f.min().min(b.min()) < best {
-            let forward = f.min() <= b.min();
-            let (side, other) = match forward {
-                true => (&mut f, &b),
-                false => (&mut b, &f),
-            };
-            let Some(Reverse((d, u))) = side.heap.pop() else {
-                break;
-            };
-            if side.dist[&u].0 < d {
-                continue;
-            }
-            settled += 1;
-            if let Some(&(o, ..)) = other.dist.get(&u)
-                && d + o < best
-            {
-                (best, meet) = (d + o, u);
-            }
-            let node = self.node(u)?;
-            let list = match forward {
-                true => node.up(),
-                false => node.down(),
-            };
-            for e in list {
-                if e.flags & avoid != 0 {
-                    continue;
-                }
-                let nd = d + e.weight;
-                let slot = side.dist.entry(e.other).or_insert((u32::MAX, 0, *e));
-                if nd < slot.0 {
-                    *slot = (nd, u, *e);
-                    side.heap.push(Reverse((nd, e.other)));
-                }
-            }
-        }
-        if best == u32::MAX {
-            return Ok(None);
-        }
-        // Up from s to the meeting node, then down to t: each node's edge, unpacked.
-        let mut steps = Vec::new();
-        let mut v = meet;
-        while v != s {
-            let (_, from, e) = f.dist[&v];
-            steps.push((from, v, e));
-            v = from;
-        }
-        steps.reverse();
-        let mut v = meet;
-        while v != t {
-            let (_, from, e) = b.dist[&v];
-            steps.push((v, from, e));
-            v = from;
-        }
-        let mut legs = Vec::new();
-        for (from, to, e) in steps {
-            self.unpack(from, to, &e, &mut legs)?;
-        }
-        Ok(Some(Path {
-            weight: best,
-            legs,
-            settled,
-        }))
-    }
-
-    /// Appends the segment directions of `e`, a hierarchy edge from `a` to `b`.
-    pub fn unpack(&self, a: u32, b: u32, e: &ChEdge, out: &mut Vec<u32>) -> io::Result<()> {
-        let m = e.mid;
-        if e.flags & SHORTCUT == 0 {
-            out.push(m);
-            return Ok(());
-        }
-        // The middle node is below both ends: `a` to it is one of its down edges, it to `b`
-        // one of its up edges, with this weight and flags between them.
-        let node = self.node(m)?;
-        for d in node.down().iter().filter(|d| d.other == a) {
-            for u in node.up().iter().filter(|u| u.other == b) {
-                if d.weight + u.weight == e.weight && (d.flags | u.flags) & AVOID == e.flags & AVOID
-                {
-                    self.unpack(a, m, d, out)?;
-                    return self.unpack(m, b, u, out);
-                }
-            }
-        }
-        Err(invalid(format!(
-            "shortcut {a} -> {b} through {m} has no halves"
-        )))
-    }
-
     /// Bytes read from the pack so far.
     pub fn reads(&self) -> Reads {
         use std::sync::atomic::Ordering::Relaxed;
@@ -729,31 +666,6 @@ impl Routing {
             + self.cells.held()
             + self.copies.held()
             + self.junctions.held()
-    }
-}
-
-/// One side of [`Routing::shortest`]: per node its distance, the node before it, and the
-/// hierarchy edge between them.
-#[derive(Default)]
-struct Side {
-    dist: HashMap<u32, (u32, u32, ChEdge)>,
-    heap: BinaryHeap<Reverse<(u32, u32)>>,
-}
-
-impl Side {
-    fn start(&mut self, s: u32) {
-        let none = ChEdge {
-            other: u32::MAX,
-            weight: 0,
-            flags: 0,
-            mid: 0,
-        };
-        self.dist.insert(s, (0, u32::MAX, none));
-        self.heap.push(Reverse((0, s)));
-    }
-
-    fn min(&self) -> u32 {
-        self.heap.peek().map_or(u32::MAX, |Reverse((d, _))| *d)
     }
 }
 

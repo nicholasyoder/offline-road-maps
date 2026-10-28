@@ -16,24 +16,24 @@ use omp_core::search::{Found, Kind, NearAddress, Search};
 use crate::mib;
 
 /// Every `n / want`-th index of `0..n`, about `want` of them.
-pub(super) fn sample(n: usize, want: usize) -> impl Iterator<Item = usize> {
+pub(crate) fn sample(n: usize, want: usize) -> impl Iterator<Item = usize> {
     let step = (n / want.max(1)).max(1);
     // An odd offset, so the sample does not line up with block starts.
     (step / 3..n).step_by(step).take(want)
 }
 
 #[derive(Default)]
-pub(super) struct Times(Vec<Duration>);
+pub(crate) struct Times(Vec<Duration>);
 
 impl Times {
-    pub(super) fn time<T>(&mut self, f: impl FnOnce() -> T) -> T {
+    pub(crate) fn time<T>(&mut self, f: impl FnOnce() -> T) -> T {
         let t = Instant::now();
         let v = f();
         self.0.push(t.elapsed());
         v
     }
 
-    pub(super) fn line(&mut self, what: &str) {
+    pub(crate) fn line(&mut self, what: &str) {
         self.0.sort_unstable();
         let q = |p: f64| {
             self.0

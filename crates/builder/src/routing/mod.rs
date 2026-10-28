@@ -336,7 +336,7 @@ fn hierarchy(
 /// Per segment, the indices in `g.csr.edges` of its forward and backward edges out of the
 /// plain node at its start (`u32::MAX` for none). Every edge out of a plain node is kept by
 /// the restrictions, so each direction has one.
-fn segment_edges(g: &Graph) -> Vec<[u32; 2]> {
+pub(crate) fn segment_edges(g: &Graph) -> Vec<[u32; 2]> {
     let mut out = vec![[u32::MAX; 2]; g.segments.len()];
     for v in 0..g.base_nodes {
         let first = g.csr.first[v as usize];
@@ -348,11 +348,11 @@ fn segment_edges(g: &Graph) -> Vec<[u32; 2]> {
 }
 
 /// The node a CSR edge leaves.
-fn source(g: &Graph, edge: u32) -> u32 {
+pub(crate) fn source(g: &Graph, edge: u32) -> u32 {
     g.csr.first.partition_point(|&f| f <= edge) as u32 - 1
 }
 
-fn plain(g: &Graph, v: u32) -> u32 {
+pub(crate) fn plain(g: &Graph, v: u32) -> u32 {
     match v < g.base_nodes {
         true => v,
         false => g.copy_of[(v - g.base_nodes) as usize],
@@ -361,7 +361,7 @@ fn plain(g: &Graph, v: u32) -> u32 {
 
 /// Segments in their new order: by the Hilbert key of their first point's grid cell, then
 /// along a finer curve. Returns `order[new] = old`, the inverse, and each one's home key.
-fn segment_order(g: &Graph) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+pub(crate) fn segment_order(g: &Graph) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let s = 32 - u32::from(GRID_ZOOM);
     let keys: Vec<(u32, u64)> = (0..g.segments.len() as u32)
         .into_par_iter()
