@@ -1,6 +1,6 @@
 # Phase 4 Plan: Trip Planner Features
 
-*Draft 2, 2026-10-28, with the owner's answers to the planning questions (decisions 14–19) and decision 12 reworded; decisions 1–13 confirmed by the owner the same day. Expands Phase 4 of [roadmap.md](roadmap.md#phase-4-trip-planner-features). Builds on phase 3's routing ([phase3-plan.md](phase3-plan.md)): the contraction hierarchy and its queries in `omp_core::route`, the route page and side panel (steps 3.7 and 3.8, which already hold this phase's placeholders), and `omp-app --render`'s offscreen renderer.*
+*Draft 2, 2026-10-28, with the owner's answers to the planning questions (decisions 14–19) and decision 12 reworded; decisions 1–13 confirmed by the owner the same day, and decision 20 from step 4.4. Expands Phase 4 of [roadmap.md](roadmap.md#phase-4-trip-planner-features). Builds on phase 3's routing ([phase3-plan.md](phase3-plan.md)): the contraction hierarchy and its queries in `omp_core::route`, the route page and side panel (steps 3.7 and 3.8, which already hold this phase's placeholders), and `omp-app --render`'s offscreen renderer.*
 
 ## Purpose
 
@@ -39,7 +39,7 @@ The roadmap's items are stop optimization, departure and arrival times with over
 | 4.1 Stop optimization | Not started | |
 | 4.2 Alternative routes (`omp-core`) | Not started | |
 | 4.3 Alternatives in the app | Not started | |
-| 4.4 U-turn penalty, measured first | In progress | Built behind `--uturn-penalty` and measured on Ohio and Quebec (2026-10-28): routing ×2.2–2.5, contraction ×8–24, U-turn routes 4.7% → 3.3% (Ohio) and 11.2% → 9.5% (Quebec) at any penalty. Recommended: do not build it for North America. **Waiting for the owner's decision** |
+| 4.4 U-turn penalty, measured first | **Done** 2026-10-28 | Built behind `--uturn-penalty` and measured on Ohio and Quebec: routing ×2.2–2.5, contraction ×8–24, U-turn routes 4.7% → 3.3% (Ohio) and 11.2% → 9.5% (Quebec) at any penalty. **Not built for North America** (owner, decision 20); the flag stays, off by default |
 | 4.5 Schedule: times, stops and overnights | Not started | |
 | 4.6 Fuel, rest and overnight suggestions (if cheap) | Not started | |
 | 4.7 Pushpins and saved trips | Not started | |
@@ -110,7 +110,7 @@ From the roadmap (phase 3 decisions 13 and 16): a hidden penalty of a few minute
 
 **Done when:** the measurements are in this plan and the size table, and the owner has decided. If the answer is yes, North America is built with it and checked.
 
-> **In progress 2026-10-28: measured; the owner's decision is open.** Built as planned, behind `build`, `graph` and `ch --uturn-penalty <s>` (0, the default, gives phase 3's graph and sections: the same counts and sizes). The restriction automaton ([`restrict.rs`](../crates/builder/src/graph/restrict.rs)) takes each two-way road `[u, v]` into a junction (three or more roads) as an approach that bans nothing, so the copy knows u and its edge back to u carries the penalty (`Edge::uturn_ds`, in the weight, not the time). Where every road into v is two-way, one of them keeps the plain node instead of a copy, which saves a node per junction. Restriction copies and U-turn copies are states of one automaton, so they combine. In the pack: `RHDR` gains the setting `uturn_penalty_s`; `RCHE` is unchanged; an `RGEO` direction flag (16) and a bit on each `RCPY` leaf mark the way back, so a route that ends just after a U-turn pays it too ([format.md](format.md#rhdr-routing-header-contiguous)). Tests: 3.1's grid test again with restrictions and penalties of 1 and 60 s, against a search over node paths that charges `[u, v, u]` at junctions (and checks that the penalty changes some routes), and a reader test that every leg between two segments' middles weighs what a search over the graph's states finds. Logs and packs in `$OMP_WORK/measure/uturn44/` (`run.sh` reruns them all).
+> **Done 2026-10-28** (871bdc7): measured, and **not taken for North America** (owner, decision 20). Built as planned, behind `build`, `graph` and `ch --uturn-penalty <s>` (0, the default, gives phase 3's graph and sections: the same counts and sizes). The restriction automaton ([`restrict.rs`](../crates/builder/src/graph/restrict.rs)) takes each two-way road `[u, v]` into a junction (three or more roads) as an approach that bans nothing, so the copy knows u and its edge back to u carries the penalty (`Edge::uturn_ds`, in the weight, not the time). Where every road into v is two-way, one of them keeps the plain node instead of a copy, which saves a node per junction. Restriction copies and U-turn copies are states of one automaton, so they combine. In the pack: `RHDR` gains the setting `uturn_penalty_s`; `RCHE` is unchanged; an `RGEO` direction flag (16) and a bit on each `RCPY` leaf mark the way back, so a route that ends just after a U-turn pays it too ([format.md](format.md#rhdr-routing-header-contiguous)). Tests: 3.1's grid test again with restrictions and penalties of 1 and 60 s, against a search over node paths that charges `[u, v, u]` at junctions (and checks that the penalty changes some routes), and a reader test that every leg between two segments' middles weighs what a search over the graph's states finds. Logs and packs in `$OMP_WORK/measure/uturn44/` (`run.sh` reruns them all).
 >
 > **Cost** (same binary; 0 is the baseline, which matches phase 3's packs exactly):
 >
@@ -143,7 +143,9 @@ From the roadmap (phase 3 decisions 13 and 16): a hidden penalty of a few minute
 >
 > **Compared with 4.2's rescoring:** not yet possible; 4.2 has not been started. Its rescoring needs no rebuild and costs nothing in the pack, and the measurement above says the median-crossing U-turns, the larger share, are within its reach and not this step's.
 >
-> **Recommendation for the owner: do not build the penalty for North America.** It would take routing over its 4.5 GiB budget and the build likely over the machine, for a third of the U-turns. Keep `--uturn-penalty` in the builder (off by default) so it can be measured again after 4.2. Left open: the owner's decision; if the answer is yes, a North America build with it (and with 4.5's `TZON`, so the continent is rebuilt once), `route --check` and the route set there.
+> **Recommendation for the owner: do not build the penalty for North America.** It would take routing over its 4.5 GiB budget and the build likely over the machine, for a third of the U-turns. Keep `--uturn-penalty` in the builder (off by default) so it can be measured again after 4.2.
+>
+> **Decided by the owner, 2026-10-28: not built** (decision 20). North America is rebuilt only for 4.5's `TZON`. Left for 4.2: its U-turn rates are compared with this table's (the comparison this step could not make), and if rescoring leaves too many, `--uturn-penalty` can be measured again on top of it.
 
 ## 4.5 Schedule: times, stops and overnights
 
@@ -247,8 +249,8 @@ As phase 3 step 3.9, with this phase's features:
 ```
 
 - 4.1, 4.2, 4.4, 4.5 and 4.7 are independent and can run side by side. 4.4's builds are long, so start them early and decide while other steps go on.
-- 4.4's decision waits for 4.2's U-turn numbers, so the owner sees both fixes side by side.
-- 4.5's `TZON` is the only format change planned (0.6). Build it with 4.4's experiment if that is taken, so North America is rebuilt once.
+- 4.4 was decided before 4.2 (decision 20: not taken), from its own numbers; 4.2 compares its rescoring with them.
+- 4.5's `TZON` is the only format change planned (0.6), and the only North America rebuild this phase needs now that 4.4's penalty is not taken.
 - Printing comes after trips, schedule and suggestions, so the printout has everything it prints: times, stops, pins.
 - 4.9's spike (egui at 300 dpi) comes first in that step: it decides how pages are drawn.
 
@@ -277,6 +279,10 @@ Settled by the owner (2026-10-28), from draft 1's questions:
 17. **The map prints on one page** (question d): the map with the route line if there is one, a scale bar, the credit line, and a one-line header with a label the user types when printing. **Directions print from their own button.** No detail maps of stops, and no page combining map and directions (4.9).
 18. **PDF text as part of the image is fine** (question e); no selectable text.
 19. **Fuel and rest suggestions go ahead as 4.6 plans** (question f), to be dropped if its measurements miss the budget.
+
+Settled by the owner (2026-10-28), from step 4.4's measurements:
+
+20. **No U-turn penalty in the North America pack.** It doubles the routing sections (over phase 3's 4.5 GiB budget) and makes contraction 8–24 times slower, for a third of the U-turns: the rest cross medians on divided roads, which only 4.2's angle-based rescoring sees. `--uturn-penalty` stays in the builder, off by default.
 
 Open: none.
 
