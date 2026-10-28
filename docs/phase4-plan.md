@@ -36,7 +36,7 @@ The roadmap's items are stop optimization, departure and arrival times with over
 
 | Step | Status | Notes |
 |---|---|---|
-| 4.1 Stop optimization | Not started | |
+| 4.1 Stop optimization | **Done** 2026-10-28 | Bucket matrix + Held–Karp ≤ 12 / heuristic above. North America warm: 25 stops 39 ms, 100 in 0.22 s, 500 in 1.4 s, 1,000 in 3.3 s; 0.996 of 100 random restarts on average (worst 1.0085); legs add up to the matrix in every run. E6430 time left to 4.11 |
 | 4.2 Alternative routes (`omp-core`) | Not started | |
 | 4.3 Alternatives in the app | Not started | |
 | 4.4 U-turn penalty, measured first | **Done** 2026-10-28 | Built behind `--uturn-penalty` and measured on Ohio and Quebec: routing ×2.2–2.5, contraction ×8–24, U-turn routes 4.7% → 3.3% (Ohio) and 11.2% → 9.5% (Quebec) at any penalty. **Not built for North America** (owner, decision 20); the flag stays, off by default |
@@ -71,6 +71,24 @@ Reorder the stops to make the trip quickest (decision 1).
 - **App:** *Optimize stop order* on the route page, with "Keep first stop" and "Keep last stop" checked by default, and "Round trip". It runs on the routing worker and can be cancelled like a trip. It shows "Saves 1 h 12 min, 84 km" with **Undo**, and stops keep their names and durations (4.5).
 
 **Done when:** criterion 1 is met in tests and on North America, `--optimize` works in the CLI, and the app's button reorders, undoes and is covered by a headless panel test.
+
+> **Done 2026-10-28** (commit "Step 4.1 done: stop optimization"). Logs in `$OMP_WORK/measure/opt41/`, on phase 3's final packs (`measure/private/`).
+>
+> - **Built:** `omp_core::route::matrix` (`Routing::matrix_until`, `optimize_until`) and `omp_core::route::order` (pure). The matrix's searches start from a leg's own seeds, U-turn and restricted penalties included, so each entry is `leg_avoiding`'s weight. Pairs on one segment, and pairs with no route avoiding all that was asked, are routed as legs. The order is a cycle through the stops plus one dummy stop (none for a round trip). Up to 12 stops to reorder it is exact (Held–Karp over at most 14 nodes). Above that come 8 starts of random-order cheapest-place insertion, then Or-opt (runs of up to 3) and 2-opt moves over 10-nearest neighbour lists, driven by a queue of the nodes a move touched (don't-look bits). Then 20 rounds a stop of local double-bridge kicks (runs of up to 30), each kept if it improves. The time budget is 10 ms a stop, between 2 and 10 s; no measured trip reached it, so orders are the same on every run.
+> - **CLI:** `route … --optimize [--keep-first] [--keep-last | --round-trip]`, and `--optimize-random <n>` for criterion 1. `--optimize-random` replaces random stops that have no route to or from the others (islands): 1 of 100, 2 of 500 and 2 of 1,000 on North America. Its "before/after" are matrix weights, restricted-road penalty included.
+> - **North America** (dev machine, keep both ends; matrix warm + order):
+>
+>   | Stops | Matrix | Order | Against 100 restarts |
+>   |---|---|---|---|
+>   | 25 | 36 ms (59 ms cold) | 3 ms | 1.0000 |
+>   | 100 | 189 ms | 29 ms | 1.0000 |
+>   | 500 | 979 ms | 393 ms | 0.9887 |
+>   | 1,000 | 1,979 ms | 1,324 ms | 0.9766 |
+>
+>   The sweep over 13, 25, 50, 100, 200 and 500 stops × 3 seeds × 4 end modes (72 runs) averages **0.9962** of the best of 100 random restarts, worst 1.0085. Order time averages 3 ms at 25 stops, 30 ms at 100 and 372 ms at 500. In all 72 runs the legs routed in the new order add up exactly to the matrix's total. The matrix costs about 2 ms a stop (two upward searches of about 350 nodes each) and holds peak RSS at 64–101 MiB for 25–1,000 stops. Ohio: 25 stops in 15 ms, 100 in 0.28 s.
+> - **Tests:** exact against brute force up to 9 stops in every end mode; the heuristic within 0.5% of Held–Karp at 10–13 stops; within 2% of 100 restarts at 13–60 stops in tests (the CLI covers more); the same order on every run; the matrix against `leg_avoiding` for every pair and avoid option on the builder's test network, and the optimized legs adding up to it.
+> - **App:** *Optimize stop order* on the route page, with *Keep first stop* and *Keep last stop* checked by default and *Round trip*. It is enabled once a complete route is shown and the order could change. It runs on the routing worker, then routes the trip in the new order. While it runs, a *Cancel* button replaces it, and any other change to the stops supersedes it. The result says "Saves 1 h 12 min, 84 km" (or "…; 3 km longer", or "already in the quickest order") from the routes before and after, with **Undo** until the stops change. Stops keep their names. A round trip adds the start again as the destination; if the destination is already at the start, it is left out of the order and added back. Covered by the headless panel test `optimize_stop_order`.
+> - **Left open:** the E6430's time for 25 stops (criterion: 2 s; 39 ms here) is measured with 4.11's benches. The stop list is not yet laid out only in view for very long trips (4.5 adds durations to its rows, so it is done there).
 
 ## 4.2 Alternative routes (`omp-core`)
 

@@ -525,3 +525,76 @@ fn legs_pay_the_uturn_penalty_to_reach_a_stop() {
     assert!(plain_uturns > 0);
     let _ = o;
 }
+
+/// The matrix between stops holds each leg's weight, with every avoid option: across the
+/// grid, along one segment both ways, round the banned turn, and out of the one-way
+/// pocket only by ferry. The optimized order's legs add up to it.
+#[test]
+fn matrix_holds_the_legs_weights() {
+    use omp_core::route::{Ends, order::NONE};
+    let g = network().build();
+    let (r, ..) = reader(&g);
+    let stops = [
+        stop(11, 12, 0.5),
+        stop(32, 33, 0.5),
+        stop(21, 22, 0.2),
+        stop(21, 22, 0.8),
+        stop(12, 22, 0.5),
+        stop(22, 23, 0.5),
+        stop(31, 41, 0.8),
+        stop(31, 41, 0.2),
+        stop(43, 44, 0.5),
+        stop(13, 43, 0.3),
+    ];
+    let snaps: Vec<_> = stops.iter().map(|s| r.snap(s).unwrap().unwrap()).collect();
+    for avoid in [0, TOLL, FERRY, AVOID] {
+        let (m, settled) = r.matrix_until(&snaps, avoid, &|| false).unwrap().unwrap();
+        assert!(settled > 0);
+        for i in 0..stops.len() {
+            for j in (0..stops.len()).filter(|&j| j != i) {
+                let leg = r.leg_avoiding(&snaps[i], &snaps[j], avoid).unwrap();
+                assert_eq!(m.get(i, j), leg.map_or(NONE, |l| l.weight), "{i} -> {j}");
+            }
+        }
+    }
+    assert_eq!(r.matrix_until(&snaps, 0, &|| true).unwrap(), None);
+
+    for ends in [
+        Ends::default(),
+        Ends {
+            keep_first: true,
+            keep_last: true,
+            round_trip: false,
+        },
+        Ends {
+            round_trip: true,
+            ..Ends::default()
+        },
+    ] {
+        let o = r
+            .optimize_until(&stops, FERRY, ends, &|| false)
+            .unwrap()
+            .unwrap();
+        let mut sorted = o.order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..stops.len()).collect::<Vec<_>>());
+        assert!(o.after.unwrap() <= o.before.unwrap());
+        let mut ordered: Vec<Stop> = o.order.iter().map(|&i| stops[i]).collect();
+        if ends.round_trip {
+            ordered.push(stops[o.order[0]]);
+        }
+        let trip = r.trip(&ordered, FERRY).unwrap();
+        let sum: u64 = trip
+            .legs
+            .iter()
+            .map(|l| u64::from(l.as_ref().unwrap().weight))
+            .sum();
+        assert_eq!(Some(sum), o.after, "{ends:?}");
+    }
+    // A stop with no road is an error.
+    let lost = [stops[0], Stop::at(omp_core::geo::project(10.0, -30.0))];
+    assert!(
+        r.optimize_until(&lost, 0, Ends::default(), &|| false)
+            .is_err()
+    );
+}

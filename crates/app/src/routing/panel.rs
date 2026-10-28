@@ -2,13 +2,15 @@
 //! stop's handle to move it, × to remove it, a button to reverse them), the avoid options,
 //! the distance and driving time in all and per leg, notices about the route, and the
 //! directions. Clicking a step flies to it and draws its stretch over the route; Escape
-//! lets go of it. Phase 4's trip planning has its places here, disabled.
+//! lets go of it. *Optimize stop order* (phase 4 step 4.1) reorders the stops, keeping the
+//! ends checked, says what it saved and offers Undo. The rest of phase 4's trip planning
+//! has its places here, disabled.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use omp_core::geo;
 use omp_core::route::{FERRY, Kind, Modifier, Step, TOLL};
 
-use super::{END, Place, RouteUi, START, StopAction, VIA, duration_text};
+use super::{END, Place, Reordered, RouteUi, START, StopAction, VIA, duration_text};
 use crate::camera::{self, Camera};
 use crate::scale::Units;
 use crate::search::distance_text;
@@ -32,6 +34,12 @@ pub enum Target {
     Remove(usize),
     Reverse,
     Avoid(u8),
+    Optimize,
+    CancelOptimize,
+    KeepFirst,
+    KeepLast,
+    RoundTrip,
+    Undo,
     Step(usize),
 }
 
@@ -42,6 +50,9 @@ enum Edit {
     Remove(usize),
     Reverse,
     Avoid(u8, bool),
+    Optimize,
+    CancelOptimize,
+    Undo,
     Pick(usize),
 }
 
@@ -73,7 +84,7 @@ impl RouteUi {
         if self.has_stops() {
             self.stop_rows(ui, &mut edits);
         }
-        self.options(ui, &mut edits);
+        self.options(ui, units, &mut edits);
         ui.separator();
         self.summary(ui, units);
         if self.route.is_some() {
@@ -105,6 +116,9 @@ impl RouteUi {
                 Edit::Remove(i) => self.remove_stop(i),
                 Edit::Reverse => self.reverse(),
                 Edit::Avoid(flag, on) => self.set_avoid(flag, on),
+                Edit::Optimize => self.optimize(),
+                Edit::CancelOptimize => self.cancel_optimize(),
+                Edit::Undo => self.undo_optimize(),
                 Edit::Pick(i) => {
                     self.pick(Some(i));
                     fly = self.step_view(i, cam.size);
@@ -221,7 +235,7 @@ impl RouteUi {
         }
     }
 
-    fn options(&mut self, ui: &mut egui::Ui, edits: &mut Vec<Edit>) {
+    fn options(&mut self, ui: &mut egui::Ui, units: Units, edits: &mut Vec<Edit>) {
         ui.horizontal(|ui| {
             let full = self.from.is_some() && self.to.is_some();
             let r = ui
@@ -241,17 +255,89 @@ impl RouteUi {
                 }
             }
         });
+        self.order_options(ui, units, edits);
         ui.horizontal_wrapped(|ui| {
-            later(
-                ui,
-                "Optimize stop order",
-                "The shortest order of the stops between, with the first and last fixed or open",
-            );
             later(
                 ui,
                 "Depart at / Arrive by",
                 "Times along the route, with overnight and fuel stops",
             );
+        });
+    }
+
+    /// *Optimize stop order* (or Cancel while it runs), the ends it keeps, and what it did
+    /// last, with Undo.
+    fn order_options(&mut self, ui: &mut egui::Ui, units: Units, edits: &mut Vec<Edit>) {
+        ui.horizontal_wrapped(|ui| {
+            if self.optimizing.is_some() {
+                let r = ui
+                    .button("Cancel")
+                    .on_hover_text("Stop looking for a quicker order");
+                self.targets.push((Target::CancelOptimize, r.rect));
+                if r.clicked() {
+                    edits.push(Edit::CancelOptimize);
+                }
+            } else {
+                let r = ui
+                    .add_enabled(
+                        self.can_optimize(),
+                        egui::Button::new("Optimize stop order"),
+                    )
+                    .on_hover_text("Put the stops in the order that makes the trip quickest")
+                    .on_disabled_hover_text(
+                        "Needs a route with stops whose order can change: \
+                         three or more, or a round trip",
+                    );
+                self.targets.push((Target::Optimize, r.rect));
+                if r.clicked() {
+                    edits.push(Edit::Optimize);
+                }
+            }
+            let round = self.ends.round_trip;
+            let boxes = [
+                (Target::KeepFirst, "Keep first stop", round),
+                (Target::KeepLast, "Keep last stop", round),
+                (Target::RoundTrip, "Round trip", false),
+            ];
+            for (target, label, disabled) in boxes {
+                let ends = &mut self.ends;
+                let on = match target {
+                    Target::KeepFirst => &mut ends.keep_first,
+                    Target::KeepLast => &mut ends.keep_last,
+                    _ => &mut ends.round_trip,
+                };
+                let r = ui.add_enabled(!disabled, egui::Checkbox::new(on, label));
+                let r = match target {
+                    Target::RoundTrip => r.on_hover_text("End back at the first stop"),
+                    _ => r.on_disabled_hover_text("A round trip starts and ends at the first stop"),
+                };
+                self.targets.push((target, r.rect));
+            }
+        });
+        let Some(done) = &self.reordered else { return };
+        let text = match done {
+            Reordered::Saved { time_s, metres, .. } => {
+                let d = distance_text(metres.abs(), units);
+                let m = match *metres < 0.0 {
+                    true => format!("; {d} longer"),
+                    false => format!(", {d}"),
+                };
+                format!("Saves {}{m}", duration_text(time_s.max(0.0)))
+            }
+            Reordered::Already => "The stops are already in the quickest order.".into(),
+            Reordered::Failed(e) => format!("Could not optimize: {e}"),
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(text).color(INK));
+            if matches!(done, Reordered::Saved { .. }) {
+                let r = ui
+                    .small_button("Undo")
+                    .on_hover_text("Put the stops back in their order before");
+                self.targets.push((Target::Undo, r.rect));
+                if r.clicked() {
+                    edits.push(Edit::Undo);
+                }
+            }
         });
     }
 

@@ -6,7 +6,7 @@ use eframe::egui::{Event, Key, PointerButton};
 
 use super::*;
 use crate::routing::tests::answer;
-use crate::routing::worker::{Answer, Worker};
+use crate::routing::worker::{Answer, Request, Worker};
 use crate::routing::{Look, Place};
 
 struct Ui {
@@ -104,11 +104,15 @@ fn stop_list() {
     let mut u = Ui::new();
     // No stops: the options only.
     u.frame(Vec::new());
-    assert!(
-        u.r.targets
-            .iter()
-            .all(|t| matches!(t.0, Target::Reverse | Target::Avoid(_)))
-    );
+    assert!(u.r.targets.iter().all(|t| matches!(
+        t.0,
+        Target::Reverse
+            | Target::Avoid(_)
+            | Target::Optimize
+            | Target::KeepFirst
+            | Target::KeepLast
+            | Target::RoundTrip
+    )));
 
     u.r.apply(StopAction::From, named("a", 40.0));
     u.r.apply(StopAction::Add, named("b", 40.2));
@@ -168,4 +172,132 @@ fn stop_list() {
     assert!(!u.r.overlays.iter().any(|o| o.0 == Look::Picked));
     u.click(Target::Clear);
     assert!(!u.r.has_stops() && u.r.route.is_none());
+}
+
+impl Ui {
+    /// Answers the optimize request waiting with `order` (or `Err`): the trip routed in
+    /// that order, each leg a minute and 500 m shorter than [`answer`]'s.
+    fn optimized(&mut self, order: Result<&[usize], &str>) -> Request {
+        let mut req = self.r.worker.take_request().expect("a request");
+        let ends = req.optimize.expect("an optimize request");
+        let mut a = match order {
+            Ok(order) => {
+                let mut stops: Vec<_> = order.iter().map(|&i| req.stops[i]).collect();
+                if ends.round_trip {
+                    stops.push(stops[0]);
+                }
+                let asked = req.stops.clone();
+                req.stops = stops;
+                let mut a = answer(&req);
+                if let Ok(r) = &mut a.routed {
+                    for l in r.trip.legs.iter_mut().flatten() {
+                        l.time_s -= 60.0;
+                        l.metres -= 500.0;
+                    }
+                }
+                a.order = Some(Ok(order.to_vec()));
+                req.stops = asked;
+                a
+            }
+            Err(e) => {
+                let mut a = answer(&req);
+                a.routed = Err(e.into());
+                a.order = Some(Err(e.into()));
+                a
+            }
+        };
+        a.optimize = std::time::Duration::from_millis(3);
+        self.tx.send(a).unwrap();
+        self.frame(Vec::new());
+        self.frame(Vec::new());
+        req
+    }
+
+    fn drawn(&self, t: Target) -> bool {
+        self.r.targets.iter().any(|(k, _)| *k == t)
+    }
+}
+
+#[test]
+fn optimize_stop_order() {
+    use crate::routing::Reordered;
+    let mut u = Ui::new();
+    u.r.apply(StopAction::From, named("a", 40.0));
+    u.r.apply(StopAction::Add, named("b", 40.4));
+    u.r.apply(StopAction::Add, named("c", 40.2));
+    u.r.apply(StopAction::To, named("d", 40.6));
+    u.frame(Vec::new());
+    // Not before the route is shown.
+    assert!(!u.r.can_optimize());
+    u.answer();
+    assert!(u.r.can_optimize());
+
+    // Keeping both ends by default: b and c swap, and it says what that saved.
+    u.click(Target::Optimize);
+    u.frame(Vec::new());
+    assert!(u.drawn(Target::CancelOptimize) && !u.drawn(Target::Optimize));
+    let req = u.optimized(Ok(&[0, 2, 1, 3]));
+    let ends = req.optimize.unwrap();
+    assert!(ends.keep_first && ends.keep_last && !ends.round_trip);
+    assert_eq!(req.stops.len(), 4);
+    assert_eq!(u.names(), "acbd");
+    let kinds: Vec<StopAction> = u.r.stops().iter().map(|s| s.0).collect();
+    use StopAction::{Add, From, To};
+    assert_eq!(kinds, [From, Add, Add, To]);
+    match &u.r.reordered {
+        Some(Reordered::Saved { time_s, metres, .. }) => {
+            assert_eq!((*time_s, *metres), (180.0, 1500.0));
+        }
+        r => panic!("{r:?}"),
+    }
+    assert!(u.r.route.is_some() && u.r.waiting.is_none());
+    assert!(u.r.overlay_lines()[1].contains("order 3.0 ms"));
+
+    // Undo puts the old order back and routes it.
+    u.click(Target::Undo);
+    assert_eq!(u.names(), "abcd");
+    assert!(u.r.reordered.is_none());
+    assert_eq!(u.answer(), 4);
+
+    // Cancelled while it runs: the route shown stays, and the button is back.
+    u.click(Target::Optimize);
+    u.frame(Vec::new());
+    u.click(Target::CancelOptimize);
+    u.frame(Vec::new());
+    assert!(u.r.waiting.is_none() && u.r.route.is_some());
+    assert!(u.drawn(Target::Optimize));
+    assert_eq!(u.names(), "abcd");
+
+    // Already the quickest: no Undo. A stop changed lets go of the note.
+    u.click(Target::Optimize);
+    u.optimized(Ok(&[0, 1, 2, 3]));
+    assert!(matches!(u.r.reordered, Some(Reordered::Already)));
+    assert!(!u.drawn(Target::Undo));
+    assert!(u.drawn(Target::Optimize));
+    u.click(Target::Reverse);
+    assert!(u.r.reordered.is_none());
+    u.answer();
+    assert_eq!(u.names(), "dcba");
+
+    // A round trip: from the first, every other stop reordered, and back.
+    u.click(Target::RoundTrip);
+    assert!(u.r.ends.round_trip);
+    u.frame(Vec::new());
+    u.click(Target::Optimize);
+    let req = u.optimized(Ok(&[0, 3, 1, 2]));
+    assert!(req.optimize.unwrap().round_trip);
+    assert_eq!(u.names(), "dacbd");
+    assert_eq!(u.r.route.as_ref().unwrap().trip.snaps.len(), 5);
+    // Back at the start already: optimized again without the return, which comes back.
+    u.click(Target::Optimize);
+    let req = u.optimized(Ok(&[0, 2, 1, 3]));
+    assert_eq!(req.stops.len(), 4);
+    assert_eq!(u.names(), "dcabd");
+
+    // A failure says so and keeps the route.
+    u.click(Target::Optimize);
+    u.optimized(Err("stop 2 has no road within reach"));
+    assert!(matches!(&u.r.reordered, Some(Reordered::Failed(e)) if e.contains("stop 2")));
+    assert!(u.r.route.is_some());
+    assert_eq!(u.names(), "dcabd");
 }

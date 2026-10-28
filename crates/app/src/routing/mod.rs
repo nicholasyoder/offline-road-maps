@@ -10,7 +10,9 @@
 //! Stops are kept in order: the start, the stops added between, and the destination. Each
 //! change asks for the route again once there is a start and a destination; the answer to
 //! the latest request replaces the route shown, and the view fits it unless it is already
-//! in view. Over the route are drawn the parts on restricted roads and the step picked in
+//! in view. *Optimize stop order* (phase 4 step 4.1) asks the worker to reorder the stops
+//! first; the answer puts the stops in the new order, says what it saved, and can be
+//! undone until the stops change again. Over the route are drawn the parts on restricted roads and the step picked in
 //! the directions, and dashed lines join each stop to where the route meets its road.
 
 mod line;
@@ -24,7 +26,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, Pos2};
 use omp_core::find::Hit;
 use omp_core::geo::{self, P};
-use omp_core::route::{FAR_SNAP_M, FERRY, Stop, TOLL};
+use omp_core::route::{Ends, FAR_SNAP_M, FERRY, Stop, TOLL};
 
 use crate::camera::{self, Camera, TILE_PX};
 use crate::pool::Pool;
@@ -73,6 +75,13 @@ impl Place {
             p: h.p,
             street: h.street,
             name: Some(h.name.clone()),
+        }
+    }
+
+    fn stop(&self) -> Stop {
+        Stop {
+            p: self.p,
+            street: self.street,
         }
     }
 }
@@ -146,6 +155,8 @@ pub fn stop_buttons(ui: &mut egui::Ui, state: &MenuState) -> (Option<StopAction>
 pub struct Taken {
     /// From the request to the answer reaching the UI.
     pub latency: Duration,
+    /// In the matrix and the order, for an optimize request.
+    pub optimize: Duration,
     pub trip: Duration,
     pub directions: Duration,
     pub line: Duration,
@@ -199,6 +210,28 @@ pub fn overlay_lines(routed: &Routed, stops: &[P], picked: Option<usize>) -> Vec
     out
 }
 
+/// The stops as they were before *Optimize stop order*, and the route's totals then.
+#[derive(Clone, Debug)]
+pub struct Before {
+    places: Vec<Place>,
+    time_s: f64,
+    metres: f64,
+}
+
+/// What the last *Optimize stop order* did, shown under it.
+#[derive(Clone, Debug)]
+pub enum Reordered {
+    /// The stops' new order saves this much on the route before; it can be undone.
+    Saved {
+        before: Before,
+        time_s: f64,
+        metres: f64,
+    },
+    /// The order was already the quickest.
+    Already,
+    Failed(String),
+}
+
 pub struct RouteUi {
     worker: Worker,
     pub from: Option<Place>,
@@ -206,6 +239,11 @@ pub struct RouteUi {
     pub to: Option<Place>,
     /// [`omp_core::route::TOLL`] and [`omp_core::route::FERRY`].
     pub avoid: u8,
+    /// The ends *Optimize stop order* keeps.
+    pub ends: Ends,
+    /// While an optimize request is waiting: the stops before it, and those it sent.
+    optimizing: Option<(Before, Vec<Place>)>,
+    pub reordered: Option<Reordered>,
     next_id: u64,
     /// The latest request, until its answer comes.
     pub waiting: Option<u64>,
@@ -250,6 +288,13 @@ impl RouteUi {
             via: Vec::new(),
             to: None,
             avoid: 0,
+            ends: Ends {
+                keep_first: true,
+                keep_last: true,
+                round_trip: false,
+            },
+            optimizing: None,
+            reordered: None,
             next_id: 0,
             waiting: None,
             route: None,
@@ -309,11 +354,16 @@ impl RouteUi {
 
     /// Puts `places` back as the stops, the first as the start if `from` and the last as
     /// the destination if `to`.
-    fn set_stops(&mut self, mut places: Vec<Place>, from: bool, to: bool) {
+    fn set_stops(&mut self, places: Vec<Place>, from: bool, to: bool) {
+        self.put_stops(places, from, to);
+        self.reroute();
+    }
+
+    /// [`Self::set_stops`] without asking for the route.
+    fn put_stops(&mut self, mut places: Vec<Place>, from: bool, to: bool) {
         self.from = (from && !places.is_empty()).then(|| places.remove(0));
         self.to = if to { places.pop() } else { None };
         self.via = places;
-        self.reroute();
     }
 
     fn places(&self) -> Vec<Place> {
@@ -364,6 +414,65 @@ impl RouteUi {
         if avoid != self.avoid {
             self.avoid = avoid;
             self.reroute();
+        }
+    }
+
+    /// The stops *Optimize stop order* sends: all of them, but for a round trip whose
+    /// destination is already back at the start, without it.
+    fn to_optimize(&self) -> Vec<Place> {
+        let mut places = self.places();
+        let back = places.len() > 2 && places.first().map(|p| p.p) == places.last().map(|p| p.p);
+        if self.ends.round_trip && back {
+            places.pop();
+        }
+        places
+    }
+
+    /// The route is shown, with stops that a new order could change.
+    pub fn can_optimize(&self) -> bool {
+        let places = self.to_optimize();
+        let round =
+            self.ends.round_trip && places.len() >= 2 && places.len() == self.places().len();
+        let shown = self.route.as_ref().is_some_and(|r| r.trip.complete());
+        shown && self.waiting.is_none() && (self.ends.free(places.len()) >= 2 || round)
+    }
+
+    /// Asks for the route through the stops in their quickest order, keeping [`Self::ends`].
+    pub fn optimize(&mut self) {
+        let Some(route) = self.route.as_ref().filter(|_| self.can_optimize()) else {
+            return;
+        };
+        let before = Before {
+            places: self.places(),
+            time_s: route.trip.time_s(),
+            metres: route.trip.metres(),
+        };
+        let places = self.to_optimize();
+        self.next_id += 1;
+        self.waiting = Some(self.next_id);
+        self.reordered = None;
+        self.worker.ask(Request {
+            id: self.next_id,
+            stops: places.iter().map(Place::stop).collect(),
+            avoid: self.avoid,
+            asked: Instant::now(),
+            optimize: Some(self.ends),
+        });
+        self.optimizing = Some((before, places));
+    }
+
+    /// Stops an optimize request; the route shown stays.
+    pub fn cancel_optimize(&mut self) {
+        if self.optimizing.take().is_some() {
+            self.worker.cancel();
+            self.waiting = None;
+        }
+    }
+
+    /// Puts the stops back as they were before the last *Optimize stop order*.
+    pub fn undo_optimize(&mut self) {
+        if let Some(Reordered::Saved { before, .. }) = self.reordered.take() {
+            self.set_stops(before.places, true, true);
         }
     }
 
@@ -469,6 +578,8 @@ impl RouteUi {
     /// Asks for the route through the stops, or drops it when there is no start or no
     /// destination.
     pub fn reroute(&mut self) {
+        self.optimizing = None;
+        self.reordered = None;
         let (Some(from), Some(to)) = (&self.from, &self.to) else {
             self.worker.cancel();
             self.waiting = None;
@@ -479,14 +590,10 @@ impl RouteUi {
             self.picked = None;
             return;
         };
-        let stop = |p: &Place| Stop {
-            p: p.p,
-            street: p.street,
-        };
         let stops = std::iter::once(from)
             .chain(&self.via)
             .chain(std::iter::once(to))
-            .map(stop)
+            .map(Place::stop)
             .collect();
         self.next_id += 1;
         self.waiting = Some(self.next_id);
@@ -495,6 +602,7 @@ impl RouteUi {
             stops,
             avoid: self.avoid,
             asked: Instant::now(),
+            optimize: None,
         });
     }
 
@@ -509,6 +617,19 @@ impl RouteUi {
                 continue;
             }
             self.waiting = None;
+            if let Some(order) = &a.order {
+                let Some((before, sent)) = self.optimizing.take() else {
+                    continue;
+                };
+                match order {
+                    Ok(order) => self.put_order(before, &sent, order, &a.routed),
+                    // The route shown stays.
+                    Err(e) => {
+                        self.reordered = Some(Reordered::Failed(e.clone()));
+                        continue;
+                    }
+                }
+            }
             self.picked = None;
             self.rows = None;
             self.overlays.clear();
@@ -517,6 +638,7 @@ impl RouteUi {
                     let line = &routed.line;
                     self.last = Some(Taken {
                         latency: a.request.asked.elapsed(),
+                        optimize: a.optimize,
                         trip: a.trip,
                         directions: a.directions,
                         line: a.line,
@@ -540,6 +662,36 @@ impl RouteUi {
             self.bands = Default::default();
         }
         fit
+    }
+
+    /// Puts the stops in the order an optimize request found, and says what it saved.
+    fn put_order(
+        &mut self,
+        before: Before,
+        sent: &[Place],
+        order: &[usize],
+        routed: &Result<Routed, String>,
+    ) {
+        let mut places: Vec<Place> = order.iter().map(|&i| sent[i].clone()).collect();
+        if self.ends.round_trip {
+            places.push(places[0].clone());
+        }
+        let same = places.len() == before.places.len()
+            && places.iter().zip(&before.places).all(|(a, b)| a.p == b.p);
+        self.reordered = Some(match (same, routed) {
+            (true, _) => Reordered::Already,
+            (false, Ok(r)) => Reordered::Saved {
+                time_s: before.time_s - r.trip.time_s(),
+                metres: before.metres - r.trip.metres(),
+                before,
+            },
+            (false, Err(_)) => Reordered::Saved {
+                time_s: 0.0,
+                metres: 0.0,
+                before,
+            },
+        });
+        self.put_stops(places, true, true);
     }
 
     /// The lines to draw on `cam`'s view, each made again for a new band.
@@ -626,11 +778,15 @@ impl RouteUi {
             let trip = &s.trip;
             let band = self.bands[Look::Route as usize].as_ref();
             lines.push(format!(
-                "last route: {} stops, {:.1} km, {:.0} min{}, trip {:.1} ms, directions {:.1} ms ({} steps), line {:.1} ms ({} points, band z{} {} segments), shown after {:.1} ms",
+                "last route: {} stops, {:.1} km, {:.0} min{}, {}trip {:.1} ms, directions {:.1} ms ({} steps), line {:.1} ms ({} points, band z{} {} segments), shown after {:.1} ms",
                 trip.snaps.len(),
                 trip.metres() / 1000.0,
                 trip.time_s() / 60.0,
                 if trip.complete() { "" } else { " (incomplete)" },
+                match t.optimize.is_zero() {
+                    true => String::new(),
+                    false => format!("order {:.1} ms, ", t.optimize.as_secs_f64() * 1e3),
+                },
                 t.trip.as_secs_f64() * 1e3,
                 t.directions.as_secs_f64() * 1e3,
                 s.steps.len(),

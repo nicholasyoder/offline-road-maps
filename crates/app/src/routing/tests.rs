@@ -104,6 +104,8 @@ pub(super) fn answer(r: &Request) -> Answer {
     Answer {
         request: r.clone(),
         routed: Ok(routed),
+        order: None,
+        optimize: Duration::ZERO,
         trip: Duration::from_millis(2),
         directions: Duration::ZERO,
         line: Duration::ZERO,

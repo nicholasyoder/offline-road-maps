@@ -271,7 +271,7 @@ impl Routing {
 
     /// Where a route from `snap` can start: the far end of each direction of its segment,
     /// with the part of it still to drive.
-    fn sources(snap: &Snap, seg: &Segment) -> Vec<Seed> {
+    pub(super) fn sources(snap: &Snap, seg: &Segment) -> Vec<Seed> {
         let mut out = vec![(
             seg.forward.head,
             part(seg.forward.time_ds, 1.0 - snap.along),
@@ -285,7 +285,7 @@ impl Routing {
     /// Where a route to `snap` can end: the near end of each direction of its segment, or
     /// a copy of it that may leave along it, with the part of it still to drive, and the
     /// U-turn penalty where leaving along it turns back.
-    fn targets(&self, snap: &Snap, seg: &Segment) -> io::Result<(Vec<Seed>, Vec<bool>)> {
+    pub(super) fn targets(&self, snap: &Snap, seg: &Segment) -> io::Result<(Vec<Seed>, Vec<bool>)> {
         let (mut out, mut reversed) = (Vec::new(), Vec::new());
         let ends = [
             (seg.a, Some(&seg.forward), snap.along, false),
@@ -438,7 +438,7 @@ impl Routing {
         self.leg_avoiding_until(from, to, avoid, &|| false)
     }
 
-    fn leg_avoiding_until(
+    pub(super) fn leg_avoiding_until(
         &self,
         from: &Snap,
         to: &Snap,

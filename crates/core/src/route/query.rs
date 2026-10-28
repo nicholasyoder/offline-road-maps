@@ -228,6 +228,57 @@ impl Routing {
         }))
     }
 
+    /// Every node a search up the hierarchy from `seeds` settles and does not stall, with
+    /// its distance: forward along up edges, or backward along down edges, with no end.
+    /// Stopped by `stop` with [`stopped`]. Returns the nodes settled.
+    pub(super) fn upward(
+        &self,
+        seeds: &[Seed],
+        forward: bool,
+        avoid: u8,
+        stop: &dyn Fn() -> bool,
+        visit: &mut dyn FnMut(u32, u32),
+    ) -> io::Result<usize> {
+        let mut side = Side::new(seeds);
+        let mut settled = 0;
+        while let Some(Reverse((d, u))) = side.heap.pop() {
+            if side.dist[&u].d < d {
+                continue;
+            }
+            settled += 1;
+            if settled % STOP_EVERY == 0 && stop() {
+                return Err(stopped());
+            }
+            let node = self.node(u)?;
+            let (out, into) = match forward {
+                true => (node.up(), node.down()),
+                false => (node.down(), node.up()),
+            };
+            let stalled = into.iter().any(|e| {
+                e.flags & avoid == 0 && side.dist(e.other).is_some_and(|w| w + e.weight < d)
+            });
+            if stalled {
+                continue;
+            }
+            visit(u, d);
+            for e in out.iter().filter(|e| e.flags & avoid == 0) {
+                let nd = d + e.weight;
+                if side.dist.get(&e.other).is_none_or(|l| nd < l.d) {
+                    side.dist.insert(
+                        e.other,
+                        Label {
+                            d: nd,
+                            from: u,
+                            edge: *e,
+                        },
+                    );
+                    side.heap.push(Reverse((nd, e.other)));
+                }
+            }
+        }
+        Ok(settled)
+    }
+
     /// Appends the segment directions of `e`, a hierarchy edge from `a` to `b`.
     pub fn unpack(&self, a: u32, b: u32, e: &ChEdge, out: &mut Vec<u32>) -> io::Result<()> {
         let m = e.mid;

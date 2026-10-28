@@ -3,9 +3,12 @@
 //! snap and each leg's distance and time, and `--geojson` writes the line. `route --check`
 //! ([`check`]) runs random pairs against Dijkstra over the same reader's base edges,
 //! checks the paths against the turn restrictions, and times routes. `route --addresses`
-//! ([`snaps`]) measures how far address points snap.
+//! ([`snaps`]) measures how far address points snap. `route --optimize` reorders the
+//! stops first (phase 4 step 4.1), and `--optimize-random` ([`optimize`]) measures that on
+//! random stops.
 
 pub mod check;
+pub mod optimize;
 pub mod set;
 pub mod snaps;
 
@@ -19,7 +22,7 @@ use omp_core::find::Request;
 use omp_core::geo::{self, P};
 use omp_core::pack::Pack;
 use omp_core::route::{
-    AVOID, FAR_SNAP_M, FERRY, FERRY_CLASS, Leg, Names, Routing, Snap, Stop, TOLL,
+    AVOID, Ends, FAR_SNAP_M, FERRY, FERRY_CLASS, Leg, Names, Routing, Snap, Stop, TOLL,
 };
 use omp_core::search::Search;
 use omp_core::street::{CLASSES, Streets};
@@ -121,6 +124,29 @@ pub struct RouteArgs {
     /// With `--near`, how far to look, in metres.
     #[arg(long, default_value_t = 500.0)]
     radius: f64,
+
+    /// Reorder the stops for the quickest trip before routing it; the first and last
+    /// stops are reordered too unless kept.
+    #[arg(long)]
+    optimize: bool,
+
+    /// With `--optimize`, keep the first stop first.
+    #[arg(long)]
+    keep_first: bool,
+
+    /// With `--optimize`, keep the last stop last.
+    #[arg(long, conflicts_with = "round_trip")]
+    keep_last: bool,
+
+    /// With `--optimize`, end back at the first stop, which is kept.
+    #[arg(long)]
+    round_trip: bool,
+
+    /// Optimize the order of this many random stops (criterion 1): the matrix's and the
+    /// order's times, the order against 100 random restarts, and whether the legs add up
+    /// to the matrix. With `--keep-first`, `--keep-last` or `--round-trip`.
+    #[arg(long)]
+    optimize_random: Option<usize>,
 
     /// MiB of decoded hierarchy blocks to keep [default: the reader's].
     #[arg(long)]
@@ -268,10 +294,21 @@ pub fn run(args: RouteArgs) -> Result<()> {
     if let Some(p) = &args.near {
         return set::near(&r, names, parse_point(p)?, args.radius);
     }
+    let avoid = parse_avoid(&args.avoid)?;
+    let ends = Ends {
+        keep_first: args.keep_first,
+        keep_last: args.keep_last,
+        round_trip: args.round_trip,
+    };
+    if let Some(n) = args.optimize_random {
+        return optimize::random(&r, n, avoid, ends, args.seed);
+    }
+    if ends != Ends::default() && !args.optimize {
+        bail!("--keep-first, --keep-last and --round-trip go with --optimize");
+    }
     if args.stops.len() < 2 {
         bail!("give at least two stops, or --check");
     }
-    let avoid = parse_avoid(&args.avoid)?;
     // Stops given as text are searched for, as the app's search box would.
     let mut search: Option<Search> = None;
     let mut stops = Vec::new();
@@ -303,6 +340,23 @@ pub fn run(args: RouteArgs) -> Result<()> {
             name,
         ));
     }
+
+    let optimized = match args.optimize {
+        true => {
+            let only: Vec<Stop> = stops.iter().map(|s| s.0).collect();
+            let o = r
+                .optimize_until(&only, avoid, ends, &|| false)?
+                .expect("never stopped");
+            optimize::print(&o, &stops.iter().map(|s| s.1.clone()).collect::<Vec<_>>());
+            let mut ordered: Vec<_> = o.order.iter().map(|&i| stops[i].clone()).collect();
+            if ends.round_trip {
+                ordered.push(ordered[0].clone());
+            }
+            stops = ordered;
+            Some(o)
+        }
+        false => None,
+    };
 
     let t = Instant::now();
     let only: Vec<Stop> = stops.iter().map(|s| s.0).collect();
@@ -354,6 +408,9 @@ pub fn run(args: RouteArgs) -> Result<()> {
             false => " (incomplete)",
         }
     );
+    if let Some(o) = &optimized {
+        optimize::check_legs(o, &trip);
+    }
     if args.directions {
         let t = Instant::now();
         let steps = r.directions(&trip, &only, names)?;

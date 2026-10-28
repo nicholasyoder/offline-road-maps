@@ -7,7 +7,9 @@
 //! milliseconds ([`route::Routing::trip_until`]); the UI drops answers to anything but its
 //! latest request, as search does. The worker also finds where each point of the line
 //! would be dropped ([`Line`]), so the UI thread only filters it, and makes the directions
-//! (step 3.7) with the pack's street table.
+//! (step 3.7) with the pack's street table. A request may ask for the stops' quickest
+//! order first (phase 4 step 4.1): the trip is then routed in that order, and stopped the
+//! same way.
 
 use std::io;
 use std::ops::Range;
@@ -18,7 +20,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use omp_core::pack::Pack;
-use omp_core::route::{self, Names, Step, Stop, Trip};
+use omp_core::route::{self, Ends, Names, Step, Stop, Trip};
 use omp_core::street::Streets;
 
 use super::line::Line;
@@ -63,6 +65,8 @@ pub struct Request {
     pub stops: Vec<Stop>,
     pub avoid: u8,
     pub asked: Instant,
+    /// Reorder the stops for the quickest trip first, keeping these ends.
+    pub optimize: Option<Ends>,
 }
 
 /// A trip and what the UI shows of it.
@@ -124,8 +128,15 @@ fn road(reader: &route::Routing, names: Option<&dyn Names>, s: u32) -> io::Resul
 }
 
 pub struct Answer {
+    /// What was asked; for an optimize request, with its stops in the new order (and back
+    /// to the first for a round trip), as the trip was routed.
     pub request: Request,
     pub routed: Result<Routed, String>,
+    /// For an optimize request: the new order, as indices of the stops asked, or why
+    /// there is none (the trip is then not routed).
+    pub order: Option<Result<Vec<usize>, String>>,
+    /// Time in the matrix and the order.
+    pub optimize: Duration,
     /// Time in `trip`, in the directions, and in finding the line's tolerances.
     pub trip: Duration,
     pub directions: Duration,
@@ -291,7 +302,7 @@ fn serve(
     wake: &dyn Fn(),
 ) {
     loop {
-        let (request, generation) = {
+        let (mut request, generation) = {
             let mut slot = shared.slot.lock().unwrap();
             loop {
                 if slot.quit {
@@ -304,6 +315,39 @@ fn serve(
             }
         };
         let stop = || shared.generation.load(Ordering::Relaxed) != generation;
+        let t = Instant::now();
+        let mut order = None;
+        if let Some(ends) = request.optimize {
+            match reader.optimize_until(&request.stops, request.avoid, ends, &stop) {
+                Ok(None) => continue,
+                Ok(Some(o)) => {
+                    let mut stops: Vec<Stop> = o.order.iter().map(|&i| request.stops[i]).collect();
+                    if ends.round_trip {
+                        stops.push(stops[0]);
+                    }
+                    request.stops = stops;
+                    order = Some(Ok(o.order));
+                }
+                Err(e) => {
+                    let e = e.to_string();
+                    let answer = Answer {
+                        request,
+                        routed: Err(e.clone()),
+                        order: Some(Err(e)),
+                        optimize: t.elapsed(),
+                        trip: Duration::ZERO,
+                        directions: Duration::ZERO,
+                        line: Duration::ZERO,
+                    };
+                    if tx.send(answer).is_err() {
+                        return;
+                    }
+                    wake();
+                    continue;
+                }
+            }
+        }
+        let optimize = t.elapsed();
         let t = Instant::now();
         let trip = match reader.trip_until(&request.stops, request.avoid, &stop) {
             // Stopped by a newer request, which is waiting.
@@ -326,6 +370,8 @@ fn serve(
         let answer = Answer {
             request,
             routed,
+            order,
+            optimize,
             trip: trip_time,
             directions,
             line,
