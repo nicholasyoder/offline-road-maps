@@ -5,7 +5,7 @@
 //!   and answers "what's here"; no egui.
 //! - [`session`]: which answer is the latest, the suggestions and results it gives, and the
 //!   recent searches.
-//! - [`ui`]: the box, its keys, the suggestions and the results panel.
+//! - [`ui`]: the box, its keys, and the search page: the suggestions and the results.
 //! - [`draw`]: the kind icons, a row, and the marker.
 
 mod draw;
@@ -21,7 +21,7 @@ use crate::scale::Units;
 
 pub use draw::{Icons, draw_marker, draw_pin};
 pub use session::Taken;
-pub use ui::{BenchKey, SearchUi};
+pub use ui::{BenchKey, Out, SearchUi};
 pub use worker::Status;
 
 /// The zoom an address is shown at.

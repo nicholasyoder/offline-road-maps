@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::search::testing::{answer, hit};
+use eframe::egui::Pos2;
 use omp_core::find::HitKind;
 use omp_core::search::Kind;
 
@@ -26,8 +27,19 @@ fn keyboard() {
             ..Default::default()
         };
         let mut out = None;
-        let mut full = ctx.run_pass(raw, |ctx| {
-            out = Some(s.ui(ctx, rect, &cam, Units::Kilometres, recent, None));
+        // As the side panel calls it, on the search page.
+        let mut full = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx().clone();
+            let mut o = s.poll(recent);
+            s.shortcut(&ctx);
+            if !s.box_was_focused() {
+                s.escape(&ctx);
+            }
+            s.box_ui(ui, &cam, 0.0, recent, None, &mut o);
+            if !s.suggestions_ui(ui, &cam, Units::Kilometres, recent, &mut o) {
+                s.results_ui(ui, &cam, Units::Kilometres, &mut o);
+            }
+            out = Some(o);
         });
         full.textures_delta.clear();
         let focused = ctx.memory(|m| m.has_focus(box_id()));

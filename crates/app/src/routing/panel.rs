@@ -1,21 +1,20 @@
-//! The route panel (phase 3 step 3.7), at the top right under the menus: the stops in order
-//! (drag a stop's handle to move it, × to remove it, a button to reverse them), the avoid
-//! options, the distance and driving time in all and per leg, notices about the route, and
-//! the directions. Clicking a step flies to it and draws its stretch over the route.
-//! Escape or the panel's × closes it; the route stays, and "Route" in the menus opens it
-//! again.
+//! The route page of the side panel (phase 3 steps 3.7 and 3.8): the stops in order (drag a
+//! stop's handle to move it, × to remove it, a button to reverse them), the avoid options,
+//! the distance and driving time in all and per leg, notices about the route, and the
+//! directions. Clicking a step flies to it and draws its stretch over the route; Escape
+//! lets go of it. Phase 4's trip planning has its places here, disabled.
 
-use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use omp_core::geo;
 use omp_core::route::{FERRY, Kind, Modifier, Step, TOLL};
 
-use super::{END, RouteUi, START, StopAction, VIA, duration_text};
+use super::{END, Place, RouteUi, START, StopAction, VIA, duration_text};
 use crate::camera::{self, Camera};
 use crate::scale::Units;
 use crate::search::distance_text;
+use crate::side::later;
 use crate::theme::{APPROX, INK, WEAK};
 
-const PANEL_WIDTH: f32 = 340.0;
 const ICON: f32 = 20.0;
 /// Where a step's text starts, from the row's left, and the line under it.
 const TEXT_X: f32 = ICON + 14.0;
@@ -23,10 +22,10 @@ const STEP_FONT: FontId = FontId::proportional(13.5);
 const SUB_H: f32 = 16.0;
 const PICKED_FILL: Color32 = Color32::from_rgb(222, 232, 250);
 
-/// What a click or a drag in the panel landed on, for the tests.
+/// What a click or a drag in the page landed on, for the tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    Close,
+    Clear,
     /// A stop's drag handle, and its row (where a dragged stop is dropped).
     Handle(usize),
     Row(usize),
@@ -36,9 +35,9 @@ pub enum Target {
     Step(usize),
 }
 
-/// A change asked for in the panel, made once it is drawn.
+/// A change asked for in the page, made once it is drawn.
 enum Edit {
-    Close,
+    Clear,
     Move(usize, usize),
     Remove(usize),
     Reverse,
@@ -47,56 +46,61 @@ enum Edit {
 }
 
 impl RouteUi {
-    /// Escape on the map closes the panel. Returns whether it did.
+    /// Escape lets go of the step picked. Returns whether it did.
     pub fn escape(&mut self, ctx: &egui::Context) -> bool {
-        if !self.panel || ctx.egui_wants_keyboard_input() {
+        if self.picked.is_none() || ctx.egui_wants_keyboard_input() {
             return false;
         }
         let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         if esc {
-            self.panel = false;
+            self.pick(None);
         }
         esc
     }
 
-    /// Draws the panel with its top right corner at `top_right`, at most `max_height` tall.
-    /// Returns the view to fly to when a step is clicked.
-    pub fn panel_ui(
+    /// Draws the page in `ui`, the directions filling what is left of its height. Returns
+    /// the view to fly to when a step is clicked.
+    pub fn page_ui(
         &mut self,
-        ctx: &egui::Context,
-        top_right: Pos2,
-        max_height: f32,
+        ui: &mut egui::Ui,
         cam: &Camera,
         units: Units,
     ) -> Option<(camera::Vec2, f64)> {
         self.targets.clear();
-        if !self.panel || !self.has_stops() {
-            return None;
-        }
         let mut edits = Vec::new();
-        let frame = egui::Frame::popup(&ctx.global_style())
-            .inner_margin(egui::Margin::symmetric(8, 6))
-            .fill(Color32::from_white_alpha(240));
-        egui::Area::new(Id::unique("route-panel"))
-            .fixed_pos(top_right)
-            .pivot(Align2::RIGHT_TOP)
-            .show(ctx, |ui| {
-                frame.show(ui, |ui| {
-                    ui.set_width(PANEL_WIDTH);
-                    self.header(ui, &mut edits);
-                    ui.separator();
-                    self.stop_rows(ui, &mut edits);
-                    self.options(ui, &mut edits);
-                    ui.separator();
-                    self.summary(ui, units);
-                    let used = ui.min_rect().height();
-                    self.directions(ui, (max_height - used - 24.0).max(80.0), units, &mut edits);
-                });
+        self.header(ui, &mut edits);
+        ui.separator();
+        if self.has_stops() {
+            self.stop_rows(ui, &mut edits);
+        }
+        self.options(ui, &mut edits);
+        ui.separator();
+        self.summary(ui, units);
+        if self.route.is_some() {
+            ui.horizontal_wrapped(|ui| {
+                later(
+                    ui,
+                    "Alternatives",
+                    "Other routes to pick from, drawn grey on the map",
+                );
+                later(
+                    ui,
+                    "Save trip",
+                    "Keep this route with its stops and options",
+                );
+                later(
+                    ui,
+                    "Print or export directions",
+                    "As a page to print, or a file",
+                );
             });
+        }
+        let left = ui.available_height();
+        self.directions(ui, left.max(80.0), units, &mut edits);
         let mut fly = None;
         for e in edits {
             match e {
-                Edit::Close => self.panel = false,
+                Edit::Clear => self.apply(StopAction::Clear, Place::at([0.0, 0.0])),
                 Edit::Move(a, b) => self.move_stop(a, b),
                 Edit::Remove(i) => self.remove_stop(i),
                 Edit::Reverse => self.reverse(),
@@ -116,13 +120,17 @@ impl RouteUi {
             if self.waiting.is_some() {
                 ui.add(egui::Spinner::new().size(12.0).color(WEAK));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui.small_button("×").on_hover_text("Close  (Esc)");
-                self.targets.push((Target::Close, r.rect));
-                if r.clicked() {
-                    edits.push(Edit::Close);
-                }
-            });
+            if self.has_stops() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let r = ui
+                        .small_button("Clear")
+                        .on_hover_text("Remove every stop and the route");
+                    self.targets.push((Target::Clear, r.rect));
+                    if r.clicked() {
+                        edits.push(Edit::Clear);
+                    }
+                });
+            }
         });
     }
 
@@ -233,12 +241,28 @@ impl RouteUi {
                 }
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            later(
+                ui,
+                "Optimize stop order",
+                "The shortest order of the stops between, with the first and last fixed or open",
+            );
+            later(
+                ui,
+                "Depart at / Arrive by",
+                "Times along the route, with overnight and fuel stops",
+            );
+        });
     }
 
     /// The totals, per leg when there are stops between, and the notices.
     fn summary(&self, ui: &mut egui::Ui, units: Units) {
         let Some(r) = &self.route else {
             let text = match (&self.error, self.from.is_some() && self.to.is_some()) {
+                (None, _) if !self.has_stops() => {
+                    "Right-click the map or a search result: “Route from here”, “Route to here”."
+                        .into()
+                }
                 (Some(e), _) => format!("Routing failed: {e}"),
                 (None, true) => "Routing…".into(),
                 (None, false) if self.from.is_none() => {
@@ -304,8 +328,8 @@ impl RouteUi {
         let rows = self.rows.as_ref().unwrap();
         let total = rows.heights.iter().sum::<f32>();
         let mut targets = Vec::new();
-        // An area lays out its contents in last frame's size, so a scroll area in it would
-        // never grow: it is asked for its height.
+        // Asked for its height, so it fills the rest of the page rather than shrinking to
+        // last frame's size.
         egui::ScrollArea::vertical()
             .max_height(max_height)
             .min_scrolled_height(total.min(max_height))

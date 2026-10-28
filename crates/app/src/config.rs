@@ -31,6 +31,24 @@ pub struct Config {
     pub layers: Layers,
     /// The last few searches, newest first, offered when the search box is empty.
     pub recent_searches: Vec<String>,
+    pub side_panel: SidePanel,
+}
+
+/// The side panel (phase 3 step 3.8): open or closed, and its width in points.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidePanel {
+    pub open: bool,
+    pub width: f32,
+}
+
+impl Default for SidePanel {
+    fn default() -> Self {
+        Self {
+            open: true,
+            width: 360.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -179,6 +197,10 @@ mod tests {
                 ..Layers::default()
             },
             recent_searches: vec!["123 Main St, Columbus".into(), "45201".into()],
+            side_panel: SidePanel {
+                open: false,
+                width: 412.0,
+            },
         };
         assert_eq!(cfg.pack.as_deref(), Some(Path::new("maps/ohio")));
         loc.save(&cfg).unwrap();
@@ -202,5 +224,6 @@ mod tests {
         // A config from before a toggle existed shows that layer.
         let c: Config = toml::from_str("[layers]\nrail = false\n").unwrap();
         assert!(!c.layers.rail && c.layers.labels && c.layers.fuel);
+        assert_eq!(c.side_panel, SidePanel::default());
     }
 }

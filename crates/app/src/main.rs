@@ -26,6 +26,7 @@ mod routing;
 mod scale;
 mod search;
 mod shapes;
+mod side;
 mod snapshot;
 mod style;
 mod text;

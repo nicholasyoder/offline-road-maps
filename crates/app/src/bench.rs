@@ -26,6 +26,11 @@
 //! the pack opens (phase 3 step 3.6), as the right-click menu does, and shows it for the
 //! whole flight, so frame times include drawing it; the time to the frame showing it is
 //! recorded, and with `OMP_BENCH_SHOTS` that frame is saved.
+//!
+//! The side panel (phase 3 step 3.8) is open throughout, at its default width, and shows
+//! what a user's actions would show: the route page once the route is asked for, the search
+//! page while typing and for "what's here". With `OMP_BENCH_SHOTS`, each page is saved once
+//! the flight is over.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -37,6 +42,7 @@ use crate::camera::{Camera, Vec2};
 use crate::here::HereTaken;
 use crate::loader::Done;
 use crate::search::{BenchKey, Taken};
+use crate::side::Page;
 
 /// Longest wait for a view to become fully detailed.
 const DETAIL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -270,6 +276,9 @@ pub struct Bench {
     /// `OMP_BENCH_SHOTS`, and a screenshot to take there.
     shots: Option<PathBuf>,
     shot: Option<String>,
+    /// With `shots`, after the flight: the side panel page shown for its screenshot, since
+    /// when, and whether the screenshot was asked for.
+    page: Option<(usize, Instant, bool)>,
 }
 
 /// Where the bench is, after a frame.
@@ -315,6 +324,7 @@ impl Bench {
             done: false,
             shots: std::env::var_os("OMP_BENCH_SHOTS").map(PathBuf::from),
             shot: None,
+            page: None,
         }
     }
 
@@ -666,10 +676,37 @@ impl Bench {
     /// Starts the idle period with the flight's report.
     pub fn start_idle(&mut self, report: Report) {
         self.idle = Some((report, Instant::now()));
+        if self.shots.is_some() {
+            self.page = Some((0, Instant::now(), false));
+        }
+    }
+
+    /// With `OMP_BENCH_SHOTS`, once the flight is over: each page of the side panel in turn,
+    /// saved once it has been shown for a moment, before the app is left idle.
+    pub fn page_shot(&mut self) -> Option<Page> {
+        let (i, since, asked) = self.page?;
+        let page = *Page::ALL.get(i)?;
+        if since.elapsed() >= SHOT_WAIT && !asked {
+            self.shot(&format!("page-{}", page.name().to_lowercase()));
+            self.page = Some((i, since, true));
+        } else if asked {
+            // The screenshot is of the frame after the one that asks for it.
+            self.page = Some((i + 1, Instant::now(), false));
+            // The idle period starts after the last.
+            if i + 1 == Page::ALL.len()
+                && let Some((_, end)) = &mut self.idle
+            {
+                *end = Instant::now();
+            }
+        }
+        Some(page)
     }
 
     /// Called once a frame.
     pub fn poll(&mut self) -> Poll {
+        if self.page.is_some_and(|(i, ..)| i < Page::ALL.len()) {
+            return Poll::Flying;
+        }
         let Some((_, end)) = &self.idle else {
             return if self.done {
                 Poll::Idle(IDLE)

@@ -2,13 +2,13 @@
 //! here?" and the point's coordinates (a click copies them). "What's here?" asks the search
 //! worker for the nearest address, the nearest street, the places and POIs within about
 //! [`NEARBY_PX`] and the areas holding the point ([`omp_core::search::Search::whats_here`],
-//! as `omp-builder here` prints it), and shows them in a panel next to a marker at the
-//! point. Escape, the panel's × or a click on the map closes it. Left click stays free for
+//! as `omp-builder here` prints it), and shows them in the side panel's search page, with a
+//! marker at the point. Escape, the answer's × or a click on the map closes it. Left click stays free for
 //! panning. The same menu has the route items (phase 3 step 3.6, [`crate::routing`]).
 
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Id, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, Color32, Pos2, Stroke};
 use omp_core::geo::{self, P};
 use omp_core::here::Shown;
 
@@ -24,7 +24,6 @@ pub const NEARBY_PX: f64 = 30.0;
 const NEARBY_M: [f64; 2] = [15.0, 300.0];
 /// Nearby places and POIs shown.
 const NEARBY_SHOWN: usize = 5;
-const PANEL_WIDTH: f32 = 300.0;
 const DOT: Color32 = Color32::from_rgb(30, 110, 220);
 
 /// A "what's here" request, as sent to the search worker.
@@ -67,6 +66,8 @@ pub struct HereUi {
     menu_at: Option<camera::Vec2>,
     pub panel: Option<Panel>,
     pub last: Option<HereTaken>,
+    /// Asked since the side panel last looked: it shows the search page.
+    pub asked: bool,
 }
 
 impl HereUi {
@@ -81,6 +82,7 @@ impl HereUi {
             asked: Instant::now(),
         };
         search.ask_here(q);
+        self.asked = true;
         self.panel = Some(Panel {
             at,
             id: self.next_id,
@@ -203,70 +205,47 @@ impl HereUi {
         painter.circle_filled(at, 5.5, DOT);
     }
 
-    /// The panel, next to the point and kept inside the map.
-    pub fn ui(
-        &mut self,
-        ctx: &egui::Context,
-        map_rect: Rect,
-        cam: &Camera,
-        units: Units,
-        icons: &Icons,
-    ) {
+    /// The answer, in the side panel's search page, under a heading with its ×.
+    pub fn page_ui(&mut self, ui: &mut egui::Ui, units: Units, icons: &Icons) {
         let Some(panel) = &self.panel else { return };
-        let s = cam.world_to_screen(panel.at);
-        let at = map_rect.min + Vec2::new(s[0] as f32, s[1] as f32);
-        if !map_rect.expand(40.0).contains(at) {
-            return;
-        }
         let mut close = false;
-        let frame = egui::Frame::popup(&ctx.global_style())
-            .inner_margin(egui::Margin::symmetric(8, 6))
-            .fill(Color32::from_white_alpha(240));
-        egui::Area::new(Id::unique("whats-here"))
-            .fixed_pos(at + Vec2::new(14.0, -14.0))
-            .constrain_to(map_rect)
-            .show(ctx, |ui| {
-                frame.show(ui, |ui| {
-                    ui.set_width(PANEL_WIDTH);
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("What's here").small().color(WEAK));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            close = ui.small_button("×").on_hover_text("Close  (Esc)").clicked();
-                        });
-                    });
-                    match &panel.answer {
-                        None => {
-                            ui.horizontal(|ui| {
-                                ui.add(egui::Spinner::new().size(12.0).color(WEAK));
-                                ui.label(egui::RichText::new("Looking…").color(WEAK));
-                            });
-                        }
-                        Some(Err(e)) => {
-                            ui.label(
-                                egui::RichText::new(format!("Could not look: {e}")).color(APPROX),
-                            );
-                        }
-                        Some(Ok(shown)) => shown_ui(ui, shown, units, icons),
-                    }
-                    ui.add_space(2.0);
-                    let [lon, lat] = geo::unit_to_lonlat(panel.at);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(lonlat_text(lon, lat))
-                                .size(11.5)
-                                .color(INK),
-                        );
-                        if ui
-                            .small_button("Copy")
-                            .on_hover_text(format!("Copy as {}", copy_text(lon, lat)))
-                            .clicked()
-                        {
-                            ui.ctx().copy_text(copy_text(lon, lat));
-                        }
-                    });
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("What's here").strong().color(INK));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = ui.small_button("×").on_hover_text("Close  (Esc)").clicked();
                 });
             });
+            match &panel.answer {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(12.0).color(WEAK));
+                        ui.label(egui::RichText::new("Looking…").color(WEAK));
+                    });
+                }
+                Some(Err(e)) => {
+                    ui.label(egui::RichText::new(format!("Could not look: {e}")).color(APPROX));
+                }
+                Some(Ok(shown)) => shown_ui(ui, shown, units, icons),
+            }
+            ui.add_space(2.0);
+            let [lon, lat] = geo::unit_to_lonlat(panel.at);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(lonlat_text(lon, lat))
+                        .size(11.5)
+                        .color(INK),
+                );
+                if ui
+                    .small_button("Copy")
+                    .on_hover_text(format!("Copy as {}", copy_text(lon, lat)))
+                    .clicked()
+                {
+                    ui.ctx().copy_text(copy_text(lon, lat));
+                }
+            });
+        });
         if close {
             self.panel = None;
         }
@@ -378,7 +357,7 @@ fn copy_text(lon: f64, lat: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{Event, PointerButton};
+    use eframe::egui::{Event, PointerButton, Rect, Vec2};
     use omp_core::here::HereAddress;
 
     fn shown(p: P) -> Shown {
@@ -422,7 +401,7 @@ mod tests {
                 here.map_input(&resp, rect.min, &cam, &search, &MenuState::default());
                 let ctx = ui.ctx().clone();
                 here.escape(&ctx);
-                here.ui(&ctx, rect, &cam, Units::Kilometres, search.icons());
+                here.page_ui(ui, Units::Kilometres, search.icons());
             });
             full.textures_delta.clear();
         };

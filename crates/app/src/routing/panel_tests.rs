@@ -1,4 +1,4 @@
-//! The route panel, clicked and dragged as a user would, on a worker with no thread.
+//! The route page, clicked and dragged as a user would, on a worker with no thread.
 
 use std::sync::mpsc::Sender;
 
@@ -40,13 +40,13 @@ impl Ui {
             focused: true,
             ..Default::default()
         };
-        let mut full = self.ctx.clone().run_pass(raw, |ctx| {
-            self.r.escape(ctx);
+        // In a panel as wide as the side panel's default.
+        let mut full = self.ctx.clone().run_ui(raw, |ui| {
+            self.r.escape(ui.ctx());
             self.r.take(&self.cam);
-            let top = self.rect.right_top() + Vec2::new(-8.0, 40.0);
-            self.fly = self
-                .r
-                .panel_ui(ctx, top, 700.0, &self.cam, Units::Kilometres);
+            egui::Panel::left("side").exact_size(360.0).show(ui, |ui| {
+                self.fly = self.r.page_ui(ui, &self.cam, Units::Kilometres);
+            });
         });
         full.textures_delta.clear();
     }
@@ -102,9 +102,13 @@ fn named(n: &str, lat: f64) -> Place {
 #[test]
 fn stop_list() {
     let mut u = Ui::new();
-    // No stops: no panel.
+    // No stops: the options only.
     u.frame(Vec::new());
-    assert!(u.r.targets.is_empty());
+    assert!(
+        u.r.targets
+            .iter()
+            .all(|t| matches!(t.0, Target::Reverse | Target::Avoid(_)))
+    );
 
     u.r.apply(StopAction::From, named("a", 40.0));
     u.r.apply(StopAction::Add, named("b", 40.2));
@@ -152,7 +156,7 @@ fn stop_list() {
     let lat = geo::unit_to_lonlat(c)[1];
     assert!(lat > 40.2 && lat < 40.4, "{lat}");
 
-    // Escape closes the panel and keeps the route; × too.
+    // Escape lets go of the step and keeps the route; Clear removes the stops and the route.
     u.frame(vec![Event::Key {
         key: Key::Escape,
         physical_key: None,
@@ -160,10 +164,8 @@ fn stop_list() {
         repeat: false,
         modifiers: egui::Modifiers::NONE,
     }]);
-    assert!(!u.r.panel && u.r.route.is_some());
-    assert!(u.r.targets.is_empty());
-    u.r.panel = true;
-    u.frame(Vec::new());
-    u.click(Target::Close);
-    assert!(!u.r.panel);
+    assert!(u.r.picked.is_none() && u.r.route.is_some());
+    assert!(!u.r.overlays.iter().any(|o| o.0 == Look::Picked));
+    u.click(Target::Clear);
+    assert!(!u.r.has_stops() && u.r.route.is_none());
 }

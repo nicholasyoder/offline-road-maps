@@ -199,7 +199,7 @@ fn stops_are_moved_removed_and_reversed() {
     r.apply(Add, named("b", 40.1));
     r.apply(Add, named("c", 40.2));
     r.apply(To, named("d", 40.3));
-    assert!(r.panel);
+    assert!(r.opened);
     let order = |r: &RouteUi| names(r).into_iter().map(|n| n.1).collect::<String>();
     // The last goes first: it is the start now, and the old start a stop between.
     r.move_stop(3, 0);

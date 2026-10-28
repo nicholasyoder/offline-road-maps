@@ -18,7 +18,9 @@ cargo run --release -p omp-app -- --pack $OMP_WORK/packs/ohio
 
 Controls: drag to pan, scroll or double-click to zoom, arrow keys to pan, `+`/`-` to zoom, F3 for the debug overlay.
 
-Search: Ctrl+F or `/` goes to the search box at the top left. Suggestions show as you type; the arrow keys move through them, Enter or a click picks one and flies there with a marker, and Enter with none selected lists every result. In the box, Escape closes the suggestions, then leaves the box; on the map it closes the results list, then removes the marker (the × next to the box clears everything). A pack built before search (format 0.3 or older) opens with the box disabled.
+The side panel on the left holds the search box, the ☰ menu (open or verify a pack, About this map, the debug overlay) and four pages: Search, Route, Trips (a placeholder for now) and Layers (the layer toggles and the scale bar's units). Ctrl+B or the « and » buttons hide and show it; drag its edge to resize it. Right-clicking the map offers "What's here?" and the route items.
+
+Search: Ctrl+F or `/` goes to the search box, opening the panel if needed. Suggestions show in the panel as you type; the arrow keys move through them, Enter or a click picks one and flies there with a marker, and Enter with none selected lists every result. Escape closes the suggestions, then leaves the box, then steps back in the page: on the search page it closes "what's here", then the results list, then removes the marker; on the route page it lets go of the step picked (the × next to the box clears the search). A pack built before search (format 0.3 or older) opens with the box disabled.
 
 The style comes from `--style <file>`, else `style.toml` next to the executable, else the built-in [crates/app/data/style.toml](crates/app/data/style.toml). A debug build (`cargo run -p omp-app -- --style crates/app/data/style.toml ...`) reloads the style when the file changes.
 

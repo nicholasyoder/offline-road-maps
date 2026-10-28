@@ -1,10 +1,11 @@
-//! The search box over the map: its keys, the suggestions under it and the results panel.
+//! The search box at the top of the side panel, its keys, and the search page: the
+//! suggestions while typing, else the results of Enter.
 
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 
-use eframe::egui::{self, Color32, Event, EventFilter, Id, Key, Pos2, Rect, Vec2};
+use eframe::egui::{self, Event, EventFilter, Id, Key, Rect, Vec2};
 use omp_core::find::Hit;
 use omp_core::schema::Schema;
 
@@ -19,9 +20,6 @@ use crate::theme::{INK, WEAK};
 
 /// Shown while the deeper search levels run.
 const SEARCHING_MORE: &str = "Searching smaller towns and more names…";
-
-const BOX_WIDTH: f32 = 320.0;
-const PANEL_WIDTH: f32 = 360.0;
 
 /// A keystroke from the bench, handled as if typed.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,7 +39,16 @@ pub struct Out {
     pub route: Option<(StopAction, Hit)>,
 }
 
-/// The search box over the map, its suggestions and results, for one open pack.
+/// The suggestions to show under the box this frame.
+#[derive(Default)]
+struct List {
+    open: bool,
+    rows: Vec<Row>,
+    message: Option<String>,
+    more: bool,
+}
+
+/// The search box in the side panel, its suggestions and results, for one open pack.
 pub struct SearchUi {
     worker: Worker,
     pub session: Session,
@@ -54,7 +61,9 @@ pub struct SearchUi {
     selected: Option<usize>,
     hovered: Option<usize>,
     /// Where the suggestions were last drawn, so a click on them keeps the box focused.
-    popup_rect: Option<Rect>,
+    list_rect: Option<Rect>,
+    /// The suggestions as the box left them this frame, for the search page.
+    list: List,
     /// The box had the focus at the end of the last frame.
     was_focused: bool,
     icons: Icons,
@@ -80,7 +89,8 @@ impl SearchUi {
             dismissed: false,
             selected: None,
             hovered: None,
-            popup_rect: None,
+            list_rect: None,
+            list: List::default(),
             was_focused: false,
             icons: Icons::new(schema),
             route_menu: MenuState::default(),
@@ -188,17 +198,8 @@ impl SearchUi {
         lines
     }
 
-    /// Takes answers, handles the keys, and draws the box, its suggestions and the results
-    /// panel. `recent` is the config's list.
-    pub fn ui(
-        &mut self,
-        ctx: &egui::Context,
-        map_rect: Rect,
-        cam: &Camera,
-        units: Units,
-        recent: &mut Vec<String>,
-        bench: Option<BenchKey>,
-    ) -> Out {
+    /// Takes the worker's answers; a search submitted with Enter flies to its first result.
+    pub fn poll(&mut self, recent: &mut Vec<String>) -> Out {
         let mut out = Out::default();
         let answers: Vec<Answer> = self.worker.poll().collect();
         for a in answers {
@@ -214,6 +215,84 @@ impl SearchUi {
                 out.taken.push(t);
             }
         }
+        out
+    }
+
+    /// Ctrl+F or "/" (as typed, whatever the keyboard layout) give the box the focus, unless
+    /// another field has the keys. Returns whether they did: the side panel is to show the
+    /// box and the search page.
+    pub fn shortcut(&mut self, ctx: &egui::Context) -> bool {
+        let enabled = matches!(self.status(), Status::Opening | Status::Ready);
+        if !enabled || ctx.egui_wants_keyboard_input() {
+            return false;
+        }
+        let go = ctx.input_mut(|i| {
+            let slash = i
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::Text(t) if t == "/"));
+            if slash {
+                i.events
+                    .retain(|e| !matches!(e, Event::Text(t) if t == "/"));
+            }
+            i.consume_key(egui::Modifiers::COMMAND, Key::F) || slash
+        });
+        if go {
+            ctx.memory_mut(|m| m.request_focus(box_id()));
+            self.dismissed = false;
+        }
+        go
+    }
+
+    /// Escape on the map closes the results, then removes the marker. Returns whether it
+    /// did.
+    pub fn escape(&mut self, ctx: &egui::Context) -> bool {
+        if ctx.egui_wants_keyboard_input()
+            || (self.session.results.is_none() && self.session.marker.is_none())
+        {
+            return false;
+        }
+        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
+        if esc {
+            if self.session.results.is_some() {
+                self.session.results = None;
+            } else {
+                self.session.marker = None;
+            }
+        }
+        esc
+    }
+
+    pub fn has_results(&self) -> bool {
+        self.session.results.is_some()
+    }
+
+    /// The box has the focus.
+    pub fn focused(&self, ctx: &egui::Context) -> bool {
+        ctx.memory(|m| m.has_focus(box_id()))
+    }
+
+    /// The panel is closed: the box lets go of the focus and the suggestions close.
+    pub fn hide(&mut self, ctx: &egui::Context) {
+        ctx.memory_mut(|m| m.surrender_focus(box_id()));
+        self.was_focused = false;
+        self.list = List::default();
+        self.list_rect = None;
+    }
+
+    /// The box and its clear button, across `ui` but for `reserve` points, with its keys: the arrows move through the
+    /// suggestions, Enter picks one or searches, Escape closes them and then lets go of the
+    /// box. What the suggestions are is kept for [`Self::suggestions_ui`].
+    pub fn box_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        cam: &Camera,
+        reserve: f32,
+        recent: &mut Vec<String>,
+        bench: Option<BenchKey>,
+        out: &mut Out,
+    ) {
+        let ctx = ui.ctx().clone();
         let status = self.status();
         let enabled = matches!(status, Status::Opening | Status::Ready);
         let id = box_id();
@@ -234,39 +313,11 @@ impl SearchUi {
             })
         };
         if !focused && self.was_focused && ctx.input(esc) {
-            if self.popup_rect.is_some() {
+            if self.list_rect.is_some() {
                 ctx.memory_mut(|m| m.request_focus(id));
                 focused = true;
             } else {
                 ctx.input_mut(|i| consume(i, Key::Escape));
-            }
-        }
-        let elsewhere = ctx.egui_wants_keyboard_input() && !focused;
-
-        // Ctrl+F or "/" (as typed, whatever the keyboard layout) focus the box.
-        if enabled && !focused && !elsewhere {
-            let go = ctx.input_mut(|i| {
-                let slash = i
-                    .events
-                    .iter()
-                    .any(|e| matches!(e, Event::Text(t) if t == "/"));
-                if slash {
-                    i.events
-                        .retain(|e| !matches!(e, Event::Text(t) if t == "/"));
-                }
-                i.consume_key(egui::Modifiers::COMMAND, Key::F) || slash
-            });
-            if go {
-                ctx.memory_mut(|m| m.request_focus(id));
-                self.dismissed = false;
-            }
-            // Escape on the map closes the results, then removes the marker.
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
-                if self.session.results.is_some() {
-                    self.session.results = None;
-                } else {
-                    self.session.marker = None;
-                }
             }
         }
         let (mut down, mut up, mut enter, mut escape) = (0, 0, false, false);
@@ -285,91 +336,72 @@ impl SearchUi {
                 self.text = t;
                 self.dismissed = false;
                 self.session.results = None;
-                cursor_to_end(ctx, &self.text);
+                cursor_to_end(&ctx, &self.text);
                 ctx.memory_mut(|m| m.request_focus(id));
             }
             Some(BenchKey::Enter) => enter = true,
             None => {}
         }
 
-        let panel = egui::Frame::popup(&ctx.global_style())
-            .inner_margin(egui::Margin::symmetric(6, 4))
-            .fill(Color32::from_white_alpha(235));
-        let box_area = egui::Area::new(Id::unique("search-area"))
-            .fixed_pos(map_rect.left_top() + Vec2::new(8.0, 8.0))
-            .show(ctx, |ui| {
-                panel
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            // A press on the suggestions must not take the focus away
-                            // before the click lands.
-                            let keep = self.popup_rect.is_some_and(|r| {
-                                ctx.pointer_interact_pos().is_some_and(|p| r.contains(p))
-                            });
-                            let before = ctx.options(|o| o.input_options.surrender_focus_on);
-                            if keep {
-                                ctx.options_mut(|o| {
-                                    o.input_options.surrender_focus_on =
-                                        egui::SurrenderFocusOn::Never;
-                                });
-                            }
-                            let hint = match &status {
-                                Status::Missing(_) | Status::Failed(_) => "No search in this map",
-                                _ => "Search  (Ctrl+F or /)",
-                            };
-                            let filter = EventFilter {
-                                horizontal_arrows: true,
-                                vertical_arrows: true,
-                                escape: true,
-                                ..Default::default()
-                            };
-                            let edit = egui::TextEdit::singleline(&mut self.text)
-                                .id(id)
-                                .hint_text(hint)
-                                .desired_width(BOX_WIDTH - 34.0)
-                                .interactive(enabled)
-                                .return_key(None)
-                                .event_filter(filter);
-                            let resp = ui.add(edit);
-                            // Escape and the arrows stay with the box, from the frame focus
-                            // was asked for (the field sets this only from the next one).
-                            ctx.memory_mut(|m| m.set_focus_lock_filter(id, filter));
-                            ctx.options_mut(|o| o.input_options.surrender_focus_on = before);
-                            // A new query: its suggestions replace the last one's results.
-                            if resp.changed() {
-                                self.dismissed = false;
-                                self.selected = None;
-                                self.session.results = None;
-                            }
-                            match &status {
-                                Status::Missing(why) => {
-                                    resp.on_disabled_hover_text(why.as_str());
-                                }
-                                Status::Failed(e) => {
-                                    resp.on_disabled_hover_text(format!(
-                                        "Search could not be opened: {e}"
-                                    ));
-                                }
-                                _ => {}
-                            }
-                            let any = !self.text.is_empty()
-                                || self.session.marker.is_some()
-                                || self.session.results.is_some();
-                            let clear = ui
-                                .add_enabled(
-                                    any,
-                                    egui::Button::new("×").min_size(Vec2::splat(22.0)),
-                                )
-                                .on_hover_text("Clear the search and its marker");
-                            if clear.clicked() {
-                                self.clear();
-                            }
-                        });
-                    })
-                    .response
-                    .rect
-            })
-            .inner;
+        ui.horizontal(|ui| {
+            // A press on the suggestions must not take the focus away before the click
+            // lands.
+            let keep = self
+                .list_rect
+                .is_some_and(|r| ctx.pointer_interact_pos().is_some_and(|p| r.contains(p)));
+            let before = ctx.options(|o| o.input_options.surrender_focus_on);
+            if keep {
+                ctx.options_mut(|o| {
+                    o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
+                });
+            }
+            let hint = match &status {
+                Status::Missing(_) | Status::Failed(_) => "No search in this map",
+                _ => "Search  (Ctrl+F or /)",
+            };
+            let filter = EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+                ..Default::default()
+            };
+            let edit = egui::TextEdit::singleline(&mut self.text)
+                .id(id)
+                .hint_text(hint)
+                .desired_width((ui.available_width() - reserve - 42.0).max(80.0))
+                .interactive(enabled)
+                .return_key(None)
+                .event_filter(filter);
+            let resp = ui.add(edit);
+            // Escape and the arrows stay with the box, from the frame focus was asked for
+            // (the field sets this only from the next one).
+            ctx.memory_mut(|m| m.set_focus_lock_filter(id, filter));
+            ctx.options_mut(|o| o.input_options.surrender_focus_on = before);
+            // A new query: its suggestions replace the last one's results.
+            if resp.changed() {
+                self.dismissed = false;
+                self.selected = None;
+                self.session.results = None;
+            }
+            match &status {
+                Status::Missing(why) => {
+                    resp.on_disabled_hover_text(why.as_str());
+                }
+                Status::Failed(e) => {
+                    resp.on_disabled_hover_text(format!("Search could not be opened: {e}"));
+                }
+                _ => {}
+            }
+            let any = !self.text.is_empty()
+                || self.session.marker.is_some()
+                || self.session.results.is_some();
+            let clear = ui
+                .add_enabled(any, egui::Button::new("×").min_size(Vec2::splat(22.0)))
+                .on_hover_text("Clear the search and its marker");
+            if clear.clicked() {
+                self.clear();
+            }
+        });
 
         // A query when the text has changed.
         if enabled && self.text != self.sent {
@@ -430,155 +462,161 @@ impl SearchUi {
                 ctx.memory_mut(|m| m.surrender_focus(id));
             }
         }
-        self.popup_rect = None;
-        if open && !escape && !enter {
-            let r = egui::Area::new(Id::unique("search-suggestions"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(box_area.left_bottom() + Vec2::new(0.0, 2.0))
-                .show(ctx, |ui| {
-                    panel.show(ui, |ui| {
-                        ui.set_width(BOX_WIDTH);
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        let searching = |ui: &mut egui::Ui, text: &str| {
-                            ui.horizontal(|ui| {
-                                ui.add(egui::Spinner::new().size(12.0).color(WEAK));
-                                ui.label(egui::RichText::new(text).color(WEAK));
-                            });
-                        };
-                        match &message {
-                            Some(m) if m == SEARCHING_MORE => searching(ui, m),
-                            Some(m) => {
-                                ui.label(egui::RichText::new(m).color(WEAK));
-                            }
-                            None => {}
-                        }
-                        self.hovered = None;
-                        for (i, row) in rows.iter().enumerate() {
-                            let r = draw::row(
-                                ui,
-                                row,
-                                &self.icons,
-                                cam,
-                                units,
-                                self.selected == Some(i),
-                            );
-                            if r.clicked() {
-                                chosen = Some(i);
-                            }
-                            if r.hovered() {
-                                self.hovered = Some(i);
-                            }
-                        }
-                        if more {
-                            ui.add_space(3.0);
-                            searching(ui, SEARCHING_MORE);
-                        }
-                    })
-                });
-            self.popup_rect = Some(r.response.rect);
-        }
+        self.list_rect = None;
         if let Some(i) = chosen {
-            match rows.get(i) {
-                Some(Row::Hit(h)) => out.fly = Some(self.pick(ctx, h, recent)),
-                Some(Row::Recent(r)) => {
-                    self.text = r.clone();
-                    self.sent = self.text.clone();
-                    cursor_to_end(ctx, &self.text);
-                    self.submit(cam);
-                    ctx.memory_mut(|m| m.surrender_focus(id));
+            self.choose(&ctx, &rows, i, cam, recent, out);
+        }
+        self.list = List {
+            open: open && !escape && !enter,
+            rows,
+            message,
+            more,
+        };
+        self.was_focused = ctx.memory(|m| m.has_focus(id));
+    }
+
+    /// A suggestion picked: a hit flies there; a recent search is run again.
+    fn choose(
+        &mut self,
+        ctx: &egui::Context,
+        rows: &[Row],
+        i: usize,
+        cam: &Camera,
+        recent: &mut Vec<String>,
+        out: &mut Out,
+    ) {
+        match rows.get(i) {
+            Some(Row::Hit(h)) => out.fly = Some(self.pick(ctx, h, recent)),
+            Some(Row::Recent(r)) => {
+                self.text = r.clone();
+                self.sent = self.text.clone();
+                cursor_to_end(ctx, &self.text);
+                self.submit(cam);
+                ctx.memory_mut(|m| m.surrender_focus(box_id()));
+            }
+            None => {}
+        }
+        self.selected = None;
+    }
+
+    /// The suggestions, when the box left them open this frame. Returns whether it drew
+    /// them.
+    pub fn suggestions_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        cam: &Camera,
+        units: Units,
+        recent: &mut Vec<String>,
+        out: &mut Out,
+    ) -> bool {
+        if !self.list.open {
+            return false;
+        }
+        let List {
+            rows,
+            message,
+            more,
+            ..
+        } = std::mem::take(&mut self.list);
+        let mut chosen = None;
+        let r = ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let searching = |ui: &mut egui::Ui, text: &str| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(12.0).color(WEAK));
+                    ui.label(egui::RichText::new(text).color(WEAK));
+                });
+            };
+            match &message {
+                Some(m) if m == SEARCHING_MORE => searching(ui, m),
+                Some(m) => {
+                    ui.label(egui::RichText::new(m).color(WEAK));
                 }
                 None => {}
             }
-            self.selected = None;
+            self.hovered = None;
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (i, row) in rows.iter().enumerate() {
+                        let r =
+                            draw::row(ui, row, &self.icons, cam, units, self.selected == Some(i));
+                        if r.clicked() {
+                            chosen = Some(i);
+                        }
+                        if r.hovered() {
+                            self.hovered = Some(i);
+                        }
+                    }
+                    if more {
+                        ui.add_space(3.0);
+                        searching(ui, SEARCHING_MORE);
+                    }
+                });
+        });
+        self.list_rect = Some(r.response.rect);
+        if let Some(i) = chosen {
+            let ctx = ui.ctx().clone();
+            self.choose(&ctx, &rows, i, cam, recent, out);
+            self.was_focused = ctx.memory(|m| m.has_focus(box_id()));
         }
-
-        let (clicked, route) = self.results_panel(ctx, map_rect, box_area, cam, units);
-        if let Some(f) = clicked {
-            self.session.marker = Some(f.clone());
-            out.fly = Some(f);
-        }
-        out.route = route;
-        self.was_focused = ctx.memory(|m| m.has_focus(id));
-        out
+        true
     }
 
-    /// The results of Enter, under the box; returns a result clicked, and a route item
-    /// picked in a result's right-click menu.
-    fn results_panel(
-        &mut self,
-        ctx: &egui::Context,
-        map_rect: Rect,
-        box_area: Rect,
-        cam: &Camera,
-        units: Units,
-    ) -> (Option<Hit>, Option<(StopAction, Hit)>) {
+    /// The results of Enter, filling the rest of `ui`: a result clicked flies there, and its
+    /// right-click menu has the route items.
+    pub fn results_ui(&mut self, ui: &mut egui::Ui, cam: &Camera, units: Units, out: &mut Out) {
         let Some(res) = self.session.results.as_ref() else {
-            return (None, None);
+            return;
         };
         let mut close = false;
         let mut clicked = None;
-        let mut route = None;
-        let panel = egui::Frame::popup(&ctx.global_style())
-            .inner_margin(egui::Margin::symmetric(6, 6))
-            .fill(Color32::from_white_alpha(240));
-        let top = box_area.bottom() + 6.0;
-        egui::Area::new(Id::unique("search-results"))
-            .fixed_pos(Pos2::new(box_area.left(), top))
-            .show(ctx, |ui| {
-                panel.show(ui, |ui| {
-                    ui.set_width(PANEL_WIDTH);
-                    ui.horizontal(|ui| {
-                        let n = res.hits.len();
-                        let more = if n >= RESULTS { " or more" } else { "" };
-                        ui.label(
-                            egui::RichText::new(format!("{n}{more} results for “{}”", res.text))
-                                .strong()
-                                .color(INK),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            close = ui.small_button("×").on_hover_text("Close  (Esc)").clicked();
-                        });
+        ui.horizontal(|ui| {
+            let n = res.hits.len();
+            let more = if n >= RESULTS { " or more" } else { "" };
+            ui.label(
+                egui::RichText::new(format!("{n}{more} results for “{}”", res.text))
+                    .strong()
+                    .color(INK),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                close = ui.small_button("×").on_hover_text("Close  (Esc)").clicked();
+            });
+        });
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .id_salt("search-results")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (i, h) in res.hits.iter().enumerate() {
+                    let row = Row::Hit(h.clone());
+                    let r = draw::row(ui, &row, &self.icons, cam, units, res.selected == Some(i));
+                    if r.clicked() {
+                        clicked = Some(i);
+                    }
+                    r.context_menu(|ui| {
+                        if let Some(a) = routing::menu_items(ui, &self.route_menu) {
+                            out.route = Some((a, h.clone()));
+                            ui.close();
+                        }
                     });
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .max_height((map_rect.bottom() - top - 90.0).max(120.0))
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            for (i, h) in res.hits.iter().enumerate() {
-                                let row = Row::Hit(h.clone());
-                                let r = draw::row(
-                                    ui,
-                                    &row,
-                                    &self.icons,
-                                    cam,
-                                    units,
-                                    res.selected == Some(i),
-                                );
-                                if r.clicked() {
-                                    clicked = Some(i);
-                                }
-                                r.context_menu(|ui| {
-                                    if let Some(a) = routing::menu_items(ui, &self.route_menu) {
-                                        route = Some((a, h.clone()));
-                                        ui.close();
-                                    }
-                                });
-                            }
-                        });
-                });
+                }
             });
         let Some(res) = self.session.results.as_mut() else {
-            return (None, route);
+            return;
         };
         if close {
             self.session.results = None;
-            return (None, route);
+            return;
         }
-        let Some(i) = clicked else {
-            return (None, route);
-        };
-        res.selected = Some(i);
-        (res.hits.get(i).cloned(), route)
+        if let Some(h) = clicked.and_then(|i| {
+            res.selected = Some(i);
+            res.hits.get(i).cloned()
+        }) {
+            self.session.marker = Some(h.clone());
+            out.fly = Some(h);
+        }
     }
 }
 

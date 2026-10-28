@@ -4,8 +4,8 @@
 //!
 //! - [`worker`]: the thread that opens the routing readers and runs the trips; no egui.
 //! - [`line`]: the route's lines, simplified per zoom band, as the renderer draws them.
-//! - [`panel`]: the route panel (step 3.7): the stops, the avoid options, the totals, the
-//!   notices and the directions.
+//! - [`panel`]: the route page of the side panel (steps 3.7 and 3.8): the stops, the avoid
+//!   options, the totals, the notices and the directions.
 //!
 //! Stops are kept in order: the start, the stops added between, and the destination. Each
 //! change asks for the route again once there is a start and a destination; the answer to
@@ -199,8 +199,8 @@ pub struct RouteUi {
     pub last: Option<Taken>,
     /// Answers to older requests, dropped.
     pub dropped: usize,
-    /// The panel is open.
-    pub panel: bool,
+    /// A stop was set since the side panel last looked: it shows the route page.
+    pub opened: bool,
     /// The step of the directions picked: drawn over the route.
     pub picked: Option<usize>,
     /// The directions' rows, laid out once per route and width.
@@ -214,6 +214,12 @@ impl RouteUi {
     pub fn start(first_chunk: PathBuf, ctx: &egui::Context) -> Self {
         let ctx = ctx.clone();
         Self::with_worker(Worker::start(first_chunk, move || ctx.request_repaint()))
+    }
+
+    /// A route UI on a worker with no thread, which never answers.
+    #[cfg(test)]
+    pub fn stub() -> Self {
+        Self::with_worker(Worker::stub().0)
     }
 
     fn with_worker(worker: Worker) -> Self {
@@ -232,7 +238,7 @@ impl RouteUi {
             bands: Default::default(),
             last: None,
             dropped: 0,
-            panel: false,
+            opened: false,
             picked: None,
             rows: None,
             targets: Vec::new(),
@@ -264,8 +270,7 @@ impl RouteUi {
         from.chain(via).chain(to).collect()
     }
 
-    /// Changes the stops and asks for the route again. A stop set opens the panel; clearing
-    /// closes it.
+    /// Changes the stops and asks for the route again. A stop set opens the route page.
     pub fn apply(&mut self, action: StopAction, place: Place) {
         match action {
             StopAction::From => self.from = Some(place),
@@ -277,7 +282,7 @@ impl RouteUi {
                 self.to = None;
             }
         }
-        self.panel = action != StopAction::Clear;
+        self.opened = action != StopAction::Clear;
         self.reroute();
     }
 

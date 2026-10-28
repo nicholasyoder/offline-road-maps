@@ -1,7 +1,8 @@
-//! The window: the map view, input, the controls over the map (search box, scale bar, zoom
-//! buttons, cursor coordinates, credit line, the Layers and Menu buttons), its dialogs (pack
-//! picker, About this map, Verify pack, errors) and the debug overlay (F3, with tile
-//! outlines).
+//! The window: the side panel on the left (search, "what's here", the route, trips, layers
+//! and the ☰ menu; phase 3 step 3.8), the map beside it with its input, the controls over the
+//! map (scale bar, cursor coordinates, zoom buttons, credit line, and a button to open the
+//! panel when it is closed), the dialogs (pack picker, About this map, Verify pack, errors)
+//! and the debug overlay (F3, with tile outlines).
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -26,6 +27,7 @@ use crate::render::{self, GpuMesh, MapCallback, Renderer};
 use crate::routing::{Place, RouteUi, StopAction};
 use crate::scale::{self, Units};
 use crate::search::{self, SearchUi, Status};
+use crate::side::{self, Action, Page};
 use crate::style::{Style, StyleFile};
 use crate::theme::INK;
 use crate::tiles::{self, Cover, Known, Resolved, TileId};
@@ -115,6 +117,11 @@ struct MapState {
     search: SearchUi,
     here: HereUi,
     routing: RouteUi,
+    /// The side panel's page.
+    page: Page,
+    /// Where the map was last drawn, to keep it still when the side panel opens, closes or
+    /// is resized.
+    last_rect: Rect,
     /// `OMP_BENCH_NO_MAP`: everything but drawing the map, to see what the rest costs.
     no_map: bool,
 }
@@ -291,10 +298,14 @@ impl App {
             search,
             here: HereUi::default(),
             routing,
+            page: Page::default(),
+            last_rect: Rect::NOTHING,
             no_map: std::env::var_os("OMP_BENCH_NO_MAP").is_some(),
         });
         self.first_full = None;
         if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
+            // The panel as it first opens, whatever the config says.
+            self.cfg.side_panel = config::SidePanel::default();
             let w = b.flight.window;
             m.camera.size = [f64::from(w[0]), f64::from(w[1])];
             m.fit_on_first_frame = false;
@@ -744,6 +755,8 @@ impl eframe::App for App {
             self.picker = !self.picker;
         }
 
+        self.side_panel(ui);
+
         let mut map_rect = Rect::NOTHING;
         let mut animate = false;
         egui::CentralPanel::default()
@@ -772,6 +785,8 @@ impl eframe::App for App {
                     return;
                 };
                 m.camera.size = [f64::from(rect.width()), f64::from(rect.height())];
+                keep_still(&mut m.camera, m.last_rect, rect);
+                m.last_rect = rect;
                 if m.fit_on_first_frame {
                     m.camera.fit_bounds();
                     m.fit_on_first_frame = false;
@@ -850,7 +865,7 @@ impl eframe::App for App {
         if self.cfg.debug_overlay && self.bench.is_none() {
             self.overlay(&ctx, map_rect);
         }
-        self.controls(&ctx, map_rect);
+        self.map_controls(&ctx, map_rect);
         self.picker_window(&ctx);
         self.about_window(&ctx);
         self.verify_window(&ctx);
@@ -1036,9 +1051,10 @@ impl App {
         if !self.adapter.is_empty() {
             lines.push(self.adapter.clone());
         }
-        // Below the search box.
+        // Below the button that opens the side panel, when it is closed.
+        let top = if self.cfg.side_panel.open { 8.0 } else { 48.0 };
         egui::Area::new(egui::Id::unique("debug-overlay"))
-            .fixed_pos(map_rect.min + Vec2::new(8.0, 52.0))
+            .fixed_pos(map_rect.min + Vec2::new(8.0, top))
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -1110,117 +1126,69 @@ impl App {
         self.picker = open;
     }
 
-    /// The buttons and readouts over the map: the search box at the top left; Layers and
-    /// Menu at the top right; the scale bar and the cursor's coordinates at the bottom left;
-    /// the zoom buttons and the credit line at the bottom right.
-    fn controls(&mut self, ctx: &egui::Context, map_rect: Rect) {
+    /// The side panel ([`side_panel`]), and what was picked in it.
+    fn side_panel(&mut self, ui: &mut egui::Ui) {
         let Some(m) = &mut self.map else { return };
-        let units = self.cfg.units.unwrap_or(m.units);
-
-        // "What's here": Escape on the map closes its panel, then the route panel, before the
-        // search's results and marker. The bench asks at the view's centre, as the
-        // right-click menu would.
-        if !m.search.box_was_focused() && !m.here.escape(ctx) {
-            m.routing.escape(ctx);
-        }
-        let available = matches!(m.search.status(), Status::Opening | Status::Ready);
-        if self.bench.as_mut().is_some_and(|b| b.here_ask(available)) {
-            m.here.ask(&m.search, m.camera.center, &m.camera);
-        }
-        for t in m.here.take(&m.search) {
-            if let Some(b) = &mut self.bench {
-                b.here_answer(&t);
-            }
-        }
-
-        // Top left: search. The bench types into it as a user would, and jumps to what it
-        // picks itself.
-        let key = self.bench.as_mut().and_then(|b| b.search_key(available));
-        m.search.route_menu = m.routing.menu_state();
-        let out = m.search.ui(
-            ctx,
-            map_rect,
-            &m.camera,
-            units,
-            &mut self.cfg.recent_searches,
-            key,
-        );
+        let parts = Parts {
+            search: &mut m.search,
+            here: &mut m.here,
+            routing: &mut m.routing,
+            page: &mut m.page,
+            camera: &m.camera,
+            pack_units: m.units,
+        };
+        let o = side_panel(ui, &mut self.cfg, parts, &mut self.bench);
+        // A result picked: fly there. The bench records it, and jumps there itself.
         if let Some(b) = &mut self.bench {
-            for t in &out.taken {
+            for t in &o.out.taken {
                 let view = t.first.as_ref().map(|h| search::view_for(h, m.camera.size));
                 b.search_answer(t, view);
             }
-        } else if let Some(h) = out.fly {
+        } else if let Some(h) = o.out.fly {
             let (c, z) = search::view_for(&h, m.camera.size);
             m.motion.fly_to(&m.camera, c, z);
         }
-        if let Some((a, h)) = out.route {
+        if let Some((a, h)) = o.out.route {
             m.routing.apply(a, Place::of_hit(&h));
         }
-        m.here.ui(ctx, map_rect, &m.camera, units, m.search.icons());
+        if let Some((c, z)) = o.fly {
+            m.motion.fly_to(&m.camera, c, z);
+        }
+        let ctx = ui.ctx().clone();
+        self.act(&ctx, o.action);
+    }
 
+    fn act(&mut self, ctx: &egui::Context, action: Option<Action>) {
+        match action {
+            Some(Action::Pick) => self.picker = true,
+            Some(Action::Verify) => self.start_verify(ctx),
+            Some(Action::About) => self.about = true,
+            None => {}
+        }
+    }
+
+    /// The buttons and readouts over the map: the button that opens the side panel at the
+    /// top left when it is closed; the scale bar and the cursor's coordinates at the bottom
+    /// left; the zoom buttons and the credit line at the bottom right.
+    fn map_controls(&mut self, ctx: &egui::Context, map_rect: Rect) {
+        let Some(m) = &mut self.map else { return };
+        let units = self.cfg.units.unwrap_or(m.units);
         let panel = egui::Frame::popup(&ctx.global_style())
             .inner_margin(egui::Margin::symmetric(6, 4))
             .fill(Color32::from_white_alpha(215));
-        // Top right, and the route panel under it.
         let mut action = None;
-        let menus = egui::Area::new(egui::Id::unique("map-menus"))
-            .fixed_pos(map_rect.right_top() + Vec2::new(-8.0, 8.0))
-            .pivot(Align2::RIGHT_TOP)
-            .show(ctx, |ui| {
-                panel.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let routing = &mut m.routing;
-                        if routing.has_stops() && !routing.panel {
-                            let r = ui.button("Route").on_hover_text("Show the route panel");
-                            if r.clicked() {
-                                routing.panel = true;
-                            }
-                        }
-                        let stay_open = egui::containers::menu::MenuConfig::new()
-                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-                        egui::containers::menu::MenuButton::new("Layers")
-                            .config(stay_open)
-                            .ui(ui, |ui| {
-                                let layers = &mut self.cfg.layers;
-                                for (i, (name, on)) in layers.entries().into_iter().enumerate() {
-                                    if i == 5 {
-                                        ui.separator();
-                                        ui.label(egui::RichText::new("Points of interest").small());
-                                    }
-                                    ui.checkbox(on, name);
-                                }
-                            });
-                        egui::containers::menu::MenuButton::new("Menu").ui(ui, |ui| {
-                            ui.menu_button("Scale bar units", |ui| {
-                                let auto = format!("As the map ({})", m.units.name());
-                                ui.radio_value(&mut self.cfg.units, None, auto);
-                                for u in Units::ALL {
-                                    ui.radio_value(&mut self.cfg.units, Some(u), u.name());
-                                }
-                            });
-                            ui.separator();
-                            if ui.button("Open a pack…  (Ctrl+O)").clicked() {
-                                action = Some(Action::Pick);
-                            }
-                            if ui.button("Verify pack…").clicked() {
-                                action = Some(Action::Verify);
-                            }
-                            if ui.button("About this map…").clicked() {
-                                action = Some(Action::About);
-                            }
-                            ui.separator();
-                            ui.checkbox(&mut self.cfg.debug_overlay, "Debug overlay  (F3)");
-                        });
-                    })
+        if !self.cfg.side_panel.open {
+            let side = &mut self.cfg.side_panel;
+            egui::Area::new(egui::Id::unique("side-open"))
+                .fixed_pos(map_rect.left_top() + Vec2::new(8.0, 8.0))
+                .show(ctx, |ui| {
+                    let open = ui
+                        .add(egui::Button::new("»").min_size(Vec2::splat(30.0)))
+                        .on_hover_text("Show the panel: search, route, layers  (Ctrl+B)");
+                    if open.clicked() {
+                        side.open = true;
+                    }
                 });
-            })
-            .response
-            .rect;
-        let top = Pos2::new(map_rect.right() - 8.0, menus.bottom() + 6.0);
-        let height = map_rect.bottom() - top.y - 120.0;
-        if let Some((c, z)) = m.routing.panel_ui(ctx, top, height, &m.camera, units) {
-            m.motion.fly_to(&m.camera, c, z);
         }
 
         // Bottom left: scale bar and coordinates.
@@ -1291,12 +1259,7 @@ impl App {
                 });
             });
 
-        match action {
-            Some(Action::Pick) => self.picker = true,
-            Some(Action::Verify) => self.start_verify(ctx),
-            Some(Action::About) => self.about = true,
-            None => {}
-        }
+        self.act(ctx, action);
     }
 
     fn start_verify(&mut self, ctx: &egui::Context) {
@@ -1544,11 +1507,184 @@ fn marker_at<'a>(
     on.then_some(h)
 }
 
-/// What a click in the controls asks for, done once their UI is drawn.
-enum Action {
-    Pick,
-    Verify,
-    About,
+/// The parts of the open map that the side panel shows.
+struct Parts<'a> {
+    search: &'a mut SearchUi,
+    here: &'a mut HereUi,
+    routing: &'a mut RouteUi,
+    page: &'a mut Page,
+    camera: &'a Camera,
+    /// The units the pack suggests.
+    pack_units: Units,
+}
+
+/// What was picked in the side panel, done once it is drawn.
+struct SideOut {
+    out: search::Out,
+    /// A step of the directions: its view.
+    fly: Option<(crate::camera::Vec2, f64)>,
+    action: Option<Action>,
+    /// Where the tabs and the button that hides the panel were drawn, for the tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    tabs: [Rect; 4],
+    #[cfg_attr(not(test), allow(dead_code))]
+    hide: Rect,
+}
+
+/// The side panel, on the left when open: the search box with the ☰ menu, the tabs, and the
+/// page. The keys and the answers of its parts are handled whether it is open or not: Ctrl+B
+/// opens and closes it, Ctrl+F and "/" open it on the search box, "what's here" opens it on
+/// the search page and a stop set on the route page, and Escape steps back in the page once
+/// the search box has let go of it.
+fn side_panel(
+    ui: &mut egui::Ui,
+    cfg: &mut Config,
+    mut p: Parts<'_>,
+    bench: &mut Option<Bench>,
+) -> SideOut {
+    let ctx = ui.ctx().clone();
+    let mut o = SideOut {
+        out: search::Out::default(),
+        fly: None,
+        action: None,
+        tabs: [Rect::NOTHING; 4],
+        hide: Rect::NOTHING,
+    };
+    let units = cfg.units.unwrap_or(p.pack_units);
+    let recent = &mut cfg.recent_searches;
+    let side = &mut cfg.side_panel;
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
+        side.open = !side.open;
+    }
+    o.out = p.search.poll(recent);
+    if p.search.shortcut(&ctx) {
+        side.open = true;
+        *p.page = Page::Search;
+    }
+    if !p.search.box_was_focused() {
+        match p.page {
+            Page::Search => {
+                let _ = p.here.escape(&ctx) || p.search.escape(&ctx);
+            }
+            Page::Route => {
+                p.routing.escape(&ctx);
+            }
+            Page::Trips | Page::Layers => {}
+        }
+    }
+    // The bench asks "what's here" at the view's centre, as the right-click menu would, and
+    // types into the box as a user would.
+    let available = matches!(p.search.status(), Status::Opening | Status::Ready);
+    if bench.as_mut().is_some_and(|b| b.here_ask(available)) {
+        p.here.ask(p.search, p.camera.center, p.camera);
+    }
+    for t in p.here.take(p.search) {
+        if let Some(b) = bench.as_mut() {
+            b.here_answer(&t);
+        }
+    }
+    let key = bench.as_mut().and_then(|b| b.search_key(available));
+    if std::mem::take(&mut p.here.asked) || key.is_some() {
+        side.open = true;
+        *p.page = Page::Search;
+    }
+    if std::mem::take(&mut p.routing.opened) {
+        side.open = true;
+        *p.page = Page::Route;
+    }
+    if let Some(page) = bench.as_mut().and_then(Bench::page_shot) {
+        *p.page = page;
+        p.search.hide(&ctx);
+    }
+    p.search.route_menu = p.routing.menu_state();
+    if !side.open {
+        p.search.hide(&ctx);
+        return o;
+    }
+
+    let range = side::width_range(ctx.content_rect().width());
+    // The config holds the width, not egui: a window made narrow for a while does not keep
+    // the panel narrow.
+    let id = ui.scope_id().with("side-panel");
+    ui.data_mut(|d| d.remove::<egui::containers::panel::PanelState>(id));
+    let asked = side.width.clamp(range.min, range.max);
+    let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(8);
+    let (debug, layers, units_cfg) = (&mut cfg.debug_overlay, &mut cfg.layers, &mut cfg.units);
+    let r = egui::Panel::left("side-panel")
+        .resizable(true)
+        .default_size(asked)
+        .size_range(range)
+        .frame(frame)
+        .show(ui, |ui| {
+            let had_focus = p.search.box_was_focused();
+            ui.horizontal(|ui| {
+                p.search.box_ui(ui, p.camera, 64.0, recent, key, &mut o.out);
+                o.action = side::menu(ui, debug);
+                let hide = ui
+                    .add(egui::Button::new("«").min_size(Vec2::splat(24.0)))
+                    .on_hover_text("Hide the panel  (Ctrl+B)");
+                o.hide = hide.rect;
+                if hide.clicked() {
+                    side.open = false;
+                }
+            });
+            // A click in the box shows the search page.
+            if p.search.focused(&ctx) && !had_focus {
+                *p.page = Page::Search;
+            }
+            o.tabs = side::tabs(ui, p.page);
+            ui.separator();
+            match p.page {
+                Page::Search => {
+                    if !p
+                        .search
+                        .suggestions_ui(ui, p.camera, units, recent, &mut o.out)
+                    {
+                        search_page(ui, &mut p, units, &mut o.out);
+                    }
+                }
+                Page::Route => o.fly = p.routing.page_ui(ui, p.camera, units),
+                Page::Trips => side::trips_ui(ui),
+                Page::Layers => side::layers_ui(ui, layers, units_cfg, p.pack_units),
+            }
+        });
+    let w = r.response.rect.width();
+    if (w - asked).abs() > 0.5 {
+        side.width = w.round();
+    }
+    o
+}
+
+/// Moves the camera with the map's left edge, which the side panel moves when it opens,
+/// closes or is resized, so what is on the map stays where it was on screen. `last` is the
+/// map's rectangle the frame before.
+fn keep_still(cam: &mut Camera, last: Rect, rect: Rect) {
+    if last.is_positive() && last.left() != rect.left() {
+        let dx = rect.center().x - last.center().x;
+        cam.center[0] += f64::from(dx) / cam.scale();
+    }
+}
+
+/// The search page under the suggestions: "what's here" for a right-clicked point, then the
+/// results of Enter; a few words on what to do when there is neither.
+fn search_page(ui: &mut egui::Ui, p: &mut Parts<'_>, units: Units, out: &mut search::Out) {
+    let here = p.here.panel.is_some();
+    p.here.page_ui(ui, units, p.search.icons());
+    if !p.search.has_results() {
+        if !here {
+            let weak = |t: &str| egui::RichText::new(t).color(crate::theme::WEAK);
+            ui.label(weak("Type a place, an address, a postcode or a business."));
+            ui.add_space(4.0);
+            ui.label(weak(
+                "Right-click the map for what is there, or to route from or to a point.",
+            ));
+        }
+        return;
+    }
+    if here {
+        ui.separator();
+    }
+    p.search.results_ui(ui, p.camera, units, out);
 }
 
 const ERROR: Color32 = Color32::from_rgb(180, 30, 30);
@@ -1596,3 +1732,7 @@ fn seconds(s: f64) -> String {
 fn mib(b: u64) -> f64 {
     b as f64 / (1024.0 * 1024.0)
 }
+
+#[cfg(test)]
+#[path = "side_tests.rs"]
+mod side_tests;
