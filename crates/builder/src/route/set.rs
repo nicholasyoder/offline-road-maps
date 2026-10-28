@@ -426,7 +426,7 @@ fn overlap(a: &[P], b: &[P]) -> f64 {
     pts.iter().filter(|&&q| near(q)).count() as f64 / pts.len().max(1) as f64
 }
 
-fn quantile(v: &[f64], q: f64) -> f64 {
+pub(super) fn quantile(v: &[f64], q: f64) -> f64 {
     let mut v = v.to_vec();
     v.sort_by(f64::total_cmp);
     v.get(((v.len() as f64 - 1.0) * q).round() as usize)

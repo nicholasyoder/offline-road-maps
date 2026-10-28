@@ -2,10 +2,12 @@
 //! tried and checked without the app, as `search` and `here` are. It prints each stop's
 //! snap and each leg's distance and time, and `--geojson` writes the line. `route --check`
 //! ([`check`]) runs random pairs against Dijkstra over the same reader's base edges,
-//! checks the paths against the turn restrictions, and times routes.
+//! checks the paths against the turn restrictions, and times routes. `route --addresses`
+//! ([`snaps`]) measures how far address points snap.
 
 pub mod check;
 pub mod set;
+pub mod snaps;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -106,6 +108,11 @@ pub struct RouteArgs {
     /// With `--osrm`, how many of the largest time differences to list.
     #[arg(long, default_value_t = 15)]
     worst: usize,
+
+    /// Snap this many random address points, each with its own street as the app does,
+    /// and report how far they are from the road a route would use (criterion 1).
+    #[arg(long)]
+    addresses: Option<usize>,
 
     /// List the turn restrictions and roundabouts near this point (`lat,lon`).
     #[arg(long)]
@@ -254,6 +261,9 @@ pub fn run(args: RouteArgs) -> Result<()> {
     }
     if !args.osrm.is_empty() {
         return set::compare(&r, names, &args.osrm, args.worst);
+    }
+    if let Some(n) = args.addresses {
+        return snaps::run(&pack, &r, n, args.seed);
     }
     if let Some(p) = &args.near {
         return set::near(&r, names, parse_point(p)?, args.radius);

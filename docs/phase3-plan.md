@@ -41,7 +41,7 @@ The roadmap's items are "road graph, car profile, turn restrictions and contract
 
 | Step | Status | Notes |
 |---|---|---|
-| 3.1 Car profile and road graph | **Done** 2026-10-27 | North America 63.7M nodes / 152.7M edges, 511k restrictions applied (+0.8% nodes), stage 231 s, build peak 47.4 GiB. OSRM 6.0.0 runs on Ohio and Quebec; coverage differs only where the profile table says |
+| 3.1 Car profile and road graph | **Done** 2026-10-27 | North America 63.7M nodes / 152.7M edges, 511k restrictions applied (+0.8% nodes), stage 231 s, build peak 47.4 GiB. OSRM 6.0.0 runs on Ohio and Quebec; coverage differs only where the profile table says. 2026-10-28, decision 14: private roads restricted, not dropped (North America 68.4M nodes, routing +7.6%; addresses within 50 m of their snap 97.4% → 99.8%) |
 | 3.2 Contraction hierarchy | **Done** 2026-10-27 | Exact against Dijkstra (0 mismatches; Ohio and Quebec 10,000 pairs × 4 avoid combinations); flag overhead 0.005%, so decision 3 stands; North America 1.65 CH edges per base edge (about 3.5 GiB), stage 293 s, build peak unchanged at 47.7 GiB |
 | 3.3 Routing format and core reader | **Done** 2026-10-27 | Format 0.5: `RHDR`, `RCHE`, `RGEO`, `RNAM`, `RGRD`, `RCPY`, `RJCT`. Varint blocks of 32 nodes with middle nodes inline, top 32 MiB first; North America 2,508 MiB (criterion 7: 4.5 GiB), build peak unchanged at 48.1 GiB |
 | 3.4 Queries, snapping and multi-stop (`omp-core`) | **Done** 2026-10-27 | Stall-on-demand halves settled nodes; `route --check` exact on Ohio and Quebec (10,000 pairs × 4) and North America (1,000 × 4), 0 forbidden paths driven; warm short trips 0.17 ms p50, coast to coast about 100 ms; caches 16 + 16 MiB |
@@ -83,11 +83,22 @@ Build the car graph in the builder from OSM, as its own stage, and measure it. N
 >
 > Left open for 3.5: the time comparison and tuning (speed factor, signal and barrier delays, ferry boarding).
 >
+> **Changed 2026-10-28 (decision 14): private roads are restricted, not dropped**, except private driveways and parking aisles; a private or destination gate makes the edges through it restricted instead of blocking. Found from an address on a private stretch of Oxmoor Avenue, Louisville, that snapped 810 m away (now 0 m). `omp-builder route <pack> --addresses N` ([`snaps.rs`](../crates/builder/src/route/snaps.rs)) snaps N random address points as the app does, with their own street, and reports the distances (criterion 1's snapping half). Logs in `$OMP_WORK/measure/private/`. 10,000 addresses each:
+>
+> | | Ohio | Quebec | North America |
+> |---|---:|---:|---:|
+> | Within 50 m of their snap, before | 98.93% | 99.55% | 97.36% |
+> | **After** | **99.85%** | **99.81%** | **99.84%** |
+> | Snapped onto a restricted road, after | 1.22% | | 2.93% (0.15% before) |
+> | Routing sections | 86.7 → 92.1 MiB (+6.2%) | 31.9 → 33.7 (+5.6%) | 2,508 → 2,700 (+7.6%) |
+>
+> Keeping private driveways and aisles too gave Ohio 99.87% for 106.7 MiB (+23%). North America has 68.4M nodes and 164.5M edges (+7.5%, +7.7%); the build took 48.5 min, peak 49.7 GiB (was 48.7). Still exact: `route --check` on Ohio (10,000 pairs × 4, with `--pbf`: 0 forbidden paths) and North America (1,000 × 4), 0 differ. The route set passes 72 of 72 on North America. Warm trips with directions, same binary, old pack against new: short p50 0.51 → 0.55 ms, p95 1.71 → 2.12; long p50 107 → 125 ms, p95 225 → 288, from denser segments and junctions (nodes settled unchanged, 564 and 563), within criterion 5's 500 ms.
+>
 > Commands, from `$OMP_WORK/osrm/` with the extract copied in: `podman run --rm -v $PWD:/data ghcr.io/project-osrm/osrm-backend:v6.0.0 osrm-extract -p /data/car-log.lua /data/ohio-261001.osm.pbf > ohio-extract.log`, then `osrm-partition` and `osrm-customize` on `/data/ohio-261001.osrm`.
 
 - **Read** the routable ways in their own PBF passes after the address and search stages have freed their memory (as `measure --routing graph` does, through `pbf::Pbf`'s typed passes): `highway` from the whitelist's road classes, `route=ferry` ways, and the nodes they use. Keep only what routing needs per way: class, speed, flags, the way ID (for the street table and names), and the node refs. Node locations come from the needed-nodes store, limited to road nodes.
 - **The car profile**, in `omp-core` so the builder and tests share it (`omp_core::profile`), modelled on OSRM's `car.lua`:
-  - **Access:** `access`, `vehicle`, `motor_vehicle` and `motorcar`, most specific first. `no` and `private` drop the way; `destination` and `delivery` keep it with a time penalty, so routes use it only to start or end there. `highway=construction`, `proposed`, `track`, `path` and `footway` are not routable.
+  - **Access:** `access`, `vehicle`, `motor_vehicle` and `motorcar`, most specific first. `no` drops the way; `destination` and `delivery` keep it with a time penalty, so routes use it only to start or end there. (`private` dropped the way too until decision 14 made it restricted like `destination`, except on driveways and parking aisles.) `highway=construction`, `proposed`, `track`, `path` and `footway` are not routable.
   - **Direction:** `oneway=yes|-1|no`, `junction=roundabout|circular`, and motorways and their links one-way by default.
   - **Speed:** `maxspeed` (parsing km/h, `mph`, and `CA:urban`-style zone values), scaled by a factor below 1 (OSRM uses 0.8) since traffic seldom drives at the limit; otherwise a default by class, lower for unpaved `surface` and for `service` subtypes (parking aisles, drive-throughs, driveways). Travel time in tenths of a second, as phase 0.
   - **Ferries:** `route=ferry` with `motor_vehicle` or `motorcar` not `no`, timed from `duration` where present, else a default speed (about 20 km/h, plus a fixed boarding time). Kept only where both ends meet a road.
@@ -110,8 +121,8 @@ Build the car graph in the builder from OSM, as its own stage, and measure it. N
 | Turn and U-turn costs | Sigmoid up to 7.5 s by angle, 20 s more for a U-turn | None | Decision 2; measured in 3.5 |
 | Stop signs, give-way | 2 s and 1 s on turns, with a minor-road heuristic | None | They need turns to apply to the right approach; a node delay would charge the major road too |
 | Signals | On the turn through the node | On each edge entering the node, in the signal's direction | No turns; a route pays once per signal either way |
-| `access=private` | Kept as restricted (start or end only) | Dropped | The plan's rule; private roads are mostly driveways and gated land a route should not use |
-| Restricted roads (`destination`, `delivery`, `customers`, HOV) | `max_turn_weight` on the turn into one from an open road | 3,600 s on each edge entering one from a node an open road touches; the time shown leaves it out | Same effect without turns: a route uses them only to start or end there |
+| `access=private` | Kept as restricted (start or end only) | The same, except private driveways and parking aisles, which are dropped | Decision 14: an address on a private road is reached along it; the driveways and aisles are four in five private ways and add a sixth to the routing sections for almost no address (until 2026-10-28 every private way was dropped) |
+| Restricted roads (`private`, `destination`, `delivery`, `customers`, HOV) | `max_turn_weight` on the turn into one from an open road | 3,600 s on each edge entering one from a node an open road touches; the time shown leaves it out | Same effect without turns: a route uses them only to start or end there |
 | Classes without a speed (`track`, `road`, `path`, `footway`, `corridor`, …) with an access tag that allows cars | Routed at 10 km/h | Never routed | The plan's class list; `track` is mostly farm and forest roads |
 | `motorway_link` without `oneway` | Two-way | One-way | The plan's rule |
 | `oneway=reverse` | Not read | As `-1` | A common synonym |
@@ -127,7 +138,7 @@ Build the car graph in the builder from OSM, as its own stage, and measure it. N
 | `route=shuttle_train`, `bridge=movable` | 10 km/h; 5 km/h | Not read | No car trains in North America OSM; movable bridges are rare |
 | `maxweight`, `maxlength`; `width`, `est_width`, `narrow` for size | Below 2,000 kg or 4.8 m blocks; widths checked | Not read | Rare for cars, with messy units |
 | Barriers that pass | No delay | `gate`, `lift_gate`, `sally_port`, `toll_booth` 10 s; others 0 (border crossings add none, decision 9) | The plan's rule |
-| `access=private` (or `destination`) on a barrier node | Passes (restricted values are not blocks) | `private` blocks, `destination` passes | Consistent with dropping private ways |
+| `access=private` (or `destination`) on a barrier node | Passes (restricted values are not blocks) | Passes with the barrier's delay, and the edges through it are restricted | Decision 14: a gated community's own roads are often untagged, so the gate is what restricts them (until 2026-10-28 a private gate blocked and a `destination` one passed freely) |
 | `barrier=toll_booth` | Not a toll | Marks the edges through it as toll | Toll booths on roads without `toll=yes` |
 | Restriction members | | `from` and `to` ways must start or end at the via node (or at the via ways' ends); otherwise counted as broken | A way through the via node is ambiguous |
 
@@ -253,6 +264,8 @@ Turn a path into directions, and write the hand-written route set.
 
 - **Panel:** the stops in order (drag to reorder, remove, swap start and end), the avoid options (tolls, ferries) as checkboxes that reroute at once, and the totals: distance and driving time, per leg and in all.
 - **Directions list:** the steps of 3.5 with icons, distance and time; clicking one zooms to it and highlights its part of the route. A notice when the route breaks an avoid option or a stop snapped far away.
+- **Restricted roads** (added 2026-10-28, decision 14): the parts of the route on private or destination-only roads drawn in another colour, and a notice ("The last 0.4 mi is on a private road"). Segments carry the restricted flag already; telling private from destination-only needs a bit in `RGEO` (a format change), else the notice says "a road with restricted access".
+- **Snap connector** (added 2026-10-28): a dashed line from where the route ends to the stop's pin, so a stop snapped some way off the road reads as that, not as a route that stops short.
 - **Units** from the settings already in `config.toml` (miles, kilometres).
 - **Keyboard:** Escape closes the panel as it does the search results.
 
@@ -300,6 +313,8 @@ Settled by the owner (2026-10-27):
 12. **OSRM is the reference**, run on the dev machine for Ohio and Quebec: for driving times and route choice (criterion 4, step 3.5), for the car profile (3.1), and for how directions are built (3.5). Its design is borrowed where it fits (OSRM is BSD-2-Clause; ideas are free to use, and any code adapted from it keeps its copyright notice), except its edge-based graph and turn costs (decision 2).
 
 13. **Free U-turns are accepted for now** (step 3.5; settled by the owner 2026-10-27, option (a)). With no turn costs (decision 2), a route may U-turn at any node for free: 4.7% of random Ohio routes and 11.2% of Quebec's have one (OSRM: 1.9% and 6.8%), mostly to get round a banned turn or reach the far side of the road, and a few take 10 s where OSRM's take 2 min. Turn costs alone change times by 3% in town and well under 1% on highways. Options: (a) accept it for now: routes stay legal, the directions say "Make a U-turn"; (b) forbid U-turns at nodes with three or more roads by splitting those nodes as restrictions do, roughly doubling the nodes at intersections (an estimate, not measured); (c) the edge-based graph after all (CH about 6–9 GiB). Chosen: (a). If U-turns bother users, measure (b)'s size first.
+
+14. **Private roads are restricted, not dropped** (settled by the owner 2026-10-28, after an address on a private stretch of Oxmoor Avenue in Louisville snapped 810 m away, onto its street's public end). `access=private` (on any of the access keys) now works as `destination` does: a route may use the road to start or end there, and entering it from an open road adds 3,600 s to what the route minimizes, not to the time shown. A gate or other barrier tagged private or destination no longer blocks: the edges through it are restricted the same way, since a gated community's own streets are often untagged. Private driveways and parking aisles (`service=driveway|parking_aisle`) are still dropped: they are four in five private ways (Ohio 194k of 250k) and would add 23% to Ohio's routing sections instead of 6%, for 0.02% more addresses within 50 m, as they carry no street name to snap to. Measured in the note under [3.1](#31-car-profile-and-road-graph). The app is to show where a route uses a restricted road (3.7).
 
 Open: none.
 

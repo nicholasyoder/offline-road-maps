@@ -308,6 +308,20 @@ fn restricted_roads_cost_to_enter() {
     assert_eq!(edge(&g, 22, 23).flags, RESTRICTED);
     assert_eq!(edge(&g, 22, 21).flags, RESTRICTED);
     assert_eq!(edge(&g, 21, 11).flags, 0);
+
+    // A private road is restricted like a destination one, and so is the road through a
+    // private gate: a gated street of plain residential roads.
+    let private = &[("highway", "residential"), ("access", "private")];
+    let g = In::default()
+        .way(1, STREET, &[11, 21, 31])
+        .way(2, private, &[21, 22])
+        .way(3, STREET, &[31, 32, 33])
+        .node(32, &[("barrier", "gate"), ("access", "private")])
+        .build();
+    assert_eq!(edge(&g, 21, 22).flags, RESTRICTED | ENTRY);
+    assert_eq!(edge(&g, 31, 33).flags, RESTRICTED | ENTRY);
+    assert_eq!(edge(&g, 33, 31).flags, RESTRICTED);
+    assert_eq!(edge(&g, 21, 31).flags, 0);
 }
 
 /// A 3 × 3 grid of streets, one way per block, with a one-way street out to 41.

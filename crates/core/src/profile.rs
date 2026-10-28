@@ -9,7 +9,9 @@ pub const TOLL: u8 = 1;
 pub const FERRY: u8 = 2;
 
 /// Seconds added when a route enters a road it may use only to start or end there
-/// (`access=destination`, `delivery`, `customers`, HOV-only), from a road it may use freely.
+/// (`access=private`, `destination`, `delivery`, `customers`, HOV-only, or through a gate
+/// with one of those), from a road it may use freely. Only what the route minimizes: the
+/// time shown leaves it out.
 pub const RESTRICTED_PENALTY_S: u32 = 3600;
 
 /// Speeds are scaled by this when they come from `maxspeed`, since traffic seldom drives at
@@ -49,18 +51,16 @@ pub const HIGHWAYS: &[(&str, f64)] = &[
 /// The access keys, most specific first.
 const ACCESS_KEYS: &[&str] = &["motorcar", "motor_vehicle", "vehicle", "access"];
 
-/// Access values that keep a road only for starting or ending there.
-const RESTRICTED: &[&str] = &["destination", "delivery", "customers"];
+/// Access values that keep a road only for starting or ending there. `private` is among
+/// them, as in OSRM: an address on a private road (a gated community, a long private
+/// drive) is reached along it, but no route goes through.
+const RESTRICTED: &[&str] = &["private", "destination", "delivery", "customers"];
+
+/// `service` values whose private ways are dropped, not restricted.
+const PRIVATE_DROPPED: &[&str] = &["driveway", "parking_aisle"];
 
 /// Access values that drop a road (OSRM's blacklist, less [`RESTRICTED`]).
-const DENIED: &[&str] = &[
-    "no",
-    "private",
-    "agricultural",
-    "forestry",
-    "emergency",
-    "psv",
-];
+const DENIED: &[&str] = &["no", "agricultural", "forestry", "emergency", "psv"];
 
 /// `service` values driven slowly (OSRM's `service_penalties`, applied to the speed here).
 const SLOW_SERVICE: &[&str] = &[
@@ -213,6 +213,15 @@ pub fn way(tags: &[(&str, &str)]) -> Result<Way, Dropped> {
     }
 
     let access = by_direction(tags, ACCESS_KEYS);
+    // Private driveways and parking aisles are most private ways (Ohio: 194k of 250k) and
+    // add a sixth to the routing sections, for almost no address: they have no name, so no
+    // address snaps to them as its own street.
+    if highway == Some("service")
+        && get(tags, "service").is_some_and(|v| PRIVATE_DROPPED.contains(&v))
+        && access.contains(&Some("private"))
+    {
+        return Err(Dropped::Access);
+    }
     let allowed = access.map(|a| !a.is_some_and(|v| DENIED.contains(&v)));
     let mut restricted = access.map(|a| a.is_some_and(|v| RESTRICTED.contains(&v)));
     if !allowed[0] && !allowed[1] {
@@ -471,6 +480,9 @@ pub struct Node {
     pub delay_s: u32,
     /// A toll booth: the edges through it get [`TOLL`].
     pub toll: bool,
+    /// A barrier passed only to reach what is behind it (a gate tagged `access=private` or
+    /// `destination`): the edges through it are restricted, as a restricted road's are.
+    pub restricted: bool,
     pub applies: Applies,
     pub signal: bool,
 }
@@ -484,11 +496,19 @@ pub fn node(tags: &[(&str, &str)]) -> Option<Node> {
         block: false,
         delay_s: 0,
         toll: false,
+        restricted: false,
         applies: Applies::Both,
         signal: false,
     };
     // An access tag decides alone; the barrier is checked only without one (as OSRM does).
+    // A restricted one lets the barrier pass with its delay, for those it lets in.
     match ACCESS_KEYS.iter().find_map(|k| get(tags, k)) {
+        Some(a) if RESTRICTED.contains(&a) => {
+            n.restricted = true;
+            if let Some(b) = get(tags, "barrier") {
+                n.delay_s = lookup_delay(b);
+            }
+        }
         Some(a) => n.block = DENIED.contains(&a),
         None => {
             if let Some(b) = get(tags, "barrier") {
@@ -521,7 +541,15 @@ pub fn node(tags: &[(&str, &str)]) -> Option<Node> {
             _ => Applies::Both,
         };
     }
-    (n.block || n.delay_s > 0 || n.toll || n.signal).then_some(n)
+    (n.block || n.delay_s > 0 || n.toll || n.restricted || n.signal).then_some(n)
+}
+
+/// The delay of a barrier that lets cars pass, 0 for others.
+fn lookup_delay(barrier: &str) -> u32 {
+    PASSABLE_BARRIERS
+        .iter()
+        .find(|(k, _)| *k == barrier)
+        .map_or(0, |&(_, d)| d)
 }
 
 /// A turn restriction's kind.
@@ -607,8 +635,6 @@ mod tests {
     fn access_most_specific_first() {
         let deny = [("highway", "residential"), ("access", "no")];
         assert_eq!(w(&deny), Err(Dropped::Access));
-        let private = [("highway", "service"), ("access", "private")];
-        assert_eq!(w(&private), Err(Dropped::Access));
         let cars = [
             ("highway", "residential"),
             ("access", "no"),
@@ -629,10 +655,23 @@ mod tests {
 
     #[test]
     fn destination_is_restricted() {
-        for v in ["destination", "delivery", "customers"] {
+        for v in ["private", "destination", "delivery", "customers"] {
             let r = w(&[("highway", "residential"), ("access", v)]).unwrap();
             assert!(r.forward.unwrap().restricted && r.backward.unwrap().restricted);
         }
+        // Private driveways and parking aisles are left out; other private service roads
+        // and public driveways are not.
+        for s in ["driveway", "parking_aisle"] {
+            let t = [
+                ("highway", "service"),
+                ("service", s),
+                ("access", "private"),
+            ];
+            assert_eq!(w(&t), Err(Dropped::Access));
+            assert!(w(&[("highway", "service"), ("service", s)]).is_ok());
+        }
+        let lane = [("highway", "service"), ("motor_vehicle", "private")];
+        assert!(w(&lane).unwrap().forward.unwrap().restricted);
         let hov = w(&[("highway", "motorway"), ("hov", "designated")]).unwrap();
         assert!(hov.forward.unwrap().restricted);
         let lanes = w(&[
@@ -831,8 +870,13 @@ mod tests {
             node(&[("barrier", "bollard"), ("motor_vehicle", "yes")]),
             None
         );
+        // A private gate lets in those it is for: the road through it is restricted.
+        let gate = node(&[("barrier", "gate"), ("access", "private")]).unwrap();
+        assert!(gate.restricted && !gate.block && gate.delay_s > 0);
+        let post = node(&[("barrier", "bollard"), ("motor_vehicle", "destination")]).unwrap();
+        assert!(post.restricted && !post.block && post.delay_s == 0);
         assert!(
-            node(&[("barrier", "gate"), ("access", "private")])
+            node(&[("barrier", "gate"), ("access", "no")])
                 .unwrap()
                 .block
         );

@@ -275,6 +275,17 @@ The routing sections of [step 3.3](phase3-plan.md#33-routing-format-and-core-rea
 
 `RCHE` is 5.2 bytes per hierarchy edge on North America, middle nodes included, against the 12 per node and edge phase 0 assumed (3,621 MiB); `RGEO` 16.3 bytes per segment. The North America pack as built is **9,804.5 MiB (9.6 GiB, 10.3 GB) in 3 chunks**, up from 7,210.4 in phase 2: routing adds 2,508 MiB and the tiles 84 MiB. The estimate of about 10,349 MiB with phase 0's 3,276 MiB CH becomes this measured 9,805.
 
+**With private roads (decision 14, 2026-10-28):** private roads kept as restricted, except private driveways and parking aisles. In `$OMP_WORK/measure/private/`. MiB:
+
+| | Ohio | Quebec | North America |
+|---|---:|---:|---:|
+| Graph nodes / edges | 2.35M / 5.65M (+4.2% / +4.6%) | | 68.4M / 164.5M (+7.5% / +7.7%) |
+| **Routing total** | **92.1** (+6.2%) | **33.7** (+5.6%) | **2,699.5** (+7.6%: `RCHE` 1,334.6, `RGEO` 1,349.7) |
+| Keeping private driveways and aisles too | 106.7 (+23%) | | not built |
+| Pack | 215.2 | | 9,995.6 |
+
+Within criterion 7's 4.5 GiB. The North America build took 48.5 min, peak 49.7 GiB (was 48.7, set by the graph read now).
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

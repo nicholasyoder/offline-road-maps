@@ -615,6 +615,9 @@ pub fn build(mut input: Input) -> Graph {
                             if n.toll {
                                 flags |= TOLL;
                             }
+                            if n.restricted {
+                                flags |= RESTRICTED;
+                            }
                         }
                     }
                     let s = travel_s(w, d, len, total) + f64::from(delay);

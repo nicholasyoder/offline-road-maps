@@ -136,6 +136,7 @@ Detailed plan: [phase3-plan.md](phase3-plan.md).
 - [ ] Planned departure and arrival times, overnight stops, and fuel or rest-stop suggestions along the route.
 - [ ] Saved trips and pushpins, with GPX, CSV and KML import and export.
 - [ ] Print or export directions and the map to PDF.
+- [ ] Alternative routes (added 2026-10-28, from trying phase 3's routes): after the quickest route, a few that take clearly different roads (via-node alternatives over the same hierarchy), each scored again with what the hierarchy leaves out, mainly turn and U-turn costs (phase 3 decisions 2 and 13), so an avoidable U-turn or a run of left turns can lose to a route a little slower on paper. Shown in grey beside the chosen one, to pick from. It cannot make a route faster than the hierarchy's: that one is already the quickest under the profile.
 
 ### Phase 5: Settings, map styles and polish
 Added 2026-10-26. The settings already in `config.toml` (units, MSAA, layers, the last view) can only be changed in the file or in scattered places in the UI. This phase gives them one home and smooths the rough edges found in real use.
