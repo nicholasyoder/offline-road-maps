@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 
-use eframe::egui::{self, Event, EventFilter, Id, Key, Rect, Vec2};
+use eframe::egui::{self, Event, EventFilter, Id, Key, Rect};
 use omp_core::find::Hit;
 use omp_core::schema::Schema;
 
@@ -16,7 +16,7 @@ use crate::camera::Camera;
 use crate::here::{HereAnswer, HereQuery};
 use crate::routing::{self, MenuState, StopAction};
 use crate::scale::Units;
-use crate::theme::{INK, WEAK};
+use crate::theme::{Glyph, INK, WEAK, glyph_button};
 
 /// Shown while the deeper search levels run.
 const SEARCHING_MORE: &str = "Searching smaller towns and more names…";
@@ -396,7 +396,8 @@ impl SearchUi {
                 || self.session.marker.is_some()
                 || self.session.results.is_some();
             let clear = ui
-                .add_enabled(any, egui::Button::new("×").min_size(Vec2::splat(22.0)))
+                .add_enabled_ui(any, |ui| glyph_button(ui, Glyph::Close, 22.0))
+                .inner
                 .on_hover_text("Clear the search and its marker");
             if clear.clicked() {
                 self.clear();
@@ -580,7 +581,9 @@ impl SearchUi {
                     .color(INK),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                close = ui.small_button("×").on_hover_text("Close  (Esc)").clicked();
+                close = glyph_button(ui, Glyph::Close, 18.0)
+                    .on_hover_text("Close  (Esc)")
+                    .clicked();
             });
         });
         ui.separator();

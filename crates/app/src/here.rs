@@ -16,7 +16,7 @@ use crate::camera::{self, Camera};
 use crate::routing::{self, MenuState, StopAction};
 use crate::scale::{self, Units};
 use crate::search::{self, Icons, SearchUi, Status};
-use crate::theme::{APPROX, INK, WEAK};
+use crate::theme::{APPROX, Glyph, INK, WEAK, glyph_button};
 
 /// Places and POIs this far from the point, in screen points, are "nearby".
 pub const NEARBY_PX: f64 = 30.0;
@@ -214,7 +214,9 @@ impl HereUi {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("What's here").strong().color(INK));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    close = ui.small_button("×").on_hover_text("Close  (Esc)").clicked();
+                    close = glyph_button(ui, Glyph::Close, 18.0)
+                        .on_hover_text("Close  (Esc)")
+                        .clicked();
                 });
             });
             match &panel.answer {

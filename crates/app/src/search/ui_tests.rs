@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::search::testing::{answer, hit};
-use eframe::egui::Pos2;
+use eframe::egui::{Pos2, Vec2};
 use omp_core::find::HitKind;
 use omp_core::search::Kind;
 

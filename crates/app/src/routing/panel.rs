@@ -13,7 +13,7 @@ use crate::camera::{self, Camera};
 use crate::scale::Units;
 use crate::search::distance_text;
 use crate::side::later;
-use crate::theme::{APPROX, INK, WEAK};
+use crate::theme::{APPROX, Glyph, INK, WEAK, glyph_button};
 
 const ICON: f32 = 20.0;
 /// Where a step's text starts, from the row's left, and the line under it.
@@ -195,7 +195,7 @@ impl RouteUi {
                         .on_hover_text(format!("{what}: {:.5}, {:.5}", ll[1], ll[0]));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.small_button("×").on_hover_text("Remove this stop");
+                    let r = glyph_button(ui, Glyph::Close, 18.0).on_hover_text("Remove this stop");
                     self.targets.push((Target::Remove(i), r.rect));
                     if r.clicked() {
                         edits.push(Edit::Remove(i));

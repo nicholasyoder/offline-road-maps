@@ -29,7 +29,7 @@ use crate::scale::{self, Units};
 use crate::search::{self, SearchUi, Status};
 use crate::side::{self, Action, Page};
 use crate::style::{Style, StyleFile};
-use crate::theme::INK;
+use crate::theme::{Glyph, INK, glyph_button};
 use crate::tiles::{self, Cover, Known, Resolved, TileId};
 use crate::verify::{Outcome, Verify};
 
@@ -189,13 +189,7 @@ impl App {
         let mut notices = s.notices;
         notices.extend(s.config.fallback.clone());
         notices.extend(err);
-        // The map is light, so its controls and dialogs are too, whatever the system theme.
-        cc.egui_ctx.set_theme(egui::Theme::Light);
-        // Smaller window titles (egui's 18 points look heavy on small dialogs).
-        cc.egui_ctx.all_styles_mut(|s| {
-            s.text_styles
-                .insert(egui::TextStyle::Heading, FontId::proportional(15.0));
-        });
+        crate::theme::apply(&cc.egui_ctx);
         let rs = cc.wgpu_render_state.as_ref();
         let adapter = rs.map_or_else(String::new, |rs| {
             let i = rs.adapter.get_info();
@@ -1182,8 +1176,7 @@ impl App {
             egui::Area::new(egui::Id::unique("side-open"))
                 .fixed_pos(map_rect.left_top() + Vec2::new(8.0, 8.0))
                 .show(ctx, |ui| {
-                    let open = ui
-                        .add(egui::Button::new("»").min_size(Vec2::splat(30.0)))
+                    let open = glyph_button(ui, Glyph::Show, 30.0)
                         .on_hover_text("Show the panel: search, route, layers  (Ctrl+B)");
                     if open.clicked() {
                         side.open = true;
@@ -1620,9 +1613,8 @@ fn side_panel(
             ui.horizontal(|ui| {
                 p.search.box_ui(ui, p.camera, 64.0, recent, key, &mut o.out);
                 o.action = side::menu(ui, debug);
-                let hide = ui
-                    .add(egui::Button::new("«").min_size(Vec2::splat(24.0)))
-                    .on_hover_text("Hide the panel  (Ctrl+B)");
+                let hide =
+                    glyph_button(ui, Glyph::Hide, 24.0).on_hover_text("Hide the panel  (Ctrl+B)");
                 o.hide = hide.rect;
                 if hide.clicked() {
                     side.open = false;
