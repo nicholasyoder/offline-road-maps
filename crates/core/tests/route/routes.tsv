@@ -1,0 +1,82 @@
+# Hand-written route set (phase 3 step 3.5, criterion 3), run by
+# `omp-builder route <pack> --set crates/core/tests/route/routes.tsv`.
+# Columns, tab-separated: region (lines run on the pack of that name; north-america runs
+# them all), id, stops (lat,lon;lat,lon;...), avoid (-, tolls, ferries, tolls,ferries),
+# roads (route numbers or name parts that must be driven for 200 m or more, `toll` and
+# `ferry` for the flags; `!` for at most 50 m; | between, a/b for either; - for none), steps (texts some
+# step must contain, ignoring case; `!` for none may), minutes (the trip's time, a-b), and
+# a note. Times are typical drive times without traffic, widened. A turn restriction is
+# checked by its forbidden turn's step: free U-turns (no turn costs, decision 2) make a time
+# bound useless.
+ohio	columbus-cleveland	39.9623,-83.0007;41.4993,-81.6944	-	I 71	I-71 North	120-190	Interstate the whole way
+ohio	cincinnati-cleveland	39.1031,-84.5120;41.4993,-81.6944	-	I 71	I-71 North	200-320	I-71 north through Columbus
+ohio	columbus-cincinnati	39.9623,-83.0007;39.1031,-84.5120	-	I 71	I-71 South	95-160
+ohio	columbus-dayton	39.9623,-83.0007;39.7589,-84.1916	-	I 70	I-70 West	60-100
+ohio	dayton-cincinnati	39.7589,-84.1916;39.1031,-84.5120	-	I 75	I-75 South	45-85
+ohio	toledo-cleveland	41.6528,-83.5379;41.4993,-81.6944	-	toll|I 80	-	95-160	Ohio Turnpike is the quick way
+ohio	toledo-cleveland-free	41.6528,-83.5379;41.4993,-81.6944	tolls	!toll	-	100-200	without the Turnpike
+ohio	toledo-youngstown	41.6528,-83.5379;41.0998,-80.6495	-	toll|I 80	-	140-230	the Turnpike across the state
+ohio	akron-canton	41.0814,-81.5190;40.7989,-81.3784	-	I 77	I-77 South	20-45
+ohio	cleveland-akron	41.4993,-81.6944;41.0814,-81.5190	-	I 77	-	35-65
+ohio	lima-toledo	40.7426,-84.1052;41.6528,-83.5379	-	I 75	I-75 North	55-95
+ohio	mansfield-columbus	40.7584,-82.5154;39.9623,-83.0007	-	I 71	I-71 South	55-95
+ohio	athens-columbus	39.3292,-82.1013;39.9623,-83.0007	-	US 33	-	65-110	US 33 northwest
+ohio	columbus-zanesville	39.9623,-83.0007;39.9403,-82.0132	-	I 70	I-70 East	50-85
+ohio	columbus-airport	39.9623,-83.0007;39.9980,-82.8919	-	I 670	-	8-25
+ohio	osu-easton	40.0067,-83.0305;40.0505,-82.9150	-	-	-	10-30	across north Columbus
+ohio	cleveland-clinic	41.4995,-81.6937;41.5025,-81.6210	-	-	-	6-20	downtown to University Circle
+ohio	kelleys-island	41.4489,-82.7080;41.5960,-82.7080	-	ferry	Take the ferry	30-120	ferry from Marblehead
+ohio	kelleys-island-noferry	41.4489,-82.7080;41.5960,-82.7080	ferries	ferry	Take the ferry	30-120	no other way: breaks the option
+ohio	put-in-bay	41.5110,-82.9370;41.6540,-82.8200	-	ferry	Take the ferry	30-120	Miller Ferry from Catawba
+ohio	columbus-dayton-cincinnati	39.9623,-83.0007;39.7589,-84.1916;39.1031,-84.5120	-	I 70|I 75	Arrive at stop 2	110-200	two legs
+ohio	exit-171	41.4600,-81.6900;41.4960,-81.6820	-	I 90	exit 171	3-15	off I-90 onto Ontario St
+ohio	dublin-roundabout	40.11776,-83.11856;40.11851,-83.11810	-	-	At the roundabout	0.2-10	Brand Rd onto Dublin Rd
+ohio	livingston-washington	39.95231,-82.98494;39.95205,-82.98511	-	-	!Turn left onto South Washington Avenue	0-10	no left from Livingston Ave onto S Washington Ave
+ohio	reading-liberty	39.11117,-84.50376;39.11128,-84.50404	-	-	!Turn left onto East Liberty Street	0-10	no turn from Reading Rd onto E Liberty St
+ohio	w25th-vermont	41.49227,-81.70821;41.49200,-81.70773	-	-	!Turn left onto Vermont Avenue	0-10	no turn from W 25th St onto Vermont Ave
+quebec	montreal-quebec	45.5017,-73.5673;46.8139,-71.2080	-	20/40	-	140-230	A-20 or A-40
+quebec	montreal-quebec-notolls	45.5017,-73.5673;46.8139,-71.2080	tolls	!toll	-	140-230	no tolls either way
+quebec	montreal-sherbrooke	45.5017,-73.5673;45.4042,-71.8929	-	10	-	75-130	A-10
+quebec	montreal-gatineau	45.5017,-73.5673;45.4765,-75.7013	-	50	-	120-200	A-50 on the Quebec side
+quebec	montreal-tremblant	45.5017,-73.5673;46.1185,-74.5962	-	15	-	75-130	A-15 then 117
+quebec	quebec-saguenay	46.8139,-71.2080;48.4284,-71.0687	-	175	-	120-190	through the Laurentides reserve
+quebec	trois-rivieres-quebec	46.3432,-72.5477;46.8139,-71.2080	-	40	-	70-120
+quebec	montreal-airport	45.5017,-73.5673;45.4577,-73.7497	-	-	-	12-35
+quebec	a25-toll	45.7000,-73.6470;45.6100,-73.5600	-	toll|25	-	10-35	Terrebonne to Anjou on the A-25 toll bridge
+quebec	a25-notoll	45.7000,-73.6470;45.6100,-73.5600	tolls	!toll	-	12-50	another bridge
+quebec	a30-toll	45.3650,-73.7500;45.4000,-74.0330	-	toll|30	-	15-45	Chateauguay to Vaudreuil on the A-30 toll section
+quebec	a30-notoll	45.3650,-73.7500;45.4000,-74.0330	tolls	!toll	-	20-80	through Montreal island
+quebec	tadoussac-ferry	48.1100,-69.7250;48.1430,-69.7150	-	ferry	Take the ferry	12-60	across the Saguenay
+quebec	tadoussac-noferry	48.1100,-69.7250;48.1430,-69.7150	ferries	!ferry	-	240-420	around by Chicoutimi
+quebec	riviere-du-loup-ferry	47.8350,-69.5360;47.8440,-69.8800	-	ferry	Take the ferry	60-180	to Saint-Simeon
+quebec	sorel-ferry	46.0440,-73.1170;46.0800,-73.1830	-	ferry	Take the ferry	15-60	Sorel to Saint-Ignace-de-Loyola
+quebec	montreal-gaspe	45.5017,-73.5673;48.8316,-64.4869	-	20|132	-	540-780	along the St Lawrence
+quebec	montreal-tr-quebec	45.5017,-73.5673;46.3432,-72.5477;46.8139,-71.2080	-	40	Arrive at stop 2	150-260	two legs on A-40
+quebec	levis-sainte-foy	46.7380,-71.2700;46.7800,-71.2900	-	175/73	-	3-20	across the Pierre-Laporte or Quebec bridge
+quebec	quebec-roundabout	46.76945,-71.35034;46.76931,-71.35217	-	-	At the roundabout	0.2-10	Avenue Le Gendre onto Rue Alfred-Bessette
+quebec	jeanne-mance	45.50696,-73.56335;45.50615,-73.56398	-	-	!Turn left onto Rue Jeanne-Mance	0-10	no turn from Rene-Levesque Ouest onto Rue Jeanne-Mance
+quebec	11e-rue	46.82910,-71.22598;46.82875,-71.22603	-	-	!Turn left onto 8e Avenue	0-10	no turn from 11e Rue onto 8e Avenue
+ontario	burlington-markham	43.3255,-79.7990;43.8561,-79.3370	-	407|toll	-	35-75	Highway 407 ETR is the quick way
+ontario	burlington-markham-free	43.3255,-79.7990;43.8561,-79.3370	tolls	!toll|!407	-	40-100	on the 403 and 401
+ontario	toronto-ottawa	43.6532,-79.3832;45.4215,-75.6972	-	401|416	-	240-360
+ontario	toronto-kingston	43.6532,-79.3832;44.2312,-76.4860	-	401	-	140-230
+ontario	toronto-niagara	43.6532,-79.3832;43.0896,-79.0849	-	QEW	-	75-130
+ontario	toronto-windsor	43.6532,-79.3832;42.3149,-83.0364	-	401	-	220-330
+ontario	toronto-barrie	43.6532,-79.3832;44.3894,-79.6903	-	400	-	55-100
+ontario	wolfe-island	44.2290,-76.4830;44.1950,-76.4300	-	ferry	Take the ferry	15-60	Kingston to Wolfe Island
+ontario	lakeshore-jarvis	43.64629,-79.36809;43.64577,-79.36990	-	-	!Turn left onto Lower Jarvis Street	0-10	no turn from Lake Shore Blvd onto Lower Jarvis St
+ontario	yonge-dundas	43.65603,-79.38078;43.65644,-79.38025	-	-	!Turn right onto Dundas Street East	0-10	no turn from Yonge St onto Dundas St E
+ontario	university-queen	43.65050,-79.38628;43.65086,-79.38653	-	-	!Turn left onto Queen Street West	0-10	no turn from University Ave onto Queen St W
+north-america	detroit-windsor	42.3314,-83.0458;42.3149,-83.0364	-	-	-	5-30	across the river by bridge or tunnel
+north-america	buffalo-toronto	42.8864,-78.8784;43.6532,-79.3832	-	QEW	-	100-170
+north-america	montreal-new-york	45.5017,-73.5673;40.7128,-74.0060	-	I 87|15	-	330-480	A-15 and I-87
+north-america	seattle-vancouver	47.6062,-122.3321;49.2827,-123.1207	-	I 5	-	130-220
+north-america	detroit-chicago	42.3314,-83.0458;41.8781,-87.6298	-	I 94	-	240-360
+north-america	new-york-boston	40.7128,-74.0060;42.3601,-71.0589	-	I 95|I 90	-	200-330
+north-america	los-angeles-san-francisco	34.0522,-118.2437;37.7749,-122.4194	-	I 5	-	320-480
+north-america	victoria-vancouver	48.4284,-123.3656;49.2827,-123.1207	-	ferry	Take the ferry	150-300	BC Ferries from Swartz Bay
+north-america	key-west-miami	24.5551,-81.7800;25.7617,-80.1918	-	US 1	-	180-300	the Overseas Highway
+north-america	halifax-charlottetown	44.6488,-63.5752;46.2382,-63.1311	-	-	-	150-260	Confederation Bridge or Wood Islands ferry
+north-america	miami-seattle	25.7743,-80.1937;47.6062,-122.3321	-	-	-	2400-3900	coast to coast
+north-america	halifax-los-angeles	44.6488,-63.5752;34.0522,-118.2437	-	-	-	2900-4500	coast to coast
+north-america	toronto-vancouver	43.6532,-79.3832;49.2827,-123.1207	-	-	-	2200-3600

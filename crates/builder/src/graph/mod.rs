@@ -452,7 +452,10 @@ pub fn build(mut input: Input) -> Graph {
     };
     let refs = |w: &WayIn| &input.refs[w.refs.clone()];
 
-    // Ferries must meet a road at both ends.
+    // Ferries must meet a road at both ends, or another ferry that does: a crossing is
+    // often mapped as several ways that meet at sea (step 3.5 found all of BC Ferries'
+    // Swartz Bay routes left out by a test of each way alone). Ferries with an end that
+    // meets neither are dropped until none is left.
     let ends: HashSet<i64> = input
         .ways
         .iter()
@@ -465,13 +468,37 @@ pub fn build(mut input: Input) -> Graph {
         .filter(|w| !w.ferry)
         .flat_map(|w| refs(w).iter().copied().filter(|id| ends.contains(id)))
         .collect();
+    let ferries: Vec<usize> = (0..input.ways.len())
+        .filter(|&i| input.ways[i].ferry)
+        .collect();
+    let mut kept: HashSet<usize> = ferries.iter().copied().collect();
+    loop {
+        // How many kept ferries pass through each end node.
+        let mut on: HashMap<i64, u32> = HashMap::new();
+        for &i in &kept {
+            for &id in refs(&input.ways[i]) {
+                if ends.contains(&id) {
+                    *on.entry(id).or_default() += 1;
+                }
+            }
+        }
+        let ok = |id: i64| met.contains(&id) || on.get(&id).is_some_and(|&n| n > 1);
+        let before = kept.len();
+        kept.retain(|&i| {
+            let r = refs(&input.ways[i]);
+            ok(r[0]) && ok(*r.last().unwrap())
+        });
+        if kept.len() == before {
+            break;
+        }
+    }
     let before = input.ways.len();
     let ways = std::mem::take(&mut input.ways);
     let ways: Vec<WayIn> = ways
         .into_iter()
-        .filter(|w| {
-            !w.ferry || (met.contains(&refs(w)[0]) && met.contains(refs(w).last().unwrap()))
-        })
+        .enumerate()
+        .filter(|(i, w)| !w.ferry || kept.contains(i))
+        .map(|(_, w)| w)
         .collect();
     stats.ferries_unconnected = (before - ways.len()) as u64;
     stats.ways = ways.len() as u64;
@@ -774,6 +801,11 @@ pub struct GraphArgs {
     /// Write the IDs of the ways in the graph, one per line, to compare with OSRM's.
     #[arg(long)]
     way_ids: Option<PathBuf>,
+
+    /// Only list the turn restrictions whose via node is within 50 m of `lat,lon`, with
+    /// their relation and way IDs (to look into a route that differs from OSRM's).
+    #[arg(long)]
+    restrictions_near: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -788,6 +820,37 @@ struct Report<'a> {
 pub fn run(args: GraphArgs) -> Result<()> {
     let start = Instant::now();
     let pbf = Pbf::open(&args.input)?;
+    if let Some(p) = &args.restrictions_near {
+        let p = crate::find::parse_point(p)?;
+        let input = read(&pbf)?;
+        let at: HashMap<i64, P> = input
+            .refs
+            .iter()
+            .copied()
+            .zip(input.coords.iter().copied())
+            .collect();
+        let near = |id: &i64| {
+            at.get(id).is_some_and(|&q| {
+                omp_core::geo::dist(p, q) * omp_core::geo::metres_per_unit(p) <= 50.0
+            })
+        };
+        for r in &input.restrictions {
+            let hit = match &r.via {
+                Via::Node(n) => near(n),
+                Via::Ways(ws) => input
+                    .ways
+                    .binary_search_by_key(&ws[0], |w| w.id)
+                    .is_ok_and(|i| input.refs[input.ways[i].refs.clone()].iter().any(near)),
+            };
+            if hit {
+                println!(
+                    "relation {}: {:?} from {:?} via {:?} to {:?}",
+                    r.id, r.kind, r.from, r.via, r.to
+                );
+            }
+        }
+        return Ok(());
+    }
     let g = make(&pbf)?;
     print_stats(&g.stats);
     if let Some(path) = &args.way_ids {

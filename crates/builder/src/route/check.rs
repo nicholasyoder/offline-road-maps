@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use anyhow::{Result, ensure};
 use omp_core::geo::{self, P};
-use omp_core::route::{FERRY_CLASS, Routing, SHORTCUT, Stop};
+use omp_core::route::{FERRY_CLASS, Names, Routing, SHORTCUT, Stop, Trip};
 use rayon::prelude::*;
 
 use super::{RouteArgs, duration, flags_text};
@@ -223,7 +223,13 @@ struct Counts {
     query_ns: AtomicU64,
 }
 
-pub fn run(first: &Path, r: &Routing, n: usize, args: &RouteArgs) -> Result<()> {
+pub fn run(
+    first: &Path,
+    r: &Routing,
+    names: Option<&dyn Names>,
+    n: usize,
+    args: &RouteArgs,
+) -> Result<()> {
     let start = Instant::now();
     let h = &r.header;
     println!(
@@ -233,7 +239,7 @@ pub fn run(first: &Path, r: &Routing, n: usize, args: &RouteArgs) -> Result<()> 
         h.segments
     );
     if n == 0 {
-        return trips(r, args);
+        return trips(r, names, args);
     }
     let restrictions = args
         .pbf
@@ -383,7 +389,7 @@ pub fn run(first: &Path, r: &Routing, n: usize, args: &RouteArgs) -> Result<()> 
         "the check failed"
     );
 
-    trips(r, args)?;
+    trips(r, names, args)?;
     println!(
         "  readers hold {:.1} MiB; {:.1} MiB read; check {:.1} s, peak RSS {:.0} MiB",
         mib(r.heap_bytes() as u64),
@@ -398,7 +404,7 @@ pub fn run(first: &Path, r: &Routing, n: usize, args: &RouteArgs) -> Result<()> 
 }
 
 /// A random point on a random segment outside small components and ferries.
-fn random_point(r: &Routing, rng: &mut Rng) -> Result<P> {
+pub(crate) fn random_point(r: &Routing, rng: &mut Rng) -> Result<P> {
     loop {
         let s = r.segment(rng.below(u64::from(r.header.segments)) as u32)?;
         if !s.small && s.class != FERRY_CLASS {
@@ -408,16 +414,21 @@ fn random_point(r: &Routing, rng: &mut Rng) -> Result<P> {
 }
 
 /// `p` moved `m` metres on bearing `rad` (east of north), on the map's plane.
-fn offset(p: P, m: f64, rad: f64) -> P {
+pub(crate) fn offset(p: P, m: f64, rad: f64) -> P {
     let u = m / geo::metres_per_unit(p);
     let x = f64::from(p[0]) + u * rad.sin();
     let y = f64::from(p[1]) - u * rad.cos();
     [x.clamp(0.0, 4.29e9) as u32, y.clamp(0.0, 4.29e9) as u32]
 }
 
-/// Routes between points timed warm: each asked twice, the second with the caches as the
-/// first left them.
-fn trips(r: &Routing, args: &RouteArgs) -> Result<()> {
+/// Routes between points timed warm, with their directions (criterion 5): each asked
+/// twice, the second with the caches as the first left them.
+fn trips(r: &Routing, names: Option<&dyn Names>, args: &RouteArgs) -> Result<()> {
+    let route = |stops: &[Stop]| -> std::io::Result<Trip> {
+        let trip = r.trip(stops, 0)?;
+        r.directions(&trip, stops, names)?;
+        Ok(trip)
+    };
     let mut rng = Rng::new(args.seed + 1);
     let n = args.trips;
     // Short: to a road 1 to 100 km away in a random direction.
@@ -443,8 +454,8 @@ fn trips(r: &Routing, args: &RouteArgs) -> Result<()> {
         let (mut routed, mut km, mut far, mut settled) = (0, 0.0, 0, 0);
         for &(a, b) in pairs.iter() {
             let stops = [Stop::at(a), Stop::at(b)];
-            once.time(|| r.trip(&stops, 0))?;
-            let trip = again.time(|| r.trip(&stops, 0))?;
+            once.time(|| route(&stops))?;
+            let trip = again.time(|| route(&stops))?;
             far += trip
                 .snaps
                 .iter()
@@ -506,7 +517,7 @@ fn trips(r: &Routing, args: &RouteArgs) -> Result<()> {
             continue;
         }
         for _ in 0..5 {
-            trip = times.time(|| r.trip(&stops, 0))?;
+            trip = times.time(|| route(&stops))?;
         }
         let l = trip.legs[0].as_ref().unwrap();
         times.line(&format!("{name}, again"));

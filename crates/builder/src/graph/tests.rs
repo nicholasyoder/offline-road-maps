@@ -280,6 +280,18 @@ fn ferries() {
     let e = edge(&g, 21, 51);
     assert_eq!(e.flags, FERRY);
     assert_eq!(e.time_ds, 18_000);
+
+    // A crossing in two ways that meet at sea is kept; a branch off it to nowhere is not.
+    let plain = &[("route", "ferry")];
+    let g = In::default()
+        .way(1, STREET, &[11, 21])
+        .way(2, STREET, &[51, 61])
+        .way(3, plain, &[21, 31, 41])
+        .way(4, plain, &[41, 51])
+        .way(5, plain, &[31, 33])
+        .build();
+    assert_eq!(g.stats.ferries_unconnected, 1);
+    assert!(has_edge(&g, 21, 41) && has_edge(&g, 41, 51));
 }
 
 #[test]

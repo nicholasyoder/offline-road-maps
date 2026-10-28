@@ -536,7 +536,9 @@ pub enum Restriction {
 
 /// Whether a `type=restriction` relation applies to cars, and of which kind. `None` for
 /// other vehicles (`restriction:hgv` alone), cars in `except`, conditional-only
-/// restrictions, and values that are neither `no_*` nor `only_*`.
+/// restrictions, values that are neither `no_*` nor `only_*`, and `no_right_turn_on_red`
+/// and the like, which forbid a turn only on a red light (step 3.5: 138 in Ohio and 8 in
+/// Quebec were applied as turn bans until then; OSRM skips them).
 pub fn restriction(tags: &[(&str, &str)]) -> Option<Restriction> {
     let except = get(tags, "except").unwrap_or_default();
     if except
@@ -553,7 +555,9 @@ pub fn restriction(tags: &[(&str, &str)]) -> Option<Restriction> {
     ]
     .iter()
     .find_map(|k| get(tags, k))?;
-    if v.starts_with("no_") {
+    if v.contains("_on_red") {
+        None
+    } else if v.starts_with("no_") {
         Some(Restriction::No)
     } else if v.starts_with("only_") {
         Some(Restriction::Only)
@@ -868,6 +872,10 @@ mod tests {
             None
         );
         assert_eq!(restriction(&[("restriction", "give_way")]), None);
+        assert_eq!(
+            restriction(&[("restriction", "no_right_turn_on_red")]),
+            None
+        );
         assert_eq!(
             restriction(&[("restriction:conditional", "no_left_turn @ (Mo-Fr)")]),
             None

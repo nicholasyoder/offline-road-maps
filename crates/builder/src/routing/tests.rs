@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use omp_core::pack::{self, Info, Pack, Writer};
 use omp_core::profile::Restriction;
-use omp_core::route::{AVOID, FERRY, FERRY_CLASS, Routing, Stop, TOLL, cell_xy};
+use omp_core::route::{AVOID, FERRY, FERRY_CLASS, Names, Road, Routing, Stop, TOLL, cell_xy};
 
 use super::*;
 use crate::ch::check::dijkstra;
 use crate::graph::Via;
-use crate::graph::tests::{In, grid, pos, way_id};
+use crate::graph::tests::{In, STREET, grid, pos, way_id};
 use crate::street::WayStreets;
 
 /// The grid of `graph::tests`, with a toll motorway, a ferry, a long way with inner nodes,
@@ -48,8 +48,12 @@ fn plain(g: &Graph, v: u32) -> u32 {
 /// The routing sections of `g` written to a pack and opened: the reader, the layout's
 /// order and sizes, and the pack's directory.
 fn reader(g: &Graph) -> (Routing, Order, Sizes, tempfile::TempDir) {
+    reader_with(g, WayStreets(vec![(302, 0, 7), (302, 2, 8)]))
+}
+
+/// [`reader`] with the ways' streets given.
+fn reader_with(g: &Graph, streets: WayStreets) -> (Routing, Order, Sizes, tempfile::TempDir) {
     let h = ch::contract(&g.csr, &ch::Params::default());
-    let streets = WayStreets(vec![(302, 0, 7), (302, 2, 8)]);
     let p = Params {
         block_nodes: 4,
         top_mib: 0.0001,
@@ -313,4 +317,112 @@ fn legs_honour_restrictions_one_ways_and_avoid_options() {
     ];
     let t = r.trip(&lost, 0).unwrap();
     assert!(!t.complete() && t.legs.iter().all(Option::is_none));
+}
+
+/// Street names for directions, without a street table.
+struct TestNames(std::collections::HashMap<u32, Road>);
+
+impl Names for TestNames {
+    fn street_road(&self, id: u32) -> std::io::Result<Road> {
+        Ok(self.0.get(&id).cloned().unwrap_or_default())
+    }
+}
+
+#[test]
+fn directions_name_turns_exits_roundabouts_and_ferries() {
+    let mut i = network();
+    // A roundabout of four one-way quarters, driven anticlockwise, with a road off each
+    // corner.
+    let ring = &[("highway", "residential"), ("junction", "roundabout")];
+    for (id, a, b) in [(400, 72, 83), (401, 83, 74), (402, 74, 63), (403, 63, 72)] {
+        i.way(id, ring, &[a, b]);
+    }
+    for (id, a, b) in [(410, 71, 72), (411, 83, 93), (412, 74, 75), (413, 63, 53)] {
+        i.way(id, STREET, &[a, b]);
+    }
+    // A one-way motorway east with exit 12A off to the right, onto Main St.
+    let motorway = &[("highway", "motorway"), ("ref", "I 70")];
+    i.way(420, motorway, &[18, 28])
+        .way(421, motorway, &[28, 38]);
+    i.way(
+        422,
+        &[("highway", "motorway_link"), ("destination", "Columbus")],
+        &[28, 37],
+    );
+    i.way(423, STREET, &[37, 47]);
+    i.junctions.push((28, "12A".into()));
+    let g = i.build();
+    let (first, oak) = (way_id(&i, 11, 21), way_id(&i, 21, 22));
+    let mut ways = vec![
+        (first, 0, 1),
+        (oak, 0, 2),
+        (302, 0, 7),
+        (412, 0, 3),
+        (423, 0, 4),
+        (420, 0, 5),
+        (421, 0, 5),
+    ];
+    ways.sort();
+    let (r, ..) = reader_with(&g, WayStreets(ways));
+    let road = |name: &str, refs: &[&str]| Road {
+        name: name.into(),
+        refs: refs.iter().map(|x| x.to_string()).collect(),
+    };
+    let names = TestNames(
+        [
+            (1, road("First St", &[])),
+            (2, road("Oak St", &[])),
+            (3, road("North Rd", &[])),
+            (4, road("Main St", &[])),
+            (5, road("", &["I 70"])),
+            (7, road("Long Rd", &[])),
+        ]
+        .into(),
+    );
+    let texts = |stops: &[Stop]| -> Vec<String> {
+        let t = r.trip(stops, 0).unwrap();
+        assert!(t.complete());
+        let steps = r.directions(&t, stops, Some(&names)).unwrap();
+        // The steps cover the trip, in order.
+        let m: f64 = steps.iter().map(|s| s.metres).sum();
+        assert!((m - t.metres()).abs() < 0.01);
+        assert!(steps.windows(2).all(|w| w[0].at_m <= w[1].at_m));
+        steps.iter().map(|s| s.text()).collect()
+    };
+
+    // East along First St, then north: a left turn.
+    assert_eq!(
+        texts(&[stop(11, 21, 0.5), stop(21, 22, 0.5)]),
+        [
+            "Head east on First St",
+            "Turn left onto Oak St",
+            "Arrive at your destination"
+        ]
+    );
+    // From the south arm round to the north one: past the east arm, the 2nd exit.
+    assert_eq!(
+        texts(&[stop(71, 72, 0.5), stop(74, 75, 0.5)]),
+        [
+            "Head north",
+            "At the roundabout, take the 2nd exit onto North Rd",
+            "Arrive at your destination"
+        ]
+    );
+    // Off the motorway at its exit.
+    assert_eq!(
+        texts(&[stop(18, 28, 0.5), stop(37, 47, 0.5)]),
+        [
+            "Head east on I-70",
+            "Take exit 12A onto Main St toward Columbus",
+            "Arrive at your destination"
+        ]
+    );
+    // Along the one-way 31-41 and across the ferry to Long Rd; a stop off to the side.
+    let t = texts(&[stop(31, 41, 0.5), Stop::at(between(43, 44, 0.5, 20.0))]);
+    assert_eq!(t[1], "Take the ferry (Island Ferry)");
+    assert_eq!(t[2], "Leave the ferry onto Long Rd");
+    assert_eq!(
+        t.last().unwrap(),
+        "Arrive at your destination, on the right"
+    );
 }

@@ -209,17 +209,27 @@ impl Routing {
                 let found = self.with_segment(s, |seg| {
                     (seg.class != FERRY_CLASS).then(|| {
                         let (d, along, point) = nearest(&seg.points, stop.p);
-                        Snap {
+                        let snap = Snap {
                             segment: s,
                             along,
                             point,
                             dist_m: d * mpu,
                             on_street: stop.street.is_some() && seg.street == stop.street,
                             small: seg.small,
-                        }
+                        };
+                        (snap, seg.b)
                     })
                 })?;
-                let Some(snap) = found else { continue };
+                let Some((mut snap, b)) = found else { continue };
+                // A segment's flag is its `a`'s. A one-way road out of the large component
+                // into a pocket has a small `b`: a route starting on it cannot leave.
+                // Checked only for a snap that would be kept, as it reads `b`'s node.
+                if !snap.small
+                    && big.as_ref().is_none_or(|x| snap.dist_m < x.dist_m)
+                    && self.node(b)?.small()
+                {
+                    snap.small = true;
+                }
                 let keep = |slot: &mut Option<Snap>| {
                     if slot.as_ref().is_none_or(|x| snap.dist_m < x.dist_m) {
                         *slot = Some(snap.clone());

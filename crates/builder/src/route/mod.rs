@@ -5,6 +5,7 @@
 //! checks the paths against the turn restrictions, and times routes.
 
 pub mod check;
+pub mod set;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,7 +16,9 @@ use clap::Args;
 use omp_core::find::Request;
 use omp_core::geo::{self, P};
 use omp_core::pack::Pack;
-use omp_core::route::{AVOID, FAR_SNAP_M, FERRY, FERRY_CLASS, Leg, Routing, Snap, Stop, TOLL};
+use omp_core::route::{
+    AVOID, FAR_SNAP_M, FERRY, FERRY_CLASS, Leg, Names, Routing, Snap, Stop, TOLL,
+};
 use omp_core::search::Search;
 use omp_core::street::{CLASSES, Streets};
 use serde_json::json;
@@ -44,6 +47,14 @@ pub struct RouteArgs {
     #[arg(long)]
     pieces: bool,
 
+    /// Print the directions: each step, its distance and time, and the totals so far.
+    #[arg(long)]
+    directions: bool,
+
+    /// Distances in miles (directions and totals) instead of kilometres.
+    #[arg(long)]
+    miles: bool,
+
     /// Check this many random pairs of nodes against Dijkstra (criterion 2), and time
     /// routes between random points.
     #[arg(long)]
@@ -64,6 +75,45 @@ pub struct RouteArgs {
 
     #[arg(long, default_value_t = 7)]
     seed: u64,
+
+    /// Run a route set (`crates/core/tests/route/routes.tsv`): its lines for the pack's
+    /// region, each checked against its expectations (criterion 3).
+    #[arg(long)]
+    set: Option<PathBuf>,
+
+    /// With `--set`, the region whose lines to run [default: the pack's name, lowercase;
+    /// `north-america` runs them all].
+    #[arg(long)]
+    region: Option<String>,
+
+    /// Print every route's directions, not only those that fail.
+    #[arg(long)]
+    verbose: bool,
+
+    /// Write this many random pairs to `--out`, for `tools/osrm/fetch.py`.
+    #[arg(long)]
+    pairs: Option<usize>,
+
+    /// Where `--pairs` writes.
+    #[arg(long)]
+    out: Option<PathBuf>,
+
+    /// Compare with OSRM's answers saved by `tools/osrm/fetch.py` (criterion 4); with
+    /// two files, also compare them with each other.
+    #[arg(long, num_args = 1..)]
+    osrm: Vec<PathBuf>,
+
+    /// With `--osrm`, how many of the largest time differences to list.
+    #[arg(long, default_value_t = 15)]
+    worst: usize,
+
+    /// List the turn restrictions and roundabouts near this point (`lat,lon`).
+    #[arg(long)]
+    near: Option<String>,
+
+    /// With `--near`, how far to look, in metres.
+    #[arg(long, default_value_t = 500.0)]
+    radius: f64,
 
     /// MiB of decoded hierarchy blocks to keep [default: the reader's].
     #[arg(long)]
@@ -186,14 +236,32 @@ fn point_json(p: P) -> serde_json::Value {
 
 pub fn run(args: RouteArgs) -> Result<()> {
     let (first, pack, r) = open(&args)?;
+    let streets = Streets::open(pack.clone())?;
+    let names = streets.as_ref().map(|s| s as &dyn Names);
     if let Some(n) = args.check {
-        return check::run(&first, &r, n, &args);
+        return check::run(&first, &r, names, n, &args);
+    }
+    let region = args
+        .region
+        .clone()
+        .unwrap_or_else(|| set::region_of(&pack.info.name));
+    if let Some(n) = args.pairs {
+        let out = args.out.as_deref().context("--pairs needs --out")?;
+        return set::write_pairs(&r, &region, n, args.seed, out);
+    }
+    if let Some(file) = &args.set {
+        return set::run_set(&r, names, file, &region, args.miles, args.verbose);
+    }
+    if !args.osrm.is_empty() {
+        return set::compare(&r, names, &args.osrm, args.worst);
+    }
+    if let Some(p) = &args.near {
+        return set::near(&r, names, parse_point(p)?, args.radius);
     }
     if args.stops.len() < 2 {
         bail!("give at least two stops, or --check");
     }
     let avoid = parse_avoid(&args.avoid)?;
-    let streets = Streets::open(pack.clone())?;
     // Stops given as text are searched for, as the app's search box would.
     let mut search: Option<Search> = None;
     let mut stops = Vec::new();
@@ -276,10 +344,27 @@ pub fn run(args: RouteArgs) -> Result<()> {
             false => " (incomplete)",
         }
     );
+    if args.directions {
+        let t = Instant::now();
+        let steps = r.directions(&trip, &only, names)?;
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        set::print_steps(&steps, args.miles, " ");
+        println!("directions: {} steps, {ms:.1} ms", steps.len());
+    }
     if let Some(path) = &args.geojson {
         write_geojson(path, &stops, &trip)?;
     }
     Ok(())
+}
+
+/// Metres as the directions show them: kilometres or miles, feet or metres when short.
+pub(crate) fn distance(m: f64, miles: bool) -> String {
+    match miles {
+        true if m < 304.8 => format!("{:.0} ft", (m / 0.3048 / 10.0).round() * 10.0),
+        true => format!("{:.1} mi", m / 1609.344),
+        false if m < 1000.0 => format!("{:.0} m", (m / 10.0).round() * 10.0),
+        false => format!("{:.1} km", m / 1000.0),
+    }
 }
 
 fn print_leg(

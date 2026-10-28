@@ -5,8 +5,10 @@
 //!
 //! [`Routing`] reads them with positioned reads and budgeted caches of decoded blocks
 //! (phase 1 decision 1). [`query`] searches the hierarchy between nodes (step 3.4), and
-//! [`trip`] snaps points to segments and routes the legs of a trip between them.
+//! [`trip`] snaps points to segments and routes the legs of a trip between them, and
+//! [`guide`] turns a trip into directions (step 3.5).
 
+mod guide;
 mod query;
 mod trip;
 
@@ -23,6 +25,7 @@ use crate::pack::Pack;
 use crate::tile::hilbert;
 use crate::varint::{Reader, invalid};
 use crate::zframe;
+pub use guide::{Kind, Modifier, Names, Road, Side, Step};
 pub use query::Seed;
 pub use trip::{FAR_SNAP_M, Leg, Piece, Snap, Stop, Trip};
 
