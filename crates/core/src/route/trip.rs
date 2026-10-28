@@ -508,6 +508,29 @@ impl Routing {
         }
         Ok(Some(Trip { snaps, legs, avoid }))
     }
+
+    /// The runs of `leg`'s pieces on [`super::RESTRICTED`] roads (private, destination
+    /// only and the like, phase 3 decision 14), as ranges of its pieces. Pieces of no
+    /// length neither start nor break a run.
+    pub fn restricted(&self, leg: &Leg) -> io::Result<Vec<Range<usize>>> {
+        let mut runs: Vec<Range<usize>> = Vec::new();
+        for (i, p) in leg.pieces.iter().enumerate() {
+            if p.metres <= 0.0 {
+                continue;
+            }
+            let flags = self.with_segment(p.dir >> 1, |s| {
+                s.direction(p.dir & 1 != 0).map_or(0, |d| d.flags)
+            })?;
+            if flags & super::RESTRICTED == 0 {
+                continue;
+            }
+            match runs.last_mut() {
+                Some(r) if leg.pieces[r.end..i].iter().all(|q| q.metres <= 0.0) => r.end = i + 1,
+                _ => runs.push(i..i + 1),
+            }
+        }
+        Ok(runs)
+    }
 }
 
 #[cfg(test)]

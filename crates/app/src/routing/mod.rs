@@ -3,14 +3,18 @@
 //! stops' markers.
 //!
 //! - [`worker`]: the thread that opens the routing readers and runs the trips; no egui.
-//! - [`line`]: the route's line, simplified per zoom band, as the renderer draws it.
+//! - [`line`]: the route's lines, simplified per zoom band, as the renderer draws them.
+//! - [`panel`]: the route panel (step 3.7): the stops, the avoid options, the totals, the
+//!   notices and the directions.
 //!
 //! Stops are kept in order: the start, the stops added between, and the destination. Each
 //! change asks for the route again once there is a start and a destination; the answer to
 //! the latest request replaces the route shown, and the view fits it unless it is already
-//! in view. The panel with the stops, the avoid options and the directions is step 3.7.
+//! in view. Over the route are drawn the parts on restricted roads and the step picked in
+//! the directions, and dashed lines join each stop to where the route meets its road.
 
 mod line;
+mod panel;
 mod worker;
 
 use std::path::PathBuf;
@@ -20,21 +24,26 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, Pos2};
 use omp_core::find::Hit;
 use omp_core::geo::{self, P};
-use omp_core::route::{Stop, Trip};
+use omp_core::route::{FAR_SNAP_M, FERRY, Stop, TOLL};
 
 use crate::camera::{self, Camera, TILE_PX};
 use crate::pool::Pool;
-use crate::search;
+use crate::scale::Units;
+use crate::search::{self, distance_text};
 
-pub use line::{GpuBand, Line, RouteDraw, RouteSegment, band_for};
-pub use worker::Status;
+pub use line::{GpuBand, Line, LineDraw, Look, RouteDraw, RouteSegment, band_for};
 use worker::{Request, Worker};
+pub use worker::{Routed, Status};
 
 /// The most the view zooms in to fit a route, and the share of the map it fills.
 const FIT_MAX_ZOOM: f64 = 17.0;
 const FIT_SHARE: f64 = 0.8;
 /// Beyond the view, in points, where pieces of the line are still drawn: its halo's width.
-const DRAW_MARGIN: f64 = 8.0;
+pub const DRAW_MARGIN: f64 = 8.0;
+/// A stop nearer its road than this gets no dashed line to it, in metres.
+const CONNECTOR_M: f64 = 3.0;
+/// The farthest a stop may be from a road, as [`omp_core::route`] snaps (its last radius).
+const SNAP_MAX_KM: f64 = 50.0;
 
 const START: Color32 = Color32::from_rgb(40, 150, 70);
 const VIA: Color32 = Color32::from_rgb(230, 140, 20);
@@ -111,20 +120,62 @@ pub fn menu_items(ui: &mut egui::Ui, state: &MenuState) -> Option<StopAction> {
     chosen
 }
 
-/// A route taken from the worker.
-pub struct Shown {
-    pub trip: Trip,
-    pub line: Line,
-}
-
 /// Timings of the last answer, for the overlay.
 #[derive(Clone, Copy, Debug)]
 pub struct Taken {
     /// From the request to the answer reaching the UI.
     pub latency: Duration,
     pub trip: Duration,
+    pub directions: Duration,
     pub line: Duration,
     pub points: usize,
+}
+
+/// "45 min", "3 h 05 min"; "under a minute".
+pub fn duration_text(s: f64) -> String {
+    let min = (s / 60.0).round() as u64;
+    match min {
+        0 => "under a minute".into(),
+        m if m < 60 => format!("{m} min"),
+        m => format!("{} h {:02} min", m / 60, m % 60),
+    }
+}
+
+/// The lines drawn over and around the route, from what the route and its stops are.
+pub fn overlay_lines(routed: &Routed, stops: &[P], picked: Option<usize>) -> Vec<(Look, Line)> {
+    let trip = &routed.trip;
+    let connectors: Vec<[P; 2]> = trip
+        .snaps
+        .iter()
+        .zip(stops)
+        .filter_map(|(s, &p)| {
+            let s = s.as_ref()?;
+            (s.dist_m >= CONNECTOR_M).then_some([s.point, p])
+        })
+        .collect();
+    let mut restricted = Vec::new();
+    for (leg, runs) in trip.legs.iter().zip(&routed.restricted) {
+        let Some(leg) = leg else { continue };
+        for r in runs {
+            let pts = leg.pieces[r.start].points.start..leg.pieces[r.end - 1].points.end;
+            restricted.push(&leg.points[pts]);
+        }
+    }
+    let mut out = vec![
+        (
+            Look::Connector,
+            Line::new(connectors.iter().map(|c| &c[..])),
+        ),
+        (Look::Restricted, Line::new(restricted)),
+    ];
+    let step = picked.and_then(|i| routed.steps.get(i));
+    if let Some(leg) = step.and_then(|s| trip.legs.get(s.leg)?.as_ref()) {
+        let s = step.unwrap();
+        let end = s.points.end.min(leg.points.len());
+        let start = s.points.start.min(end);
+        out.push((Look::Picked, Line::new([&leg.points[start..end]])));
+    }
+    out
 }
 
 pub struct RouteUi {
@@ -137,13 +188,26 @@ pub struct RouteUi {
     next_id: u64,
     /// The latest request, until its answer comes.
     pub waiting: Option<u64>,
-    pub route: Option<Shown>,
+    pub route: Option<Routed>,
+    /// The stops the route shown was asked through.
+    routed_stops: Vec<P>,
     pub error: Option<String>,
-    /// The line at the band last drawn.
-    band: Option<Arc<GpuBand>>,
+    /// The lines other than the route's own ([`overlay_lines`]).
+    overlays: Vec<(Look, Line)>,
+    /// Per [`Look`], its line at the band last drawn.
+    bands: [Option<Arc<GpuBand>>; 4],
     pub last: Option<Taken>,
     /// Answers to older requests, dropped.
     pub dropped: usize,
+    /// The panel is open.
+    pub panel: bool,
+    /// The step of the directions picked: drawn over the route.
+    pub picked: Option<usize>,
+    /// The directions' rows, laid out once per route and width.
+    rows: Option<panel::Rows>,
+    /// What the panel drew last frame, for the tests to click on.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) targets: Vec<(panel::Target, egui::Rect)>,
 }
 
 impl RouteUi {
@@ -162,10 +226,16 @@ impl RouteUi {
             next_id: 0,
             waiting: None,
             route: None,
+            routed_stops: Vec::new(),
             error: None,
-            band: None,
+            overlays: Vec::new(),
+            bands: Default::default(),
             last: None,
             dropped: 0,
+            panel: false,
+            picked: None,
+            rows: None,
+            targets: Vec::new(),
         }
     }
 
@@ -178,8 +248,12 @@ impl RouteUi {
         MenuState {
             enabled: status.usable(),
             why: status.why_not(),
-            has_stops: self.from.is_some() || self.to.is_some() || !self.via.is_empty(),
+            has_stops: self.has_stops(),
         }
+    }
+
+    pub fn has_stops(&self) -> bool {
+        self.from.is_some() || self.to.is_some() || !self.via.is_empty()
     }
 
     /// The stops in order, each with its kind.
@@ -190,7 +264,8 @@ impl RouteUi {
         from.chain(via).chain(to).collect()
     }
 
-    /// Changes the stops and asks for the route again.
+    /// Changes the stops and asks for the route again. A stop set opens the panel; clearing
+    /// closes it.
     pub fn apply(&mut self, action: StopAction, place: Place) {
         match action {
             StopAction::From => self.from = Some(place),
@@ -202,7 +277,167 @@ impl RouteUi {
                 self.to = None;
             }
         }
+        self.panel = action != StopAction::Clear;
         self.reroute();
+    }
+
+    /// Puts `places` back as the stops, the first as the start if `from` and the last as
+    /// the destination if `to`.
+    fn set_stops(&mut self, mut places: Vec<Place>, from: bool, to: bool) {
+        self.from = (from && !places.is_empty()).then(|| places.remove(0));
+        self.to = if to { places.pop() } else { None };
+        self.via = places;
+        self.reroute();
+    }
+
+    fn places(&self) -> Vec<Place> {
+        self.stops().into_iter().map(|(_, p)| p.clone()).collect()
+    }
+
+    /// Moves stop `from` (in [`Self::stops`]' order) to `to`; the first is then the start
+    /// and the last the destination.
+    pub fn move_stop(&mut self, from: usize, to: usize) {
+        let mut places = self.places();
+        if from >= places.len() || to >= places.len() || from == to {
+            return;
+        }
+        let p = places.remove(from);
+        places.insert(to, p);
+        let (f, t) = (self.from.is_some(), self.to.is_some());
+        self.set_stops(places, f, t);
+    }
+
+    /// Removes stop `i`. The stop next to a removed start or destination takes its place.
+    pub fn remove_stop(&mut self, i: usize) {
+        let mut places = self.places();
+        if i >= places.len() {
+            return;
+        }
+        let n = places.len();
+        let via = !self.via.is_empty();
+        let from = self.from.is_some() && (i != 0 || via);
+        let to = self.to.is_some() && (i != n - 1 || via);
+        places.remove(i);
+        self.set_stops(places, from, to);
+    }
+
+    /// Reverses the stops: the destination becomes the start.
+    pub fn reverse(&mut self) {
+        let mut places = self.places();
+        places.reverse();
+        let (f, t) = (self.to.is_some(), self.from.is_some());
+        self.set_stops(places, f, t);
+    }
+
+    /// Turns an avoid option ([`TOLL`], [`FERRY`]) on or off, and routes again.
+    pub fn set_avoid(&mut self, flag: u8, on: bool) {
+        let avoid = match on {
+            true => self.avoid | flag,
+            false => self.avoid & !flag,
+        };
+        if avoid != self.avoid {
+            self.avoid = avoid;
+            self.reroute();
+        }
+    }
+
+    /// Picks a step of the directions (or none), to draw over the route.
+    pub fn pick(&mut self, step: Option<usize>) {
+        if step == self.picked {
+            return;
+        }
+        self.picked = step;
+        self.overlays.retain(|(l, _)| *l != Look::Picked);
+        self.bands[Look::Picked as usize] = None;
+        if let Some(r) = &self.route {
+            let picked = overlay_lines(r, &self.routed_stops, step);
+            self.overlays
+                .extend(picked.into_iter().filter(|(l, _)| *l == Look::Picked));
+        }
+    }
+
+    /// The view that shows step `i`, its stretch of road fitted.
+    pub fn step_view(&self, i: usize, size: camera::Vec2) -> Option<(camera::Vec2, f64)> {
+        let r = self.route.as_ref()?;
+        let s = r.steps.get(i)?;
+        let leg = r.trip.legs.get(s.leg)?.as_ref()?;
+        let pts = leg.points.get(s.points.clone()).unwrap_or_default();
+        let one = [s.point];
+        let pts = if pts.is_empty() { &one[..] } else { pts };
+        let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for &p in pts {
+            let w = geo::to_unit(p);
+            b = [
+                b[0].min(w[0]),
+                b[1].min(w[1]),
+                b[2].max(w[0]),
+                b[3].max(w[1]),
+            ];
+        }
+        Some(view_for(b, size))
+    }
+
+    /// What the panel says about the route: stops far from a road or with none, legs with
+    /// no route, avoid options broken, and stretches on restricted roads.
+    pub fn notices(&self, units: Units) -> Vec<String> {
+        let Some(r) = &self.route else {
+            return Vec::new();
+        };
+        let trip = &r.trip;
+        let n = trip.snaps.len();
+        let who = |i: usize| match i {
+            0 => "the start".to_string(),
+            i if i + 1 == n => "the destination".into(),
+            i => format!("stop {}", i + 1),
+        };
+        let mut out = Vec::new();
+        for (i, s) in trip.snaps.iter().enumerate() {
+            match s {
+                None => out.push(capital(&format!(
+                    "{} has no road within {}.",
+                    who(i),
+                    distance_text(SNAP_MAX_KM * 1000.0, units)
+                ))),
+                Some(s) if s.dist_m > FAR_SNAP_M => out.push(capital(&format!(
+                    "{} is {} from the nearest road.",
+                    who(i),
+                    distance_text(s.dist_m, units)
+                ))),
+                _ => {}
+            }
+        }
+        for (i, l) in trip.legs.iter().enumerate() {
+            let snapped = trip.snaps[i].is_some() && trip.snaps[i + 1].is_some();
+            if l.is_none() && snapped {
+                out.push(format!("No road goes from {} to {}.", who(i), who(i + 1)));
+            }
+        }
+        let broken = trip.broken();
+        if broken & TOLL != 0 {
+            out.push("This route uses a toll road: no route avoids them.".into());
+        }
+        if broken & FERRY != 0 {
+            out.push("This route uses a ferry: no route avoids them.".into());
+        }
+        let last = trip.legs.len().saturating_sub(1);
+        for (li, (leg, runs)) in trip.legs.iter().zip(&r.restricted).enumerate() {
+            let Some(leg) = leg else { continue };
+            for run in runs {
+                let m: f64 = leg.pieces[run.clone()].iter().map(|p| p.metres).sum();
+                let d = distance_text(m, units);
+                let first = leg.pieces[..run.start].iter().all(|p| p.metres <= 0.0);
+                let end = leg.pieces[run.end..].iter().all(|p| p.metres <= 0.0);
+                let what = "on a road with restricted access (private or destination only).";
+                out.push(match (first, end) {
+                    (true, _) if li == 0 => format!("The first {d} is {what}"),
+                    (_, true) if li == last => format!("The last {d} is {what}"),
+                    (true, _) => format!("{d} after {} is {what}", who(li)),
+                    (_, true) => format!("{d} before {} is {what}", who(li + 1)),
+                    _ => format!("{d} of the route is {what}"),
+                });
+            }
+        }
+        out
     }
 
     /// Asks for the route through the stops, or drops it when there is no start or no
@@ -213,7 +448,9 @@ impl RouteUi {
             self.waiting = None;
             self.route = None;
             self.error = None;
-            self.band = None;
+            self.overlays.clear();
+            self.bands = Default::default();
+            self.picked = None;
             return;
         };
         let stop = |p: &Place| Stop {
@@ -246,17 +483,27 @@ impl RouteUi {
                 continue;
             }
             self.waiting = None;
+            self.picked = None;
+            self.rows = None;
+            self.overlays.clear();
             match a.routed {
-                Ok((trip, line)) => {
+                Ok(routed) => {
+                    let line = &routed.line;
                     self.last = Some(Taken {
                         latency: a.request.asked.elapsed(),
                         trip: a.trip,
+                        directions: a.directions,
                         line: a.line,
                         points: line.points,
                     });
-                    fit = (!line.is_empty() && !in_view(cam, line.bounds))
-                        .then(|| view_for(line.bounds, cam.size));
-                    self.route = Some(Shown { trip, line });
+                    self.routed_stops = a.request.stops.iter().map(|s| s.p).collect();
+                    self.overlays = overlay_lines(&routed, &self.routed_stops, None);
+                    // The stops off the road too, at the ends of their connectors.
+                    let bounds =
+                        fit_bounds(std::iter::once(line).chain(self.overlays.iter().map(|o| &o.1)));
+                    fit = (!line.is_empty() && !in_view(cam, bounds))
+                        .then(|| view_for(bounds, cam.size));
+                    self.route = Some(routed);
                     self.error = None;
                 }
                 Err(e) => {
@@ -264,25 +511,44 @@ impl RouteUi {
                     self.error = Some(e);
                 }
             }
-            self.band = None;
+            self.bands = Default::default();
         }
         fit
     }
 
-    /// The line to draw on `cam`'s view, made again for a new band.
+    /// The lines to draw on `cam`'s view, each made again for a new band.
     pub fn layout(
         &mut self,
         pool: &Arc<Pool>,
         cam: &Camera,
         pixels_per_point: f32,
     ) -> Option<RouteDraw> {
-        let shown = self.route.as_ref()?;
+        let routed = self.route.as_ref()?;
         let band = band_for(cam.zoom);
-        if self.band.as_ref().is_none_or(|b| b.band != band) {
-            self.band = GpuBand::upload(pool, shown.line.band(band)).map(Arc::new);
+        let mut draw = RouteDraw::default();
+        for look in Look::ALL {
+            let line = match look {
+                Look::Route => Some(&routed.line),
+                _ => self.overlays.iter().find(|(l, _)| *l == look).map(|o| &o.1),
+            };
+            let Some(line) = line.filter(|l| !l.is_empty()) else {
+                continue;
+            };
+            let slot = &mut self.bands[look as usize];
+            if slot.as_ref().is_none_or(|b| b.band != band) {
+                *slot = GpuBand::upload(pool, line.band(band)).map(Arc::new);
+            }
+            if let Some(b) = slot.clone() {
+                draw.lines.push(LineDraw::layout(
+                    look,
+                    b,
+                    cam,
+                    pixels_per_point,
+                    DRAW_MARGIN,
+                ));
+            }
         }
-        let b = self.band.clone()?;
-        Some(RouteDraw::layout(b, cam, pixels_per_point, DRAW_MARGIN))
+        Some(draw)
     }
 
     /// The stops' markers: numbered pins, green at the start and red at the destination.
@@ -332,17 +598,20 @@ impl RouteUi {
         }];
         if let (Some(t), Some(s)) = (&self.last, &self.route) {
             let trip = &s.trip;
+            let band = self.bands[Look::Route as usize].as_ref();
             lines.push(format!(
-                "last route: {} stops, {:.1} km, {:.0} min{}, trip {:.1} ms, line {:.1} ms ({} points, band z{} {} segments), shown after {:.1} ms",
+                "last route: {} stops, {:.1} km, {:.0} min{}, trip {:.1} ms, directions {:.1} ms ({} steps), line {:.1} ms ({} points, band z{} {} segments), shown after {:.1} ms",
                 trip.snaps.len(),
                 trip.metres() / 1000.0,
                 trip.time_s() / 60.0,
                 if trip.complete() { "" } else { " (incomplete)" },
                 t.trip.as_secs_f64() * 1e3,
+                t.directions.as_secs_f64() * 1e3,
+                s.steps.len(),
                 t.line.as_secs_f64() * 1e3,
                 t.points,
-                self.band.as_ref().map_or(0, |b| b.band),
-                self.band.as_ref().map_or(0, |b| b.pieces.last().map_or(0, |p| p.segments.end)),
+                band.map_or(0, |b| b.band),
+                band.map_or(0, |b| b.pieces.last().map_or(0, |p| p.segments.end)),
                 t.latency.as_secs_f64() * 1e3
             ));
         }
@@ -354,6 +623,29 @@ impl RouteUi {
         }
         lines
     }
+}
+
+/// `s` with its first letter in capitals.
+fn capital(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
+/// The bounds (world) of the lines that have points.
+pub fn fit_bounds<'a>(lines: impl IntoIterator<Item = &'a Line>) -> [f64; 4] {
+    lines.into_iter().filter(|l| !l.is_empty()).fold(
+        [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+        |b, l| {
+            let c = l.bounds;
+            [
+                b[0].min(c[0]),
+                b[1].min(c[1]),
+                b[2].max(c[2]),
+                b[3].max(c[3]),
+            ]
+        },
+    )
 }
 
 /// `bounds` (world) are on screen.

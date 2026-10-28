@@ -6,8 +6,11 @@
 //! route's reads). A new request replaces the one waiting and stops the one running within
 //! milliseconds ([`route::Routing::trip_until`]); the UI drops answers to anything but its
 //! latest request, as search does. The worker also finds where each point of the line
-//! would be dropped ([`Line`]), so the UI thread only filters it.
+//! would be dropped ([`Line`]), so the UI thread only filters it, and makes the directions
+//! (step 3.7) with the pack's street table.
 
+use std::io;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -15,7 +18,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use omp_core::pack::Pack;
-use omp_core::route::{self, Stop, Trip};
+use omp_core::route::{self, Names, Step, Stop, Trip};
+use omp_core::street::Streets;
 
 use super::line::Line;
 
@@ -61,11 +65,70 @@ pub struct Request {
     pub asked: Instant,
 }
 
+/// A trip and what the UI shows of it.
+pub struct Routed {
+    pub trip: Trip,
+    pub line: Line,
+    pub steps: Vec<Step>,
+    /// Per leg, the runs of its pieces on restricted roads.
+    pub restricted: Vec<Vec<Range<usize>>>,
+    /// Per stop, the name of the road it snapped to, or empty.
+    pub roads: Vec<String>,
+}
+
+impl Routed {
+    /// Directions, restricted runs and road names for `trip` through `stops`, with its
+    /// line.
+    pub fn new(
+        reader: &route::Routing,
+        streets: Option<&Streets>,
+        stops: &[Stop],
+        trip: Trip,
+        line: Line,
+    ) -> io::Result<Self> {
+        let names = streets.map(|s| s as &dyn Names);
+        let steps = reader.directions(&trip, stops, names)?;
+        let restricted = trip
+            .legs
+            .iter()
+            .map(|l| l.as_ref().map_or(Ok(Vec::new()), |l| reader.restricted(l)))
+            .collect::<io::Result<_>>()?;
+        let roads = trip
+            .snaps
+            .iter()
+            .map(|s| {
+                s.as_ref()
+                    .map_or(Ok(String::new()), |s| road(reader, names, s.segment))
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Self {
+            trip,
+            line,
+            steps,
+            restricted,
+            roads,
+        })
+    }
+}
+
+/// The name of segment `s`'s road: its street's, else its label's.
+fn road(reader: &route::Routing, names: Option<&dyn Names>, s: u32) -> io::Result<String> {
+    let (street, label) = reader.with_segment(s, |seg| (seg.street, seg.label))?;
+    if let (Some(id), Some(n)) = (street, names) {
+        return Ok(n.street_road(id)?.text());
+    }
+    match label {
+        Some(l) => Ok(reader.label(l)?.name),
+        None => Ok(String::new()),
+    }
+}
+
 pub struct Answer {
     pub request: Request,
-    pub routed: Result<(Trip, Line), String>,
-    /// Time in `trip`, and in finding the line's tolerances.
+    pub routed: Result<Routed, String>,
+    /// Time in `trip`, in the directions, and in finding the line's tolerances.
     pub trip: Duration,
+    pub directions: Duration,
     pub line: Duration,
 }
 
@@ -183,11 +246,12 @@ fn work(
     let t0 = Instant::now();
     let opened = Pack::open(&first_chunk).map(Arc::new).and_then(|p| {
         let minor = p.minor;
-        route::Routing::open(p).map(|r| (r, minor))
+        let streets = Streets::open(p.clone())?;
+        route::Routing::open(p).map(|r| (r, streets, minor))
     });
-    let reader = match opened {
-        Ok((Some(r), _)) => Arc::new(r),
-        Ok((None, minor)) => {
+    let (reader, streets) = match opened {
+        Ok((Some(r), streets, _)) => (Arc::new(r), streets),
+        Ok((None, _, minor)) => {
             shared.slot.lock().unwrap().status = Status::Missing(minor);
             wake();
             return;
@@ -215,11 +279,17 @@ fn work(
             }
         })
         .expect("spawn routing top");
-    serve(shared, &reader, tx, &*wake);
+    serve(shared, &reader, streets.as_ref(), tx, &*wake);
 }
 
 /// Answers requests until the worker is dropped.
-fn serve(shared: &Arc<Shared>, reader: &route::Routing, tx: &Sender<Answer>, wake: &dyn Fn()) {
+fn serve(
+    shared: &Arc<Shared>,
+    reader: &route::Routing,
+    streets: Option<&Streets>,
+    tx: &Sender<Answer>,
+    wake: &dyn Fn(),
+) {
     loop {
         let (request, generation) = {
             let mut slot = shared.slot.lock().unwrap();
@@ -243,15 +313,22 @@ fn serve(shared: &Arc<Shared>, reader: &route::Routing, tx: &Sender<Answer>, wak
         };
         let trip_time = t.elapsed();
         let t = Instant::now();
-        let routed = trip.map(|trip| {
-            let line = Line::new(trip.legs.iter().flatten().map(|l| l.points.as_slice()));
+        let trip = trip.map(|trip| {
+            let line = Line::of_trip(&trip);
             (trip, line)
         });
+        let line = t.elapsed();
+        let t = Instant::now();
+        let routed = trip.and_then(|(trip, line)| {
+            Routed::new(reader, streets, &request.stops, trip, line).map_err(|e| e.to_string())
+        });
+        let directions = t.elapsed();
         let answer = Answer {
             request,
             routed,
             trip: trip_time,
-            line: t.elapsed(),
+            directions,
+            line,
         };
         if tx.send(answer).is_err() {
             return;

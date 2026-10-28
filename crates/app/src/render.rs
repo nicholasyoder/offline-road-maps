@@ -29,8 +29,8 @@ use crate::camera::Camera;
 use crate::layers::Hidden;
 use crate::mesh::{Mesh, Segment, Vertex};
 use crate::pool::{Alloc, Kind, Pool};
-use crate::routing::{RouteDraw, RouteSegment};
-use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, ROUTE_PAINT, Rgba, Style};
+use crate::routing::{Look, RouteDraw, RouteSegment};
+use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, ROUTE_PAINTS, Rgba, Style};
 use crate::text::{ATLAS, Upload};
 use crate::tiles::TileId;
 
@@ -44,11 +44,17 @@ pub fn samples(requested: Option<u32>) -> u32 {
 }
 const EXTENT: f64 = (1u32 << omp_core::tile::EXTENT_BITS) as f64;
 
-/// The route's line and its halo on each side, in points, and their colours.
+/// The route's lines and their halo on each side, in points, and their colours.
 const ROUTE_WIDTH: f32 = 5.0;
 const ROUTE_HALO: f32 = 1.5;
 const ROUTE_COLOR: Rgba = [36, 104, 224, 255];
 const ROUTE_HALO_COLOR: Rgba = [255, 255, 255, 255];
+const RESTRICTED_COLOR: Rgba = [150, 96, 200, 255];
+const PICKED_WIDTH: f32 = 7.0;
+const PICKED_COLOR: Rgba = [14, 44, 122, 255];
+const CONNECTOR_WIDTH: f32 = 2.0;
+const CONNECTOR_DASH: [f32; 2] = [4.0, 3.0];
+const CONNECTOR_COLOR: Rgba = [70, 70, 70, 255];
 
 /// A tile's vertex data on the GPU, in ranges of the pool's slabs.
 pub struct GpuMesh {
@@ -159,7 +165,8 @@ struct Globals {
 struct TileTransform {
     origin: [f32; 2],
     scale: f32,
-    _pad: f32,
+    /// A route piece's paint; unused by tiles.
+    paint: f32,
 }
 
 /// A style colour for the GPU, 0–1 with straight alpha: linear for an sRGB target.
@@ -175,7 +182,7 @@ pub fn gpu_color(c: Rgba, srgb_target: bool) -> [f32; 4] {
     [f(c[0]), f(c[1]), f(c[2]), f32::from(c[3]) / 255.0]
 }
 
-/// The style's paints at a zoom, in pixels, then the route's at [`ROUTE_PAINT`].
+/// The style's paints at a zoom, in pixels, then the route's from [`ROUTE_PAINTS`].
 pub fn paints(
     style: &Style,
     hidden: &Hidden,
@@ -215,12 +222,21 @@ pub fn paints(
             }
         })
         .chain(std::iter::repeat(GpuPaint::default()))
-        .take(ROUTE_PAINT)
-        .chain(std::iter::once(GpuPaint {
-            color: color(ROUTE_COLOR),
-            casing: color(ROUTE_HALO_COLOR),
-            width: [ROUTE_WIDTH * ppp, (ROUTE_WIDTH + 2.0 * ROUTE_HALO) * ppp],
-            ..GpuPaint::default()
+        .take(ROUTE_PAINTS)
+        .chain(Look::ALL.map(|look| {
+            let (c, w, dash) = match look {
+                Look::Connector => (CONNECTOR_COLOR, CONNECTOR_WIDTH, CONNECTOR_DASH),
+                Look::Route => (ROUTE_COLOR, ROUTE_WIDTH, [0.0; 2]),
+                Look::Restricted => (RESTRICTED_COLOR, ROUTE_WIDTH, [0.0; 2]),
+                Look::Picked => (PICKED_COLOR, PICKED_WIDTH, [0.0; 2]),
+            };
+            GpuPaint {
+                color: color(c),
+                casing: color(ROUTE_HALO_COLOR),
+                width: [w * ppp, (w + 2.0 * ROUTE_HALO) * ppp],
+                dash: dash.map(|d| d * ppp),
+                ..GpuPaint::default()
+            }
         }))
         .collect()
 }
@@ -646,7 +662,15 @@ impl Renderer {
 
     /// Uploads the frame's uniforms.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
-        let route = frame.route.as_ref().map_or(&[][..], |r| &r.pieces[..]);
+        let route: Vec<([f32; 2], f32, f32)> = frame
+            .route
+            .iter()
+            .flat_map(|r| &r.lines)
+            .flat_map(|l| {
+                let paint = l.look.paint() as f32;
+                l.pieces.iter().map(move |p| (p.1, p.2, paint))
+            })
+            .collect();
         let n_transforms = frame.tiles.len() + frame.sources.len() + route.len();
         if n_transforms > self.capacity {
             self.capacity = n_transforms.next_power_of_two();
@@ -697,14 +721,14 @@ impl Renderer {
         }
         // The tiles' transforms, then the sources', then the route pieces'.
         let mut data = vec![0u8; self.stride as usize * n_transforms];
-        let placed = frame.tiles.iter().map(|t| (t.origin, t.scale));
-        let placed = placed.chain(frame.sources.iter().map(|s| (s.origin, s.scale)));
-        let placed = placed.chain(route.iter().map(|p| (p.1, p.2)));
-        for (i, (origin, scale)) in placed.enumerate() {
+        let placed = frame.tiles.iter().map(|t| (t.origin, t.scale, 0.0));
+        let placed = placed.chain(frame.sources.iter().map(|s| (s.origin, s.scale, 0.0)));
+        let placed = placed.chain(route);
+        for (i, (origin, scale, paint)) in placed.enumerate() {
             let tr = TileTransform {
                 origin,
                 scale,
-                _pad: 0.0,
+                paint,
             };
             let at = i * self.stride as usize;
             data[at..at + 16].copy_from_slice(bytemuck::bytes_of(&tr));
@@ -824,17 +848,24 @@ impl Renderer {
             && clip[3] > clip[1]
         {
             pass.set_scissor_rect(clip[0], clip[1], clip[2] - clip[0], clip[3] - clip[1]);
-            let first = frame.tiles.len() + frame.sources.len();
+            let mut first = frame.tiles.len() + frame.sources.len();
             let size = std::mem::size_of::<RouteSegment>() as u64;
-            for pl in [&self.route_halo, &self.route] {
-                pass.set_pipeline(pl);
-                for (k, (r, _, _)) in route.pieces.iter().enumerate() {
-                    let offset = ((first + k) as u64 * self.stride) as u32;
-                    pass.set_bind_group(1, &self.transforms_bg, &[offset]);
-                    let bytes = u64::from(r.start) * size..u64::from(r.end) * size;
-                    pass.set_vertex_buffer(0, route.band.segments.slice(bytes));
-                    pass.draw(0..6, 0..r.len() as u32);
+            for line in &route.lines {
+                let pipelines = match line.look.halo() {
+                    true => &[&self.route_halo, &self.route][..],
+                    false => &[&self.route][..],
+                };
+                for pl in pipelines {
+                    pass.set_pipeline(pl);
+                    for (k, (r, _, _)) in line.pieces.iter().enumerate() {
+                        let offset = ((first + k) as u64 * self.stride) as u32;
+                        pass.set_bind_group(1, &self.transforms_bg, &[offset]);
+                        let bytes = u64::from(r.start) * size..u64::from(r.end) * size;
+                        pass.set_vertex_buffer(0, line.band.segments.slice(bytes));
+                        pass.draw(0..6, 0..r.len() as u32);
+                    }
                 }
+                first += line.pieces.len();
             }
         }
         if !frame.glyphs.is_empty() && clip[2] > clip[0] && clip[3] > clip[1] {

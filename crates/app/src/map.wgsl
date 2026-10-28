@@ -1,7 +1,8 @@
 // The map: polygon fills, and lines widened to screen-width quads with round ends.
 // Positions are tile-local (4096 per tile edge); `tile` places them in viewport pixels.
 // The route is drawn with the same lines, from float positions local to a piece of it,
-// which `tile` places the same way, in the paint after the style's.
+// which `tile` places the same way, in the paint `tile` names (one of the route's, after the
+// style's).
 
 struct Globals {
     // Viewport size in pixels.
@@ -24,13 +25,12 @@ struct TileTransform {
     origin: vec2<f32>,
     // Pixels per tile unit.
     scale: f32,
-    _pad: f32,
+    // The route's pieces: their paint (style.rs, ROUTE_PAINTS).
+    paint: f32,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var<uniform> paints: array<Paint, 128>;
-// The route's paint: the last (style.rs, ROUTE_PAINT).
-const ROUTE_PAINT: u32 = 127u;
 @group(1) @binding(0) var<uniform> tile: TileTransform;
 
 fn to_clip(px: vec2<f32>) -> vec4<f32> {
@@ -135,12 +135,12 @@ fn vs_casing(
 
 @vertex
 fn vs_route(@builtin(vertex_index) vi: u32, @location(0) a: vec2<f32>, @location(1) b: vec2<f32>) -> LineOut {
-    return line(vi, tile.origin + a * tile.scale, tile.origin + b * tile.scale, ROUTE_PAINT, 0.0, false);
+    return line(vi, tile.origin + a * tile.scale, tile.origin + b * tile.scale, u32(tile.paint), 0.0, false);
 }
 
 @vertex
 fn vs_route_halo(@builtin(vertex_index) vi: u32, @location(0) a: vec2<f32>, @location(1) b: vec2<f32>) -> LineOut {
-    return line(vi, tile.origin + a * tile.scale, tile.origin + b * tile.scale, ROUTE_PAINT, 0.0, true);
+    return line(vi, tile.origin + a * tile.scale, tile.origin + b * tile.scale, u32(tile.paint), 0.0, true);
 }
 
 @fragment

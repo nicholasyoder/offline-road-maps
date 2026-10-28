@@ -7,6 +7,10 @@
 //! is the same line Douglas–Peucker would give at that tolerance. A band's segments are cut
 //! into pieces, each with its own origin, so their positions stay small enough for `f32`
 //! at any zoom, and pieces off screen are not drawn.
+//!
+//! Step 3.7 draws more lines the same way, each a [`Look`] with its own paint: the parts on
+//! restricted roads and the step picked in the directions over the route, and dashed lines
+//! from where the route meets each stop's road to the stop.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -16,6 +20,7 @@ use omp_core::geo::{self, P};
 
 use crate::camera::{self, Camera, TILE_PX};
 use crate::pool::{Alloc, Kind, Pool};
+use crate::style::ROUTE_PAINTS;
 
 /// Bands are whole zooms up to this one; deeper zooms draw its line. Its tolerance (a
 /// quarter point, about 0.3 m) is under the 2 m the pack's geometry is simplified to.
@@ -77,6 +82,11 @@ impl Line {
             bounds,
             points,
         }
+    }
+
+    /// The route's line: one part per routed leg.
+    pub fn of_trip(trip: &omp_core::route::Trip) -> Self {
+        Self::new(trip.legs.iter().flatten().map(|l| l.points.as_slice()))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -220,16 +230,63 @@ pub fn band_for(zoom: f64) -> u8 {
     (zoom.floor().max(0.0) as u8).min(MAX_BAND)
 }
 
-/// The route as a frame draws it: its band's segments, and the pieces on screen with
-/// their origins in viewport pixels and pixels per unit.
-pub struct RouteDraw {
+/// How a line of the route overlay is drawn, in the order drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// Dashed, from where the route meets a stop's road to the stop.
+    Connector,
+    Route,
+    /// Over the route where it is on a private or destination-only road.
+    Restricted,
+    /// Over the route: the step picked in the directions.
+    Picked,
+}
+
+impl Look {
+    pub const ALL: [Look; 4] = [Look::Connector, Look::Route, Look::Restricted, Look::Picked];
+
+    /// Its entry in the paint table (render.rs).
+    pub fn paint(self) -> usize {
+        ROUTE_PAINTS + self as usize
+    }
+
+    /// Drawn with a halo first. The lines over the route have none, so their ends do not
+    /// cut into it.
+    pub fn halo(self) -> bool {
+        !matches!(self, Look::Restricted)
+    }
+}
+
+/// One line of the overlay as a frame draws it: its band's segments, and the pieces on
+/// screen with their origins in viewport pixels and pixels per unit.
+pub struct LineDraw {
+    pub look: Look,
     pub band: Arc<GpuBand>,
     pub pieces: Vec<(Range<u32>, [f32; 2], f32)>,
 }
 
+/// The route overlay's lines, in the order drawn.
+#[derive(Default)]
+pub struct RouteDraw {
+    pub lines: Vec<LineDraw>,
+}
+
 impl RouteDraw {
+    /// The pieces on screen of every line.
+    pub fn pieces(&self) -> usize {
+        self.lines.iter().map(|l| l.pieces.len()).sum()
+    }
+}
+
+impl LineDraw {
     /// The pieces of `band` on `cam`'s view, `margin` points around it included.
-    pub fn layout(band: Arc<GpuBand>, cam: &Camera, pixels_per_point: f32, margin: f64) -> Self {
+    pub fn layout(
+        look: Look,
+        band: Arc<GpuBand>,
+        cam: &Camera,
+        pixels_per_point: f32,
+        margin: f64,
+    ) -> Self {
         let ppp = f64::from(pixels_per_point);
         let [x0, y0, x1, y1] = cam.visible();
         let m = margin / cam.scale();
@@ -250,7 +307,7 @@ impl RouteDraw {
                 )
             })
             .collect();
-        Self { band, pieces }
+        Self { look, band, pieces }
     }
 }
 

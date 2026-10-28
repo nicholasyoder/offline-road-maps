@@ -1,7 +1,8 @@
 //! `omp-app --render`: draws one view offscreen to a PNG, without a window. For reviewing
 //! renderer and style changes, and for the reference screenshots in `docs/screenshots/`.
-//! With `--route`, it routes through the stops and draws the route, fitting the view to
-//! it unless `--center` and `--zoom` say otherwise.
+//! With `--route`, it routes through the stops and draws the route as the app does (with
+//! its restricted parts and the lines to stops off the road), fitting the view to it unless
+//! `--center` and `--zoom` say otherwise.
 
 use std::collections::HashMap;
 use std::io::BufWriter;
@@ -15,7 +16,7 @@ use crate::labels::{self, Placer, TileLabels};
 use crate::layers::Hidden;
 use crate::pool::Pool;
 use crate::render::{self, GpuMesh, Renderer};
-use crate::routing::{self, GpuBand, Line, RouteDraw};
+use crate::routing::{self, GpuBand, Line, LineDraw, Look, RouteDraw};
 use crate::style::{Style, StyleFile};
 use crate::tiles::{self, Known, TileId};
 use crate::{loader, mesh, packs};
@@ -30,6 +31,8 @@ pub struct Snapshot {
     pub zoom: Option<f64>,
     /// Stops to route through, `(lat, lon)`.
     pub route: Vec<(f64, f64)>,
+    /// A step of the route's directions to draw over it, from 0; the view fits it.
+    pub step: Option<usize>,
     /// In pixels.
     pub size: [u32; 2],
     pub pixels_per_point: f32,
@@ -90,6 +93,7 @@ impl Snapshot {
             center: center.map(|c| lat_lon(c, "--center")).transpose()?,
             zoom: zoom.map(|z| num(z, "zoom")).transpose()?,
             route,
+            step: None,
             size,
             pixels_per_point: scale.map_or(Ok(1.0), |s| num(s, "scale"))?.clamp(0.25, 8.0) as f32,
             msaa: render::samples(msaa.map(|s| num(s, "msaa")).transpose()?.map(|v| v as u32)),
@@ -114,9 +118,15 @@ impl Snapshot {
         let mut cam = Camera::new(opened.bounds);
         cam.size = self.size.map(|v| f64::from(v) / ppp);
         let (route, route_msg) = self.route(&first)?;
-        let fitted = route
-            .as_ref()
-            .map(|l| routing::view_for(l.bounds, cam.size));
+        let routed = route
+            .iter()
+            .any(|(look, l)| *look == Look::Route && !l.is_empty());
+        let fit = |look: Option<Look>| {
+            let lines = route.iter().filter(|(l, _)| look.is_none_or(|k| k == *l));
+            routing::view_for(routing::fit_bounds(lines.map(|(_, l)| l)), cam.size)
+        };
+        let picked = route.iter().any(|(look, _)| *look == Look::Picked);
+        let fitted = routed.then(|| fit(picked.then_some(Look::Picked)));
         let center = match (self.center, fitted) {
             (Some((lat, lon)), _) => omp_core::geo::lonlat_to_unit(lon, lat),
             (None, Some((c, _))) => c,
@@ -219,17 +229,27 @@ impl Snapshot {
             &style.pass_cap,
         );
         let mut route_msg = route_msg;
-        if let Some(line) = &route {
+        if !route.is_empty() {
             let t = Instant::now();
-            let band = line.band(routing::band_for(cam.zoom));
-            let (z, n) = (band.band, band.segments.len());
-            frame.route = GpuBand::upload(&pool, band)
-                .map(|b| RouteDraw::layout(Arc::new(b), &cam, self.pixels_per_point, 8.0));
+            let z = routing::band_for(cam.zoom);
+            let mut draw = RouteDraw::default();
+            let mut n = 0;
+            for (look, line) in &route {
+                let band = line.band(z);
+                n += band.segments.len();
+                if let Some(b) = GpuBand::upload(&pool, band) {
+                    let ppp = self.pixels_per_point;
+                    let m = routing::DRAW_MARGIN;
+                    draw.lines
+                        .push(LineDraw::layout(*look, Arc::new(b), &cam, ppp, m));
+                }
+            }
             route_msg += &format!(
-                "; line at z{z}: {n} segments, {} pieces drawn, in {:.2} ms",
-                frame.route.as_ref().map_or(0, |r| r.pieces.len()),
+                "; lines at z{z}: {n} segments, {} pieces drawn, in {:.2} ms",
+                draw.pieces(),
                 t.elapsed().as_secs_f64() * 1e3
             );
+            frame.route = Some(draw);
         }
         let t1 = Instant::now();
         let sources: Vec<labels::Source> = plan
@@ -289,14 +309,16 @@ impl Snapshot {
 }
 
 impl Snapshot {
-    /// The route through `--route`'s stops, and a line about it.
-    fn route(&self, first: &Path) -> Result<(Option<Line>, String), String> {
+    /// The lines of the route through `--route`'s stops, in the order drawn, and a line
+    /// about it.
+    fn route(&self, first: &Path) -> Result<(Vec<(Look, Line)>, String), String> {
         if self.route.is_empty() {
-            return Ok((None, String::new()));
+            return Ok((Vec::new(), String::new()));
         }
         let t = Instant::now();
-        let pack = omp_core::pack::Pack::open(first).map_err(|e| e.to_string())?;
-        let r = omp_core::route::Routing::open(Arc::new(pack))
+        let pack = Arc::new(omp_core::pack::Pack::open(first).map_err(|e| e.to_string())?);
+        let streets = omp_core::street::Streets::open(pack.clone()).map_err(|e| e.to_string())?;
+        let r = omp_core::route::Routing::open(pack)
             .map_err(|e| e.to_string())?
             .ok_or("the pack has no routing")?;
         let stops: Vec<omp_core::route::Stop> = self
@@ -308,18 +330,37 @@ impl Snapshot {
             })
             .collect();
         let trip = r.trip(&stops, 0).map_err(|e| e.to_string())?;
-        let line = Line::new(trip.legs.iter().flatten().map(|l| l.points.as_slice()));
+        let line = Line::of_trip(&trip);
+        let routed = routing::Routed::new(&r, streets.as_ref(), &stops, trip, line)
+            .map_err(|e| e.to_string())?;
+        let trip = &routed.trip;
+        let restricted: f64 = trip
+            .legs
+            .iter()
+            .zip(&routed.restricted)
+            .filter_map(|(l, runs)| Some((l.as_ref()?, runs)))
+            .flat_map(|(l, runs)| runs.iter().flat_map(|r| &l.pieces[r.clone()]))
+            .fold(0.0, |m, p| m + p.metres);
         let mut msg = format!(
-            "\n  route: {:.1} km, {:.0} min, {} points, in {:.0} ms",
+            "\n  route: {:.1} km, {:.0} min, {} points, {} steps, {:.2} km restricted, in {:.0} ms",
             trip.metres() / 1000.0,
             trip.time_s() / 60.0,
-            line.points,
+            routed.line.points,
+            routed.steps.len(),
+            restricted / 1000.0,
             t.elapsed().as_secs_f64() * 1e3
         );
         if !trip.complete() {
             msg += " (some stops not reached)";
         }
-        Ok((Some(line).filter(|l| !l.is_empty()), msg))
+        let points: Vec<_> = stops.iter().map(|s| s.p).collect();
+        if let Some(s) = self.step.and_then(|i| routed.steps.get(i)) {
+            msg += &format!("\n  step {}: {}", self.step.unwrap() + 1, s.text());
+        }
+        let mut lines = routing::overlay_lines(&routed, &points, self.step);
+        lines.push((Look::Route, routed.line));
+        lines.sort_by_key(|(look, _)| *look as usize);
+        Ok((lines, msg))
     }
 }
 

@@ -1117,10 +1117,11 @@ impl App {
         let Some(m) = &mut self.map else { return };
         let units = self.cfg.units.unwrap_or(m.units);
 
-        // "What's here": Escape on the map closes its panel before the search's results and
-        // marker. The bench asks at the view's centre, as the right-click menu would.
-        if !m.search.box_was_focused() {
-            m.here.escape(ctx);
+        // "What's here": Escape on the map closes its panel, then the route panel, before the
+        // search's results and marker. The bench asks at the view's centre, as the
+        // right-click menu would.
+        if !m.search.box_was_focused() && !m.here.escape(ctx) {
+            m.routing.escape(ctx);
         }
         let available = matches!(m.search.status(), Status::Opening | Status::Ready);
         if self.bench.as_mut().is_some_and(|b| b.here_ask(available)) {
@@ -1161,14 +1162,21 @@ impl App {
         let panel = egui::Frame::popup(&ctx.global_style())
             .inner_margin(egui::Margin::symmetric(6, 4))
             .fill(Color32::from_white_alpha(215));
-        // Top right.
+        // Top right, and the route panel under it.
         let mut action = None;
-        egui::Area::new(egui::Id::unique("map-menus"))
+        let menus = egui::Area::new(egui::Id::unique("map-menus"))
             .fixed_pos(map_rect.right_top() + Vec2::new(-8.0, 8.0))
             .pivot(Align2::RIGHT_TOP)
             .show(ctx, |ui| {
                 panel.show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        let routing = &mut m.routing;
+                        if routing.has_stops() && !routing.panel {
+                            let r = ui.button("Route").on_hover_text("Show the route panel");
+                            if r.clicked() {
+                                routing.panel = true;
+                            }
+                        }
                         let stay_open = egui::containers::menu::MenuConfig::new()
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
                         egui::containers::menu::MenuButton::new("Layers")
@@ -1206,7 +1214,14 @@ impl App {
                         });
                     })
                 });
-            });
+            })
+            .response
+            .rect;
+        let top = Pos2::new(map_rect.right() - 8.0, menus.bottom() + 6.0);
+        let height = map_rect.bottom() - top.y - 120.0;
+        if let Some((c, z)) = m.routing.panel_ui(ctx, top, height, &m.camera, units) {
+            m.motion.fly_to(&m.camera, c, z);
+        }
 
         // Bottom left: scale bar and coordinates.
         let mpp = scale::metres_per_point(m.camera.lonlat()[1], m.camera.scale());

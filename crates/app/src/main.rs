@@ -42,7 +42,7 @@ use eframe::egui;
 const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
        omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
        omp-app --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
-               [--size <w>x<h>] [--scale <s>] [--msaa <n>] [--style <file>] <out.png>
+               [--step <n>] [--size <w>x<h>] [--scale <s>] [--msaa <n>] [--style <file>] <out.png>
 
   --pack <dir>   open the pack in <dir> (or the first chunk file itself); default:
                  maps/ next to the executable, else the pack used last
@@ -53,7 +53,8 @@ const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
   --render       draw one view offscreen to <out.png>, without a window; --size in
                  pixels (default 1200x800), --scale in pixels per point (default 1),
                  --msaa 1 to turn antialiasing off; --route draws the route through
-                 the stops, and fits the view to it without --center and --zoom";
+                 the stops, and fits the view to it without --center and --zoom;
+                 --step draws step <n> of its directions over it, and fits that";
 
 #[derive(Default)]
 struct Args {
@@ -64,6 +65,7 @@ struct Args {
     center: Option<String>,
     zoom: Option<String>,
     route: Option<String>,
+    step: Option<String>,
     size: Option<String>,
     scale: Option<String>,
     msaa: Option<String>,
@@ -90,6 +92,7 @@ fn parse_args() -> Result<Args, String> {
             Some("--center") => a.center = Some(text(value("--center")?)),
             Some("--zoom") => a.zoom = Some(text(value("--zoom")?)),
             Some("--route") => a.route = Some(text(value("--route")?)),
+            Some("--step") => a.step = Some(text(value("--step")?)),
             Some("--size") => a.size = Some(text(value("--size")?)),
             Some("--scale") => a.scale = Some(text(value("--scale")?)),
             Some("--msaa") => a.msaa = Some(text(value("--msaa")?)),
@@ -290,7 +293,15 @@ fn render(args: &Args, style: style::StyleFile) -> ExitCode {
         args.msaa.as_deref(),
         file.clone(),
     );
-    match snap.and_then(|s| snapshot::Snapshot { style, ..s }.run()) {
+    let step = match args.step.as_deref().map(str::parse::<usize>) {
+        None => None,
+        Some(Ok(n)) if n > 0 => Some(n - 1),
+        Some(_) => {
+            eprintln!("--step wants a step number from 1\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match snap.and_then(|s| snapshot::Snapshot { style, step, ..s }.run()) {
         Ok(msg) => {
             eprintln!("{msg}");
             ExitCode::SUCCESS
