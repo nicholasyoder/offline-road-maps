@@ -51,6 +51,13 @@ pub const RESTRICTED: u8 = 4;
 /// `RGEO`: a [`RESTRICTED`] direction entered from a node an open road touches; its weight
 /// carries [`crate::profile::RESTRICTED_PENALTY_S`].
 pub const ENTRY: u8 = 8;
+/// `RGEO`: a route that reaches this direction's start at the plain node (not a copy) and
+/// leaves along it turns back the way it came, and pays the U-turn penalty
+/// ([`Routing::uturn_penalty_s`]; phase 4 step 4.4).
+pub const UTURN: u8 = 16;
+/// The `RHDR` setting that holds the U-turn penalty in seconds. Without it there is none,
+/// and `RCPY`'s leaves have no U-turn bit.
+pub const UTURN_SETTING: &str = "uturn_penalty_s";
 /// A segment's class: an index into [`crate::street::CLASSES`], or this for a ferry.
 pub const FERRY_CLASS: u8 = 19;
 /// Stored points are in units of 2^6 world units, as in `SGEO`.
@@ -259,12 +266,16 @@ impl Cell {
     }
 }
 
-/// A copy of a node, made for one approach by turn restrictions (`RCPY`).
+/// A copy of a node, made for one approach by turn restrictions or the U-turn penalty
+/// (`RCPY`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Copy {
     pub node: u32,
     /// The segment directions (`segment << 1 | reversed`) a route may leave it by.
     pub leaves: Vec<u32>,
+    /// Those of `leaves` that turn back the way the copy was reached, and pay the U-turn
+    /// penalty.
+    pub uturns: Vec<u32>,
 }
 
 /// The grid cell of a point.
@@ -364,6 +375,8 @@ pub struct Routing {
     cells: Cache<usize, Vec<(u32, Cell)>>,
     copies: Cache<usize, Vec<(u32, Copy)>>,
     junctions: Cache<usize, Vec<(u32, String)>>,
+    /// From `RHDR`'s [`UTURN_SETTING`].
+    uturn_s: u32,
 }
 
 fn need(b: Option<Blocked>, id: [u8; 4]) -> io::Result<Blocked> {
@@ -389,6 +402,11 @@ impl Routing {
             rcpy: open(RCPY)?,
             rjct: open(RJCT)?,
             pack,
+            uturn_s: header
+                .settings
+                .get(UTURN_SETTING)
+                .and_then(|v| v.as_u64())
+                .map_or(0, |s| s as u32),
             header,
             rche,
             nodes: Cache::new(NODE_CACHE),
@@ -586,6 +604,21 @@ impl Routing {
         Ok(())
     }
 
+    /// Seconds a U-turn at a junction adds to a route's weight (0: none).
+    pub fn uturn_penalty_s(&self) -> u32 {
+        self.uturn_s
+    }
+
+    /// Whether a hierarchy weight is `directions`, the weights of its segment directions,
+    /// plus some U-turn penalties: the hierarchy's edges carry them, the directions do not.
+    pub fn adds_up(&self, directions: u32, weight: u32) -> bool {
+        match (weight.checked_sub(directions), self.uturn_s * 10) {
+            (Some(0), _) => true,
+            (Some(extra), u) => u > 0 && extra % u == 0,
+            (None, _) => false,
+        }
+    }
+
     /// The copies of plain node `v`.
     pub fn copies(&self, v: u32) -> io::Result<Vec<Copy>> {
         let Some(b) = self.rcpy.find(v) else {
@@ -593,8 +626,16 @@ impl Routing {
         };
         let list = self.copies.get(b, || {
             let (raw, read) = self.rcpy.read(&self.pack, b)?;
-            let v = decode_copies(self.rcpy.first(b), &raw, self.header.nodes)?;
-            let bytes = v.iter().map(|(_, c)| 40 + c.leaves.capacity() * 4).sum();
+            let v = decode_copies(
+                self.rcpy.first(b),
+                &raw,
+                self.header.nodes,
+                self.uturn_s > 0,
+            )?;
+            let bytes = v
+                .iter()
+                .map(|(_, c)| 64 + (c.leaves.capacity() + c.uturns.capacity()) * 4)
+                .sum();
             Ok((v, bytes, read))
         })?;
         let start = list.partition_point(|(p, _)| *p < v);
@@ -609,7 +650,12 @@ impl Routing {
     pub fn for_each_copy(&self, mut f: impl FnMut(u32, &Copy)) -> io::Result<()> {
         for b in 0..self.rcpy.blocks() {
             let (raw, _) = self.rcpy.read(&self.pack, b)?;
-            for (p, c) in decode_copies(self.rcpy.first(b), &raw, self.header.nodes)? {
+            for (p, c) in decode_copies(
+                self.rcpy.first(b),
+                &raw,
+                self.header.nodes,
+                self.uturn_s > 0,
+            )? {
                 f(p, &c);
             }
         }
@@ -847,8 +893,14 @@ pub fn decode_cells(first: u32, raw: &[u8]) -> io::Result<Vec<(u32, Cell)>> {
     Ok(out)
 }
 
-/// An `RCPY` block: plain nodes and their copies.
-pub fn decode_copies(first: u32, raw: &[u8], nodes: u32) -> io::Result<Vec<(u32, Copy)>> {
+/// An `RCPY` block: plain nodes and their copies. With `uturn`, each leaf has the U-turn bit
+/// below it.
+pub fn decode_copies(
+    first: u32,
+    raw: &[u8],
+    nodes: u32,
+    uturn: bool,
+) -> io::Result<Vec<(u32, Copy)>> {
     let mut r = Reader::new(raw);
     let mut out = Vec::new();
     let mut plain = first;
@@ -863,13 +915,29 @@ pub fn decode_copies(first: u32, raw: &[u8], nodes: u32) -> io::Result<Vec<(u32,
             return Err(invalid("RCPY count larger than the data"));
         }
         let mut leaves = Vec::with_capacity(n);
+        let mut uturns = Vec::new();
         let mut s = 0u32;
         for i in 0..n {
             let d = r.varint()? as u32;
             s = if i == 0 { d } else { s.wrapping_add(d) };
-            leaves.push(s);
+            match uturn {
+                true => {
+                    leaves.push(s >> 1);
+                    if s & 1 != 0 {
+                        uturns.push(s >> 1);
+                    }
+                }
+                false => leaves.push(s),
+            }
         }
-        out.push((plain, Copy { node, leaves }));
+        out.push((
+            plain,
+            Copy {
+                node,
+                leaves,
+                uturns,
+            },
+        ));
     }
     Ok(out)
 }

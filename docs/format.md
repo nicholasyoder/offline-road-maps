@@ -320,7 +320,7 @@ The car routing sections (0.5, phase 3 step 3.3): a contraction hierarchy over t
 
 ### `RHDR`: routing header (contiguous)
 
-A zstd-compressed JSON object: `nodes`, `edges` (of the hierarchy), `segments`, `labels`, `block_nodes` (nodes per `RCHE` block), `top_nodes`, `top_bytes` (the bytes of `RCHE`, index included, that hold the top), and `settings`, the profile constants the graph was built with (speed factor, signal and ferry delays, the restricted-road penalty, the small-component size), for display.
+A zstd-compressed JSON object: `nodes`, `edges` (of the hierarchy), `segments`, `labels`, `block_nodes` (nodes per `RCHE` block), `top_nodes`, `top_bytes` (the bytes of `RCHE`, index included, that hold the top), and `settings`, the profile constants the graph was built with (speed factor, signal and ferry delays, the restricted-road penalty, the small-component size), for display. One setting changes how the sections read: **`uturn_penalty_s`**, present only in a pack built with `--uturn-penalty` (phase 4 step 4.4). Then a junction (a node with three or more roads) has a copy per two-way road into it, as restrictions make copies, and the base edge from a copy back along the road it was reached by weighs its time plus the penalty in `RCHE`. Without the setting there is no penalty and `RCPY` has no U-turn bits.
 
 ### `RCHE`: the hierarchy (spanning)
 
@@ -334,7 +334,7 @@ edge  = target:zvarint  (weight << 3 | flags):varint  mid:zvarint
 
 - Each edge of the hierarchy is stored once, at its lower end (the one contracted first). An **up** edge of node *v* runs from *v* to `target`; a **down** edge runs from `target` into *v*. Both lists are sorted by target, then weight.
 - `target` is a delta from the previous edge's target in the same list, the first from *v*.
-- `weight`: tenths of a second, the restricted-road penalty included. `flags`: bit 0 **toll**, bit 1 **ferry**, bit 2 **shortcut**. A shortcut's toll and ferry bits are the union of its halves'.
+- `weight`: tenths of a second, the restricted-road and U-turn penalties included. `flags`: bit 0 **toll**, bit 1 **ferry**, bit 2 **shortcut**. A shortcut's toll and ferry bits are the union of its halves'.
 - `mid`: for a shortcut, its **middle node**, as a delta from *v*; for a base edge, its **segment direction** (`segment << 1 | reversed`, see `RGEO`), as a delta from the previous base edge's in the block (from 0 at the start of each block). Keeping them in the record means unpacking reads only the middle nodes' blocks (step 3.3 measured 12 pages outside the top per long Ohio route this way, against 99 with them in an array of their own; North America 732 against 1,331).
 - `small`: the node is in a strongly connected component of fewer than 1,000 nodes, so snapping avoids it.
 - **Queries:** search forward from the start on up edges and backward from the end on down edges, skipping edges whose flags are avoided; the best meeting node gives the route. Toll and ferry edges stay in the hierarchy, and a shortcut was only left out where a witness path with no flag it lacked existed, so one hierarchy answers each combination of avoided flags exactly (phase 3 decision 3).
@@ -356,7 +356,7 @@ direction = time:varint  flags:varint  head:varint
 - `street`: the street ID + 1 of the way's piece in `SSTR`, for its name and refs; 0 if it has none (an unnamed road, a ferry).
 - `label`: an index into `RNAM`; 0, the empty label, for none.
 - `decimetres`: the way's length between the two nodes, before simplification.
-- `forward` is the way from `a` to `b`, `backward` the way back. Segments are oriented so that `forward` is open: a one-way road tagged against its nodes runs from its last node. `time`: tenths of a second, without the restricted-road penalty. `flags`: 1 toll, 2 ferry, 4 **restricted** (a road to start or end on only), 8 **entry** (it enters restricted roads from an open one: its weight in `RCHE` is `time` + 36,000). `head`: the node a route reaches at the end of the direction when it starts on the segment, 0 for the plain end node, else the copy's node ID + 1.
+- `forward` is the way from `a` to `b`, `backward` the way back. Segments are oriented so that `forward` is open: a one-way road tagged against its nodes runs from its last node. `time`: tenths of a second, without the restricted-road penalty. `flags`: 1 toll, 2 ferry, 4 **restricted** (a road to start or end on only), 8 **entry** (it enters restricted roads from an open one: its weight in `RCHE` is `time` + 36,000), 16 **U-turn** (a route at the plain start node, not a copy, that leaves along this direction turns back the way it came: at a junction whose roads in are all two-way, one of them keeps the plain node instead of a copy; the edge's weight adds `uturn_penalty_s` × 10). `head`: the node a route reaches at the end of the direction when it starts on the segment, 0 for the plain end node, else the copy's node ID + 1.
 - Points run from `a` to `b`, simplified to 2 m, at least two, in units of 2⁶ world units as deltas from a cursor that starts at (0, 0) in each block, as `SGEO`'s.
 - Segments are ordered by the Hilbert key of their first point's z14 cell, then along a z24 Hilbert curve of that point, so each cell's own segments are one run of IDs (`RGRD`) and the segments of a route share blocks.
 
@@ -391,7 +391,7 @@ zstd blocks of about 16 KiB; `count` is the number of copies, `first` the plain 
 entry = plain_delta:varint  copy:zvarint  nleaves:varint  leaf:varint  leaf_delta:varint*
 ```
 
-Sorted by plain node, then copy. `plain_delta` is from the previous entry's plain node (from `first`); `copy` is the copy's node ID as a delta from its plain node; the leaves are the segment directions (`segment << 1 | reversed`) the copy has an edge along, ascending, the first in full. A route that ends partway along a segment direction may arrive at its start node or any copy of it that lists the direction.
+Sorted by plain node, then copy. `plain_delta` is from the previous entry's plain node (from `first`); `copy` is the copy's node ID as a delta from its plain node; the leaves are the segment directions (`segment << 1 | reversed`) the copy has an edge along, ascending, the first in full. A route that ends partway along a segment direction may arrive at its start node or any copy of it that lists the direction. With `RHDR`'s `uturn_penalty_s`, each leaf is `direction << 1 | uturn`, where `uturn` marks the way back along the road the copy was reached by: a route ending along it pays the penalty, as it does at the plain node for an `RGEO` direction with the U-turn flag.
 
 ### `RJCT`: exit numbers (spanning)
 

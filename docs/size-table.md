@@ -288,6 +288,19 @@ Within criterion 7's 4.5 GiB. The North America build took 48.5 min, peak 49.7 G
 
 **Phase 3 as measured in [step 3.9](phase3-plan.md#39-performance-accuracy-and-hardware-checks):** this North America pack is the one phase 3 ships, **9,995.6 MiB (9.8 GiB, 10.5 GB) in 3 chunks**, 0.45× CoMaps: tiles and index 6,299.4 MiB, search and addresses 996.6 (as in phase 2), routing 2,699.5. The routing stages take 12.1 of the build's 48.5 min (graph 258 s, CH 354 s, sections 113 s).
 
+### Phase 4 step 4.4: the U-turn penalty (experiment)
+
+The routing sections with a U-turn penalty at junctions of three or more roads ([step 4.4](phase4-plan.md#44-u-turn-penalty-measured-first), `build --uturn-penalty <s>`), on Ohio and Quebec without addresses, in `$OMP_WORK/measure/uturn44/`. Not built for North America: the owner decides with these numbers. MiB:
+
+| | Ohio | Quebec | North America |
+|---|---:|---:|---:|
+| Graph nodes / edges, no penalty | 2.35M / 5.65M | 0.84M / 1.95M | 68.4M / 164.5M |
+| With the penalty (any of 60, 180, 300 s) | 5.17M / 14.44M | 1.75M / 4.77M | about 150M / 410M (extrapolated) |
+| `RCHE` / `RGEO` / `RCPY`, no penalty | 47.8 / 43.9 / 0.09 | 15.5 / 17.9 / 0.07 | 1,334.6 / 1,349.7 / 2.1 |
+| With 60 s | 159.5 / 53.2 / 13.8 | 48.5 / 21.9 / 4.9 | not built |
+| **Routing total**, no penalty → 60 / 180 / 300 s | **92.1 → 226.8 / 229.1 / 232.6** | **33.7 → 75.6 / 77.2 / 78.4** | **2,699.5 → about 6,000–6,800** (extrapolated; criterion 7 of phase 3: 4,608) |
+| Contraction, no penalty → 60 / 180 / 300 s | 9 → 129 / 200 / 221 s | 4 → 34 / 54 / 60 s | 354 s → about 50–140 min (extrapolated) |
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.

@@ -228,7 +228,7 @@ pub fn run(first: &Path, pack: &Arc<Pack>, streets: u32, want: usize) -> Result<
         ensure!(
             plain(from) == d.from
                 && plain(to) == d.to
-                && e.weight == d.weight
+                && (e.weight == d.weight || e.weight == d.weight + r.uturn_penalty_s() * 10)
                 && e.flags & AVOID == d.flags & AVOID,
             "edge {from} -> {to} does not match segment direction {m}"
         );
@@ -269,7 +269,7 @@ pub fn run(first: &Path, pack: &Arc<Pack>, streets: u32, want: usize) -> Result<
             .map(|&l| segs[(l >> 1) as usize][(l & 1) as usize].unwrap().weight)
             .sum();
         ensure!(
-            sum == e.weight,
+            r.adds_up(sum, e.weight),
             "shortcut {a} -> {b} unpacks to weight {sum}"
         );
         unpacked += 1;
@@ -335,7 +335,7 @@ pub fn run(first: &Path, pack: &Arc<Pack>, streets: u32, want: usize) -> Result<
             sum += d.weight;
             at = d.to;
         }
-        plain(at) == plain(t) && sum == p.weight
+        plain(at) == plain(t) && r.adds_up(sum, p.weight)
     };
     if full {
         let t0 = Instant::now();

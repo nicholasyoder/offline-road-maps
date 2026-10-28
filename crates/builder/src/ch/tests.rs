@@ -10,6 +10,7 @@ fn edge(to: u32, time_ds: u32, flags: u8) -> Edge {
         time_ds,
         seg: 0,
         flags,
+        uturn_ds: 0,
     }
 }
 

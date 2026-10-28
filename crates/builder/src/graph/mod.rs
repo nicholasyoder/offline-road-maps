@@ -1,7 +1,9 @@
 //! The car routing graph (phase 3 step 3.1): the roads and ferries of a PBF that the car
 //! profile ([`omp_core::profile`]) lets a car use, cut into edges between intersections,
 //! with turn restrictions applied by splitting nodes ([`restrict`]) and the small strongly
-//! connected components marked ([`scc`]).
+//! connected components marked ([`scc`]). With a U-turn penalty (phase 4 step 4.4), the
+//! same splitting gives each junction a copy per approach, so turning back the way a route
+//! came can cost more than the time shown.
 //!
 //! [`read`] reads the PBF in three passes (restrictions, ways, nodes) into an [`Input`], and
 //! [`build`] makes the [`Graph`] from it, so tests can build an input by hand.
@@ -209,12 +211,17 @@ pub struct Edge {
     pub seg: u32,
     /// [`TOLL`], [`FERRY`], [`RESTRICTED`], [`ENTRY`].
     pub flags: u8,
+    /// The U-turn penalty in tenths of a second, on an edge back the way its copy of a
+    /// junction was reached ([`restrict`]); 0 on every other edge.
+    pub uturn_ds: u16,
 }
 
 impl Edge {
-    /// What the route minimizes: the time, plus the penalty for entering restricted roads.
+    /// What the route minimizes: the time, plus the penalties for entering restricted roads
+    /// and for a U-turn.
     pub fn weight(&self) -> u32 {
         self.time_ds
+            + u32::from(self.uturn_ds)
             + match self.flags & ENTRY {
                 0 => 0,
                 _ => profile::RESTRICTED_PENALTY_S * 10,
@@ -253,6 +260,7 @@ impl Csr {
             time_ds: 0,
             seg: 0,
             flags: 0,
+            uturn_ds: 0,
         };
         let mut edges = vec![blank; list.len()];
         for (from, e) in list {
@@ -397,6 +405,9 @@ pub struct Stats {
     pub ferry_edges: u64,
     pub restricted_edges: u64,
     pub entry_edges: u64,
+    /// Seconds a U-turn at a junction costs in the weight (0: none; phase 4 step 4.4).
+    #[serde(default)]
+    pub uturn_penalty_s: u32,
     /// The largest [`Edge::weight`], in tenths of a second.
     pub max_weight_ds: u32,
     pub restrictions: RestrictionStats,
@@ -408,8 +419,11 @@ pub struct Stats {
     pub peak_rss_mib: f64,
 }
 
-/// Reads the PBF and builds its graph.
-pub fn make(pbf: &Pbf) -> Result<Graph> {
+/// The largest U-turn penalty, in seconds ([`Edge::uturn_ds`] holds tenths in 16 bits).
+pub const MAX_UTURN_S: u32 = 3600;
+
+/// Reads the PBF and builds its graph, with a U-turn penalty of `uturn_s` seconds (0: none).
+pub fn make(pbf: &Pbf, uturn_s: u32) -> Result<Graph> {
     let t = Instant::now();
     let input = read(pbf)?;
     let read_s = t.elapsed().as_secs_f64();
@@ -419,7 +433,7 @@ pub fn make(pbf: &Pbf) -> Result<Graph> {
         input.refs.len(),
         peak_rss_mib()
     );
-    let mut g = build(input);
+    let mut g = build(input, uturn_s);
     g.stats.read_s = read_s;
     g.stats.peak_rss_mib = peak_rss_mib();
     Ok(g)
@@ -444,10 +458,16 @@ fn metres(a: P, b: P) -> f64 {
     (dx * dx + dy * dy).sqrt() * geom::metres_per_unit(a)
 }
 
-pub fn build(mut input: Input) -> Graph {
+/// The graph of `input`, with a U-turn penalty of `uturn_s` seconds at junctions (0: none).
+pub fn build(mut input: Input, uturn_s: u32) -> Graph {
+    assert!(
+        uturn_s <= MAX_UTURN_S,
+        "U-turn penalty over {MAX_UTURN_S} s"
+    );
     let start = Instant::now();
     let mut stats = Stats {
         read: std::mem::take(&mut input.read),
+        uturn_penalty_s: uturn_s,
         ..Stats::default()
     };
     let refs = |w: &WayIn| &input.refs[w.refs.clone()];
@@ -626,6 +646,7 @@ pub fn build(mut input: Input) -> Graph {
                         time_ds: ((s * 10.0).round() as u32).max(1),
                         seg: sid << 1 | u32::from(fwd == reversed),
                         flags,
+                        uturn_ds: 0,
                     };
                     list.push((from, e));
                 }
@@ -682,6 +703,7 @@ pub fn build(mut input: Input) -> Graph {
         &seqs,
         via_rank,
         &input.restrictions,
+        (uturn_s * 10) as u16,
         &mut stats.restrictions,
     );
     drop(ranks);
@@ -754,6 +776,13 @@ pub fn print_stats(s: &Stats) {
         x.forbidden_paths,
         x.nodes_added
     );
+    if s.uturn_penalty_s > 0 {
+        eprintln!(
+            "  graph: U-turns: {} s penalty at {} junctions, {} approach copies, {} edges \
+             with the penalty",
+            s.uturn_penalty_s, x.uturn_junctions, x.uturn_copies, x.uturn_edges
+        );
+    }
     let c = &s.components;
     eprintln!(
         "  graph: {} nodes ({} before restrictions), {} edges ({} toll, {} ferry, {} \
@@ -809,6 +838,11 @@ pub struct GraphArgs {
     /// their relation and way IDs (to look into a route that differs from OSRM's).
     #[arg(long)]
     restrictions_near: Option<String>,
+
+    /// Seconds a U-turn at a junction of three or more roads adds to the weight (not to
+    /// the time shown); 0 for none (phase 4 step 4.4).
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=MAX_UTURN_S as i64))]
+    uturn_penalty: u32,
 }
 
 #[derive(Serialize)]
@@ -854,7 +888,7 @@ pub fn run(args: GraphArgs) -> Result<()> {
         }
         return Ok(());
     }
-    let g = make(&pbf)?;
+    let g = make(&pbf, args.uturn_penalty)?;
     print_stats(&g.stats);
     if let Some(path) = &args.way_ids {
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);

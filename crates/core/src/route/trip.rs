@@ -12,7 +12,7 @@ use std::io;
 use std::ops::Range;
 
 use super::query::{STOP_EVERY, stopped};
-use super::{AVOID, FERRY_CLASS, Path, Routing, Seed, Segment};
+use super::{AVOID, FERRY_CLASS, Path, Routing, Seed, Segment, UTURN};
 use crate::geo::{self, P};
 
 /// A snap farther than this from its point is worth a warning.
@@ -283,22 +283,25 @@ impl Routing {
     }
 
     /// Where a route to `snap` can end: the near end of each direction of its segment, or
-    /// a copy of it that may leave along it, with the part of it still to drive.
+    /// a copy of it that may leave along it, with the part of it still to drive, and the
+    /// U-turn penalty where leaving along it turns back.
     fn targets(&self, snap: &Snap, seg: &Segment) -> io::Result<(Vec<Seed>, Vec<bool>)> {
         let (mut out, mut reversed) = (Vec::new(), Vec::new());
         let ends = [
             (seg.a, Some(&seg.forward), snap.along, false),
             (seg.b, seg.backward.as_ref(), 1.0 - snap.along, true),
         ];
+        let uturn = self.uturn_penalty_s() * 10;
         for (v, d, f, rev) in ends {
             let Some(d) = d else { continue };
             let w = part(d.time_ds, f);
             let dir = snap.segment << 1 | u32::from(rev);
-            out.push((v, w));
+            out.push((v, w + if d.flags & UTURN != 0 { uturn } else { 0 }));
             reversed.push(rev);
             for c in self.copies(v)? {
                 if c.leaves.binary_search(&dir).is_ok() {
-                    out.push((c.node, w));
+                    let back = c.uturns.binary_search(&dir).is_ok();
+                    out.push((c.node, w + if back { uturn } else { 0 }));
                     reversed.push(rev);
                 }
             }

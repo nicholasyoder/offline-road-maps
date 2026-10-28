@@ -24,6 +24,8 @@ pub(crate) struct In {
     restrictions: Vec<RestrictionIn>,
     labels: Labels,
     pub(crate) junctions: Vec<(i64, String)>,
+    /// The U-turn penalty to build with, in seconds.
+    pub(crate) uturn_s: u32,
 }
 
 impl In {
@@ -67,7 +69,7 @@ impl In {
     pub(crate) fn build(&self) -> Graph {
         let mut ways = self.ways.clone();
         ways.sort_by_key(|w| w.id);
-        build(Input {
+        let input = Input {
             ways,
             refs: self.refs.clone(),
             coords: self.refs.iter().map(|&id| pos(id)).collect(),
@@ -79,7 +81,8 @@ impl In {
             },
             junctions: self.junctions.clone(),
             read: ReadStats::default(),
-        })
+        };
+        build(input, self.uturn_s)
     }
 }
 
@@ -145,10 +148,30 @@ fn distances(g: &Graph, src: u32) -> Vec<u32> {
 /// Shortest weights on `base` (a graph without restrictions) from `src`, never walking a
 /// path in `forbidden`: Dijkstra over the last few nodes walked.
 fn reference(base: &Csr, forbidden: &[Vec<u32>], src: u32) -> Vec<u32> {
-    let keep = forbidden.iter().map(Vec::len).max().unwrap_or(1) - 1;
+    reference_from(base, forbidden, 0, None, src)
+}
+
+/// [`reference`], with `uturn_ds` added for each path `[u, v, u]` where v has three or more
+/// roads, and starting as if arrived at `src` from `from`.
+fn reference_from(
+    base: &Csr,
+    forbidden: &[Vec<u32>],
+    uturn_ds: u32,
+    from: Option<u32>,
+    src: u32,
+) -> Vec<u32> {
+    let mut roads = vec![std::collections::BTreeSet::new(); base.nodes()];
+    for v in 0..base.nodes() as u32 {
+        for e in base.out(v) {
+            roads[v as usize].insert(e.to);
+            roads[e.to as usize].insert(v);
+        }
+    }
+    let keep = (forbidden.iter().map(Vec::len).max().unwrap_or(1) - 1).max(2);
     let mut best: HashMap<Vec<u32>, u32> = HashMap::new();
     let mut out = vec![u32::MAX; base.nodes()];
-    let mut heap = BinaryHeap::from([Reverse((0, vec![src]))]);
+    let start = from.map_or(vec![src], |u| vec![u, src]);
+    let mut heap = BinaryHeap::from([Reverse((0, start))]);
     while let Some(Reverse((d, hist))) = heap.pop() {
         if best.get(&hist).is_some_and(|&b| b <= d) {
             continue;
@@ -162,8 +185,13 @@ fn reference(base: &Csr, forbidden: &[Vec<u32>], src: u32) -> Vec<u32> {
             if forbidden.iter().any(|f| next.ends_with(f)) {
                 continue;
             }
+            let back = match next.len() >= 3 && next[next.len() - 3] == e.to {
+                true => roads[v as usize].len() >= 3,
+                false => false,
+            };
+            let w = e.weight() + if back { uturn_ds } else { 0 };
             let cut = next.len().saturating_sub(keep);
-            heap.push(Reverse((d + e.weight(), next[cut..].to_vec())));
+            heap.push(Reverse((d + w, next[cut..].to_vec())));
         }
     }
     out
@@ -427,12 +455,113 @@ fn restrictions_match_a_search_over_paths() {
 }
 
 #[test]
+fn uturn_penalty_matches_a_search_over_paths() {
+    use Restriction::*;
+    let base_in = grid();
+    let base = base_in.build();
+    let w = |a, b| way_id(&base_in, a, b);
+    let mut changed = 0;
+    for (restricted, uturn_s) in [(false, 1), (true, 1), (true, 60)] {
+        let mut i = grid();
+        i.uturn_s = uturn_s;
+        let mut forbidden: Vec<Vec<i64>> = Vec::new();
+        if restricted {
+            i.restriction(No, w(11, 21), Via::Node(21), w(21, 22))
+                .restriction(Only, w(12, 22), Via::Node(22), w(22, 32))
+                .restriction(No, w(13, 23), Via::Ways(vec![w(23, 33)]), w(33, 32))
+                // From 32 only straight on to 12, so reaching 21 or 23 needs a U-turn or
+                // a detour.
+                .restriction(Only, w(32, 22), Via::Node(22), w(22, 12))
+                // At a node with two roads: no U-turn penalty there.
+                .restriction(No, w(13, 23), Via::Node(13), w(13, 12));
+            forbidden = vec![
+                vec![11, 21, 22],
+                vec![12, 22, 21],
+                vec![12, 22, 23],
+                vec![12, 22, 12],
+                vec![13, 23, 33, 32],
+                vec![32, 22, 21],
+                vec![32, 22, 23],
+                vec![32, 22, 32],
+                vec![23, 13, 12],
+            ];
+        }
+        let g = i.build();
+        let s = &g.stats.restrictions;
+        // 12, 21, 22, 23, 32 and 31 (with the one-way out to 41) have three roads or more;
+        // the corners and 41 keep their free U-turn.
+        assert_eq!(s.uturn_junctions, 6);
+        assert!(s.uturn_edges > 0);
+        let ids = |p: &[i64]| p.iter().map(|&n| id(&base, n)).collect::<Vec<_>>();
+        let forbidden: Vec<Vec<u32>> = forbidden.iter().map(|p| ids(p)).collect();
+        let in_g = |v: u32| {
+            (0..g.base_nodes)
+                .find(|&x| g.coords[x as usize] == base.coords[v as usize])
+                .unwrap()
+        };
+        let in_base = |x: u32| {
+            (0..base.base_nodes)
+                .find(|&v| base.coords[v as usize] == g.coords[x as usize])
+                .unwrap()
+        };
+        for src in 0..base.base_nodes {
+            // A plain junction node stands for arriving from one road, whose edge back
+            // pays the penalty: the reference starts with that road walked.
+            let from = g
+                .csr
+                .out(in_g(src))
+                .iter()
+                .find(|e| e.uturn_ds > 0)
+                .map(|e| in_base(orig(&g, e.to)));
+            let want = reference_from(&base.csr, &forbidden, uturn_s * 10, from, src);
+            let free = reference_from(&base.csr, &forbidden, 0, from, src);
+            let got = distances(&g, in_g(src));
+            for (v, &w) in want.iter().enumerate() {
+                assert_eq!(
+                    got[in_g(v as u32) as usize],
+                    w,
+                    "from {src} to {v}, restricted {restricted}, {uturn_s} s"
+                );
+                changed += usize::from(w != free[v]);
+            }
+        }
+        // Each copy of a junction pays for turning back to the one road it was reached by,
+        // and for nothing else.
+        for c in g.base_nodes..g.csr.nodes() as u32 {
+            let backs: Vec<&Edge> = g.csr.out(c).iter().filter(|e| e.uturn_ds > 0).collect();
+            assert!(backs.len() <= 1, "copy {c} of {}", orig(&g, c));
+            for e in backs {
+                assert_eq!(u32::from(e.uturn_ds), uturn_s * 10);
+            }
+        }
+    }
+    // The penalty changed some shortest routes: the test reaches U-turns.
+    assert!(changed > 0);
+
+    // Two-way junctions keep one approach on the plain node, which then pays for turning
+    // back towards it: 22 has four roads, so three copies.
+    let mut i = grid();
+    i.uturn_s = 60;
+    let g = i.build();
+    let v = id(&g, 22);
+    assert_eq!(g.copy_of.iter().filter(|&&p| p == v).count(), 3);
+    assert_eq!(g.csr.out(v).iter().filter(|e| e.uturn_ds > 0).count(), 1);
+    // 31 is entered from 21 and 32 (both two-way) and leaves to 41 (one-way): one of the
+    // two stays on the plain node.
+    assert_eq!(g.copy_of.iter().filter(|&&p| p == id(&g, 31)).count(), 1);
+    // Without the penalty, the graph is the one 3.1 builds.
+    assert!(base.csr.edges.iter().all(|e| e.uturn_ds == 0));
+    assert!(base.copy_of.is_empty());
+}
+
+#[test]
 fn small_components() {
     let e = |to| Edge {
         to,
         time_ds: 1,
         seg: 0,
         flags: 0,
+        uturn_ds: 0,
     };
     // 0 ⇄ 1 ⇄ 2, and 3 → 0 with no way back.
     let g = Csr::from_edges(

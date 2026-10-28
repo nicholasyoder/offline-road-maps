@@ -386,7 +386,11 @@ pub(crate) fn segment_order(g: &Graph) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
 fn direction(g: &Graph, o: &Order, edge: u32, end: u32, out: &mut Vec<u8>) {
     let e = &g.csr.edges[edge as usize];
     put(out, u64::from(e.time_ds));
-    put(out, u64::from(e.flags));
+    let uturn = match e.uturn_ds {
+        0 => 0,
+        _ => core::UTURN,
+    };
+    put(out, u64::from(e.flags | uturn));
     let head = o.id[e.to as usize];
     put(
         out,
@@ -529,6 +533,21 @@ pub fn sections(
     let (rcpy, copies) = copies(g, &o, &seg_id)?;
     let (rjct, junctions) = junctions(g, &o)?;
 
+    let mut settings = serde_json::json!({
+        "simplify_m": graph::SIMPLIFY_M,
+        "maxspeed_factor": profile::MAXSPEED_FACTOR,
+        "signal_s": profile::SIGNAL_S,
+        "ferry_kmh": profile::FERRY_KMH,
+        "ferry_boarding_s": profile::FERRY_BOARDING_S,
+        "restricted_penalty_s": profile::RESTRICTED_PENALTY_S,
+        "small_component": graph::SMALL_COMPONENT,
+    })
+    .as_object()
+    .cloned()
+    .unwrap_or_default();
+    if g.stats.uturn_penalty_s > 0 {
+        settings.insert(core::UTURN_SETTING.into(), g.stats.uturn_penalty_s.into());
+    }
     let header = Header {
         nodes: n,
         edges: edges as u32,
@@ -537,18 +556,7 @@ pub fn sections(
         block_nodes: p.block_nodes,
         top_nodes: o.top,
         top_bytes,
-        settings: serde_json::json!({
-            "simplify_m": graph::SIMPLIFY_M,
-            "maxspeed_factor": profile::MAXSPEED_FACTOR,
-            "signal_s": profile::SIGNAL_S,
-            "ferry_kmh": profile::FERRY_KMH,
-            "ferry_boarding_s": profile::FERRY_BOARDING_S,
-            "restricted_penalty_s": profile::RESTRICTED_PENALTY_S,
-            "small_component": graph::SMALL_COMPONENT,
-        })
-        .as_object()
-        .cloned()
-        .unwrap_or_default(),
+        settings,
     };
     let rhdr = header.encode()?;
     sizes = Sizes {
@@ -662,8 +670,10 @@ fn grid(g: &Graph, seg_order: &[u32], home: &[u32]) -> Result<(BlockedSection, u
     ))
 }
 
-/// `RCPY`: per plain node, its copies and the segment directions each may leave by.
+/// `RCPY`: per plain node, its copies and the segment directions each may leave by. With a
+/// U-turn penalty, each direction is `dir << 1 | uturn`.
 fn copies(g: &Graph, o: &Order, seg_id: &[u32]) -> Result<(BlockedSection, u64)> {
+    let uturns = g.stats.uturn_penalty_s > 0;
     let mut list: Vec<(u32, u32, Vec<u32>)> = g
         .copy_of
         .par_iter()
@@ -674,7 +684,13 @@ fn copies(g: &Graph, o: &Order, seg_id: &[u32]) -> Result<(BlockedSection, u64)>
                 .csr
                 .out(c)
                 .iter()
-                .map(|e| seg_id[(e.seg >> 1) as usize] << 1 | (e.seg & 1))
+                .map(|e| {
+                    let dir = seg_id[(e.seg >> 1) as usize] << 1 | (e.seg & 1);
+                    match uturns {
+                        true => dir << 1 | u32::from(e.uturn_ds > 0),
+                        false => dir,
+                    }
+                })
                 .collect();
             leaves.sort_unstable();
             leaves.dedup();

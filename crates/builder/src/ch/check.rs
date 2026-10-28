@@ -405,6 +405,10 @@ pub struct ChArgs {
     /// A graph saved by `graph --save`, or an OSM extract (.osm.pbf) to build it from.
     input: PathBuf,
 
+    /// With an extract: the U-turn penalty to build the graph with, as `graph`'s.
+    #[arg(long, default_value_t = 0)]
+    uturn_penalty: u32,
+
     /// Contract without the avoid flags, to measure what they cost.
     #[arg(long)]
     no_flags: bool,
@@ -463,7 +467,7 @@ pub fn run(args: ChArgs) -> Result<()> {
     let is_pbf = args.input.to_string_lossy().ends_with(".pbf");
     let g: Graph = match is_pbf {
         true => {
-            let g = graph::make(&Pbf::open(&args.input)?)?;
+            let g = graph::make(&Pbf::open(&args.input)?, args.uturn_penalty)?;
             graph::print_stats(&g.stats);
             g
         }

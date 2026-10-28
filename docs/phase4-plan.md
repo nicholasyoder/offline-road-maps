@@ -39,7 +39,7 @@ The roadmap's items are stop optimization, departure and arrival times with over
 | 4.1 Stop optimization | Not started | |
 | 4.2 Alternative routes (`omp-core`) | Not started | |
 | 4.3 Alternatives in the app | Not started | |
-| 4.4 U-turn penalty, measured first | Not started | |
+| 4.4 U-turn penalty, measured first | In progress | Built behind `--uturn-penalty` and measured on Ohio and Quebec (2026-10-28): routing ×2.2–2.5, contraction ×8–24, U-turn routes 4.7% → 3.3% (Ohio) and 11.2% → 9.5% (Quebec) at any penalty. Recommended: do not build it for North America. **Waiting for the owner's decision** |
 | 4.5 Schedule: times, stops and overnights | Not started | |
 | 4.6 Fuel, rest and overnight suggestions (if cheap) | Not started | |
 | 4.7 Pushpins and saved trips | Not started | |
@@ -109,6 +109,41 @@ From the roadmap (phase 3 decisions 13 and 16): a hidden penalty of a few minute
 - **Decision for the owner** with these numbers: build it for North America or not. If yes, rebuild, rerun `route --check` (exact against Dijkstra on the split graph) and the route set, and update the size table and format.md (no new section is expected; `RCPY` grows).
 
 **Done when:** the measurements are in this plan and the size table, and the owner has decided. If the answer is yes, North America is built with it and checked.
+
+> **In progress 2026-10-28: measured; the owner's decision is open.** Built as planned, behind `build`, `graph` and `ch --uturn-penalty <s>` (0, the default, gives phase 3's graph and sections: the same counts and sizes). The restriction automaton ([`restrict.rs`](../crates/builder/src/graph/restrict.rs)) takes each two-way road `[u, v]` into a junction (three or more roads) as an approach that bans nothing, so the copy knows u and its edge back to u carries the penalty (`Edge::uturn_ds`, in the weight, not the time). Where every road into v is two-way, one of them keeps the plain node instead of a copy, which saves a node per junction. Restriction copies and U-turn copies are states of one automaton, so they combine. In the pack: `RHDR` gains the setting `uturn_penalty_s`; `RCHE` is unchanged; an `RGEO` direction flag (16) and a bit on each `RCPY` leaf mark the way back, so a route that ends just after a U-turn pays it too ([format.md](format.md#rhdr-routing-header-contiguous)). Tests: 3.1's grid test again with restrictions and penalties of 1 and 60 s, against a search over node paths that charges `[u, v, u]` at junctions (and checks that the penalty changes some routes), and a reader test that every leg between two segments' middles weighs what a search over the graph's states finds. Logs and packs in `$OMP_WORK/measure/uturn44/` (`run.sh` reruns them all).
+>
+> **Cost** (same binary; 0 is the baseline, which matches phase 3's packs exactly):
+>
+> | | Ohio 0 | Ohio 60 / 180 / 300 s | Quebec 0 | Quebec 60 / 180 / 300 s |
+> |---|---:|---:|---:|---:|
+> | Junctions / approach copies | | 1.41M / 2.82M | | 0.48M / 0.91M |
+> | Graph nodes / edges | 2.35M / 5.65M | 5.17M / 14.44M (×2.20 / ×2.55) | 0.84M / 1.95M | 1.75M / 4.77M (×2.09 / ×2.45) |
+> | CH edges (shortcuts) | 9.05M (3.57M) | 29.3M (15.7M) / 29.7M / 29.7M (×3.2–3.3) | 3.26M (1.36M) | 9.66M (5.12M) (×3.0) |
+> | `RCHE` / `RGEO` / `RCPY`, MiB | 47.8 / 43.9 / 0.09 | 159.5–165.6 / 53.2 / 13.6–13.8 | 15.5 / 17.9 / 0.07 | 48.5–51.3 / 21.9 / 4.9 |
+> | **Routing sections, MiB** | **92.1** | **226.8 / 229.1 / 232.6** (×2.46–2.53) | **33.7** | **75.6 / 77.2 / 78.4** (×2.24–2.33) |
+> | Graph stage / contraction | 5.2 s / 9.2 s | 8.3 s / 129, 200, 221 s | 4.6 s / 4.2 s | 5.5 s / 34, 54, 60 s |
+> | Build wall time / peak RSS | 37 s / 4.9 GiB | 2:39, 3:52, 4:12 / 5.4 GiB | 51 s / 6.7 GiB | 1:25, 1:44, 1:50 / 6.8 GiB |
+> | Nodes settled per query (`route --check`) | 292 | 489–497 | 197 | 262–265 |
+> | Warm trips with geometry, p50: short / long | 0.51 / 3.17 ms | 0.55 / 3.19 ms | 0.42 / 1.00 ms | 0.43–0.44 / 1.02 ms |
+>
+> Decision 13 guessed twice the nodes at junctions; it is twice the nodes of the whole graph, because 60% of Ohio's nodes are junctions of three roads or more, and 2.5 times the edges. A higher penalty does not change the copies, but contraction slows with it (heavier edges need longer witnesses). Warm trips barely change: their time is decoding geometry (3.4), not the search, which settles 30–70% more nodes. **Still exact:** `route --check 10000 --pbf` on all eight packs, 10,000 pairs × 4 avoid combinations against Dijkstra on the split graph: 0 differ, 0 bad paths, 0 forbidden paths.
+>
+> **North America, extrapolated** (not built): routing 2,699.5 MiB × 2.2–2.5 ≈ **6.0–6.7 GiB, over criterion 7's 4.5 GiB** of phase 3 (the pack would grow from 9.8 to about 13.5 GiB). Contraction took 354 s in phase 3's build; at Ohio's and Quebec's ratios it would take about 50 min to 2 h, and its memory (19.6 GiB alone in 3.2) grows with the edges to perhaps 45–50 GiB, which does not fit beside what the build holds at that point (peak 49.7 GiB of the 62 GB machine) without spilling to disk.
+>
+> **Effect** (`route --osrm` on 3.5's 1,000 pairs and the route set, against OSRM 6.0.0's answers saved in 3.5):
+>
+> | | Ohio 0 | Ohio 60 / 180 / 300 s | Quebec 0 | Quebec 60 / 180 / 300 s | OSRM (Ohio / Quebec) |
+> |---|---:|---:|---:|---:|---:|
+> | Routes with a U-turn step | 4.7% | 3.3% / 3.3% / 3.3% | 11.2% | 9.6% / 9.4% / 9.5% | 1.9% / 6.8% |
+> | — in town (< 10 km) / regional / highway | 3.0 / 4.8 / 5.7% | 1.7 / 3.9 / 3.6% | 9.3 / 11.0 / 12.6% | 7.4 / 9.5 / 11.1% (60 s) | 2.2 / 1.6 / 2.1%; 6.4 / 6.2 / 8.0% |
+> | Time ours/OSRM, median; within 15%; same roads | 0.994; 99.4%; 92.8% | unchanged (92.7–92.8%) | 0.993; 98.6%; 92.1% | 0.993; 98.6%; 92.2% | |
+> | Route set: pass; within 15% of OSRM; with a U-turn | 26/26; 76%; 28% | 25/26; 80%; 24% | 22/22; 77%; 23% | 21/22; 77%; 18% | 4% / 18% |
+>
+> Only about a third of the U-turn routes go, and the same third at 60 s as at 300 s: those are the U-turns the node split can see. The rest are U-turns **across a median**: on a divided road each carriageway is its own one-way way, so turning back crosses from one node to another and never revisits one (Pearl Road, Carnegie Avenue and Tylersville Road in Ohio's sample, 11 of 400 pairs at 60 s). Only a cost on the turn's angle catches those, which is 4.2's rescoring (OSRM's turn function from the geometry). The two set lines that fail are expectations written around the free U-turn, not wrong routes: `exit-171` now leaves I-90 at exit 172A for the same 6.5 km and 7 min, instead of exit 171 and a U-turn on East 9th Street; `jeanne-mance` no longer makes the U-turn on Rue Jeanne-Mance but goes round through a 40 m lane (1 min instead of 25 s), and the step "Turn left onto Rue Jeanne-Mance" out of that lane matches the line's text for the banned left from René-Lévesque, which the route does not take. Neither line was changed.
+>
+> **Compared with 4.2's rescoring:** not yet possible; 4.2 has not been started. Its rescoring needs no rebuild and costs nothing in the pack, and the measurement above says the median-crossing U-turns, the larger share, are within its reach and not this step's.
+>
+> **Recommendation for the owner: do not build the penalty for North America.** It would take routing over its 4.5 GiB budget and the build likely over the machine, for a third of the U-turns. Keep `--uturn-penalty` in the builder (off by default) so it can be measured again after 4.2. Left open: the owner's decision; if the answer is yes, a North America build with it (and with 4.5's `TZON`, so the continent is rebuilt once), `route --check` and the route set there.
 
 ## 4.5 Schedule: times, stops and overnights
 

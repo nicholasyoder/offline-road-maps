@@ -150,6 +150,11 @@ pub struct BuildArgs {
     #[arg(long)]
     reuse_stages: bool,
 
+    /// Seconds a U-turn at a junction of three or more roads adds to what a route minimizes,
+    /// not to the time shown; 0 for none (phase 4 step 4.4, measured before it is taken).
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=graph::MAX_UTURN_S as i64))]
+    uturn_penalty: u32,
+
     /// Directory for the temporary tile store [default: <work dir>/tmp].
     #[arg(long)]
     temp: Option<PathBuf>,
@@ -248,8 +253,11 @@ impl Stages {
             admin: cache.key("admin", &admin),
             tiles: cache.key("tiles", &tiles),
             addresses: cache.key("addresses", &addresses),
-            graph: cache.key("graph", &format!("{}", cache::GRAPH)),
-            ch: cache.key("ch", &format!("{} {}", cache::GRAPH, cache::CH)),
+            graph: cache.key("graph", &format!("{} {}", cache::GRAPH, args.uturn_penalty)),
+            ch: cache.key(
+                "ch",
+                &format!("{} {} {}", cache::GRAPH, args.uturn_penalty, cache::CH),
+            ),
             cache,
         })
     }
@@ -379,7 +387,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         &mut t,
     )?;
     let routing = cache::stage(Stages::at(&setup.stages, |s| &s.graph), || {
-        graph::make(&setup.pbf)
+        graph::make(&setup.pbf, args.uturn_penalty)
     })?;
     graph::print_stats(&routing.stats);
     t.stage("routing graph");

@@ -438,3 +438,90 @@ fn directions_name_turns_exits_roundabouts_and_ferries() {
         "Arrive at your destination, on the right"
     );
 }
+
+/// With a U-turn penalty, a leg between the middles of any two segments weighs what a
+/// search over the graph's states finds: from the head of either direction of the first,
+/// to any state with an edge along a direction of the second, with that edge's penalty
+/// (the `RCPY` U-turn bit for copies, `RGEO`'s [`omp_core::route::UTURN`] for plain nodes).
+#[test]
+fn legs_pay_the_uturn_penalty_to_reach_a_stop() {
+    // A one-way street into 22 that may not turn to 23: a U-turn at 21 or 32 is quicker
+    // than going round the block.
+    let mut i = network();
+    i.way(
+        400,
+        &[("highway", "residential"), ("oneway", "yes")],
+        &[52, 22],
+    );
+    let to = way_id(&i, 22, 23);
+    i.restriction(Restriction::No, 400, Via::Node(22), to);
+    i.uturn_s = 1;
+    let g = i.build();
+    assert!(g.stats.restrictions.uturn_edges > 0);
+    let (r, o, ..) = reader(&g);
+    assert_eq!(r.uturn_penalty_s(), 1);
+    let (seg_order, seg_id, _) = segment_order(&g);
+    let edges = segment_edges(&g);
+    let snap = |old: usize| omp_core::route::Snap {
+        segment: seg_id[old],
+        along: 0.5,
+        point: [0, 0],
+        dist_m: 0.0,
+        on_street: false,
+        small: false,
+    };
+    let half = |t: u32| (f64::from(t) * 0.5).round() as u32;
+    let n = g.csr.nodes() as u32;
+    let mut dist = vec![u32::MAX; n as usize];
+    let (mut legs, mut paid) = (0, 0);
+    for (a, starts) in edges.iter().enumerate() {
+        for b in 0..seg_order.len() {
+            if a == b || g.way_info[g.segments[a].way as usize].class == FERRY_CLASS {
+                continue;
+            }
+            let mut want: Option<u32> = None;
+            for &ea in starts.iter().filter(|&&e| e != u32::MAX) {
+                let ea = &g.csr.edges[ea as usize];
+                for c in 0..n {
+                    for eb in g.csr.out(c).iter().filter(|e| e.seg >> 1 == b as u32) {
+                        let Some(d) = dijkstra(&g.csr, ea.to, c, 0, &mut dist) else {
+                            continue;
+                        };
+                        let w = half(ea.time_ds) + d + half(eb.time_ds) + u32::from(eb.uturn_ds);
+                        want = Some(want.map_or(w, |x| x.min(w)));
+                    }
+                }
+            }
+            let got = r.leg_between(&snap(a), &snap(b), 0).unwrap();
+            assert_eq!(got.as_ref().map(|l| l.weight), want, "{a} -> {b}");
+            let Some(leg) = got else { continue };
+            legs += 1;
+            // The time shown leaves the penalty out.
+            paid += usize::from(f64::from(leg.weight) > leg.time_s * 10.0 + 1.0);
+        }
+    }
+    assert!(legs > 100, "{legs}");
+    // Some legs are quickest with a U-turn (round the banned turns at 22).
+    assert!(paid > 0);
+
+    // Copies list the way back as a U-turn, and so do the plain nodes' directions.
+    let mut copy_uturns = 0;
+    r.for_each_copy(|_, c| {
+        assert!(c.uturns.iter().all(|d| c.leaves.contains(d)));
+        copy_uturns += c.uturns.len();
+    })
+    .unwrap();
+    assert!(copy_uturns > 0);
+    let mut plain_uturns = 0;
+    r.for_each_segment(|_, s| {
+        for d in [Some(&s.forward), s.backward.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            plain_uturns += usize::from(d.flags & omp_core::route::UTURN != 0);
+        }
+    })
+    .unwrap();
+    assert!(plain_uturns > 0);
+    let _ = o;
+}

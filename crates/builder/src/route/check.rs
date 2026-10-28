@@ -134,7 +134,9 @@ struct Restrictions {
 impl Restrictions {
     fn load(pbf: &Path, r: &Routing) -> Result<Restrictions> {
         let t = Instant::now();
-        let g = graph::make(&Pbf::open(pbf)?)?;
+        // The pack's U-turn penalty, so the copies are the same.
+        let uturn_s = r.uturn_penalty_s();
+        let g = graph::make(&Pbf::open(pbf)?, uturn_s)?;
         ensure!(
             g.csr.nodes() == r.header.nodes as usize
                 && g.segments.len() == r.header.segments as usize,
@@ -299,7 +301,7 @@ pub fn run(
             sum += d.weight();
             at = to;
         }
-        Ok(plain(at) == plain(t) && sum == p.weight)
+        Ok(plain(at) == plain(t) && r.adds_up(sum, p.weight))
     };
 
     let t = Instant::now();

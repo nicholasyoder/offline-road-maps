@@ -9,8 +9,15 @@
 //! nodes, whose state is just themselves, and one copy of v per approach that a restriction
 //! names (`[u, v]`), with only the edges out of v that the approach allows. Via-node and
 //! via-way restrictions, and restrictions that overlap, all come out of the same rule.
+//!
+//! A U-turn penalty (phase 4 step 4.4) uses the same automaton. A U-turn is the node path
+//! `[u, v, u]`; it needs a state that knows u, so each two-way road `[u, v]` into a junction
+//! v (three or more roads) goes into the trie as an approach that bans nothing, and the edge
+//! from that copy back to u carries the penalty. Where every road into v is two-way, one of
+//! them, u0, gets no copy: arriving from u0 reaches the plain node, which then knows it came
+//! from u0. Dead ends and nodes with two roads keep their free U-turn.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use omp_core::profile::Restriction;
 use serde::{Deserialize, Serialize};
@@ -29,8 +36,16 @@ pub struct RestrictionStats {
     /// The members do not meet end to end.
     pub broken: u64,
     pub forbidden_paths: u64,
-    /// Copies of nodes, one per restricted approach.
+    /// Copies of nodes, one per restricted approach (and per U-turn approach).
     pub nodes_added: u64,
+    /// With a U-turn penalty: the junctions, the approach copies made for it (some
+    /// restricted approaches already had one), and the edges that carry it.
+    #[serde(default)]
+    pub uturn_junctions: u64,
+    #[serde(default)]
+    pub uturn_copies: u64,
+    #[serde(default)]
+    pub uturn_edges: u64,
 }
 
 /// The nodes next to `v` along `seq`, where `v` is one of its ends.
@@ -165,43 +180,133 @@ fn forbidden(
     paths
 }
 
+/// Where a U-turn costs the penalty: per node, whether it is a junction, and the one road a
+/// plain junction node is reached from (`u32::MAX` for none), and the approaches that need
+/// a copy.
+#[derive(Default)]
+struct UTurns {
+    junction: Vec<bool>,
+    plain_prev: Vec<u32>,
+    approaches: Vec<[u32; 2]>,
+}
+
+fn uturns(g: &Csr, paths: &[Vec<u32>], st: &mut RestrictionStats) -> UTurns {
+    let n = g.nodes();
+    // The nodes with an edge into each node, by a counting sort.
+    let mut first = vec![0u32; n + 1];
+    for e in &g.edges {
+        first[e.to as usize + 1] += 1;
+    }
+    for i in 0..n {
+        first[i + 1] += first[i];
+    }
+    let mut next = first.clone();
+    let mut from = vec![0u32; g.edges.len()];
+    for v in 0..n as u32 {
+        for e in g.out(v) {
+            let slot = &mut next[e.to as usize];
+            from[*slot as usize] = v;
+            *slot += 1;
+        }
+    }
+    drop(next);
+    // Approaches a restriction already copies.
+    let copied: HashSet<(u32, u32)> = paths.iter().map(|p| (p[0], p[1])).collect();
+    let mut u = UTurns {
+        junction: vec![false; n],
+        plain_prev: vec![u32::MAX; n],
+        approaches: Vec::new(),
+    };
+    let (mut ins, mut outs) = (Vec::new(), Vec::new());
+    for v in 0..n as u32 {
+        ins.clear();
+        ins.extend_from_slice(&from[first[v as usize] as usize..first[v as usize + 1] as usize]);
+        ins.sort_unstable();
+        ins.dedup();
+        outs.clear();
+        outs.extend(g.out(v).iter().map(|e| e.to));
+        outs.sort_unstable();
+        outs.dedup();
+        let roads = ins.len()
+            + outs
+                .iter()
+                .filter(|x| ins.binary_search(x).is_err())
+                .count();
+        if roads < 3 {
+            continue;
+        }
+        u.junction[v as usize] = true;
+        st.uturn_junctions += 1;
+        let uncopied = |a: &&u32| !copied.contains(&(**a, v));
+        let two: Vec<u32> = ins
+            .iter()
+            .filter(|a| outs.binary_search(a).is_ok())
+            .filter(uncopied)
+            .copied()
+            .collect();
+        let one_way = ins
+            .iter()
+            .filter(|a| outs.binary_search(a).is_err())
+            .any(|a| uncopied(&a));
+        let rest = match (one_way, two.split_first()) {
+            (false, Some((&u0, rest))) => {
+                u.plain_prev[v as usize] = u0;
+                rest
+            }
+            _ => &two[..],
+        };
+        u.approaches.extend(rest.iter().map(|&a| [a, v]));
+    }
+    u
+}
+
 /// The automaton over node IDs. States `0..n` are the plain nodes; the rest are trie nodes of
 /// depth two or more.
 struct Trie {
     n: u32,
     child: HashMap<(u32, u32), u32>,
-    /// Plain nodes that start a forbidden path.
+    /// Plain nodes that start a forbidden path or an approach.
     starts: Vec<bool>,
-    /// Per state from `n`: its graph node, whether a forbidden path ends there or at a
-    /// suffix of it, and its failure state.
+    /// Per state from `n`: its graph node, the graph node before it, whether a forbidden
+    /// path ends there or at a suffix of it, and its failure state.
     node: Vec<u32>,
+    prev: Vec<u32>,
     banned: Vec<bool>,
     fail: Vec<u32>,
 }
 
 impl Trie {
-    fn new(n: u32, paths: &[Vec<u32>]) -> Trie {
+    /// The trie of the forbidden `paths` and of the `approaches`, which ban nothing.
+    fn new(n: u32, paths: &[Vec<u32>], approaches: &[[u32; 2]]) -> Trie {
         let mut t = Trie {
             n,
             child: HashMap::new(),
             starts: vec![false; n as usize],
             node: Vec::new(),
+            prev: Vec::new(),
             banned: Vec::new(),
             fail: Vec::new(),
         };
         let mut depth = Vec::new();
-        for p in paths {
+        let all = paths
+            .iter()
+            .map(|p| (&p[..], true))
+            .chain(approaches.iter().map(|a| (&a[..], false)));
+        for (p, ban) in all {
             let mut s = p[0];
             t.starts[s as usize] = true;
             for (d, &y) in p.iter().enumerate().skip(1) {
                 s = *t.child.entry((s, y)).or_insert_with(|| {
                     t.node.push(y);
+                    t.prev.push(p[d - 1]);
                     t.banned.push(false);
                     depth.push(d);
                     n + t.node.len() as u32 - 1
                 });
             }
-            t.banned[(s - n) as usize] = true;
+            if ban {
+                t.banned[(s - n) as usize] = true;
+            }
         }
         // Failure links in order of depth, so a state's failure is done before it is needed.
         let mut parent = vec![0; t.node.len()];
@@ -252,23 +357,44 @@ impl Trie {
     fn banned(&self, s: u32) -> bool {
         s >= self.n && self.banned[(s - self.n) as usize]
     }
+
+    /// The graph node walked before state `s`'s, if the state knows it.
+    fn prev(&self, s: u32, u: &UTurns) -> Option<u32> {
+        match s < self.n {
+            true => u
+                .plain_prev
+                .get(s as usize)
+                .copied()
+                .filter(|&p| p != u32::MAX),
+            false => Some(self.prev[(s - self.n) as usize]),
+        }
+    }
 }
 
-/// The graph with the restrictions applied, the node each added copy is of, and the
-/// forbidden node paths.
+/// The graph with the restrictions applied, and a U-turn penalty of `uturn_ds` tenths of a
+/// second (0: none), the node each added copy is of, and the forbidden node paths.
 pub fn apply(
     g: Csr,
     seqs: &HashMap<i64, Vec<u32>>,
     via_rank: impl Fn(i64) -> Option<u32>,
     list: &[RestrictionIn],
+    uturn_ds: u16,
     st: &mut RestrictionStats,
 ) -> (Csr, Vec<u32>, Vec<Vec<u32>>) {
     let paths = forbidden(&g, seqs, via_rank, list, st);
-    if paths.is_empty() {
+    let mut u = match uturn_ds {
+        0 => UTurns::default(),
+        _ => uturns(&g, &paths, st),
+    };
+    if paths.is_empty() && u.approaches.is_empty() {
         return (g, Vec::new(), paths);
     }
     let n = g.nodes() as u32;
-    let trie = Trie::new(n, &paths);
+    // Each approach is a new state, reached from its plain first node.
+    let approaches = std::mem::take(&mut u.approaches);
+    st.uturn_copies = approaches.len() as u64;
+    let trie = Trie::new(n, &paths, &approaches);
+    drop(approaches);
 
     // Copies reached from a plain node, then from each other.
     let mut id: Vec<u32> = vec![u32::MAX; trie.node.len()];
@@ -301,7 +427,12 @@ pub fn apply(
     let mut edges: Vec<Edge> = Vec::with_capacity(g.edges.len());
     first.push(0);
     for s in states {
-        for e in g.out(trie.node_of(s)) {
+        let v = trie.node_of(s);
+        let back = match u.junction.get(v as usize) {
+            Some(true) => trie.prev(s, &u),
+            _ => None,
+        };
+        for e in g.out(v) {
             let t = trie.goto(s, e.to);
             if trie.banned(t) {
                 continue;
@@ -310,7 +441,12 @@ pub fn apply(
                 true => t,
                 false => id[(t - n) as usize],
             };
-            edges.push(Edge { to, ..*e });
+            let uturn_ds = match back == Some(e.to) {
+                true => uturn_ds,
+                false => 0,
+            };
+            st.uturn_edges += u64::from(uturn_ds > 0);
+            edges.push(Edge { to, uturn_ds, ..*e });
         }
         first.push(edges.len() as u32);
     }
