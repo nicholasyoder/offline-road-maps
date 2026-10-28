@@ -2,7 +2,8 @@
 //! renderer and style changes, and for the reference screenshots in `docs/screenshots/`.
 //! With `--route`, it routes through the stops and draws the route as the app does (with
 //! its restricted parts and the lines to stops off the road), fitting the view to it unless
-//! `--center` and `--zoom` say otherwise.
+//! `--center` and `--zoom` say otherwise. With `--alternatives`, each leg's alternatives
+//! (phase 4 step 4.3) are drawn grey under it, the one ranked best shown.
 
 use std::collections::HashMap;
 use std::io::BufWriter;
@@ -33,6 +34,8 @@ pub struct Snapshot {
     pub route: Vec<(f64, f64)>,
     /// A step of the route's directions to draw over it, from 0; the view fits it.
     pub step: Option<usize>,
+    /// Find each leg's alternatives, show the best and draw the others.
+    pub alternatives: bool,
     /// In pixels.
     pub size: [u32; 2],
     pub pixels_per_point: f32,
@@ -94,6 +97,7 @@ impl Snapshot {
             zoom: zoom.map(|z| num(z, "zoom")).transpose()?,
             route,
             step: None,
+            alternatives: false,
             size,
             pixels_per_point: scale.map_or(Ok(1.0), |s| num(s, "scale"))?.clamp(0.25, 8.0) as f32,
             msaa: render::samples(msaa.map(|s| num(s, "msaa")).transpose()?.map(|v| v as u32)),
@@ -331,8 +335,53 @@ impl Snapshot {
             .collect();
         let trip = r.trip(&stops, 0).map_err(|e| e.to_string())?;
         let line = Line::of_trip(&trip);
-        let routed = routing::Routed::new(&r, streets.as_ref(), &stops, trip, line)
-            .map_err(|e| e.to_string())?;
+        let names = streets.as_ref().map(|s| s as &dyn omp_core::route::Names);
+        let (mut routed, roads) =
+            routing::Routed::with_roads(&r, streets.as_ref(), &stops, trip, line, &|| false)
+                .map_err(|e| e.to_string())?
+                .expect("never stopped");
+        let mut grey = None;
+        let mut alt_msg = String::new();
+        if self.alternatives {
+            let t = Instant::now();
+            let mut times = [std::time::Duration::ZERO; 2];
+            let quickest = routing::Quickest {
+                trip: &routed.trip,
+                steps: &routed.steps,
+                restricted: &routed.restricted,
+                roads: &roads,
+            };
+            let legs = routing::choices(&r, names, &stops, &quickest, &|| false, &mut times)
+                .map_err(|e| e.to_string())?
+                .expect("never stopped");
+            let chosen: Vec<usize> = legs
+                .iter()
+                .map(|c| c.as_ref().map_or(0, |c| c.best))
+                .collect();
+            for (li, c) in legs.iter().enumerate() {
+                let Some(c) = c else { continue };
+                for (k, x) in c.routes.iter().enumerate() {
+                    alt_msg += &format!(
+                        "\n  leg {} route {}{}: {:.1} km, {:.0} min, {} turns, {} U-turns, via {}",
+                        li + 1,
+                        k + 1,
+                        if k == c.best { " (shown)" } else { "" },
+                        x.leg.metres / 1000.0,
+                        x.leg.time_s / 60.0,
+                        x.turns.turns,
+                        x.turns.uturns,
+                        if x.road.is_empty() { "-" } else { &x.road }
+                    );
+                }
+            }
+            alt_msg += &format!(
+                "\n  alternatives in {:.0} ms (search {:.0} ms, directions and lines {:.0} ms)",
+                t.elapsed().as_secs_f64() * 1e3,
+                times[0].as_secs_f64() * 1e3,
+                times[1].as_secs_f64() * 1e3
+            );
+            grey = Some(routing::put_choices(&mut routed, &legs, &chosen));
+        }
         let trip = &routed.trip;
         let restricted: f64 = trip
             .legs
@@ -353,12 +402,14 @@ impl Snapshot {
         if !trip.complete() {
             msg += " (some stops not reached)";
         }
+        msg += &alt_msg;
         let points: Vec<_> = stops.iter().map(|s| s.p).collect();
         if let Some(s) = self.step.and_then(|i| routed.steps.get(i)) {
             msg += &format!("\n  step {}: {}", self.step.unwrap() + 1, s.text());
         }
         let mut lines = routing::overlay_lines(&routed, &points, self.step);
         lines.push((Look::Route, routed.line));
+        lines.extend(grey.map(|g| (Look::Alternative, g)));
         lines.sort_by_key(|(look, _)| *look as usize);
         Ok((lines, msg))
     }

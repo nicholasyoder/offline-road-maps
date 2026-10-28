@@ -55,6 +55,8 @@ const PICKED_COLOR: Rgba = [14, 44, 122, 255];
 const CONNECTOR_WIDTH: f32 = 2.0;
 const CONNECTOR_DASH: [f32; 2] = [4.0, 3.0];
 const CONNECTOR_COLOR: Rgba = [70, 70, 70, 255];
+const ALTERNATIVE_WIDTH: f32 = 4.5;
+const ALTERNATIVE_COLOR: Rgba = [150, 156, 166, 255];
 
 /// A tile's vertex data on the GPU, in ranges of the pool's slabs.
 pub struct GpuMesh {
@@ -225,6 +227,7 @@ pub fn paints(
         .take(ROUTE_PAINTS)
         .chain(Look::ALL.map(|look| {
             let (c, w, dash) = match look {
+                Look::Alternative => (ALTERNATIVE_COLOR, ALTERNATIVE_WIDTH, [0.0; 2]),
                 Look::Connector => (CONNECTOR_COLOR, CONNECTOR_WIDTH, CONNECTOR_DASH),
                 Look::Route => (ROUTE_COLOR, ROUTE_WIDTH, [0.0; 2]),
                 Look::Restricted => (RESTRICTED_COLOR, ROUTE_WIDTH, [0.0; 2]),

@@ -31,7 +31,7 @@ use crate::pack::Pack;
 use crate::tile::hilbert;
 use crate::varint::{Reader, invalid};
 use crate::zframe;
-pub use alt::{AltParams, Alternative, Alternatives};
+pub use alt::{AltParams, Alternative, Alternatives, via_road_of};
 pub use guide::{Kind, Modifier, Names, Road, Side, Step, Turns, turn_cost_s};
 pub use matrix::Optimized;
 pub use order::{Ends, Matrix};

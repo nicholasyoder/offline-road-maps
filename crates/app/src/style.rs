@@ -307,7 +307,7 @@ pub struct RoadProps {
 pub const MAX_PAINTS: usize = 128;
 /// The route overlay's paints, the table's last entries, one per
 /// [`crate::routing::Look`].
-pub const ROUTE_PAINTS: usize = MAX_PAINTS - 4;
+pub const ROUTE_PAINTS: usize = MAX_PAINTS - crate::routing::Look::ALL.len();
 
 impl Style {
     /// Resolves `file` against `schema`. Also returns warnings: rules for layers and classes

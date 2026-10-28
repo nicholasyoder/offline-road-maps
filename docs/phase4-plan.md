@@ -38,7 +38,7 @@ The roadmap's items are stop optimization, departure and arrival times with over
 |---|---|---|
 | 4.1 Stop optimization | **Done** 2026-10-28 | Bucket matrix + Held–Karp ≤ 12 / heuristic above. North America warm: 25 stops 39 ms, 100 in 0.22 s, 500 in 1.4 s, 1,000 in 3.3 s; 0.996 of 100 random restarts on average (worst 1.0085); legs add up to the matrix in every run. E6430 time left to 4.11 |
 | 4.2 Alternative routes (`omp-core`) | **Done** 2026-10-28 | Via nodes over the CH, T-test, turn-cost ranking. Over 50 km, one alternative for 85.5% of Ohio's pairs, 75.6% of North America's, 68.9% of Quebec's (OSRM: 52.2%; criterion restated for Quebec, decision 21). Coast to coast 0.47 s with directions. Turn costs pick another route on 1% of legs: U-turns 4.7% → 4.6% (Ohio), 11.2% → 10.7% (Quebec) |
-| 4.3 Alternatives in the app | Not started | |
+| 4.3 Alternatives in the app | **Done** 2026-10-28 | Found on the worker after the route, with their directions, and drawn grey with a "+10 min" tag; picked by a click on the map or in the page's list per leg. Ohio flight frame p95 1.07–1.08 ms against 1.07 before; alternatives shown 0.16 s after asking. New York–Los Angeles: alternatives with directions 0.48 s warm. Directions now stop on a newer request |
 | 4.4 U-turn penalty, measured first | **Done** 2026-10-28 | Built behind `--uturn-penalty` and measured on Ohio and Quebec: routing ×2.2–2.5, contraction ×8–24, U-turn routes 4.7% → 3.3% (Ohio) and 11.2% → 9.5% (Quebec) at any penalty. **Not built for North America** (owner, decision 20); the flag stays, off by default |
 | 4.5 Schedule: times, stops and overnights | Not started | |
 | 4.6 Fuel, rest and overnight suggestions (if cheap) | Not started | |
@@ -150,6 +150,27 @@ Find a few routes that take clearly different roads, and score them again with w
 - **Bench:** the Ohio route flight with alternatives shown, frame p95 against 3.8's.
 
 **Done when:** alternatives can be seen and picked on the map and in the list on the North America pack, with a headless test of picking from the list, and the bench's frame p95 is recorded.
+
+> **Done 2026-10-28** (commit "Step 4.3 done: alternatives in the app"). Logs in `$OMP_WORK/measure/alt43/` (`run.sh` reruns them), on phase 3's final packs (`measure/private/`).
+>
+> - **Worker:** the route and its directions are sent first, as before. The worker then finds each leg's alternatives (`AltParams::default()`: up to two, at most 25% slower) and makes their directions, restricted runs, lines and tag points, then sends them as a second reply. A newer request stops all of it within milliseconds: `Routing::directions_until` is new and checks every 64 pieces and junctions. The route's own directions use it too, which closes phase 3.7's carried item (see below). If turn costs rank an alternative best (decision 3), the UI shows that one when the reply arrives, once, and the page says why: "Shown first for its turns: 1 min slower on paper, 2 fewer U-turns."
+> - **Map:** the routes not shown are one more overlay line (`Look::Alternative`), grey and drawn under the rest. Each has a tag giving its time against the route shown ("+10 min", "−4 min"). The tag sits at the middle of the longest stretch it shares with none of the leg's other routes. A click within 8 points of a grey line, or on its tag, shows that route. The tags are egui shapes, so `--render` does not draw them.
+> - **Route page:** under the totals, a *Routes* list per leg (headed "1 to 2" when there are several legs): time · distance · "quickest" or the difference from it · "via I-40". The quickest comes first, then the alternatives by time (4.2 left them in the order taken). The route shown is selected, and clicking another shows it. The leg's line, its restricted runs and its steps are swapped for that route's, and the directions are renumbered, so the totals, the notices and the directions follow. While the search runs, the list shows "Looking for other routes…". The choice holds until the stops or avoid options change, which ask for the route again. The via node is kept with each route (`Route::via`) for 4.7's saved trips.
+> - **Via road** ("via I-40"): the road most of the route takes that the leg's other routes do not, by metres. It is `Routing::via_road`'s result, computed from the roads the route's own directions already looked up (`Routing::directions_roads_until`, `route::via_road_of`), and shows the main ref, else the name. `Road::short` gives it.
+> - **Cost of reading:** a coast-to-coast leg's geometry is larger than the 16 MiB segment cache, so every pass over a leg decodes its `RGEO` blocks again. A first version took 1.0 s for New York–Los Angeles's alternatives: it made a separate pass each for the restricted runs and for the via road, and those passes took 85 ms and 115 ms per route. Two changes fixed it. `Piece` now carries its direction's flags, so `Leg::restricted` reads nothing (this replaces `Routing::restricted`, and saves the same pass on the route itself). The via road now comes from the directions' own roads. Result: 0.48 s, as `route --alternatives` takes with directions. A test with a 256 MiB segment cache took it to 0.19 s, but the cache stays at 16 MiB, since RSS is budgeted. A via road taken from the steps' roads would need no read at all, but it was wrong on 3 of 11 Ohio routes, because a step's road does not cover the name changes within it.
+> - **Measured:**
+>
+>   | | Before (1851ed8) | With alternatives |
+>   |---|---:|---:|
+>   | Ohio route flight (`ohio-route.toml`, 2 runs each): frame interval p50 / p95 | 0.80 / 1.07 ms | 0.80–0.81 / 1.07–1.08 ms |
+>   | — max | 22–28 ms | 26–33 ms |
+>   | — RSS peak | 223 MiB | 227–229 MiB |
+>   | — route shown after (trip; directions) | 111–117 ms (41; 56–58 ms) | 89 ms (41–42; 36–39 ms) |
+>   | — its 6 alternatives shown after | – | 161–164 ms |
+>
+>   **North America, `--render --alternatives`** (one process per run, readers' caches cold, system cache warm). New York–Los Angeles: route 0.71 s including opening the pack. Alternatives 0.48 s: the search 0.21 s, then directions and lines 0.28 s. The routes are I-80 (shown), I-40 (+10 min) and I-70 (+58 min). New York–Los Angeles–Seattle: 0.62 s, and leg 2's alternative goes via US 395 (+2 h 37 min). Ohio's five stops: 68 ms for 6 alternatives. **In the app** (`na-alternatives.toml`, asked as the pack opens, from the disk): the route was shown after 451 ms and its 3 alternatives after 1,217 ms; frame p95 1.28 ms. [`docs/screenshots/route-alternatives.png`](screenshots/route-alternatives.png) is its route page.
+> - **Tests:** `alternatives_are_shown_and_picked` (worker stub): the alternatives arrive after the route, and the best is shown with its steps renumbered. Clicks near a grey line and on a tag pick it, while one far away does nothing. Answers for another route are dropped, and a change of avoid option lets go of the alternatives. `alternatives_from_the_list` (headless panel): the list appears once they arrive, picking from it changes the totals and directions and back, and the turn-cost note is right. `tags_go_where_routes_part`, `restricted_runs_from_the_pieces_flags`. On the builder's ladder network, `directions_roads_until` gives the same steps as `directions`, the same roads as `roads` and the same via road as `via_road`, and returns `None` when stopped.
+> - **Left open:** picking by hand on the North America pack, on the map and in the list, is for the owner's next hand check: the clicks are covered by the headless tests, and the page by the bench screenshot. The list is not checked at a 300-point panel; its rows wrap. With several legs and two alternatives each, the list grows long, three rows per leg, above the directions.
 
 ## 4.4 U-turn penalty, measured first
 
@@ -356,7 +377,7 @@ Open: none.
 
 ## Carried from earlier phases
 
-- **Directions run after the trip and cannot be stopped by a newer request** (3.7). 4.3's alternatives come after the directions, so they must be cancellable from the start. Phase 5's "show the route's line before its directions" also helps them.
+- **Directions run after the trip and cannot be stopped by a newer request** (3.7). 4.3's alternatives come after the directions, so they must be cancellable from the start. Phase 5's "show the route's line before its directions" also helps them. **Done in 4.3:** directions and alternatives both stop on a newer request (`Routing::directions_until`).
 - **Free U-turns** (phase 3 decisions 13 and 16): 4.2's rescoring and 4.4's penalty.
 - **How the route page's buttons wrap in a narrow panel** (3.10): the page gains many controls here, so check it at 300 points.
 - **Phase 5's print style and UI size setting:** the print page should take a style and a text scale as parameters, so phase 5 only adds choices.

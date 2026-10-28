@@ -786,7 +786,13 @@ impl eframe::App for App {
                     set_stops(&mut m.routing, &stops);
                 }
                 let waiting = m.routing.waiting.is_some();
+                let looking = m.routing.looking;
                 let fit = m.routing.take(&m.camera);
+                if let (Some(b), true, false) = (&mut self.bench, looking, m.routing.looking)
+                    && let Some(t) = m.routing.alt_taken
+                {
+                    b.alternatives_shown(m.routing.found(), t.latency.as_secs_f64() * 1e3);
+                }
                 match (&mut self.bench, fit) {
                     (None, Some((c, z))) => m.motion.fly_to(&m.camera, c, z),
                     (Some(b), _) if waiting && m.routing.waiting.is_none() => {
@@ -801,6 +807,8 @@ impl eframe::App for App {
                                 km: s.trip.metres() / 1000.0,
                                 minutes: s.trip.time_s() / 60.0,
                                 points: t.points,
+                                alternatives: None,
+                                alternatives_ms: None,
                             }),
                             (_, _, Some(e)) => Err(e.clone()),
                             _ => Err("no route".into()),
@@ -810,6 +818,13 @@ impl eframe::App for App {
                 }
                 if self.bench.is_none() {
                     m.input(ui, &resp, rect.min, dt);
+                    // A click on an alternative's grey line or tag picks it.
+                    if resp.clicked()
+                        && let Some(p) = resp.interact_pointer_pos()
+                    {
+                        let at = [f64::from(p.x - rect.min.x), f64::from(p.y - rect.min.y)];
+                        m.routing.click(&m.camera, at);
+                    }
                     let menu = m.routing.menu_state();
                     let picked = m
                         .here

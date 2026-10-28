@@ -602,6 +602,21 @@ impl Bench {
         }
     }
 
+    /// The alternatives to the latest route are drawn this frame: `n` of them, `ms` after
+    /// it was asked. Recorded for the flight's route and a `route` step's.
+    pub fn alternatives_shown(&mut self, n: usize, ms: f64) {
+        let log = &mut self.logs[self.step].route;
+        let r = match (self.phase == Phase::Route && log.done, &mut log.shown) {
+            (true, Some(r)) => r,
+            _ => match &mut self.route {
+                Some(r) if r.alternatives.is_none() => r,
+                _ => return,
+            },
+        };
+        r.alternatives = Some(n);
+        r.alternatives_ms = Some(ms);
+    }
+
     /// Where to save a screenshot of this frame, if one is due.
     pub fn take_shot(&mut self) -> Option<PathBuf> {
         let name = self.shot.take()?;
@@ -1031,12 +1046,22 @@ pub struct RouteReport {
     pub km: f64,
     pub minutes: f64,
     pub points: usize,
+    /// The legs' alternatives found, and the time from the request to the frame showing
+    /// them (phase 4 step 4.3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alternatives: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alternatives_ms: Option<f64>,
 }
 
 impl RouteReport {
     fn line(&self) -> String {
+        let alts = match (self.alternatives, self.alternatives_ms) {
+            (Some(n), Some(ms)) => format!("; {n} alternatives shown after {ms:.0} ms"),
+            _ => String::new(),
+        };
         format!(
-            "{} stops, {:.1} km, {:.0} min, {} points, {} steps; shown after {:.0} ms (trip {:.1} ms, directions {:.1} ms)",
+            "{} stops, {:.1} km, {:.0} min, {} points, {} steps; shown after {:.0} ms (trip {:.1} ms, directions {:.1} ms){alts}",
             self.stops,
             self.km,
             self.minutes,

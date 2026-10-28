@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use omp_core::route::{Kind, Leg, Modifier, Piece, Road, Snap, Step, Trip};
 
-use super::worker::{Answer, Request};
+use super::worker::{self, Alternatives, Answer, Choices, Reply, Request};
 use super::*;
 use crate::scale::Units;
 
@@ -57,6 +57,7 @@ pub(super) fn answer(r: &Request) -> Answer {
                 metres: 1000.0,
                 time_s: 60.0,
                 points: k..k + 2,
+                flags: 0,
             })
             .collect();
         legs.push(Some(Leg {
@@ -112,6 +113,190 @@ pub(super) fn answer(r: &Request) -> Answer {
     }
 }
 
+/// The alternatives to `a`'s route: per leg, the quickest and one 4 min and 2 km longer a
+/// little east of it, by "US 33", ranked best on the legs in `best`.
+pub(super) fn alternatives(a: &Answer, best: &[usize]) -> Reply {
+    let routed = a.routed.as_ref().unwrap();
+    let legs = routed
+        .trip
+        .legs
+        .iter()
+        .enumerate()
+        .map(|(li, leg)| {
+            let leg = leg.as_ref()?;
+            let mut steps: Vec<Step> = routed
+                .steps
+                .iter()
+                .filter(|s| s.leg == li)
+                .cloned()
+                .collect();
+            let f = (steps[0].at_m, steps[0].at_s);
+            for s in &mut steps {
+                (s.at_m, s.at_s) = (s.at_m - f.0, s.at_s - f.1);
+            }
+            let quickest = worker::Route {
+                leg: leg.clone(),
+                turns: Default::default(),
+                via: None,
+                road: "I-71".into(),
+                steps: steps.clone(),
+                restricted: routed.restricted[li].clone(),
+                line: Line::new([leg.points.as_slice()]),
+                tag: Some(leg.points[1]),
+            };
+            let mut other = leg.clone();
+            for p in &mut other.points {
+                p[0] += 50_000;
+            }
+            for p in &mut other.pieces {
+                p.dir += 100;
+            }
+            other.time_s += 240.0;
+            other.metres += 2000.0;
+            for s in &mut steps {
+                s.metres += 500.0;
+            }
+            let alt = worker::Route {
+                line: Line::new([other.points.as_slice()]),
+                tag: Some(other.points[1]),
+                leg: other,
+                turns: Default::default(),
+                via: Some(leg.points[1]),
+                road: "US 33".into(),
+                steps,
+                restricted: Vec::new(),
+            };
+            Some(Choices {
+                routes: vec![quickest, alt],
+                best: usize::from(best.contains(&li)),
+            })
+        })
+        .collect();
+    Reply::Alternatives(Alternatives {
+        id: a.request.id,
+        legs: Ok(legs),
+        search: Duration::from_millis(5),
+        directions: Duration::from_millis(7),
+    })
+}
+
+#[test]
+fn alternatives_are_shown_and_picked() {
+    let (worker, tx) = Worker::stub();
+    let mut r = RouteUi::with_worker(worker);
+    let mut cam = Camera::new([0.2, 0.3, 0.3, 0.4]);
+    cam.size = [1000.0, 700.0];
+    r.apply(StopAction::From, place(40.0, -83.0));
+    r.apply(StopAction::Add, place(40.5, -82.5));
+    r.apply(StopAction::To, place(41.0, -82.0));
+    let req = r.worker.take_request().unwrap();
+    let a = answer(&req);
+    let alts = alternatives(&a, &[1]);
+    tx.send(a.into()).unwrap();
+    r.take(&cam);
+    cam.set_lonlat(-82.5, 40.5, 9.0);
+    assert!(r.looking && r.alternatives.is_none());
+    assert!(r.overlays.iter().all(|o| o.0 != Look::Alternative));
+    let time = r.route.as_ref().unwrap().trip.time_s();
+
+    // They come after the route; the second leg's alternative is ranked best and shown.
+    tx.send(alts).unwrap();
+    r.take(&cam);
+    assert!(!r.looking);
+    assert_eq!(r.chosen, [0, 1]);
+    let shown = r.route.as_ref().unwrap();
+    assert_eq!(shown.trip.time_s(), time + 240.0);
+    assert_eq!(
+        shown.trip.legs[1].as_ref().unwrap().points[0][0],
+        req.stops[1].p[0] + 50_000
+    );
+    // The second leg's steps are the alternative's, counted on from the first leg's.
+    assert_eq!(shown.steps.len(), 6);
+    assert_eq!(shown.steps[3].at_m, 3000.0);
+    assert_eq!(shown.steps[5].at_m, 3000.0 + 1500.0 + 2500.0);
+    assert!(shown.restricted[1].is_empty());
+    // Grey: the first leg's alternative and the second's quickest.
+    let grey = r
+        .overlays
+        .iter()
+        .find(|o| o.0 == Look::Alternative)
+        .unwrap();
+    assert_eq!(grey.1.points, 8);
+    assert_eq!(r.route.as_ref().unwrap().line.points, 8);
+
+    // Clicking near the first leg's grey line picks it; far from both, nothing.
+    let alt = &r.not_shown().next().unwrap().2.leg.points;
+    let mid = |a: P, b: P| [(a[0] / 2 + b[0] / 2), (a[1] / 2 + b[1] / 2)];
+    let on = cam.world_to_screen(geo::to_unit(mid(alt[0], alt[1])));
+    assert!(!r.click(&cam, [on[0] + 300.0, on[1]]));
+    assert!(r.click(&cam, [on[0] + 3.0, on[1]]));
+    assert_eq!(r.chosen, [1, 1]);
+    assert_eq!(r.route.as_ref().unwrap().trip.time_s(), time + 480.0);
+    // And its tag the second leg's quickest, whose tag says what it saves.
+    let (li, k, q) = r.not_shown().nth(1).unwrap();
+    assert_eq!((li, k), (1, 0));
+    assert_eq!(r.tag_text(li, q), "−4 min");
+    let tag = cam.world_to_screen(geo::to_unit(q.tag.unwrap()));
+    assert!(r.click(&cam, [tag[0] + 20.0, tag[1] - 6.0]));
+    assert_eq!(r.chosen, [1, 0]);
+
+    // Answers for another route are dropped; a change of the stops lets go of them.
+    let dropped = r.dropped;
+    tx.send(alternatives(
+        &answer(&Request {
+            id: 99,
+            ..req.clone()
+        }),
+        &[],
+    ))
+    .unwrap();
+    r.take(&cam);
+    assert_eq!(r.dropped, dropped + 1);
+    r.set_avoid(TOLL, true);
+    let req = r.worker.take_request().unwrap();
+    tx.send(answer(&req).into()).unwrap();
+    r.take(&cam);
+    assert!(r.alternatives.is_none() && r.chosen.is_empty() && r.looking);
+    assert_eq!(delta_text(-20.0), "same time");
+    assert_eq!(delta_text(3700.0), "+1 h 02 min");
+}
+
+#[test]
+fn tags_go_where_routes_part() {
+    let leg = |dirs: &[u32]| {
+        let pieces: Vec<Piece> = dirs
+            .iter()
+            .enumerate()
+            .map(|(i, &d)| Piece {
+                dir: d,
+                start: 0.0,
+                end: 1.0,
+                metres: 100.0,
+                time_s: 10.0,
+                points: i..i + 2,
+                flags: 0,
+            })
+            .collect();
+        Leg {
+            weight: 0,
+            time_s: 0.0,
+            metres: 0.0,
+            points: (0..=dirs.len() as u32).map(|i| [i * 10, 0]).collect(),
+            pieces,
+            uses: 0,
+            broken: 0,
+            settled: 0,
+        }
+    };
+    let a = leg(&[2, 4, 6, 8, 10, 12, 14]);
+    let b = leg(&[2, 30, 32, 34, 36, 38, 14]);
+    // The run apart is pieces 1 to 5; its middle is piece 3's.
+    assert_eq!(worker::tag_point(&b, &[&a]), Some([30, 0]));
+    // Driven either way round, a segment is shared: 5 is segment 2 backwards.
+    let c = leg(&[2, 5, 31, 33, 12, 14]);
+    assert_eq!(worker::tag_point(&c, &[&a, &b]), None);
+}
+
 #[test]
 fn stops_ask_and_the_latest_answer_is_shown() {
     let (worker, tx) = Worker::stub();
@@ -143,8 +328,8 @@ fn stops_ask_and_the_latest_answer_is_shown() {
 
     // The first request's answer is stale and dropped; the second's is shown, and the
     // view, at z16 on the start, flies out to fit it.
-    tx.send(answer(&first)).unwrap();
-    tx.send(answer(&second)).unwrap();
+    tx.send(answer(&first).into()).unwrap();
+    tx.send(answer(&second).into()).unwrap();
     let (c, z) = r.take(&cam).expect("fit the route");
     assert_eq!(r.dropped, 1);
     assert!(r.waiting.is_none());
@@ -161,7 +346,7 @@ fn stops_ask_and_the_latest_answer_is_shown() {
     cam.zoom = z;
     r.reroute();
     let third = r.worker.take_request().unwrap();
-    tx.send(answer(&third)).unwrap();
+    tx.send(answer(&third).into()).unwrap();
     assert!(r.take(&cam).is_none());
     assert!(r.route.is_some());
 
@@ -246,7 +431,7 @@ fn notices_and_steps() {
     r.apply(StopAction::To, place(41.0, -82.0));
     r.set_avoid(TOLL, true);
     let req = r.worker.take_request().unwrap();
-    tx.send(answer(&req)).unwrap();
+    tx.send(answer(&req).into()).unwrap();
     r.take(&cam);
     let n = r.notices(Units::Miles);
     assert_eq!(

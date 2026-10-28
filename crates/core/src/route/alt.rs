@@ -356,21 +356,27 @@ impl Routing {
         others: &[&Leg],
         names: Option<&dyn Names>,
     ) -> io::Result<Option<Road>> {
-        let theirs: HashSet<u32> = others
-            .iter()
-            .flat_map(|l| l.pieces.iter().map(|p| p.dir >> 1))
-            .collect();
-        let roads = self.roads(route, names)?;
-        let mut metres: HashMap<String, (f64, usize)> = HashMap::new();
-        for (i, (p, road)) in route.pieces.iter().zip(&roads).enumerate() {
-            if theirs.contains(&(p.dir >> 1)) || road.is_empty() {
-                continue;
-            }
-            metres.entry(road.text()).or_insert((0.0, i)).0 += p.metres;
-        }
-        Ok(metres
-            .into_values()
-            .max_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, i)| roads[i].clone()))
+        Ok(via_road_of(route, &self.roads(route, names)?, others))
     }
+}
+
+/// The road most of `route` that is on none of `others` runs along, by metres, given the
+/// road of each of its pieces: what it goes "via". `None` if it has no named road of its
+/// own.
+pub fn via_road_of(route: &Leg, roads: &[Road], others: &[&Leg]) -> Option<Road> {
+    let theirs: HashSet<u32> = others
+        .iter()
+        .flat_map(|l| l.pieces.iter().map(|p| p.dir >> 1))
+        .collect();
+    let mut metres: HashMap<String, (f64, usize)> = HashMap::new();
+    for (i, (p, road)) in route.pieces.iter().zip(roads).enumerate() {
+        if theirs.contains(&(p.dir >> 1)) || road.is_empty() {
+            continue;
+        }
+        metres.entry(road.text()).or_insert((0.0, i)).0 += p.metres;
+    }
+    metres
+        .into_values()
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, i)| roads[i].clone())
 }

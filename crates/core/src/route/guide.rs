@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::io;
 use std::ops::Range;
 
+use super::query::{STOP_EVERY, stopped};
 use super::{FERRY_CLASS, Leg, Routing, Snap, Stop, Trip, cell_xy};
 use crate::geo::{self, P};
 use crate::street::Streets;
@@ -126,6 +127,9 @@ pub enum Kind {
     OffFerry,
 }
 
+/// Directions, and per leg the road of each piece.
+pub type StepsAndRoads = (Vec<Step>, Vec<Vec<Road>>);
+
 /// A road's name and route numbers, as signed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Road {
@@ -152,6 +156,14 @@ impl Road {
             parts.push(&self.name);
         }
         parts.join(" / ")
+    }
+
+    /// Its most important route number as signed ("I-40"), else its name: what a route
+    /// is "via".
+    pub fn short(&self) -> String {
+        self.refs
+            .first()
+            .map_or_else(|| self.name.clone(), |r| ref_text(r))
     }
 
     /// The same road for directions: a route number in common, or the same name.
@@ -558,6 +570,8 @@ struct Guide<'a> {
     r: &'a Routing,
     names: Option<&'a dyn Names>,
     streets: HashMap<u32, Road>,
+    /// Asked every [`STOP_EVERY`] pieces and junctions: true stops the directions.
+    stop: &'a dyn Fn() -> bool,
 }
 
 impl Guide<'_> {
@@ -589,7 +603,10 @@ impl Guide<'_> {
 
     fn infos(&mut self, leg: &Leg) -> io::Result<Vec<Info>> {
         let mut out = Vec::with_capacity(leg.pieces.len());
-        for p in &leg.pieces {
+        for (i, p) in leg.pieces.iter().enumerate() {
+            if i % STOP_EVERY == STOP_EVERY - 1 && (self.stop)() {
+                return Err(stopped());
+            }
             let seg = self.r.segment(p.dir >> 1)?;
             let label = match seg.label {
                 Some(l) => self.r.label(l)?,
@@ -673,6 +690,9 @@ impl Guide<'_> {
         let mut steps = vec![depart];
         let mut k = first + 1;
         while k < end {
+            if k % STOP_EVERY == 0 && (self.stop)() {
+                return Err(stopped());
+            }
             let (prev, cur) = (&info[k - 1], &info[k]);
             let (v, p, in_b, out_b) = joint(k);
             let angle = turn_angle(in_b, out_b);
@@ -930,6 +950,7 @@ impl Routing {
             r: self,
             names,
             streets: HashMap::new(),
+            stop: &|| false,
         };
         Ok(g.infos(leg)?.into_iter().map(|i| i.road).collect())
     }
@@ -943,20 +964,74 @@ impl Routing {
         stops: &[Stop],
         names: Option<&dyn Names>,
     ) -> io::Result<Vec<Step>> {
+        let steps = self.directions_until(trip, stops, names, &|| false)?;
+        Ok(steps.expect("directions that are never stopped"))
+    }
+
+    /// [`Self::directions`], given up within milliseconds once `stop` returns true: `None`
+    /// then. Asked between legs, and every [`STOP_EVERY`] pieces and junctions.
+    pub fn directions_until(
+        &self,
+        trip: &Trip,
+        stops: &[Stop],
+        names: Option<&dyn Names>,
+        stop: &dyn Fn() -> bool,
+    ) -> io::Result<Option<Vec<Step>>> {
+        match self.directions_inner(trip, stops, names, stop, None) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(None),
+            r => r.map(Some),
+        }
+    }
+
+    /// [`Self::directions_until`], and per leg the road of each piece, as [`Self::roads`]
+    /// gives it (empty for a leg with no route). A long leg's geometry does not stay in the
+    /// segment cache, so this saves reading it again.
+    pub fn directions_roads_until(
+        &self,
+        trip: &Trip,
+        stops: &[Stop],
+        names: Option<&dyn Names>,
+        stop: &dyn Fn() -> bool,
+    ) -> io::Result<Option<StepsAndRoads>> {
+        let mut roads = Vec::with_capacity(trip.legs.len());
+        match self.directions_inner(trip, stops, names, stop, Some(&mut roads)) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(None),
+            r => r.map(|steps| Some((steps, roads))),
+        }
+    }
+
+    fn directions_inner(
+        &self,
+        trip: &Trip,
+        stops: &[Stop],
+        names: Option<&dyn Names>,
+        stop: &dyn Fn() -> bool,
+        mut roads: Option<&mut Vec<Vec<Road>>>,
+    ) -> io::Result<Vec<Step>> {
         let mut g = Guide {
             r: self,
             names,
             streets: HashMap::new(),
+            stop,
         };
         let mut out = Vec::new();
         let (mut at_m, mut at_s) = (0.0, 0.0);
         let last_leg = trip.legs.len().saturating_sub(1);
         for (li, leg) in trip.legs.iter().enumerate() {
+            if let Some(r) = roads.as_deref_mut() {
+                r.push(Vec::new());
+            }
             let Some(leg) = leg else { continue };
             if leg.pieces.is_empty() {
                 continue;
             }
+            if stop() {
+                return Err(stopped());
+            }
             let info = g.infos(leg)?;
+            if let Some(r) = roads.as_deref_mut() {
+                r[li] = info.iter().map(|i| i.road.clone()).collect();
+            }
             let raw = collapse(g.raw(leg, &info)?, leg, &info);
             let snaps: [Option<&Snap>; 2] = [trip.snaps[li].as_ref(), trip.snaps[li + 1].as_ref()];
             for (i, s) in raw.iter().enumerate() {
@@ -1099,6 +1174,7 @@ mod tests {
                 metres: geo::dist(pts[i - 1], pts[i]) * geo::metres_per_unit(pts[i]),
                 time_s: 1.0,
                 points: i - 1..i + 1,
+                flags: 0,
             })
             .collect();
         Leg {

@@ -12,8 +12,16 @@
 //! the latest request replaces the route shown, and the view fits it unless it is already
 //! in view. *Optimize stop order* (phase 4 step 4.1) asks the worker to reorder the stops
 //! first; the answer puts the stops in the new order, says what it saved, and can be
-//! undone until the stops change again. Over the route are drawn the parts on restricted roads and the step picked in
-//! the directions, and dashed lines join each stop to where the route meets its road.
+//! undone until the stops change again. Over the route are drawn the parts on restricted
+//! roads and the step picked in the directions, and dashed lines join each stop to where
+//! the route meets its road.
+//!
+//! Each leg's alternatives (phase 4 step 4.3) come from the worker after the route, drawn
+//! grey under it with a tag giving the time against the route shown. Clicking a grey line
+//! or its tag, or a row of the route page's list, picks it: the leg, its directions and
+//! the totals are swapped for its own. If turn costs rank an alternative best (decision
+//! 3), it is shown when it arrives and the page says why. The choice holds until the stops
+//! or avoid options change.
 
 mod line;
 mod panel;
@@ -34,6 +42,8 @@ use crate::scale::Units;
 use crate::search::{self, distance_text};
 
 pub use line::{GpuBand, Line, LineDraw, Look, RouteDraw, RouteSegment, band_for};
+use worker::Reply;
+pub use worker::{Choices, Quickest, choices};
 use worker::{Request, Worker};
 pub use worker::{Routed, Status};
 
@@ -42,6 +52,10 @@ const FIT_MAX_ZOOM: f64 = 17.0;
 const FIT_SHARE: f64 = 0.8;
 /// Beyond the view, in points, where pieces of the line are still drawn: its halo's width.
 pub const DRAW_MARGIN: f64 = 8.0;
+/// How near a click must be to a grey line, or to its tag's anchor, to pick it, in points.
+const CLICK_PT: f64 = 8.0;
+const TAG_HALF: [f64; 2] = [30.0, 11.0];
+const TAG_FILL: Color32 = Color32::from_rgb(98, 104, 114);
 /// A stop nearer its road than this gets no dashed line to it, in metres.
 const CONNECTOR_M: f64 = 3.0;
 /// The farthest a stop may be from a road, as [`omp_core::route`] snaps (its last radius).
@@ -153,6 +167,7 @@ pub fn stop_buttons(ui: &mut egui::Ui, state: &MenuState) -> (Option<StopAction>
 /// Timings of the last answer, for the overlay.
 #[derive(Clone, Copy, Debug)]
 pub struct Taken {
+    pub asked: Instant,
     /// From the request to the answer reaching the UI.
     pub latency: Duration,
     /// In the matrix and the order, for an optimize request.
@@ -161,6 +176,24 @@ pub struct Taken {
     pub directions: Duration,
     pub line: Duration,
     pub points: usize,
+}
+
+/// Time to the alternatives, for the overlay.
+#[derive(Clone, Copy, Debug)]
+pub struct AltTaken {
+    pub search: Duration,
+    pub directions: Duration,
+    /// From the request to the alternatives reaching the UI.
+    pub latency: Duration,
+}
+
+/// "+4 min", "−1 h 02 min", "same time": `s` seconds more or less.
+pub fn delta_text(s: f64) -> String {
+    match (s / 60.0).round() {
+        0.0 => "same time".into(),
+        m if m > 0.0 => format!("+{}", duration_text(s)),
+        _ => format!("−{}", duration_text(-s)),
+    }
 }
 
 /// "45 min", "3 h 05 min"; "under a minute".
@@ -210,6 +243,43 @@ pub fn overlay_lines(routed: &Routed, stops: &[P], picked: Option<usize>) -> Vec
     out
 }
 
+/// Puts route `chosen[i]` of each leg's `legs[i]` in `r`: its leg, directions, restricted
+/// runs and line. Returns the line of the routes not chosen.
+pub fn put_choices(r: &mut Routed, legs: &[Option<Choices>], chosen: &[usize]) -> Line {
+    let mut steps = Vec::with_capacity(r.steps.len());
+    let mut lines = Vec::new();
+    for (li, c) in legs.iter().enumerate() {
+        match c {
+            Some(c) => {
+                let x = &c.routes[chosen[li]];
+                r.trip.legs[li] = Some(x.leg.clone());
+                r.restricted[li] = x.restricted.clone();
+                steps.extend(x.steps.iter().cloned());
+                lines.push(&x.line);
+            }
+            None => steps.extend(r.steps.iter().filter(|s| s.leg == li).cloned()),
+        }
+    }
+    let (mut at_m, mut at_s) = (0.0, 0.0);
+    for s in &mut steps {
+        s.at_m = at_m;
+        s.at_s = at_s;
+        at_m += s.metres;
+        at_s += s.time_s;
+    }
+    r.steps = steps;
+    r.line = Line::join(lines);
+    let others = legs.iter().zip(chosen).flat_map(|(c, &k)| {
+        let routes = c.as_ref().map_or(&[][..], |c| &c.routes[..]);
+        routes
+            .iter()
+            .enumerate()
+            .filter(move |(j, _)| *j != k)
+            .map(|(_, x)| &x.line)
+    });
+    Line::join(others)
+}
+
 /// The stops as they were before *Optimize stop order*, and the route's totals then.
 #[derive(Clone, Debug)]
 pub struct Before {
@@ -254,7 +324,7 @@ pub struct RouteUi {
     /// The lines other than the route's own ([`overlay_lines`]).
     overlays: Vec<(Look, Line)>,
     /// Per [`Look`], its line at the band last drawn.
-    bands: [Option<Arc<GpuBand>>; 4],
+    bands: [Option<Arc<GpuBand>>; Look::ALL.len()],
     pub last: Option<Taken>,
     /// Answers to older requests, dropped.
     pub dropped: usize,
@@ -262,6 +332,15 @@ pub struct RouteUi {
     pub opened: bool,
     /// The step of the directions picked: drawn over the route.
     pub picked: Option<usize>,
+    /// The request the route shown answered, whose alternatives are awaited or shown.
+    shown: Option<u64>,
+    /// The alternatives to the route shown are being looked for.
+    pub looking: bool,
+    /// Per leg of the route shown, its routes; `Err` if they could not be found.
+    pub alternatives: Option<Result<Vec<Option<Choices>>, String>>,
+    /// Per leg, the route shown, in its [`Choices`].
+    pub chosen: Vec<usize>,
+    pub alt_taken: Option<AltTaken>,
     /// The directions' rows, laid out once per route and width.
     rows: Option<panel::Rows>,
     /// What the panel drew last frame, for the tests to click on.
@@ -306,6 +385,11 @@ impl RouteUi {
             dropped: 0,
             opened: false,
             picked: None,
+            shown: None,
+            looking: false,
+            alternatives: None,
+            chosen: Vec::new(),
+            alt_taken: None,
             rows: None,
             targets: Vec::new(),
         }
@@ -588,6 +672,10 @@ impl RouteUi {
             self.overlays.clear();
             self.bands = Default::default();
             self.picked = None;
+            self.shown = None;
+            self.looking = false;
+            self.alternatives = None;
+            self.chosen.clear();
             return;
         };
         let stops = std::iter::once(from)
@@ -610,8 +698,32 @@ impl RouteUi {
     /// view to fly to when a new route is not already in view.
     pub fn take(&mut self, cam: &Camera) -> Option<(camera::Vec2, f64)> {
         let mut fit = None;
-        let answers: Vec<_> = self.worker.poll().collect();
-        for a in answers {
+        let replies: Vec<_> = self.worker.poll().collect();
+        for reply in replies {
+            let a = match reply {
+                Reply::Route(a) => a,
+                Reply::Alternatives(x) => {
+                    if self.shown != Some(x.id) || !self.looking {
+                        self.dropped += 1;
+                        continue;
+                    }
+                    self.looking = false;
+                    self.alt_taken = Some(AltTaken {
+                        search: x.search,
+                        directions: x.directions,
+                        latency: self.last.map_or(Duration::ZERO, |t| t.asked.elapsed()),
+                    });
+                    if let Ok(legs) = &x.legs {
+                        self.chosen = legs
+                            .iter()
+                            .map(|c| c.as_ref().map_or(0, |c| c.best))
+                            .collect();
+                    }
+                    self.alternatives = Some(x.legs);
+                    self.show_choices();
+                    continue;
+                }
+            };
             if self.waiting != Some(a.request.id) {
                 self.dropped += 1;
                 continue;
@@ -633,10 +745,18 @@ impl RouteUi {
             self.picked = None;
             self.rows = None;
             self.overlays.clear();
+            self.alternatives = None;
+            self.chosen.clear();
+            self.alt_taken = None;
+            self.looking = false;
+            self.shown = None;
             match a.routed {
                 Ok(routed) => {
                     let line = &routed.line;
+                    self.shown = Some(a.request.id);
+                    self.looking = routed.trip.legs.iter().any(Option::is_some);
                     self.last = Some(Taken {
+                        asked: a.request.asked,
                         latency: a.request.asked.elapsed(),
                         optimize: a.optimize,
                         trip: a.trip,
@@ -662,6 +782,118 @@ impl RouteUi {
             self.bands = Default::default();
         }
         fit
+    }
+
+    /// The alternatives found to the route shown, over every leg.
+    pub fn found(&self) -> usize {
+        match &self.alternatives {
+            Some(Ok(legs)) => legs.iter().flatten().map(|c| c.routes.len() - 1).sum(),
+            _ => 0,
+        }
+    }
+
+    /// Shows route `k` of leg `leg`'s alternatives.
+    pub fn choose(&mut self, leg: usize, k: usize) {
+        let Some(Ok(legs)) = &self.alternatives else {
+            return;
+        };
+        let ok = legs
+            .get(leg)
+            .and_then(Option::as_ref)
+            .is_some_and(|c| k < c.routes.len());
+        if ok && self.chosen[leg] != k {
+            self.chosen[leg] = k;
+            self.show_choices();
+        }
+    }
+
+    /// Puts the chosen routes in the route shown, and the others in grey.
+    fn show_choices(&mut self) {
+        let (Some(r), Some(Ok(legs))) = (&mut self.route, &self.alternatives) else {
+            return;
+        };
+        let grey = put_choices(r, legs, &self.chosen);
+        self.picked = None;
+        self.rows = None;
+        self.overlays = overlay_lines(r, &self.routed_stops, None);
+        self.overlays.push((Look::Alternative, grey));
+        self.bands = Default::default();
+    }
+
+    /// The legs' routes not shown, each with its leg and place in its [`Choices`].
+    fn not_shown(&self) -> impl Iterator<Item = (usize, usize, &worker::Route)> {
+        let legs = match &self.alternatives {
+            Some(Ok(legs)) => &legs[..],
+            _ => &[],
+        };
+        legs.iter().enumerate().flat_map(move |(li, c)| {
+            let routes = c.as_ref().map_or(&[][..], |c| &c.routes[..]);
+            let k = self.chosen.get(li).copied().unwrap_or(0);
+            routes
+                .iter()
+                .enumerate()
+                .filter(move |(j, _)| *j != k)
+                .map(move |(j, x)| (li, j, x))
+        })
+    }
+
+    /// A tag's text: the time against the route shown on its leg.
+    fn tag_text(&self, leg: usize, x: &worker::Route) -> String {
+        let shown = self
+            .route
+            .as_ref()
+            .and_then(|r| r.trip.legs.get(leg)?.as_ref());
+        delta_text(x.leg.time_s - shown.map_or(x.leg.time_s, |l| l.time_s))
+    }
+
+    /// Picks the grey line or tag at `at` (points in the map), if any. Returns whether it
+    /// did.
+    pub fn click(&mut self, cam: &Camera, at: camera::Vec2) -> bool {
+        let w = cam.screen_to_world(at);
+        let mut best: Option<(f64, usize, usize)> = None;
+        for (li, k, x) in self.not_shown() {
+            let on_tag = x.tag.is_some_and(|t| {
+                let s = cam.world_to_screen(geo::to_unit(t));
+                (s[0] - at[0]).abs() <= TAG_HALF[0] && (s[1] - at[1]).abs() <= TAG_HALF[1]
+            });
+            let d = match on_tag {
+                true => Some(0.0),
+                false => x.line.distance_pt(cam, w, CLICK_PT),
+            };
+            if let Some(d) = d.filter(|&d| best.is_none_or(|b| d < b.0)) {
+                best = Some((d, li, k));
+            }
+        }
+        let Some((_, li, k)) = best else { return false };
+        self.choose(li, k);
+        true
+    }
+
+    /// The tags of the routes not shown: the time against the route shown, at a point
+    /// where each runs apart from the others.
+    fn draw_tags(&self, painter: &egui::Painter, origin: Pos2, cam: &Camera) {
+        for (li, _, x) in self.not_shown() {
+            let Some(t) = x.tag else { continue };
+            let s = cam.world_to_screen(geo::to_unit(t));
+            let c = Pos2::new(origin.x + s[0] as f32, origin.y + s[1] as f32);
+            if !painter.clip_rect().expand(40.0).contains(c) {
+                continue;
+            }
+            let galley = painter.layout_no_wrap(
+                self.tag_text(li, x),
+                egui::FontId::proportional(12.0),
+                Color32::WHITE,
+            );
+            let rect = egui::Rect::from_center_size(c, galley.size() + egui::vec2(10.0, 4.0));
+            painter.rect(
+                rect,
+                4.0,
+                TAG_FILL,
+                egui::Stroke::new(1.0, Color32::WHITE),
+                egui::StrokeKind::Outside,
+            );
+            painter.galley(rect.min + egui::vec2(5.0, 2.0), galley, Color32::WHITE);
+        }
     }
 
     /// Puts the stops in the order an optimize request found, and says what it saved.
@@ -729,8 +961,9 @@ impl RouteUi {
         Some(draw)
     }
 
-    /// The stops' markers: numbered pins, green at the start and red at the destination.
+    /// The alternatives' tags, then the stops' markers: numbered pins, green at the start and red at the destination.
     pub fn draw_markers(&self, painter: &egui::Painter, origin: Pos2, cam: &Camera) {
+        self.draw_tags(painter, origin, cam);
         let stops = self.stops();
         for (i, (kind, place)) in stops.iter().enumerate().rev() {
             let s = cam.world_to_screen(geo::to_unit(place.p));
@@ -797,8 +1030,19 @@ impl RouteUi {
                 t.latency.as_secs_f64() * 1e3
             ));
         }
+        if let (Some(t), Some(Ok(_))) = (&self.alt_taken, &self.alternatives) {
+            let found = self.found();
+            lines.push(format!(
+                "alternatives: {found} found in {:.1} ms, their directions and lines {:.1} ms, shown {:.1} ms after the route was asked",
+                t.search.as_secs_f64() * 1e3,
+                t.directions.as_secs_f64() * 1e3,
+                t.latency.as_secs_f64() * 1e3
+            ));
+        }
         if self.waiting.is_some() {
             lines.push("routing…".into());
+        } else if self.looking {
+            lines.push("looking for alternatives…".into());
         }
         if let Some(e) = &self.error {
             lines.push(format!("route failed: {e}"));

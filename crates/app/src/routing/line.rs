@@ -42,6 +42,7 @@ pub struct RouteSegment {
 
 /// The route's points, in world coordinates, in runs: one per leg, so a leg with no route
 /// leaves a gap.
+#[derive(Clone)]
 pub struct Line {
     parts: Vec<Vec<camera::Vec2>>,
     /// Per point of each part, the tolerance in world units below which it is kept; the
@@ -89,8 +90,50 @@ impl Line {
         Self::new(trip.legs.iter().flatten().map(|l| l.points.as_slice()))
     }
 
+    /// The parts of `lines` in one line, as they were simplified.
+    pub fn join<'a>(lines: impl IntoIterator<Item = &'a Line>) -> Self {
+        let mut out = Line {
+            parts: Vec::new(),
+            keep: Vec::new(),
+            bounds: [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+            points: 0,
+        };
+        for l in lines {
+            out.parts.extend(l.parts.iter().cloned());
+            out.keep.extend(l.keep.iter().cloned());
+            let b = l.bounds;
+            out.bounds = [
+                out.bounds[0].min(b[0]),
+                out.bounds[1].min(b[1]),
+                out.bounds[2].max(b[2]),
+                out.bounds[3].max(b[3]),
+            ];
+            out.points += l.points;
+        }
+        out
+    }
+
     pub fn is_empty(&self) -> bool {
         self.parts.is_empty()
+    }
+
+    /// The distance in points from `at` (world) to the line on `cam`'s view, or `None`
+    /// when no part comes within `max` points.
+    pub fn distance_pt(&self, cam: &Camera, at: camera::Vec2, max: f64) -> Option<f64> {
+        let s = cam.scale();
+        let m = max / s;
+        let [b0, b1, b2, b3] = self.bounds;
+        if at[0] < b0 - m || at[0] > b2 + m || at[1] < b1 - m || at[1] > b3 + m {
+            return None;
+        }
+        let mut best = f64::INFINITY;
+        for pts in &self.parts {
+            for w in pts.windows(2) {
+                best = best.min(segment_distance(at, w[0], w[1]));
+            }
+        }
+        let d = best * s;
+        (d <= max).then_some(d)
     }
 
     /// The band's segments in pieces.
@@ -149,6 +192,18 @@ impl Line {
         }
         b
     }
+}
+
+/// The distance from `p` to the segment from `a` to `b`.
+fn segment_distance(p: camera::Vec2, a: camera::Vec2, b: camera::Vec2) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let v = [p[0] - a[0], p[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let t = match len2 > 0.0 {
+        true => ((v[0] * d[0] + v[1] * d[1]) / len2).clamp(0.0, 1.0),
+        false => 0.0,
+    };
+    (v[0] - t * d[0]).hypot(v[1] - t * d[1])
 }
 
 /// Douglas–Peucker over the whole line, keeping for each point the distance at which it
@@ -233,6 +288,8 @@ pub fn band_for(zoom: f64) -> u8 {
 /// How a line of the route overlay is drawn, in the order drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Look {
+    /// Grey, under the rest: the legs' other routes (phase 4 step 4.3).
+    Alternative,
     /// Dashed, from where the route meets a stop's road to the stop.
     Connector,
     Route,
@@ -243,7 +300,13 @@ pub enum Look {
 }
 
 impl Look {
-    pub const ALL: [Look; 4] = [Look::Connector, Look::Route, Look::Restricted, Look::Picked];
+    pub const ALL: [Look; 5] = [
+        Look::Alternative,
+        Look::Connector,
+        Look::Route,
+        Look::Restricted,
+        Look::Picked,
+    ];
 
     /// Its entry in the paint table (render.rs).
     pub fn paint(self) -> usize {

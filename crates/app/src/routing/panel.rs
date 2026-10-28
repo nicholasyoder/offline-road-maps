@@ -3,14 +3,16 @@
 //! the distance and driving time in all and per leg, notices about the route, and the
 //! directions. Clicking a step flies to it and draws its stretch over the route; Escape
 //! lets go of it. *Optimize stop order* (phase 4 step 4.1) reorders the stops, keeping the
-//! ends checked, says what it saved and offers Undo. The rest of phase 4's trip planning
-//! has its places here, disabled.
+//! ends checked, says what it saved and offers Undo. Each leg's alternatives (step 4.3) are
+//! listed under the totals, the one shown selected; clicking another shows it. The rest of
+//! phase 4's trip planning has its places here, disabled.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use omp_core::geo;
 use omp_core::route::{FERRY, Kind, Modifier, Step, TOLL};
 
-use super::{END, Place, Reordered, RouteUi, START, StopAction, VIA, duration_text};
+use super::worker::Choices;
+use super::{END, Place, Reordered, RouteUi, START, StopAction, VIA, delta_text, duration_text};
 use crate::camera::{self, Camera};
 use crate::scale::Units;
 use crate::search::distance_text;
@@ -40,6 +42,8 @@ pub enum Target {
     KeepLast,
     RoundTrip,
     Undo,
+    /// A leg's route in the list of alternatives.
+    Alternative(usize, usize),
     Step(usize),
 }
 
@@ -53,6 +57,7 @@ enum Edit {
     Optimize,
     CancelOptimize,
     Undo,
+    Choose(usize, usize),
     Pick(usize),
 }
 
@@ -87,13 +92,9 @@ impl RouteUi {
         self.options(ui, units, &mut edits);
         ui.separator();
         self.summary(ui, units);
+        self.alternatives_list(ui, units, &mut edits);
         if self.route.is_some() {
             ui.horizontal_wrapped(|ui| {
-                later(
-                    ui,
-                    "Alternatives",
-                    "Other routes to pick from, drawn grey on the map",
-                );
                 later(
                     ui,
                     "Save trip",
@@ -119,6 +120,7 @@ impl RouteUi {
                 Edit::Optimize => self.optimize(),
                 Edit::CancelOptimize => self.cancel_optimize(),
                 Edit::Undo => self.undo_optimize(),
+                Edit::Choose(leg, k) => self.choose(leg, k),
                 Edit::Pick(i) => {
                     self.pick(Some(i));
                     fly = self.step_view(i, cam.size);
@@ -390,6 +392,80 @@ impl RouteUi {
         }
     }
 
+    /// Each leg's routes, the one shown selected: time, distance, against the quickest, and
+    /// the road it takes that the others do not.
+    fn alternatives_list(&mut self, ui: &mut egui::Ui, units: Units, edits: &mut Vec<Edit>) {
+        if self.route.is_none() {
+            return;
+        }
+        if self.looking {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(12.0).color(WEAK));
+                ui.label(egui::RichText::new("Looking for other routes…").color(WEAK));
+            });
+            return;
+        }
+        let legs = match &self.alternatives {
+            None => return,
+            Some(Err(e)) => {
+                let text = format!("Other routes could not be found: {e}");
+                ui.label(egui::RichText::new(text).color(APPROX));
+                return;
+            }
+            Some(Ok(legs)) => legs,
+        };
+        if !legs.iter().flatten().any(|c| c.routes.len() > 1) {
+            let text = "No other route within a quarter of the quickest's time.";
+            ui.label(egui::RichText::new(text).color(WEAK));
+            return;
+        }
+        ui.label(egui::RichText::new("Routes").strong().color(INK));
+        let many = legs.len() > 1;
+        for (li, c) in legs.iter().enumerate() {
+            let Some(c) = c else { continue };
+            if many {
+                let text = match c.routes.len() {
+                    1 => format!("{} to {}: no other route", li + 1, li + 2),
+                    _ => format!("{} to {}", li + 1, li + 2),
+                };
+                ui.label(egui::RichText::new(text).size(12.0).color(WEAK));
+            }
+            if c.routes.len() < 2 {
+                continue;
+            }
+            let quickest = c.routes[0].leg.time_s;
+            for (k, x) in c.routes.iter().enumerate() {
+                let against = match k {
+                    0 => "quickest".to_string(),
+                    _ => delta_text(x.leg.time_s - quickest),
+                };
+                let via = match x.road.is_empty() {
+                    true => String::new(),
+                    false => format!(" · via {}", x.road),
+                };
+                let text = format!(
+                    "{} · {} · {against}{via}",
+                    duration_text(x.leg.time_s),
+                    distance_text(x.leg.metres, units)
+                );
+                let shown = self.chosen.get(li) == Some(&k);
+                let r = ui
+                    .selectable_label(shown, egui::RichText::new(text).color(INK))
+                    .on_hover_text(format!(
+                        "{} turns, {} U-turns",
+                        x.turns.turns, x.turns.uturns
+                    ));
+                self.targets.push((Target::Alternative(li, k), r.rect));
+                if r.clicked() && !shown {
+                    edits.push(Edit::Choose(li, k));
+                }
+            }
+            if let Some(why) = ranked_note(c) {
+                ui.label(egui::RichText::new(why).size(12.0).color(WEAK));
+            }
+        }
+    }
+
     /// The steps, only those in view laid out and drawn: a long route has hundreds.
     fn directions(
         &mut self,
@@ -440,6 +516,28 @@ impl RouteUi {
             });
         self.targets.extend(targets);
     }
+}
+
+/// Why turn costs ranked another route than the quickest best: "Shown first for its turns:
+/// 1 min slower on paper, 2 fewer U-turns."
+fn ranked_note(c: &Choices) -> Option<String> {
+    if c.best == 0 {
+        return None;
+    }
+    let (b, q) = (&c.routes[c.best], &c.routes[0]);
+    let fewer = |n: u32, m: u32, what: &str| {
+        let d = n.saturating_sub(m);
+        (d > 0).then(|| format!("{d} fewer {what}{}", if d == 1 { "" } else { "s" }))
+    };
+    let why = fewer(q.turns.uturns, b.turns.uturns, "U-turn")
+        .or_else(|| fewer(q.turns.turns, b.turns.turns, "turn"))
+        .unwrap_or_else(|| "gentler turns".into());
+    let slower = b.leg.time_s - q.leg.time_s;
+    let paper = match (slower / 60.0).round() {
+        0.0 => "the same time on paper".to_string(),
+        _ => format!("{} slower on paper", duration_text(slower)),
+    };
+    Some(format!("Shown first for its turns: {paper}, {why}."))
 }
 
 /// The directions' rows as laid out for a width: their heights, and the distance and time

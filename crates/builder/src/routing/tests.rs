@@ -661,6 +661,10 @@ fn alternatives_take_other_roads_and_are_admissible() {
     }
     // Stopped, and without a graph along one segment.
     let p = AltParams::default();
+    let alts_ab = r
+        .alternatives_until(&sa, &sb, &quickest, 0, &p, &|| false)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         r.alternatives_until(&sa, &sb, &quickest, 0, &p, &|| true)
             .unwrap(),
@@ -676,6 +680,30 @@ fn alternatives_take_other_roads_and_are_admissible() {
         .unwrap()
         .unwrap();
     assert_eq!(alts.routes.len(), 1);
+
+    // Directions with each piece's road (step 4.3): the same steps, and the roads `roads`
+    // gives; the alternative's via road is from them as from `via_road`. Stopped: `None`.
+    let trip = omp_core::route::Trip {
+        snaps: vec![Some(sa.clone()), Some(sb.clone())],
+        legs: vec![Some(alts_ab.routes[1].leg.clone())],
+        avoid: 0,
+    };
+    let (steps, roads) = r
+        .directions_roads_until(&trip, &[a, b], None, &|| false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(steps, r.directions(&trip, &[a, b], None).unwrap());
+    let alt = &alts_ab.routes[1].leg;
+    assert_eq!(roads, [r.roads(alt, None).unwrap()]);
+    assert_eq!(
+        omp_core::route::via_road_of(alt, &roads[0], &[&quickest]),
+        r.via_road(alt, &[&quickest], None).unwrap()
+    );
+    assert!(alt.restricted().is_empty());
+    assert_eq!(
+        r.directions_until(&trip, &[a, b], None, &|| true).unwrap(),
+        None
+    );
 
     // Between every pair of points on the grid network, with every avoid option.
     let g = network().build();

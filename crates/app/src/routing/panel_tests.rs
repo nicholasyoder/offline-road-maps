@@ -6,13 +6,13 @@ use eframe::egui::{Event, Key, PointerButton};
 
 use super::*;
 use crate::routing::tests::answer;
-use crate::routing::worker::{Answer, Request, Worker};
+use crate::routing::worker::{Reply, Request, Worker};
 use crate::routing::{Look, Place};
 
 struct Ui {
     ctx: egui::Context,
     r: RouteUi,
-    tx: Sender<Answer>,
+    tx: Sender<Reply>,
     cam: Camera,
     rect: Rect,
     fly: Option<(camera::Vec2, f64)>,
@@ -67,7 +67,7 @@ impl Ui {
     fn answer(&mut self) -> usize {
         let req = self.r.worker.take_request().expect("a request");
         let n = req.stops.len();
-        self.tx.send(answer(&req)).unwrap();
+        self.tx.send(answer(&req).into()).unwrap();
         // The panel grows to fit the answer on the next frame.
         self.frame(Vec::new());
         self.frame(Vec::new());
@@ -207,7 +207,7 @@ impl Ui {
             }
         };
         a.optimize = std::time::Duration::from_millis(3);
-        self.tx.send(a).unwrap();
+        self.tx.send(a.into()).unwrap();
         self.frame(Vec::new());
         self.frame(Vec::new());
         req
@@ -300,4 +300,75 @@ fn optimize_stop_order() {
     assert!(matches!(&u.r.reordered, Some(Reordered::Failed(e)) if e.contains("stop 2")));
     assert!(u.r.route.is_some());
     assert_eq!(u.names(), "dcabd");
+}
+
+#[test]
+fn alternatives_from_the_list() {
+    use crate::routing::tests::alternatives;
+    let mut u = Ui::new();
+    u.r.apply(StopAction::From, named("a", 40.0));
+    u.r.apply(StopAction::To, named("b", 40.4));
+    u.frame(Vec::new());
+    let req = u.r.worker.take_request().unwrap();
+    let a = answer(&req);
+    let alts = alternatives(&a, &[]);
+    u.tx.send(a.into()).unwrap();
+    u.frame(Vec::new());
+    u.frame(Vec::new());
+    // Looking: nothing to pick yet.
+    assert!(u.r.looking);
+    assert!(!u.drawn(Target::Alternative(0, 0)));
+    u.tx.send(alts).unwrap();
+    u.frame(Vec::new());
+    u.frame(Vec::new());
+    assert!(u.drawn(Target::Alternative(0, 0)) && u.drawn(Target::Alternative(0, 1)));
+    assert_eq!(u.r.chosen, [0]);
+    let steps = |u: &Ui| {
+        u.r.targets
+            .iter()
+            .filter(|t| matches!(t.0, Target::Step(_)))
+            .count()
+    };
+    assert_eq!(steps(&u), 3);
+
+    // Picking the second updates the totals and the directions; the pick of a step goes.
+    u.click(Target::Step(1));
+    assert_eq!(u.r.picked, Some(1));
+    u.click(Target::Alternative(0, 1));
+    assert_eq!(u.r.chosen, [1]);
+    assert!(u.r.picked.is_none());
+    let r = u.r.route.as_ref().unwrap();
+    assert_eq!((r.trip.time_s(), r.trip.metres()), (420.0, 5000.0));
+    assert_eq!(r.steps[1].metres, 2500.0);
+    assert!(u.r.overlays.iter().any(|o| o.0 == Look::Alternative));
+    assert_eq!(steps(&u), 3);
+    // And back, once the page has been laid out again.
+    u.frame(Vec::new());
+    u.click(Target::Alternative(0, 0));
+    assert_eq!(u.r.chosen, [0]);
+    assert_eq!(u.r.route.as_ref().unwrap().trip.time_s(), 180.0);
+
+    // Ranked best for its turns: shown first, and the page says why.
+    u.click(Target::Reverse);
+    let req = u.r.worker.take_request().unwrap();
+    let a = answer(&req);
+    let mut alts = alternatives(&a, &[0]);
+    if let Reply::Alternatives(x) = &mut alts {
+        let c = x.legs.as_mut().unwrap()[0].as_mut().unwrap();
+        c.routes[0].turns.uturns = 2;
+    }
+    u.tx.send(a.into()).unwrap();
+    u.tx.send(alts).unwrap();
+    u.frame(Vec::new());
+    u.frame(Vec::new());
+    assert_eq!(u.r.chosen, [1]);
+    assert_eq!(
+        super::ranked_note(
+            &u.r.alternatives.as_ref().unwrap().as_ref().unwrap()[0]
+                .clone()
+                .unwrap()
+        )
+        .unwrap(),
+        "Shown first for its turns: 4 min slower on paper, 2 fewer U-turns."
+    );
 }

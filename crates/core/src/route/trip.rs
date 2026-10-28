@@ -70,6 +70,9 @@ pub struct Piece {
     pub time_s: f64,
     /// Its points in the leg's.
     pub points: Range<usize>,
+    /// The direction's flags: [`super::TOLL`], [`super::FERRY`], [`super::RESTRICTED`]
+    /// and the like.
+    pub flags: u8,
 }
 
 /// A route from one stop to the next.
@@ -99,6 +102,25 @@ pub struct Trip {
     /// Per pair of stops; `None` when there is no route at all, or a stop has no snap.
     pub legs: Vec<Option<Leg>>,
     pub avoid: u8,
+}
+
+impl Leg {
+    /// The runs of its pieces on [`super::RESTRICTED`] roads (private, destination only
+    /// and the like, phase 3 decision 14), as ranges of its pieces. Pieces of no length
+    /// neither start nor break a run.
+    pub fn restricted(&self) -> Vec<Range<usize>> {
+        let mut runs: Vec<Range<usize>> = Vec::new();
+        for (i, p) in self.pieces.iter().enumerate() {
+            if p.metres <= 0.0 || p.flags & super::RESTRICTED == 0 {
+                continue;
+            }
+            match runs.last_mut() {
+                Some(r) if self.pieces[r.end..i].iter().all(|q| q.metres <= 0.0) => r.end = i + 1,
+                _ => runs.push(i..i + 1),
+            }
+        }
+        runs
+    }
 }
 
 impl Trip {
@@ -439,6 +461,7 @@ impl Routing {
                 metres: seg.metres * f,
                 time_s: f64::from(d.time_ds) / 10.0 * f,
                 points: first..leg.points.len(),
+                flags: d.flags,
             };
             leg.time_s += piece.time_s;
             leg.metres += piece.metres;
@@ -530,29 +553,6 @@ impl Routing {
         }
         Ok(Some(Trip { snaps, legs, avoid }))
     }
-
-    /// The runs of `leg`'s pieces on [`super::RESTRICTED`] roads (private, destination
-    /// only and the like, phase 3 decision 14), as ranges of its pieces. Pieces of no
-    /// length neither start nor break a run.
-    pub fn restricted(&self, leg: &Leg) -> io::Result<Vec<Range<usize>>> {
-        let mut runs: Vec<Range<usize>> = Vec::new();
-        for (i, p) in leg.pieces.iter().enumerate() {
-            if p.metres <= 0.0 {
-                continue;
-            }
-            let flags = self.with_segment(p.dir >> 1, |s| {
-                s.direction(p.dir & 1 != 0).map_or(0, |d| d.flags)
-            })?;
-            if flags & super::RESTRICTED == 0 {
-                continue;
-            }
-            match runs.last_mut() {
-                Some(r) if leg.pieces[r.end..i].iter().all(|q| q.metres <= 0.0) => r.end = i + 1,
-                _ => runs.push(i..i + 1),
-            }
-        }
-        Ok(runs)
-    }
 }
 
 #[cfg(test)]
@@ -568,6 +568,39 @@ mod tests {
         assert!((along - 0.75).abs() < 1e-9);
         let (d, along, _) = nearest(&pts, [90, 100]);
         assert_eq!((d, along), (10.0, 0.0));
+    }
+
+    #[test]
+    fn restricted_runs_from_the_pieces_flags() {
+        let piece = |metres: f64, flags: u8| Piece {
+            dir: 0,
+            start: 0.0,
+            end: 1.0,
+            metres,
+            time_s: 1.0,
+            points: 0..2,
+            flags,
+        };
+        let r = super::super::RESTRICTED;
+        let leg = Leg {
+            weight: 0,
+            time_s: 0.0,
+            metres: 0.0,
+            // A piece of no length neither breaks a run nor starts one.
+            pieces: vec![
+                piece(10.0, r),
+                piece(0.0, 0),
+                piece(10.0, r | super::super::TOLL),
+                piece(10.0, 0),
+                piece(0.0, r),
+                piece(10.0, r),
+            ],
+            points: Vec::new(),
+            uses: 0,
+            broken: 0,
+            settled: 0,
+        };
+        assert_eq!(leg.restricted(), [0..3, 5..6]);
     }
 
     #[test]
