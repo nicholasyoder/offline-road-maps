@@ -1,6 +1,6 @@
 # Phase 4 Plan: Trip Planner Features
 
-*Draft 2, 2026-10-28, with the owner's answers to the planning questions (decisions 14–19) and decision 12 reworded. Expands Phase 4 of [roadmap.md](roadmap.md#phase-4-trip-planner-features). Builds on phase 3's routing ([phase3-plan.md](phase3-plan.md)): the contraction hierarchy and its queries in `omp_core::route`, the route page and side panel (steps 3.7 and 3.8, which already hold this phase's placeholders), and `omp-app --render`'s offscreen renderer. Decisions 1–13 are proposals until the owner confirms them.*
+*Draft 2, 2026-10-28, with the owner's answers to the planning questions (decisions 14–19) and decision 12 reworded; decisions 1–13 confirmed by the owner the same day. Expands Phase 4 of [roadmap.md](roadmap.md#phase-4-trip-planner-features). Builds on phase 3's routing ([phase3-plan.md](phase3-plan.md)): the contraction hierarchy and its queries in `omp_core::route`, the route page and side panel (steps 3.7 and 3.8, which already hold this phase's placeholders), and `omp-app --render`'s offscreen renderer.*
 
 ## Purpose
 
@@ -219,7 +219,7 @@ As phase 3 step 3.9, with this phase's features:
 
 ## Decisions
 
-Proposed while planning (2026-10-28), for the owner to confirm:
+Proposed while planning and confirmed by the owner (2026-10-28):
 1. **Optimize for driving time**, the route's own metric, with first and last stops fixed or open, or a round trip. Exact up to 12 stops to reorder, a deterministic heuristic beyond (no stop limit: decision 15).
 2. **Alternatives by via nodes over the existing CH**: no second metric, no format change, up to two per leg. Penalty and plateau methods need a customizable metric or full Dijkstra trees, which the pack does not support at continent size.
 3. **Alternatives are ranked by time plus turn costs** (OSRM's turn function, from the geometry), and the best is the one shown. The times shown stay the profile's, as with restricted roads' penalty, so legs, steps and totals keep adding up.
@@ -243,7 +243,7 @@ Settled by the owner (2026-10-28), from draft 1's questions:
 18. **PDF text as part of the image is fine** (question e); no selectable text.
 19. **Fuel and rest suggestions go ahead as 4.6 plans** (question f), to be dropped if its measurements miss the budget.
 
-Open: confirmation of the proposed decisions 1–13.
+Open: none.
 
 ## Out of scope for phase 4
 
