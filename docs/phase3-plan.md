@@ -49,7 +49,7 @@ The roadmap's items are "road graph, car profile, turn restrictions and contract
 | 3.6 Routing in the app: stops, worker and overlay | **Done** 2026-10-27 | Right-click menu and search results set stops (numbered pins); worker cancels a stale trip within 64 nodes or pieces and reads the hierarchy's top when the pack opens; route drawn as line segments between roads and labels, one band per zoom (coast to coast 17,618 points, a band in 0.5 ms). Ohio bench frame p95 0.90 ms with a route against 0.89 without; `--render --route` snapshots in `docs/screenshots/` |
 | 3.7 Route panel and directions list | **Done** 2026-10-28 | Panel at the top right: stops dragged, removed and reversed, avoid checkboxes, totals per leg, notices, directions with drawn icons (only the rows in view laid out); a step clicked flies there and is drawn over the route; restricted stretches in purple; dashed lines to stops off the road. Ohio bench frame p95 1.17 ms with route and panel against 0.90 without a route; coast to coast on North America shown 503 ms after asking, first route after opening |
 | 3.8 Side panel: one home for search, routing and the menus | **Done** 2026-10-28 | Opaque resizable panel on the left (300–480 points, at most 45% of the window, saved in `config.toml`): search box and ☰ menu, then Search, Route, Trips and Layers pages; the map beside it stays still as it opens, closes or resizes, and view fits use the visible map. Ohio bench frame p95 1.04 ms with route and route page against `ohio.toml`'s 0.82 on the same pack and day (3.7: 1.17 against 0.90) |
-| 3.9 Performance, accuracy and hardware checks | Not started | |
+| 3.9 Performance, accuracy and hardware checks | **In progress** 2026-10-28 | Dev machine done: criteria 1, 2, 3, 7, 8 met; misses are the first route from a cold USB 2 stick (short 3.2 s, coast to coast 6.5–7.6 s; criterion 5: 3 s) and RSS 322 MiB (criterion 6: 300 MB). Stick ready; left: the 7490 and E6430 runs and the hand checks |
 
 ## Environment notes
 
@@ -335,6 +335,54 @@ As phase 2 step 2.9, with routing added:
 - Click through the side panel by hand in a window on each machine (3.7 left this open).
 
 **Done when:** every exit criterion is measured on every machine, with any that miss written up for the owner.
+
+> **In progress 2026-10-28.** Done: the dev machine, the checks that need no machine, and the stick. Left: the bench and the hand click-through on the Latitude 7490 and the E6430 (the owner), then the table below filled in and the misses settled. Logs in `$OMP_WORK/measure/check39/` and `$OMP_WORK/measure/bench/3.9/` (`summarize.py` there prints the bench reports).
+>
+> - **Pack:** not rebuilt. The decision 14 North America pack (`measure/private/na-pack`, format 0.5, 9,995.6 MiB in 3 chunks) is current: nothing that writes a pack changed since. Routing adds **2,699.5 MiB** (`RCHE` 1,334.6, `RGEO` 1,349.7, the rest 15.2), within criterion 7's 4.5 GiB; tiles and index 6,299.4, search and addresses 996.6 as in phase 2. Size table and roadmap §4 updated. Its build: 48.5 min, peak 49.7 GiB; the routing stages 12.1 min (graph 258 s, CH 354 s, sections 113 s, layout 2 s), within criterion 8's 45 min aim.
+> - **Binary:** `omp-app` 14.5 MB Linux, 13.1 MB Windows (CI, commit `2be2e44`; criterion 7: 30 MB). `cargo tree` for Linux, Windows and macOS has no network crate.
+> - **Checks on North America** (same binary): `route --check 1000` exact, 0 of 1,000 pairs × 4 avoid combinations differ from Dijkstra (3–9 unreachable per combination, as in 3.4). The route set passes **72 of 72**. Warm, with directions: short trips p50 0.55 / p95 2.1 ms (4.7 / 12.6 the first time asked), random long trips 110 / 221 ms, coast to coast 229–272 ms (criterion 5: 50 and 500 ms).
+> - **Criterion 1's pairs** (left open in 3.4): `route --addresses N` now also routes the sampled points that fall in the 48 contiguous states and southern Canada (a box, 125°W–52°W, 24°N–55°N) in pairs. 1,000 points: 992 in the box, **496 of 496 pairs routed** with both ends within 50 m or on their own street (criterion 1: 99.5%). 10,000 points: 4,971 pairs, 99.84% routed, 99.86% snapped, **99.70%** both. The 8 unrouted pairs each have an end snapped to its own street inside a small component (a gated or island pocket the large network cannot reach); the 7 others have an end 100–490 m away on another road.
+> - **Bench:** a step may now ask for a route (`route = "lat,lon;…"`), recording the time to the route and its directions shown. The North America flight asks for Miami–Seattle as the pack opens (the first route from a cold stick) and shows it while it flies, then after the searches routes Columbus (22 km), Montreal (24 km), Cincinnati–Cleveland, Halifax–Los Angeles and ten stops from Boston to Columbus (1,842 km).
+> - **Stick:** the same 16 GB SanDisk Cruzer Blade (FAT32, USB 2), with the new pack, the CI binaries, the flight and a README that lists the hand checks. Copying took 37.6 min (4.4 MiB/s); `verify` after a remount: OK in 286 s (35 MiB/s). Phase 2's results moved to `results/2.9/`.
+> - **Dev machine, from the stick** (cold = stick remounted just before):
+>
+>   | | Cold | Warm |
+>   |---|---:|---:|
+>   | Start-up | 2,636 ms | 123 ms |
+>   | Frame p95 / max, route shown all flight | 1.35 / 34 ms | 1.34 / 18 ms |
+>   | First route, Miami–Seattle, asked as the pack opens | **7,640 ms** (trip 5,300, directions 935) | 452 ms |
+>   | Columbus / Montreal short routes | 94 / 113 ms | 8 / 11 ms |
+>   | Cincinnati–Cleveland | 447 ms | 36 ms |
+>   | Halifax–Los Angeles | 3,461 ms | 484 ms |
+>   | Ten stops | 2,397 ms | 378 ms |
+>   | Frame p95 during the route steps | 1.11–1.73 ms | 1.10–1.77 ms |
+>   | Slowest jump to full detail | 2,229 ms (Manhattan z12) | 17 ms |
+>   | Keystrokes p50 / p95 / max | 39 / 292 / 1,035 ms | 26 / 85 / 148 ms |
+>   | RSS peak | **322 MiB** | **320 MiB** |
+>   | Idle CPU | 0.5% | 0.6% |
+>
+>   Route steps are timed from the request to the frame showing route and directions; the cold run's later routes are cold only for what the earlier ones did not read. Asked alone as the pack opens (small flights `cold-short.toml` and `cold-long.toml`, stick remounted before each): Columbus 3,155 ms (trip 1,597: start-up reads tiles, the search and routing indexes and the hierarchy's top from the stick at the same time), Miami–Seattle 6,458 ms. From the CLI with nothing else reading, cold: Columbus 385 ms, Miami–Seattle 3,312 ms plus 525 ms of directions. The cold first route also slows the rest of start-up: the slowest cold jump is 2.2 s (phase 2: 1.0 s). Every route is drawn without dropping frames (worst step p95 1.77 ms).
+> - **RSS:** 322 MiB (338 MB) peak against phase 2's 241 MiB on the same flight. A one-step flight at z3: 140 MiB, 187 with the Miami–Seattle route (phase 2: 121). So routing holds about 47 MiB once a long route has been made (node and segment caches 16 + 16 MiB, small caches 1 MiB, the worker's street caches 6 MiB, the route itself) and the app's side panel and route overlay about 19 MiB more. Not glibc's arenas: `MALLOC_ARENA_MAX=1` changes it by 6 MiB. Caches of 8 + 8 MiB would save 21 MiB (3.4: Cincinnati–Cleveland 0.7 → about 14 ms the first time, still well within criterion 5).
+> - **Exit criteria so far** (machine-independent ones on the North America pack; cold = from the USB 2 stick):
+>
+>   | Criterion | Dev | 7490 | E6430 |
+>   |---|---|---|---|
+>   | 1. Coverage: address pairs routed (99.5%) | **100%** (496 pairs), 99.70% of 4,971 ✓ | | |
+>   | 2. Exact against Dijkstra, restrictions kept | 0 differ (1,000 × 4); Ohio and Quebec 10,000 × 4 and Ohio's restrictions in 3.4 ✓ | | |
+>   | 3. Route set (95%) | 72 of 72 ✓ | | |
+>   | 4. Within 15% of OSRM (90%) | random pairs 99.4% (Ohio), 98.6% (Quebec) ✓; hand-written routes 76–77% ✗ (3.5) | | |
+>   | 5. Warm: under 100 km p95 50 ms, coast to coast 500 ms (E6430: 2.5×) | 2.1 ms, 229–272 ms CLI; 484 ms in the app ✓ | | |
+>   | 5. First route, cold USB 2 (3 s) | short 3.2 s, coast to coast 6.5–7.6 s ✗ | | |
+>   | 5. Ten stops warm (E6430: 2 s) | 378 ms | | |
+>   | 5. Off the UI thread, no dropped frames | frame p95 ≤ 1.8 ms through every route ✓ | | |
+>   | 6. RSS (300 MB) | 322 MiB (338 MB) ✗ | | |
+>   | 7. Size (+4.5 GiB; app 30 MB) | +2,699.5 MiB; 14.5 / 13.1 MB ✓ | | |
+>   | 8. Builder (56 GB cap; routing 45 min) | 48.5 min, peak 49.7 GiB; routing 12.1 min ✓ | | |
+>
+> - **For the owner, what misses so far:**
+>   - **The first route from a cold USB 2 stick:** 3.2 s for a short trip asked as the app opens, 6.5–7.6 s coast to coast; asked once start-up is done, coast to coast took 3.5 s cold (Halifax–Los Angeles in the flight). Most of it is the stick's random reads, one at a time: a coast-to-coast route reads about 1,000 `RGEO` blocks for its geometry and the junctions' cells for its directions, on top of the hierarchy. Options: accept it (warm it is 0.5 s, and a short route asked a few seconds after start-up is about 0.1 s); read the motorway and trunk segments' geometry in the background after the hierarchy's top (they carry most of a long route; would need them grouped in `RGEO`, a format change, and its size measured); or show the route's line as soon as the trip is done and the directions after (saves 0.5–0.9 s of the cold wait).
+>   - **RSS 338 MB** on the dev machine (criterion 6: 300 MB), about 47 MiB of it routing's caches and the route. Options: accept a higher budget (say 350 MB, as phase 1 accepted Windows' exceptions); halve the routing caches (−21 MiB, first routes a little slower); or both, with search's readers (41 MiB) looked at too.
+>   - **Criterion 4's hand-written routes** (76–77% within 15% of OSRM, from 3.5) are still open: turn costs and ferry timing, as written up there.
 
 ---
 

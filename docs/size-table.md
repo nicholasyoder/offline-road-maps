@@ -286,6 +286,8 @@ The routing sections of [step 3.3](phase3-plan.md#33-routing-format-and-core-rea
 
 Within criterion 7's 4.5 GiB. The North America build took 48.5 min, peak 49.7 GiB (was 48.7, set by the graph read now).
 
+**Phase 3 as measured in [step 3.9](phase3-plan.md#39-performance-accuracy-and-hardware-checks):** this North America pack is the one phase 3 ships, **9,995.6 MiB (9.8 GiB, 10.5 GB) in 3 chunks**, 0.45× CoMaps: tiles and index 6,299.4 MiB, search and addresses 996.6 (as in phase 2), routing 2,699.5. The routing stages take 12.1 of the build's 48.5 min (graph 258 s, CH 354 s, sections 113 s).
+
 ## What the columns mean
 
 - **Ohio, Ontario, Quebec** are measured on their own Geofabrik extracts. Ontario and Quebec clip the ocean to their `.poly`.
