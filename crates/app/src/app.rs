@@ -1611,10 +1611,17 @@ fn side_panel(
         .show(ui, |ui| {
             let had_focus = p.search.box_was_focused();
             ui.horizontal(|ui| {
-                p.search.box_ui(ui, p.camera, 64.0, recent, key, &mut o.out);
+                p.search.box_ui(
+                    ui,
+                    p.camera,
+                    2.0 * crate::theme::HEADER_H + 16.0,
+                    recent,
+                    key,
+                    &mut o.out,
+                );
                 o.action = side::menu(ui, debug);
-                let hide =
-                    glyph_button(ui, Glyph::Hide, 24.0).on_hover_text("Hide the panel  (Ctrl+B)");
+                let hide = glyph_button(ui, Glyph::Hide, crate::theme::HEADER_H)
+                    .on_hover_text("Hide the panel  (Ctrl+B)");
                 o.hide = hide.rect;
                 if hide.clicked() {
                     side.open = false;

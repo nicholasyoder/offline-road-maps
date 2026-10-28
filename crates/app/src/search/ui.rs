@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 
-use eframe::egui::{self, Event, EventFilter, Id, Key, Rect};
+use eframe::egui::{self, Color32, Event, EventFilter, Id, Key, Rect, Vec2};
 use omp_core::find::Hit;
 use omp_core::schema::Schema;
 
@@ -16,7 +16,7 @@ use crate::camera::Camera;
 use crate::here::{HereAnswer, HereQuery};
 use crate::routing::{self, MenuState, StopAction};
 use crate::scale::Units;
-use crate::theme::{Glyph, INK, WEAK, glyph_button};
+use crate::theme::{Glyph, HEADER_H, INK, WEAK, glyph_button};
 
 /// Shown while the deeper search levels run.
 const SEARCHING_MORE: &str = "Searching smaller towns and more names…";
@@ -62,6 +62,9 @@ pub struct SearchUi {
     hovered: Option<usize>,
     /// Where the suggestions were last drawn, so a click on them keeps the box focused.
     list_rect: Option<Rect>,
+    /// Where the clear button was drawn, for the tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    clear_rect: Option<Rect>,
     /// The suggestions as the box left them this frame, for the search page.
     list: List,
     /// The box had the focus at the end of the last frame.
@@ -90,6 +93,7 @@ impl SearchUi {
             selected: None,
             hovered: None,
             list_rect: None,
+            clear_rect: None,
             list: List::default(),
             was_focused: false,
             icons: Icons::new(schema),
@@ -365,14 +369,20 @@ impl SearchUi {
                 escape: true,
                 ..Default::default()
             };
+            // The clear button sits in a slot at the box's right end.
+            let slot = egui::IdSalt::new("search-clear");
             let edit = egui::TextEdit::singleline(&mut self.text)
                 .id(id)
                 .hint_text(hint)
-                .desired_width((ui.available_width() - reserve - 42.0).max(80.0))
+                .desired_width((ui.available_width() - reserve - 12.0).max(80.0))
+                .min_size(Vec2::new(0.0, HEADER_H))
+                .align(egui::Align2::LEFT_CENTER)
+                .suffix(egui::Atom::custom(slot, Vec2::splat(CLEAR)))
                 .interactive(enabled)
                 .return_key(None)
                 .event_filter(filter);
-            let resp = ui.add(edit);
+            let out = edit.show(ui);
+            let resp = out.response.response.clone();
             // Escape and the arrows stay with the box, from the frame focus was asked for
             // (the field sets this only from the next one).
             ctx.memory_mut(|m| m.set_focus_lock_filter(id, filter));
@@ -395,12 +405,18 @@ impl SearchUi {
             let any = !self.text.is_empty()
                 || self.session.marker.is_some()
                 || self.session.results.is_some();
-            let clear = ui
-                .add_enabled_ui(any, |ui| glyph_button(ui, Glyph::Close, 22.0))
-                .inner
-                .on_hover_text("Clear the search and its marker");
-            if clear.clicked() {
-                self.clear();
+            // Over the box, so it takes the clicks there.
+            self.clear_rect = out.response.rect(slot).filter(|_| any);
+            if let Some(r) = self.clear_rect {
+                let clear = ui
+                    .interact(r, id.with("clear"), egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Clear the search and its marker");
+                clear_mark(ui.painter(), r, clear.hovered());
+                if clear.clicked() {
+                    self.clear();
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
             }
         });
 
@@ -621,6 +637,24 @@ impl SearchUi {
             out.fly = Some(h);
         }
     }
+}
+
+/// The clear button's side, in the box.
+const CLEAR: f32 = 18.0;
+
+/// The × in the box: grey, and darker on a light disc when hovered.
+fn clear_mark(p: &egui::Painter, r: Rect, hovered: bool) {
+    let c = r.center();
+    let color = if hovered {
+        p.circle_filled(c, r.width() / 2.0, Color32::from_gray(225));
+        INK
+    } else {
+        WEAK
+    };
+    let h = 3.5;
+    let stroke = egui::Stroke::new(1.5, color);
+    p.line_segment([c + Vec2::new(-h, -h), c + Vec2::new(h, h)], stroke);
+    p.line_segment([c + Vec2::new(-h, h), c + Vec2::new(h, -h)], stroke);
 }
 
 fn box_id() -> Id {

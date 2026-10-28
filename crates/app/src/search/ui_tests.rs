@@ -111,7 +111,8 @@ fn keyboard() {
     let (out, _) = frame(&mut s, &mut recent, Vec::new());
     assert_eq!(out.fly.as_ref(), Some(&hits[0]));
     assert_eq!(s.session.results.as_ref().map(|r| r.hits.len()), Some(2));
-    // Typing again closes the results; the clear button empties everything.
+    // Typing again closes the results; the × in the box empties everything and keeps the
+    // focus.
     frame(
         &mut s,
         &mut recent,
@@ -119,8 +120,20 @@ fn keyboard() {
     );
     frame(&mut s, &mut recent, vec![Event::Text("u".into())]);
     assert!(s.session.results.is_none() && s.text == "Colu");
-    s.clear();
+    let at = s.clear_rect.expect("the clear button").center();
+    let press = |pressed| Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: none,
+    };
+    frame(&mut s, &mut recent, vec![Event::PointerMoved(at)]);
+    frame(&mut s, &mut recent, vec![press(true)]);
+    frame(&mut s, &mut recent, vec![press(false)]);
     assert!(s.text.is_empty() && s.session.marker.is_none());
+    let (_, focused) = frame(&mut s, &mut recent, Vec::new());
+    assert!(focused, "the box keeps the focus");
+    assert!(s.clear_rect.is_none(), "nothing left to clear");
 
     // An arrow right after Ctrl+F moves through the recent searches, not the focus.
     frame(&mut s, &mut recent, vec![key(Key::Escape, none)]);

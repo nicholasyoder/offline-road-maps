@@ -7,7 +7,7 @@ use eframe::egui::{self, Rangef, Rect, Stroke, Vec2};
 
 use crate::layers::Layers;
 use crate::scale::Units;
-use crate::theme::{INK, WEAK};
+use crate::theme::{HEADER_H, INK, WEAK};
 
 /// The panel's width range, in points, and the most of a narrow window it may take.
 const WIDTH: [f32; 2] = [300.0, 480.0];
@@ -76,7 +76,7 @@ pub fn tabs(ui: &mut egui::Ui, page: &mut Page) -> [Rect; 4] {
 /// are placeholders.
 pub fn menu(ui: &mut egui::Ui, debug_overlay: &mut bool) -> Option<Action> {
     let mut action = None;
-    let button = egui::Button::new("").min_size(Vec2::splat(24.0));
+    let button = egui::Button::new("").min_size(Vec2::splat(HEADER_H));
     let (r, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
         if ui.button("Open a pack…  (Ctrl+O)").clicked() {
             action = Some(Action::Pick);

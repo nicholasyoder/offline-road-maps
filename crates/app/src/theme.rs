@@ -10,6 +10,9 @@ pub const WEAK: Color32 = Color32::from_gray(105);
 /// Marks a result or position that is only approximate.
 pub const APPROX: Color32 = Color32::from_rgb(176, 96, 0);
 
+/// Height of the search box and the buttons beside it.
+pub const HEADER_H: f32 = 26.0;
+
 /// Corner radius of the widgets, and of windows, menus and the boxes over the map.
 const WIDGET_RADIUS: u8 = 3;
 const WINDOW_RADIUS: u8 = 4;
