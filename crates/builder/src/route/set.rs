@@ -18,7 +18,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use omp_core::geo::{self, P};
-use omp_core::route::{FERRY, Kind, Names, Road, Routing, Step, Stop, TOLL, Trip, cell_xy};
+use omp_core::route::{
+    AltParams, FERRY, Kind, Names, Road, Routing, Step, Stop, TOLL, Trip, cell_xy,
+};
 
 use super::check::{offset, random_point};
 use super::{distance, duration, flags_text, latlon, parse_avoid};
@@ -278,18 +280,9 @@ pub fn write_pairs(r: &Routing, region: &str, n: usize, seed: u64, out: &Path) -
     for (class, lo, hi) in [("town", 1_000, 10_000), ("regional", 10_000, 100_000)] {
         let mut k = 0;
         while k < per {
-            let p = random_point(r, &mut rng)?;
-            let m = (lo + rng.below(hi - lo)) as f64;
-            let rad = rng.below(360) as f64 * std::f64::consts::PI / 180.0;
-            let near = r.segments_near(offset(p, m, rad), 500.0)?;
-            if near.is_empty() {
+            let Some((p, q)) = pair_near(r, &mut rng, lo, hi)? else {
                 continue;
-            }
-            let s = r.segment(near[rng.below(near.len() as u64) as usize])?;
-            if s.small || s.class == omp_core::route::FERRY_CLASS {
-                continue;
-            }
-            let q = s.points[s.points.len() / 2];
+            };
             k += 1;
             writeln!(text, "{region}\t{class}-{k:04}\t{}\t-", stops_text(&[p, q]))?;
         }
@@ -301,6 +294,23 @@ pub fn write_pairs(r: &Routing, region: &str, n: usize, seed: u64, out: &Path) -
     std::fs::write(out, text)?;
     println!("wrote {n} pairs to {}", out.display());
     Ok(())
+}
+
+/// A random point and the middle of a road `lo..hi` metres from it in a random
+/// direction, or `None` if there is no such road (not in a small component, nor a ferry).
+pub(super) fn pair_near(r: &Routing, rng: &mut Rng, lo: u64, hi: u64) -> Result<Option<(P, P)>> {
+    let p = random_point(r, rng)?;
+    let m = (lo + rng.below(hi - lo)) as f64;
+    let rad = rng.below(360) as f64 * std::f64::consts::PI / 180.0;
+    let near = r.segments_near(offset(p, m, rad), 500.0)?;
+    if near.is_empty() {
+        return Ok(None);
+    }
+    let s = r.segment(near[rng.below(near.len() as u64) as usize])?;
+    if s.small || s.class == omp_core::route::FERRY_CLASS {
+        return Ok(None);
+    }
+    Ok(Some((p, s.points[s.points.len() / 2])))
 }
 
 /// A route as compared: its time, length, steps, U-turns and line.
@@ -542,6 +552,7 @@ pub fn compare(
     names: Option<&dyn Names>,
     files: &[std::path::PathBuf],
     worst: usize,
+    alternatives: Option<&AltParams>,
 ) -> Result<()> {
     let sets: Vec<Vec<Answer>> = files
         .iter()
@@ -550,12 +561,20 @@ pub fn compare(
     // Ours, once per pair.
     let mut ours: HashMap<String, Route> = HashMap::new();
     let mut unrouted = Vec::new();
+    // With alternatives: the routes picked, and how many are not the quickest.
+    let (mut picked, mut legs) = (0, 0);
     for a in &sets[0] {
         let stops: Vec<Stop> = a.stops.iter().map(|&p| Stop::at(p)).collect();
-        let trip = r.trip(&stops, a.avoid)?;
+        let mut trip = r.trip(&stops, a.avoid)?;
         if !trip.complete() {
             unrouted.push(a.id.clone());
             continue;
+        }
+        if let Some(params) = alternatives {
+            let alts = super::alt::of_trip(r, &trip, params)?;
+            legs += alts.len();
+            picked += alts.iter().flatten().filter(|x| x.picked != 0).count();
+            trip = super::alt::picked(&trip, &alts);
         }
         let steps = r.directions(&trip, &stops, names)?;
         // Steps as OSRM counts them: a depart and an arrive per leg.
@@ -580,6 +599,11 @@ pub fn compare(
                 uturns,
                 line,
             },
+        );
+    }
+    if alternatives.is_some() {
+        println!(
+            "ours are the routes picked by turn costs: another than the quickest on {picked} of {legs} legs"
         );
     }
     for (f, set) in files.iter().zip(&sets) {

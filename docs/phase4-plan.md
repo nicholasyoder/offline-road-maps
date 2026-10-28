@@ -37,7 +37,7 @@ The roadmap's items are stop optimization, departure and arrival times with over
 | Step | Status | Notes |
 |---|---|---|
 | 4.1 Stop optimization | **Done** 2026-10-28 | Bucket matrix + Held–Karp ≤ 12 / heuristic above. North America warm: 25 stops 39 ms, 100 in 0.22 s, 500 in 1.4 s, 1,000 in 3.3 s; 0.996 of 100 random restarts on average (worst 1.0085); legs add up to the matrix in every run. E6430 time left to 4.11 |
-| 4.2 Alternative routes (`omp-core`) | Not started | |
+| 4.2 Alternative routes (`omp-core`) | **Done** 2026-10-28 | Via nodes over the CH, T-test, turn-cost ranking. Over 50 km, one alternative for 85.5% of Ohio's pairs, 75.6% of North America's, **68.9% of Quebec's** (OSRM: 52.2%): short of 70%, written up for the owner (Open below). Coast to coast 0.47 s with directions. Turn costs pick another route on 1% of legs: U-turns 4.7% → 4.6% (Ohio), 11.2% → 10.7% (Quebec) |
 | 4.3 Alternatives in the app | Not started | |
 | 4.4 U-turn penalty, measured first | **Done** 2026-10-28 | Built behind `--uturn-penalty` and measured on Ohio and Quebec: routing ×2.2–2.5, contraction ×8–24, U-turn routes 4.7% → 3.3% (Ohio) and 11.2% → 9.5% (Quebec) at any penalty. **Not built for North America** (owner, decision 20); the flag stays, off by default |
 | 4.5 Schedule: times, stops and overnights | Not started | |
@@ -107,6 +107,40 @@ Find a few routes that take clearly different roads, and score them again with w
 
 **Done when:** alternatives work for single and multi-stop trips in the CLI, criterion 2's share and time are measured on the three packs (or the shortfall written up), and the U-turn rate of the picked routes is compared with OSRM.
 
+> **Done 2026-10-28** (commit "Step 4.2 done: alternative routes"), with Quebec's share short of criterion 2 and written up for the owner (Open, under Decisions). Logs in `$OMP_WORK/measure/alt42/` (`run.sh` reruns them), on phase 3's final packs (`measure/private/`).
+>
+> - **Built:** `omp_core::route::alt` (`Routing::alternatives_until`). Given a leg's quickest route, as the trip routed it, it searches again from the leg's own seeds with `Routing::explore`, which carries both sides on until their next node is 1.25 times the quickest weight away. A node both sides settled is a via node, and its route (up the hierarchy to it, down from it) is a candidate. Candidates are scored by twice their weight plus their weight on the hierarchy edges of routes already taken. Identical ones are dropped, and so are those that share over 80% by hierarchy edges, which is a lower bound of what they share once unpacked. Up to 16 are unpacked in score order. Each is kept if it drives no segment twice, has at most 80% of its weight on segments of the routes taken, and passes the T-test. The T-test runs one CH query between the nodes 12.5% of the quickest weight before and after the via node, so the stretch is the plan's α = 25% long, and it must find nothing quicker than the route's own stretch. The search's limit bounds the stretch. Up to two alternatives per leg. They avoid what the quickest leg avoided (a flag it had to break is allowed). A leg along one segment gets none.
+> - **Rescoring** (`Leg::turns`, in `guide.rs`; decision 3): OSRM's `car.lua` turn function at every node where the leg changes segment, from the bearings over 15 m that directions use. It gives up to 7.5 s by angle, cheaper to the right (bias 1.075): 2.1 s for a right turn, 5.4 s for a left turn, 7.5 s for turning back. Each U-turn adds 20 s, counted as directions count them: back at one junction (over 165°), or two turns within 30 m that add up to over 165° (across a median). OSRM charges only junctions of three roads or more; this charges every node, which costs 0.007 s going straight. It reads nothing from the pack, only the leg's line. Each route is ranked by its weight plus that cost, and the best is `picked`. The times shown stay the profile's.
+> - **Stall-on-demand** is off in these searches by default (`AltParams::stall`). Without it, more pairs get an alternative on every pack (table), for 20–40% more search time. `--stall` measures with it.
+> - **CLI:** `route … --alternatives` prints each leg's routes: distance, time, the time ranked with turn costs, turns and U-turns, the difference and stretch, the share it has with the routes before it, and the road it takes that the others do not ("via US 395"; `Routing::via_road`, for 4.3). `*` marks the one picked, with "picked 2: 3 min slower on paper, 1 fewer U-turns". `--geojson` writes them all. `--alternatives-random <n>` measures, on a quarter each of pairs 1–10, 10–50 and 50–250 km apart and random points anywhere (`--out` writes the pairs). `--osrm … --alternatives` compares the picked routes with OSRM's. `tools/osrm/alternatives.py` asks OSRM for its own alternatives on the same pairs.
+> - **Share found** (1,000 random pairs per pack, by the quickest route's length; OSRM 6.0.0 MLD with `alternatives=2` on the same pairs):
+>
+>   | | Ohio | Quebec | North America |
+>   |---|---:|---:|---:|
+>   | **Over 50 km, at least one** (criterion 2: 70%) | **85.5%** | **68.9%** | **75.6%** |
+>   | — with stall-on-demand | 83.0% | 62.3% | 70.8% |
+>   | — OSRM | 87.9% | 52.2% | |
+>   | Over 50 km, two: ours / with stall / OSRM | 75.5 / 67.6 / 57.6% | 40.9 / 33.2 / 21.4% | 61.0 / 55.7% / – |
+>   | At least one, < 10 / 10–50 / 50–200 / 200–1,000 / > 1,000 km | 39 / 73 / 85 / 87 / – % | 31 / 50 / 70 / 68 / (3 of 5) | 38 / 55 / 74 / 76 / 77% |
+>   | — OSRM, same bands | 42 / 72 / 88 / 88 / – % | 28 / 48 / 63 / 35 / (2 of 5) | |
+>   | Stretch p50 / max; sharing p50 / max | 1.107 / 1.250; 0.39 / 0.80 | 1.112 / 1.250; 0.47 / 0.80 | 1.094 / 1.249; 0.39 / 0.80 |
+>   | Alternatives' search, ms p50 / p95 / max | 2.3 / 15.5 / 34.2 | 1.0 / 8.7 / 21.6 | 2.2 / 158 / 309 |
+>
+>   Testing 64 candidates instead of 16 takes Quebec only from 68.9% to 69.3%. Peak RSS over the 1,000 North America pairs: 81 MiB.
+> - **Time** (dev machine; each CLI run is a new process, so the trip comes first from cold caches and the alternatives follow it, as they will in the app). The quickest route is untouched: the app's trip and its directions run as before. On North America over 1,000 km the quickest leg takes 56 ms (p50), and its alternatives 104 ms (p50, 309 max) plus 132 ms for their directions. New York to Los Angeles: the trip takes 97 ms and its directions 125 ms. The alternatives (I-40, 10 min slower, sharing 5%; I-70, 58 min, sharing 70%) take 201 ms and their directions 264 ms: **0.47 s**, under criterion 2's 1 s but about twice the route's own 0.22 s, mostly decoding the alternatives' lines and naming their steps. New York, Los Angeles and Seattle: 149 + 192 ms for the trip, 270 + 328 ms for its alternatives. Cold from the disk is left to 4.11's benches.
+> - **Effect against OSRM** (`route --osrm … --alternatives` on 3.5's pairs and the route set):
+>
+>   | | Ohio | Quebec |
+>   |---|---:|---:|
+>   | Legs where turn costs pick another route | 9 of 1,000 | 12 of 993 |
+>   | Routes with a U-turn step: quickest (3.5) → picked; OSRM | 4.7% → **4.6%**; 1.9% | 11.2% → **10.7%**; 6.8% |
+>   | Ours is OSRM's first route (90% overlap): quickest → picked | 92.8% → 93.3% | 92.1% → 92.4% |
+>   | Route set with a U-turn: quickest → picked; OSRM | 28% → 24%; 4% | 23% → 23%; 18% |
+>
+>   **Rescoring removes few U-turns.** It only chooses among admissible alternatives. Those differ from the quickest by more than 20% of their weight, while a route that avoids a U-turn differs by a block. In town, where most U-turns are, under 40% of pairs have an alternative at all. 4.4's penalty alone took the rates to 3.3% and 9.5%; it is not built (decision 20). The route set passes as before (Ohio 26/26, Quebec 22/22); it routes the quickest.
+> - **Tests:** OSRM's turn costs at known angles, and turns, U-turns and median U-turns from hand-made lines (`guide.rs`). On a hand-built ladder of a street and a faster road, with and without stall-on-demand, the alternative is found on the other road and its line, pieces and totals add up. Stopping returns `None`, and a leg along one segment has no alternative. Between every pair of points on the builder's test network, with every avoid option, every alternative is within the stretch, shares at most 80%, drives no segment twice and uses nothing avoided, and `picked` is the lowest score.
+> - **Left open:** Quebec's share and the U-turns, for the owner (Open, under Decisions). Alternatives are listed in the order they were taken, not by time; 4.3 sorts them for display. Directions for alternatives are 4.3's to make cancellable.
+
 ## 4.3 Alternatives in the app
 
 - **Worker:** the quickest route and its directions come first, as now. The alternatives are found after it, on the same worker, and fill in. A newer request cancels them. If rescoring prefers an alternative, the line shown changes once, and the panel says so.
@@ -159,7 +193,7 @@ From the roadmap (phase 3 decisions 13 and 16): a hidden penalty of a few minute
 >
 > Only about a third of the U-turn routes go, and the same third at 60 s as at 300 s: those are the U-turns the node split can see. The rest are U-turns **across a median**: on a divided road each carriageway is its own one-way way, so turning back crosses from one node to another and never revisits one (Pearl Road, Carnegie Avenue and Tylersville Road in Ohio's sample, 11 of 400 pairs at 60 s). Only a cost on the turn's angle catches those, which is 4.2's rescoring (OSRM's turn function from the geometry). The two set lines that fail are expectations written around the free U-turn, not wrong routes: `exit-171` now leaves I-90 at exit 172A for the same 6.5 km and 7 min, instead of exit 171 and a U-turn on East 9th Street; `jeanne-mance` no longer makes the U-turn on Rue Jeanne-Mance but goes round through a 40 m lane (1 min instead of 25 s), and the step "Turn left onto Rue Jeanne-Mance" out of that lane matches the line's text for the banned left from René-Lévesque, which the route does not take. Neither line was changed.
 >
-> **Compared with 4.2's rescoring:** not yet possible; 4.2 has not been started. Its rescoring needs no rebuild and costs nothing in the pack, and the measurement above says the median-crossing U-turns, the larger share, are within its reach and not this step's.
+> **Compared with 4.2's rescoring:** not yet possible; 4.2 has not been started. Its rescoring needs no rebuild and costs nothing in the pack, and the measurement above says the median-crossing U-turns, the larger share, are within its reach and not this step's. *Measured in 4.2 (2026-10-28): rescoring reaches far fewer than expected, 4.7% → 4.6% (Ohio) and 11.2% → 10.7% (Quebec), because it only chooses among alternatives that differ by more than a block.*
 >
 > **Recommendation for the owner: do not build the penalty for North America.** It would take routing over its 4.5 GiB budget and the build likely over the machine, for a third of the U-turns. Keep `--uturn-penalty` in the builder (off by default) so it can be measured again after 4.2.
 >
@@ -302,7 +336,10 @@ Settled by the owner (2026-10-28), from step 4.4's measurements:
 
 20. **No U-turn penalty in the North America pack.** It doubles the routing sections (over phase 3's 4.5 GiB budget) and makes contraction 8–24 times slower, for a third of the U-turns: the rest cross medians on divided roads, which only 4.2's angle-based rescoring sees. `--uturn-penalty` stays in the builder, off by default.
 
-Open: none.
+Open, from step 4.2's measurements (2026-10-28):
+
+- **(g) Quebec's share of alternatives.** Over 50 km, 68.9% of Quebec's pairs get one, against criterion 2's 70% (Ohio 85.5%, North America 75.6%). OSRM finds one for only 52.2% of the same pairs, so the shortfall comes from Quebec's roads (long stretches with no other road within 25%) more than from the method. Options: (1) keep the method and restate criterion 2 for Quebec as "at least OSRM's share on the same pairs" (**recommended**); (2) loosen admissibility, for example sharing up to 85% or stretch up to 30%, which gives alternatives that are less distinct or slower; (3) test more candidates, which does not help (64 instead of 16: 69.3%).
+- **(h) U-turns after rescoring.** Ranking with turn costs removes few U-turns (4.7% → 4.6% in Ohio, 11.2% → 10.7% in Quebec; OSRM 1.9% and 6.8%), because a route that avoids one differs from the quickest by a block, not by 20%. Options: (1) leave them: decision 20 already declined the penalty (**recommended for this phase**); (2) look for hidden variants for the pick only, such as a second search from the U-turn's node with that U-turn banned, shown as the same route but without it: new work of perhaps a day or two, with its own measurements; (3) come back to it with phase 5's routing work.
 
 ## Out of scope for phase 4
 

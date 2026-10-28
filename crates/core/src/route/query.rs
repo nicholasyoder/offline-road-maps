@@ -1,6 +1,8 @@
 //! Queries over the hierarchy (phase 3 step 3.4): a bidirectional search with
 //! stall-on-demand, from any number of start and end nodes each with a distance already
-//! driven, and the unpacking of its hierarchy edges to segment directions.
+//! driven, and the unpacking of its hierarchy edges to segment directions. The same search
+//! run on past the quickest route ([`Routing::explore`]) finds alternatives' via nodes
+//! (phase 4 step 4.2).
 //!
 //! The forward search follows up edges from the starts, the backward one down edges from
 //! the ends; each settles the side with the smaller distance next and both stop once that
@@ -59,13 +61,13 @@ struct Label {
     edge: ChEdge,
 }
 
-struct Side {
+pub(super) struct Side {
     dist: HashMap<u32, Label, BuildHasherDefault<NodeHasher>>,
     heap: BinaryHeap<Reverse<(u32, u32)>>,
 }
 
 impl Side {
-    fn new(seeds: &[Seed]) -> Self {
+    pub(super) fn new(seeds: &[Seed]) -> Self {
         let mut s = Side {
             dist: HashMap::default(),
             heap: BinaryHeap::new(),
@@ -96,12 +98,12 @@ impl Side {
         self.heap.peek().map_or(u32::MAX, |Reverse((d, _))| *d)
     }
 
-    fn dist(&self, v: u32) -> Option<u32> {
+    pub(super) fn dist(&self, v: u32) -> Option<u32> {
         self.dist.get(&v).map(|l| l.d)
     }
 
     /// The hierarchy edges from the seed to `v`, seed first, and the seed node.
-    fn trace(&self, mut v: u32) -> (Vec<(u32, u32, ChEdge)>, u32) {
+    pub(super) fn trace(&self, mut v: u32) -> (Vec<(u32, u32, ChEdge)>, u32) {
         let mut out = Vec::new();
         loop {
             let l = self.dist[&v];
@@ -115,9 +117,19 @@ impl Side {
     }
 }
 
+/// What [`Routing::explore`] leaves: both sides' labels, the nodes each settled in order
+/// (forward, backward), and the quickest route met, through `meet`.
+pub(super) struct Explored {
+    pub f: Side,
+    pub b: Side,
+    pub settled: [Vec<u32>; 2],
+    pub best: u32,
+    pub meet: u32,
+}
+
 /// The index of the seed at node `v` that a search started from: the one with the least
 /// weight, as [`Side::new`] kept.
-fn seed_index(seeds: &[Seed], v: u32) -> usize {
+pub(super) fn seed_index(seeds: &[Seed], v: u32) -> usize {
     (0..seeds.len())
         .filter(|&i| seeds[i].0 == v)
         .min_by_key(|&i| seeds[i].1)
@@ -279,11 +291,99 @@ impl Routing {
         Ok(settled)
     }
 
+    /// Both sides of a search from `sources` to `targets` run on past the quickest route
+    /// until neither has a node left within `limit(best)` (phase 4 step 4.2), for the
+    /// alternatives' via nodes. Without `stall`, no node is stalled. Stopped by `stop` with
+    /// [`stopped`].
+    pub(super) fn explore(
+        &self,
+        sources: &[Seed],
+        targets: &[Seed],
+        avoid: u8,
+        stall: bool,
+        limit: &dyn Fn(u32) -> u32,
+        stop: &dyn Fn() -> bool,
+    ) -> io::Result<Explored> {
+        let mut x = Explored {
+            f: Side::new(sources),
+            b: Side::new(targets),
+            settled: [Vec::new(), Vec::new()],
+            best: u32::MAX,
+            meet: u32::MAX,
+        };
+        let mut n = 0;
+        loop {
+            let forward = x.f.min() <= x.b.min();
+            let (side, other, list) = match forward {
+                true => (&mut x.f, &x.b, &mut x.settled[0]),
+                false => (&mut x.b, &x.f, &mut x.settled[1]),
+            };
+            if x.best != u32::MAX && side.min() > limit(x.best) {
+                break;
+            }
+            let Some(Reverse((d, u))) = side.heap.pop() else {
+                break;
+            };
+            if side.dist[&u].d < d {
+                continue;
+            }
+            n += 1;
+            if n % STOP_EVERY == 0 && stop() {
+                return Err(stopped());
+            }
+            list.push(u);
+            if let Some(o) = other.dist(u)
+                && d + o < x.best
+            {
+                (x.best, x.meet) = (d + o, u);
+            }
+            let node = self.node(u)?;
+            let (out, into) = match forward {
+                true => (node.up(), node.down()),
+                false => (node.down(), node.up()),
+            };
+            let stalled = stall
+                && into.iter().any(|e| {
+                    e.flags & avoid == 0 && side.dist(e.other).is_some_and(|w| w + e.weight < d)
+                });
+            if stalled {
+                continue;
+            }
+            for e in out.iter().filter(|e| e.flags & avoid == 0) {
+                let nd = d + e.weight;
+                if side.dist.get(&e.other).is_none_or(|l| nd < l.d) {
+                    side.dist.insert(
+                        e.other,
+                        Label {
+                            d: nd,
+                            from: u,
+                            edge: *e,
+                        },
+                    );
+                    side.heap.push(Reverse((nd, e.other)));
+                }
+            }
+        }
+        Ok(x)
+    }
+
     /// Appends the segment directions of `e`, a hierarchy edge from `a` to `b`.
     pub fn unpack(&self, a: u32, b: u32, e: &ChEdge, out: &mut Vec<u32>) -> io::Result<()> {
+        self.unpack_each(a, b, e, &mut |_, _, base| out.push(base.mid))
+    }
+
+    /// Calls `f` with each base edge of `e`, a hierarchy edge from `a` to `b`, in order:
+    /// its end nodes and itself.
+    pub(super) fn unpack_each(
+        &self,
+        a: u32,
+        b: u32,
+        e: &ChEdge,
+        f: &mut dyn FnMut(u32, u32, &ChEdge),
+    ) -> io::Result<()> {
         let m = e.mid;
         if e.flags & SHORTCUT == 0 {
-            out.push(m);
+            f(a, b, e);
             return Ok(());
         }
         // The middle node is below both ends: `a` to it is one of its down edges, it to `b`
@@ -293,8 +393,8 @@ impl Routing {
             for u in node.up().iter().filter(|u| u.other == b) {
                 if d.weight + u.weight == e.weight && (d.flags | u.flags) & AVOID == e.flags & AVOID
                 {
-                    self.unpack(a, m, d, out)?;
-                    return self.unpack(m, b, u, out);
+                    self.unpack_each(a, m, d, f)?;
+                    return self.unpack_each(m, b, u, f);
                 }
             }
         }

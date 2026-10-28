@@ -56,7 +56,7 @@ pub struct Snap {
 }
 
 /// A segment direction and the part of it driven, as [`Piece::start`] and [`Piece::end`].
-type Span = (u32, f64, f64);
+pub(super) type Span = (u32, f64, f64);
 
 /// A stretch of a leg along one segment direction.
 #[derive(Clone, Debug, PartialEq)]
@@ -187,8 +187,34 @@ fn cut(pts: &[P], start: f64, end: f64) -> Vec<P> {
     out
 }
 
+/// The pieces of a route from `from` to `to` through the hierarchy: the part of `from`'s
+/// segment from its `source` seed ([`Routing::sources`]), the segment directions `legs`,
+/// and the part of `to`'s segment, driven `reversed` or not.
+pub(super) fn spans(
+    from: &Snap,
+    to: &Snap,
+    source: usize,
+    reversed: bool,
+    legs: &[u32],
+) -> Vec<Span> {
+    // The forward direction's seed is the first.
+    let first = match source {
+        0 => (from.segment << 1, from.along, 1.0),
+        _ => (from.segment << 1 | 1, 1.0 - from.along, 1.0),
+    };
+    let last = match reversed {
+        false => (to.segment << 1, 0.0, to.along),
+        true => (to.segment << 1 | 1, 0.0, 1.0 - to.along),
+    };
+    let mut out = Vec::with_capacity(legs.len() + 2);
+    out.push(first);
+    out.extend(legs.iter().map(|&l| (l, 0.0, 1.0)));
+    out.push(last);
+    out
+}
+
 /// The share of `t` a fraction `f` of it is, rounded.
-fn part(t: u32, f: f64) -> u32 {
+pub(super) fn part(t: u32, f: f64) -> u32 {
     (f64::from(t) * f).round() as u32
 }
 
@@ -336,19 +362,7 @@ impl Routing {
         }) = path
         {
             settled = n;
-            // The forward direction's seed is the first.
-            let first = match source {
-                0 => (from.segment << 1, from.along, 1.0),
-                _ => (from.segment << 1 | 1, 1.0 - from.along, 1.0),
-            };
-            let last = match reversed[target] {
-                false => (to.segment << 1, 0.0, to.along),
-                true => (to.segment << 1 | 1, 0.0, 1.0 - to.along),
-            };
-            let mut pieces = vec![first];
-            pieces.extend(legs.iter().map(|&l| (l, 0.0, 1.0)));
-            pieces.push(last);
-            best = Some((weight, pieces));
+            best = Some((weight, spans(from, to, source, reversed[target], &legs)));
         }
         // Along the one segment, without the graph.
         if from.segment == to.segment {
@@ -375,7 +389,12 @@ impl Routing {
     }
 
     /// A leg's totals and line from its pieces.
-    fn leg(&self, weight: u32, pieces: &[Span], stop: &dyn Fn() -> bool) -> io::Result<Leg> {
+    pub(super) fn leg(
+        &self,
+        weight: u32,
+        pieces: &[Span],
+        stop: &dyn Fn() -> bool,
+    ) -> io::Result<Leg> {
         let mut leg = Leg {
             weight,
             time_s: 0.0,

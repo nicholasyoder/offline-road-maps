@@ -5,8 +5,10 @@
 //! checks the paths against the turn restrictions, and times routes. `route --addresses`
 //! ([`snaps`]) measures how far address points snap. `route --optimize` reorders the
 //! stops first (phase 4 step 4.1), and `--optimize-random` ([`optimize`]) measures that on
-//! random stops.
+//! random stops. `route --alternatives` ([`alt`]) finds each leg's alternatives (step 4.2),
+//! and `--alternatives-random` measures them on random pairs.
 
+pub mod alt;
 pub mod check;
 pub mod optimize;
 pub mod set;
@@ -22,7 +24,8 @@ use omp_core::find::Request;
 use omp_core::geo::{self, P};
 use omp_core::pack::Pack;
 use omp_core::route::{
-    AVOID, Ends, FAR_SNAP_M, FERRY, FERRY_CLASS, Leg, Names, Routing, Snap, Stop, TOLL,
+    AVOID, AltParams, Alternatives, Ends, FAR_SNAP_M, FERRY, FERRY_CLASS, Leg, Names, Routing,
+    Snap, Stop, TOLL,
 };
 use omp_core::search::Search;
 use omp_core::street::{CLASSES, Streets};
@@ -99,7 +102,7 @@ pub struct RouteArgs {
     #[arg(long)]
     pairs: Option<usize>,
 
-    /// Where `--pairs` writes.
+    /// Where `--pairs` and `--alternatives-random` write the pairs.
     #[arg(long)]
     out: Option<PathBuf>,
 
@@ -147,6 +150,21 @@ pub struct RouteArgs {
     /// to the matrix. With `--keep-first`, `--keep-last` or `--round-trip`.
     #[arg(long)]
     optimize_random: Option<usize>,
+
+    /// Find each leg's alternatives (up to two), and print them with their time, the time
+    /// ranked with turn costs, what they share and their turns; `--geojson` writes them
+    /// all. With `--osrm`, compare the routes turn costs pick instead of the quickest.
+    #[arg(long)]
+    alternatives: bool,
+
+    /// Find the alternatives of this many random pairs (criterion 2): how often one and
+    /// two are found, their stretch and sharing, and their time. `--out` gets the pairs.
+    #[arg(long)]
+    alternatives_random: Option<usize>,
+
+    /// With the alternatives, search with stall-on-demand.
+    #[arg(long)]
+    stall: bool,
 
     /// MiB of decoded hierarchy blocks to keep [default: the reader's].
     #[arg(long)]
@@ -285,8 +303,13 @@ pub fn run(args: RouteArgs) -> Result<()> {
     if let Some(file) = &args.set {
         return set::run_set(&r, names, file, &region, args.miles, args.verbose);
     }
+    let params = AltParams {
+        stall: args.stall,
+        ..AltParams::default()
+    };
     if !args.osrm.is_empty() {
-        return set::compare(&r, names, &args.osrm, args.worst);
+        let alts = args.alternatives.then_some(&params);
+        return set::compare(&r, names, &args.osrm, args.worst, alts);
     }
     if let Some(n) = args.addresses {
         return snaps::run(&pack, &r, n, args.seed);
@@ -302,6 +325,9 @@ pub fn run(args: RouteArgs) -> Result<()> {
     };
     if let Some(n) = args.optimize_random {
         return optimize::random(&r, n, avoid, ends, args.seed);
+    }
+    if let Some(n) = args.alternatives_random {
+        return alt::random(&r, names, n, avoid, &params, args.seed, args.out.as_deref());
     }
     if ends != Ends::default() && !args.optimize {
         bail!("--keep-first, --keep-last and --round-trip go with --optimize");
@@ -411,6 +437,30 @@ pub fn run(args: RouteArgs) -> Result<()> {
     if let Some(o) = &optimized {
         optimize::check_legs(o, &trip);
     }
+    let alts = match args.alternatives {
+        true => {
+            let t = Instant::now();
+            let alts = alt::of_trip(&r, &trip, &params)?;
+            let found = t.elapsed().as_secs_f64() * 1e3;
+            // With their directions, as the app shows them.
+            let t = Instant::now();
+            for (i, a) in alts.iter().enumerate() {
+                for x in a.iter().flat_map(|a| &a.routes[1..]) {
+                    let one = omp_core::route::Trip {
+                        snaps: trip.snaps[i..i + 2].to_vec(),
+                        legs: vec![Some(x.leg.clone())],
+                        avoid,
+                    };
+                    r.directions(&one, &only[i..i + 2], names)?;
+                }
+            }
+            let directions = t.elapsed().as_secs_f64() * 1e3;
+            alt::print(&r, names, &alts)?;
+            println!("alternatives: {found:.1} ms, their directions {directions:.1} ms");
+            alts
+        }
+        false => Vec::new(),
+    };
     if args.directions {
         let t = Instant::now();
         let steps = r.directions(&trip, &only, names)?;
@@ -419,7 +469,7 @@ pub fn run(args: RouteArgs) -> Result<()> {
         println!("directions: {} steps, {ms:.1} ms", steps.len());
     }
     if let Some(path) = &args.geojson {
-        write_geojson(path, &stops, &trip)?;
+        write_geojson(path, &stops, &trip, &alts)?;
     }
     Ok(())
 }
@@ -496,6 +546,7 @@ fn write_geojson(
     path: &Path,
     stops: &[(Stop, String)],
     trip: &omp_core::route::Trip,
+    alts: &[Option<Alternatives>],
 ) -> Result<()> {
     let mut features = Vec::new();
     for (i, ((stop, name), snap)) in stops.iter().zip(&trip.snaps).enumerate() {
@@ -523,6 +574,25 @@ fn write_geojson(
                     "time_s": l.time_s,
                     "uses": flags_text(l.uses),
                     "broken": flags_text(l.broken),
+                },
+            }));
+        }
+    }
+    for (i, a) in alts.iter().enumerate() {
+        let Some(a) = a else { continue };
+        for (k, x) in a.routes.iter().enumerate().skip(1) {
+            features.push(json!({
+                "type": "Feature",
+                "geometry": line_json(&x.leg.points),
+                "properties": {
+                    "leg": i + 1,
+                    "alternative": k + 1,
+                    "picked": k == a.picked,
+                    "metres": x.leg.metres,
+                    "time_s": x.leg.time_s,
+                    "ranked_s": x.score_s(),
+                    "shared": x.shared,
+                    "uturns": x.turns.uturns,
                 },
             }));
         }

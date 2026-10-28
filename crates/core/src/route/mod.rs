@@ -8,8 +8,10 @@
 //! [`trip`] snaps points to segments and routes the legs of a trip between them, and
 //! [`guide`] turns a trip into directions (step 3.5). [`matrix`] finds the times between
 //! every pair of a trip's stops, and [`order`] the quickest order through them (phase 4
-//! step 4.1).
+//! step 4.1). [`alt`] finds a leg's alternative routes and ranks them with turn costs
+//! (step 4.2).
 
+mod alt;
 mod guide;
 mod matrix;
 pub mod order;
@@ -29,7 +31,8 @@ use crate::pack::Pack;
 use crate::tile::hilbert;
 use crate::varint::{Reader, invalid};
 use crate::zframe;
-pub use guide::{Kind, Modifier, Names, Road, Side, Step};
+pub use alt::{AltParams, Alternative, Alternatives};
+pub use guide::{Kind, Modifier, Names, Road, Side, Step, Turns, turn_cost_s};
 pub use matrix::Optimized;
 pub use order::{Ends, Matrix};
 pub use query::Seed;

@@ -598,3 +598,131 @@ fn matrix_holds_the_legs_weights() {
             .is_err()
     );
 }
+
+/// Two roads between the same ends: a street along the south (y = 1) and a faster
+/// primary road along the north (y = 4), joined at both ends, with a street across the
+/// middle that only makes detours, and dead ends off both.
+fn ladder() -> Graph {
+    let primary = &[("highway", "primary"), ("name", "North Rd")];
+    let mut i = In::default();
+    i.way(1, STREET, &[11, 21, 31, 41, 51, 61])
+        .way(2, primary, &[14, 24, 34, 44, 54, 64])
+        .way(3, STREET, &[11, 12, 13, 14])
+        .way(4, STREET, &[61, 62, 63, 64])
+        .way(5, STREET, &[31, 32, 33, 34]);
+    for (k, (a, b)) in [(21, 22), (41, 42), (51, 52), (24, 25), (44, 45)]
+        .into_iter()
+        .enumerate()
+    {
+        i.way(10 + k as i64, STREET, &[a, b]);
+    }
+    i.build()
+}
+
+/// The ladder's alternative runs along the north road, and every route found is
+/// admissible: within the stretch, sharing no more than allowed, without a loop.
+#[test]
+fn alternatives_take_other_roads_and_are_admissible() {
+    use omp_core::route::AltParams;
+    let g = ladder();
+    let (r, ..) = reader(&g);
+    let (a, b) = (stop(11, 12, 0.5), stop(61, 62, 0.5));
+    let (sa, sb) = (r.snap(&a).unwrap().unwrap(), r.snap(&b).unwrap().unwrap());
+    let quickest = r.leg_avoiding(&sa, &sb, 0).unwrap().unwrap();
+    // 600 m of street: 86 s, against 1 km with the primary road's 500 m: 100 s.
+    assert!((quickest.metres - 600.0).abs() < 2.0, "{}", quickest.metres);
+    for stall in [false, true] {
+        let p = AltParams {
+            stall,
+            ..AltParams::default()
+        };
+        let alts = r
+            .alternatives_until(&sa, &sb, &quickest, 0, &p, &|| false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(alts.routes[0].leg, quickest);
+        assert_eq!(alts.routes.len(), 2, "stall {stall}");
+        let alt = &alts.routes[1].leg;
+        assert!((alt.metres - 1000.0).abs() < 2.0, "{}", alt.metres);
+        let north = omp_core::geo::dist(alt.points[alt.points.len() / 2], pos(34));
+        assert!(north * omp_core::geo::metres_per_unit(pos(34)) < 260.0);
+        assert!(alt.weight > quickest.weight);
+        assert!(f64::from(alt.weight) <= 1.25 * f64::from(quickest.weight));
+        assert!(alts.routes[1].shared <= 0.8);
+        assert!(alts.routes[1].via.is_some());
+        // The line runs from snap to snap.
+        assert_eq!(alt.points[0], sa.point);
+        assert_eq!(*alt.points.last().unwrap(), sb.point);
+        let sum: f64 = alt.pieces.iter().map(|p| p.time_s).sum();
+        assert!((sum - alt.time_s).abs() < 1e-6);
+        // A straight route along the street needs no turns: it is the one picked.
+        assert_eq!(alts.picked, 0);
+        assert!(alts.routes[1].turns.turns >= 2);
+    }
+    // Stopped, and without a graph along one segment.
+    let p = AltParams::default();
+    assert_eq!(
+        r.alternatives_until(&sa, &sb, &quickest, 0, &p, &|| true)
+            .unwrap(),
+        None
+    );
+    let (c, d) = (
+        r.snap(&stop(21, 31, 0.2)).unwrap().unwrap(),
+        r.snap(&stop(21, 31, 0.8)).unwrap().unwrap(),
+    );
+    let along = r.leg_avoiding(&c, &d, 0).unwrap().unwrap();
+    let alts = r
+        .alternatives_until(&c, &d, &along, 0, &p, &|| false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(alts.routes.len(), 1);
+
+    // Between every pair of points on the grid network, with every avoid option.
+    let g = network().build();
+    let (r, ..) = reader(&g);
+    let stops = [
+        stop(11, 12, 0.5),
+        stop(32, 33, 0.5),
+        stop(21, 22, 0.2),
+        stop(12, 22, 0.5),
+        stop(22, 23, 0.5),
+        stop(31, 41, 0.8),
+        stop(43, 44, 0.5),
+        stop(13, 43, 0.3),
+    ];
+    let snaps: Vec<_> = stops.iter().map(|s| r.snap(s).unwrap().unwrap()).collect();
+    let mut found = 0;
+    for avoid in [0, TOLL, FERRY, AVOID] {
+        for i in 0..snaps.len() {
+            for j in (0..snaps.len()).filter(|&j| j != i) {
+                let Some(q) = r.leg_avoiding(&snaps[i], &snaps[j], avoid).unwrap() else {
+                    continue;
+                };
+                let alts = r
+                    .alternatives_until(&snaps[i], &snaps[j], &q, avoid, &p, &|| false)
+                    .unwrap()
+                    .unwrap();
+                found += alts.routes.len() - 1;
+                let best = alts
+                    .routes
+                    .iter()
+                    .map(|x| x.score_s())
+                    .fold(f64::INFINITY, f64::min);
+                assert_eq!(alts.picked().score_s(), best);
+                for x in &alts.routes[1..] {
+                    let l = &x.leg;
+                    assert!(f64::from(l.weight) <= 1.25 * f64::from(q.weight));
+                    assert!(x.shared <= 0.8);
+                    assert_eq!(l.broken, 0);
+                    assert_eq!(l.uses & avoid & !q.broken, 0, "{i} -> {j}");
+                    let mut segs: Vec<u32> = l.pieces.iter().map(|p| p.dir >> 1).collect();
+                    segs.sort_unstable();
+                    let n = segs.len();
+                    segs.dedup();
+                    assert_eq!(segs.len(), n, "a loop, {i} -> {j}");
+                }
+            }
+        }
+    }
+    assert!(found > 0);
+}

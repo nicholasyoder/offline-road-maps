@@ -30,6 +30,13 @@ const END_M: f64 = 2.0;
 const HEADING_M: f64 = 30_000.0;
 /// Route numbers shown with a road; the rest are left out.
 const SHOWN_REFS: usize = 2;
+/// OSRM's turn function (`car.lua`), which ranks alternatives (phase 4 step 4.2): a turn
+/// costs up to this many seconds by its angle,
+const TURN_PENALTY_S: f64 = 7.5;
+/// less to the right than to the left, as on roads driven on the right,
+const TURN_BIAS: f64 = 1.075;
+/// and a U-turn this much more.
+const UTURN_PENALTY_S: f64 = 20.0;
 
 /// Where a road goes from the way it was driven, by its angle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -408,6 +415,76 @@ fn route_heading(r: &str, a: P, b: P) -> Option<&'static str> {
         (false, _, true) => "East",
         (false, _, false) => "West",
     })
+}
+
+/// The seconds OSRM's turn function gives a turn of `angle` degrees (positive to the
+/// right): a sigmoid from next to nothing straight on to [`TURN_PENALTY_S`] turning back.
+pub fn turn_cost_s(angle: f64) -> f64 {
+    let x = angle.abs() / 180.0;
+    let e = match angle >= 0.0 {
+        true => 13.0 / TURN_BIAS * x - 6.5 * TURN_BIAS,
+        false => 13.0 * TURN_BIAS * x - 6.5 / TURN_BIAS,
+    };
+    TURN_PENALTY_S / (1.0 + (-e).exp())
+}
+
+/// The turns a leg makes, from its geometry, as alternatives are ranked (phase 4 step 4.2,
+/// decision 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Turns {
+    /// Seconds by OSRM's turn function at every junction where the leg changes segment,
+    /// and [`UTURN_PENALTY_S`] for each U-turn.
+    pub cost_s: f64,
+    /// Junctions where it turns by more than 45°, U-turns left out.
+    pub turns: u32,
+    /// U-turns as the directions show them: back along the road at a junction, or two
+    /// turns closer than [`COLLAPSE_M`] that together turn back (across a median).
+    pub uturns: u32,
+}
+
+impl Leg {
+    pub fn turns(&self) -> Turns {
+        let (n, pts) = (self.pieces.len(), &self.points);
+        // A stop at a node: its piece of next to nothing makes no turn, as in directions.
+        let tiny = |k: usize| n > 1 && self.pieces[k].metres < END_M;
+        let first = usize::from(n > 0 && tiny(0));
+        let end = n.saturating_sub(usize::from(n > 1 && tiny(n - 1) && n - 1 > first));
+        // Each junction's angle and where it is along the leg.
+        let mut joints = Vec::new();
+        let mut at_m: f64 = self.pieces[..first.min(n)].iter().map(|p| p.metres).sum();
+        for k in first + 1..end {
+            at_m += self.pieces[k - 1].metres;
+            let at = self.pieces[k].points.start;
+            let (from, to) = (self.pieces[k - 1].points.start, self.pieces[k].points.end);
+            let back = leaving(pts[from..=at].iter().rev().copied());
+            let out = leaving(pts[at..to].iter().copied());
+            joints.push((turn_angle((back + 180.0).rem_euclid(360.0), out), at_m));
+        }
+        let mut t = Turns::default();
+        let mut i = 0;
+        while i < joints.len() {
+            let (a, m) = joints[i];
+            t.cost_s += turn_cost_s(a);
+            let pair = joints.get(i + 1).filter(|&&(b, mb)| {
+                mb - m < COLLAPSE_M
+                    && a.abs() <= 150.0
+                    && b.abs() <= 150.0
+                    && turn_angle(0.0, a + b).abs() > 165.0
+            });
+            if a.abs() > 165.0 || pair.is_some() {
+                t.uturns += 1;
+                t.cost_s += UTURN_PENALTY_S;
+            } else if a.abs() > 45.0 {
+                t.turns += 1;
+            }
+            if let Some(&(b, _)) = pair {
+                t.cost_s += turn_cost_s(b);
+                i += 1;
+            }
+            i += 1;
+        }
+        t
+    }
 }
 
 /// What directions need of one piece of a leg.
@@ -999,6 +1076,90 @@ mod tests {
         assert_eq!(compass(100.0), "east");
         assert_eq!(compass(350.0), "north");
         assert_eq!(compass(225.0), "southwest");
+    }
+
+    #[test]
+    fn turn_costs_follow_osrm() {
+        // OSRM's car.lua at these angles, to the hundredth of a second.
+        let r = |a: f64| (turn_cost_s(a) * 100.0).round() / 100.0;
+        assert_eq!(r(0.0), 0.01);
+        assert_eq!(r(90.0), 2.11);
+        assert_eq!(r(-90.0), 5.39);
+        assert_eq!(r(180.0), 7.45);
+        assert!(turn_cost_s(-45.0) > turn_cost_s(45.0));
+    }
+
+    /// A leg along `pts`, a piece between each pair of points.
+    fn leg_along(pts: &[P]) -> Leg {
+        let pieces = (1..pts.len())
+            .map(|i| super::super::Piece {
+                dir: (i as u32) << 1,
+                start: 0.0,
+                end: 1.0,
+                metres: geo::dist(pts[i - 1], pts[i]) * geo::metres_per_unit(pts[i]),
+                time_s: 1.0,
+                points: i - 1..i + 1,
+            })
+            .collect();
+        Leg {
+            weight: 0,
+            time_s: 0.0,
+            metres: 0.0,
+            pieces,
+            points: pts.to_vec(),
+            uses: 0,
+            broken: 0,
+            settled: 0,
+        }
+    }
+
+    #[test]
+    fn turns_and_uturns_from_the_geometry() {
+        // 100 m east, a right turn south, 100 m, then back north the way it came.
+        let at = |e: f64, s: f64| {
+            let p = geo::project(40.0, -83.0);
+            let u = 1.0 / geo::metres_per_unit(p);
+            [
+                (f64::from(p[0]) + e * u) as u32,
+                (f64::from(p[1]) + s * u) as u32,
+            ]
+        };
+        let t = leg_along(&[
+            at(0.0, 0.0),
+            at(100.0, 0.0),
+            at(100.0, 100.0),
+            at(100.0, 0.0),
+        ])
+        .turns();
+        assert_eq!((t.turns, t.uturns), (1, 1));
+        assert!(
+            (t.cost_s - (2.11 + 7.45 + 20.0)).abs() < 0.05,
+            "{}",
+            t.cost_s
+        );
+        // Across a median: left, 20 m, left again onto the other carriageway.
+        let t = leg_along(&[
+            at(0.0, 0.0),
+            at(100.0, 0.0),
+            at(100.0, -20.0),
+            at(0.0, -20.0),
+        ])
+        .turns();
+        assert_eq!((t.turns, t.uturns), (0, 1));
+        assert!(
+            (t.cost_s - (2.0 * 5.39 + 20.0)).abs() < 0.05,
+            "{}",
+            t.cost_s
+        );
+        // The same 200 m apart are two left turns.
+        let t = leg_along(&[
+            at(0.0, 0.0),
+            at(100.0, 0.0),
+            at(100.0, -200.0),
+            at(0.0, -200.0),
+        ])
+        .turns();
+        assert_eq!((t.turns, t.uturns), (2, 0));
     }
 
     #[test]
