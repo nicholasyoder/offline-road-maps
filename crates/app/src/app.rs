@@ -1051,9 +1051,11 @@ impl App {
             .fixed_pos(map_rect.min + Vec2::new(8.0, top))
             .interactable(false)
             .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.label(egui::RichText::new(lines.join("\n")).monospace().size(12.0));
-                });
+                egui::Frame::popup(ui.style())
+                    .shadow(crate::theme::MAP_SHADOW)
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(lines.join("\n")).monospace().size(12.0));
+                    });
             });
     }
 
@@ -1168,6 +1170,7 @@ impl App {
         let Some(m) = &mut self.map else { return };
         let units = self.cfg.units.unwrap_or(m.units);
         let panel = egui::Frame::popup(&ctx.global_style())
+            .shadow(crate::theme::MAP_SHADOW)
             .inner_margin(egui::Margin::symmetric(6, 4))
             .fill(Color32::from_white_alpha(215));
         let mut action = None;

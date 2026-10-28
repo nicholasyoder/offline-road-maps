@@ -3,7 +3,7 @@
 //! panel itself, with the search box and the search and route pages, is drawn by
 //! [`crate::app`].
 
-use eframe::egui::{self, Rangef, Rect, Stroke, Vec2};
+use eframe::egui::{self, Rangef, Rect, Vec2};
 
 use crate::layers::Layers;
 use crate::scale::Units;
@@ -99,12 +99,20 @@ pub fn menu(ui: &mut egui::Ui, debug_overlay: &mut bool) -> Option<Action> {
         later_in(ui, 5, "Keyboard shortcuts", "a list of the keys");
     });
     let r = r.on_hover_text("Menu");
-    // Drawn, not typed: egui's fonts have no ☰.
-    let stroke = Stroke::new(1.6, ui.style().interact(&r).fg_stroke.color);
+    // Drawn, not typed: egui's fonts have no ☰. Bars 2 points thick and 5 apart, on whole
+    // pixels, so the gaps come out equal.
+    let color = ui.style().interact(&r).fg_stroke.color;
+    let ppp = ui.ctx().pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
     let c = r.rect.center();
+    let (top, thick) = (snap(c.y - 1.0), snap(2.0).max(1.0 / ppp));
     for k in -1..=1 {
-        let y = c.y + k as f32 * 4.5;
-        ui.painter().hline((c.x - 6.0)..=(c.x + 6.0), y, stroke);
+        let y = top + snap(5.0) * k as f32;
+        let bar = Rect::from_min_max(
+            egui::pos2(snap(c.x - 6.0), y),
+            egui::pos2(snap(c.x + 6.0), y + thick),
+        );
+        ui.painter().rect_filled(bar, 0.0, color);
     }
     action
 }

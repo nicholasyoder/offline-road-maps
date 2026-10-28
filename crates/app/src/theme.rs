@@ -13,6 +13,15 @@ pub const APPROX: Color32 = Color32::from_rgb(176, 96, 0);
 /// Height of the search box and the buttons beside it.
 pub const HEADER_H: f32 = 26.0;
 
+/// The shadow of the boxes over the map: close under them, not egui's popup shadow, which
+/// sits 6 by 10 points away.
+pub const MAP_SHADOW: egui::Shadow = egui::Shadow {
+    offset: [0, 1],
+    blur: 4,
+    spread: 0,
+    color: Color32::from_black_alpha(40),
+};
+
 /// Corner radius of the widgets, and of windows, menus and the boxes over the map.
 const WIDGET_RADIUS: u8 = 3;
 const WINDOW_RADIUS: u8 = 4;
