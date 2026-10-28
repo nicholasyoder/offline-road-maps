@@ -1147,6 +1147,9 @@ impl App {
         if let Some((a, h)) = o.out.route {
             m.routing.apply(a, Place::of_hit(&h));
         }
+        if let Some((a, place)) = o.stop {
+            m.routing.apply(a, place);
+        }
         if let Some((c, z)) = o.fly {
             m.motion.fly_to(&m.camera, c, z);
         }
@@ -1517,6 +1520,8 @@ struct Parts<'a> {
 /// What was picked in the side panel, done once it is drawn.
 struct SideOut {
     out: search::Out,
+    /// A route button of "what's here" or the picked result.
+    stop: Option<(StopAction, Place)>,
     /// A step of the directions: its view.
     fly: Option<(crate::camera::Vec2, f64)>,
     action: Option<Action>,
@@ -1558,6 +1563,7 @@ fn side_panel(
     let ctx = ui.ctx().clone();
     let mut o = SideOut {
         out: search::Out::default(),
+        stop: None,
         fly: None,
         action: None,
         tabs: [Rect::NOTHING; 4],
@@ -1590,6 +1596,11 @@ fn side_panel(
     let available = matches!(p.search.status(), Status::Opening | Status::Ready);
     if bench.as_mut().is_some_and(|b| b.here_ask(available)) {
         p.here.ask(p.search, p.camera.center, p.camera);
+    }
+    // A result picked opens "what's here" at it, with the route buttons. Not in the bench,
+    // so its searches are timed as before.
+    if bench.is_none() && p.here.follow(p.search, p.camera) {
+        ctx.request_repaint();
     }
     for t in p.here.take(p.search) {
         if let Some(b) = bench.as_mut() {
@@ -1658,7 +1669,7 @@ fn side_panel(
                         .search
                         .suggestions_ui(ui, p.camera, units, recent, &mut o.out)
                     {
-                        search_page(ui, &mut p, units, &mut o.out);
+                        o.stop = search_page(ui, &mut p, units, &mut o.out);
                     }
                 }
                 Page::Route => o.fly = p.routing.page_ui(ui, p.camera, units),
@@ -1683,11 +1694,18 @@ fn keep_still(cam: &mut Camera, last: Rect, rect: Rect) {
     }
 }
 
-/// The search page under the suggestions: "what's here" for a right-clicked point, then the
-/// results of Enter; a few words on what to do when there is neither.
-fn search_page(ui: &mut egui::Ui, p: &mut Parts<'_>, units: Units, out: &mut search::Out) {
+/// The search page under the suggestions: "what's here" for a right-clicked point or the
+/// picked result, then the results of Enter; a few words on what to do when there is
+/// neither. Returns a route button clicked, with its stop.
+fn search_page(
+    ui: &mut egui::Ui,
+    p: &mut Parts<'_>,
+    units: Units,
+    out: &mut search::Out,
+) -> Option<(StopAction, Place)> {
     let here = p.here.panel.is_some();
-    p.here.page_ui(ui, units, p.search.icons());
+    let menu = p.routing.menu_state();
+    let stop = p.here.page_ui(ui, units, p.search.icons(), &menu);
     if !p.search.has_results() {
         if !here {
             let weak = |t: &str| egui::RichText::new(t).color(crate::theme::WEAK);
@@ -1697,12 +1715,13 @@ fn search_page(ui: &mut egui::Ui, p: &mut Parts<'_>, units: Units, out: &mut sea
                 "Right-click the map for what is there, or to route from or to a point.",
             ));
         }
-        return;
+        return stop;
     }
     if here {
         ui.separator();
     }
     p.search.results_ui(ui, p.camera, units, out);
+    stop
 }
 
 const ERROR: Color32 = Color32::from_rgb(180, 30, 30);

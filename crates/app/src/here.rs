@@ -5,15 +5,20 @@
 //! as `omp-builder here` prints it), and shows them in the side panel's search page, with a
 //! marker at the point. Escape, the answer's × or a click on the map closes it. Left click stays free for
 //! panning. The same menu has the route items (phase 3 step 3.6, [`crate::routing`]).
+//!
+//! A search result picked opens the same panel at the result, under its name (step 3.10).
+//! Both have the route items as buttons; a result's stop is the result itself, snapped to
+//! its own street first ([`Place::of_hit`]).
 
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Pos2, Stroke};
+use eframe::egui::{self, Color32, Pos2, Rect, Stroke};
+use omp_core::find::Hit;
 use omp_core::geo::{self, P};
 use omp_core::here::Shown;
 
 use crate::camera::{self, Camera};
-use crate::routing::{self, MenuState, StopAction};
+use crate::routing::{self, MenuState, Place, StopAction};
 use crate::scale::{self, Units};
 use crate::search::{self, Icons, SearchUi, Status};
 use crate::theme::{APPROX, Glyph, INK, WEAK, glyph_button};
@@ -55,6 +60,8 @@ pub struct HereTaken {
 /// The panel: where it points, and the answer once it is in.
 pub struct Panel {
     pub at: camera::Vec2,
+    /// The search result picked, when the panel is for one.
+    pub hit: Option<Hit>,
     id: u64,
     pub answer: Option<Result<Shown, String>>,
 }
@@ -68,11 +75,36 @@ pub struct HereUi {
     pub last: Option<HereTaken>,
     /// Asked since the side panel last looked: it shows the search page.
     pub asked: bool,
+    /// The search marker the panel last followed ([`Self::follow`]).
+    followed: Option<Hit>,
+    /// Where the route buttons were drawn last frame, for the tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) buttons: Option<[Rect; 3]>,
 }
 
 impl HereUi {
     /// Asks what is at `at` (world coordinates) and opens the panel there.
     pub fn ask(&mut self, search: &SearchUi, at: camera::Vec2, cam: &Camera) {
+        self.open(search, at, cam, None);
+    }
+
+    /// Follows the search's marker: a result newly picked opens the panel at it, and the
+    /// marker cleared closes the panel that was its. Returns whether the marker changed.
+    pub fn follow(&mut self, search: &SearchUi, cam: &Camera) -> bool {
+        let marker = &search.session.marker;
+        if *marker == self.followed {
+            return false;
+        }
+        self.followed = marker.clone();
+        match marker {
+            Some(h) => self.open(search, geo::to_unit(h.p), cam, Some(h.clone())),
+            None if self.panel.as_ref().is_some_and(|p| p.hit.is_some()) => self.panel = None,
+            None => {}
+        }
+        true
+    }
+
+    fn open(&mut self, search: &SearchUi, at: camera::Vec2, cam: &Camera, hit: Option<Hit>) {
         self.next_id += 1;
         let mpp = scale::metres_per_point(geo::unit_to_lonlat(at)[1], cam.scale());
         let q = HereQuery {
@@ -85,6 +117,7 @@ impl HereUi {
         self.asked = true;
         self.panel = Some(Panel {
             at,
+            hit,
             id: self.next_id,
             answer: None,
         });
@@ -182,9 +215,12 @@ impl HereUi {
         esc
     }
 
-    /// The marker: a dot at the point, and a ring at the address found when it is apart.
+    /// The marker: a dot at the point, and a ring at the address found when it is apart. A
+    /// picked result has the search's own pin instead.
     pub fn draw_marker(&self, painter: &egui::Painter, origin: Pos2, cam: &Camera) {
-        let Some(panel) = &self.panel else { return };
+        let Some(panel) = self.panel.as_ref().filter(|p| p.hit.is_none()) else {
+            return;
+        };
         let screen = |w: camera::Vec2| {
             let s = cam.world_to_screen(w);
             Pos2::new(origin.x + s[0] as f32, origin.y + s[1] as f32)
@@ -205,20 +241,48 @@ impl HereUi {
         painter.circle_filled(at, 5.5, DOT);
     }
 
-    /// The answer, in the side panel's search page, under a heading with its ×.
-    pub fn page_ui(&mut self, ui: &mut egui::Ui, units: Units, icons: &Icons) {
-        let Some(panel) = &self.panel else { return };
+    /// The answer, in the side panel's search page, under a heading with its ×: "What's
+    /// here", or the picked result's name and where it is. Then the route buttons; returns
+    /// the one clicked, and the stop it makes.
+    pub fn page_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        units: Units,
+        icons: &Icons,
+        route: &MenuState,
+    ) -> Option<(StopAction, Place)> {
+        let panel = self.panel.as_ref()?;
         let mut close = false;
+        let mut chosen = None;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("What's here").strong().color(INK));
+                match &panel.hit {
+                    Some(h) => {
+                        ui.label(egui::RichText::new(icons.of(h)).color(WEAK));
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&h.name).strong().size(14.0).color(INK),
+                            )
+                            .truncate(),
+                        );
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("What's here").strong().color(INK));
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     close = glyph_button(ui, Glyph::Close, 18.0)
                         .on_hover_text("Close  (Esc)")
                         .clicked();
                 });
             });
+            if let Some(h) = &panel.hit
+                && !h.context.is_empty()
+            {
+                ui.label(egui::RichText::new(&h.context).size(11.5).color(WEAK));
+            }
+            let hit_name = panel.hit.as_ref().map(|h| h.name.as_str());
             match &panel.answer {
                 None => {
                     ui.horizontal(|ui| {
@@ -229,7 +293,7 @@ impl HereUi {
                 Some(Err(e)) => {
                     ui.label(egui::RichText::new(format!("Could not look: {e}")).color(APPROX));
                 }
-                Some(Ok(shown)) => shown_ui(ui, shown, units, icons),
+                Some(Ok(shown)) => shown_ui(ui, shown, units, icons, hit_name),
             }
             ui.add_space(2.0);
             let [lon, lat] = geo::unit_to_lonlat(panel.at);
@@ -247,10 +311,21 @@ impl HereUi {
                     ui.ctx().copy_text(copy_text(lon, lat));
                 }
             });
+            ui.add_space(3.0);
+            let (a, rects) = routing::stop_buttons(ui, route);
+            self.buttons = Some(rects);
+            chosen = a.map(|a| {
+                let place = match &panel.hit {
+                    Some(h) => Place::of_hit(h),
+                    None => Place::at(panel.at),
+                };
+                (a, place)
+            });
         });
         if close {
             self.panel = None;
         }
+        chosen
     }
 
     pub fn overlay_line(&self) -> Option<String> {
@@ -264,8 +339,9 @@ impl HereUi {
 }
 
 /// The answer: the address and its place, the street when it is not the address's, the
-/// places and POIs nearby, and the areas.
-fn shown_ui(ui: &mut egui::Ui, s: &Shown, units: Units, icons: &Icons) {
+/// places and POIs nearby, and the areas. A picked result's own address (`hit_name`) is
+/// already its heading.
+fn shown_ui(ui: &mut egui::Ui, s: &Shown, units: Units, icons: &Icons, hit_name: Option<&str>) {
     let away = |m: f64| {
         if m < 10.0 {
             String::new()
@@ -274,7 +350,11 @@ fn shown_ui(ui: &mut egui::Ui, s: &Shown, units: Units, icons: &Icons) {
         }
     };
     let weak = |t: String| egui::RichText::new(t).size(11.5).color(WEAK);
-    if let Some(a) = &s.address {
+    if let Some(a) = s
+        .address
+        .as_ref()
+        .filter(|a| Some(a.label.as_str()) != hit_name)
+    {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("🏠").color(WEAK));
             ui.label(egui::RichText::new(&a.label).strong().size(14.0).color(INK));
@@ -403,7 +483,7 @@ mod tests {
                 here.map_input(&resp, rect.min, &cam, &search, &MenuState::default());
                 let ctx = ui.ctx().clone();
                 here.escape(&ctx);
-                here.page_ui(ui, Units::Kilometres, search.icons());
+                here.page_ui(ui, Units::Kilometres, search.icons(), &MenuState::default());
             });
             full.textures_delta.clear();
         };

@@ -96,16 +96,17 @@ pub struct MenuState {
     pub has_stops: bool,
 }
 
+const ITEMS: [(&str, StopAction); 3] = [
+    ("Route from here", StopAction::From),
+    ("Route to here", StopAction::To),
+    ("Add stop", StopAction::Add),
+];
+
 /// The route items of a menu: "Route from here", "Route to here", "Add stop", and "Clear
 /// route" once there are stops. Returns the one clicked.
 pub fn menu_items(ui: &mut egui::Ui, state: &MenuState) -> Option<StopAction> {
     let mut chosen = None;
-    let items = [
-        ("Route from here", StopAction::From),
-        ("Route to here", StopAction::To),
-        ("Add stop", StopAction::Add),
-    ];
-    for (label, action) in items {
+    for (label, action) in ITEMS {
         let r = ui.add_enabled(state.enabled, egui::Button::new(label));
         if r.clicked() {
             chosen = Some(action);
@@ -118,6 +119,26 @@ pub fn menu_items(ui: &mut egui::Ui, state: &MenuState) -> Option<StopAction> {
         chosen = Some(StopAction::Clear);
     }
     chosen
+}
+
+/// The same items as a row of buttons, for the search page's "what's here" and picked
+/// result (step 3.10). Returns the one clicked, and where each was drawn, for the tests.
+pub fn stop_buttons(ui: &mut egui::Ui, state: &MenuState) -> (Option<StopAction>, [egui::Rect; 3]) {
+    let mut chosen = None;
+    let mut rects = [egui::Rect::NOTHING; 3];
+    ui.horizontal_wrapped(|ui| {
+        for (i, (label, action)) in ITEMS.into_iter().enumerate() {
+            let r = ui.add_enabled(state.enabled, egui::Button::new(label).small());
+            rects[i] = r.rect;
+            if r.clicked() {
+                chosen = Some(action);
+            }
+            if let Some(why) = &state.why {
+                r.on_disabled_hover_text(why.as_str());
+            }
+        }
+    });
+    (chosen, rects)
 }
 
 /// Timings of the last answer, for the overlay.

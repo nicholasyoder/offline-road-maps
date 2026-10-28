@@ -1,6 +1,6 @@
 # Phase 3 Plan: Car Routing
 
-*Draft 2, 2026-10-27, with the owner's answers to the planning questions (decisions 1–12). Expands Phase 3 of [roadmap.md](roadmap.md#phase-3-car-routing). Builds on the routing estimate from phase 0 ([step 0.3](phase0-plan.md#routing-and-search-estimates), [0.5](phase0-plan.md#05-full-north-america-run)), the provisional routing note in [format.md](format.md#routing--provisional), the street table and spatial grid from [phase 2](phase2-plan.md), and the builder as restructured by the [refactor plan](refactor-plan.md).*
+*Draft 2, 2026-10-27, with the owner's answers to the planning questions (decisions 1–12); done 2026-10-28, its misses accepted by the owner (decisions 15 and 16). Expands Phase 3 of [roadmap.md](roadmap.md#phase-3-car-routing). Builds on the routing estimate from phase 0 ([step 0.3](phase0-plan.md#routing-and-search-estimates), [0.5](phase0-plan.md#05-full-north-america-run)), the provisional routing note in [format.md](format.md#routing--provisional), the street table and spatial grid from [phase 2](phase2-plan.md), and the builder as restructured by the [refactor plan](refactor-plan.md).*
 
 ## Purpose
 
@@ -50,7 +50,7 @@ The roadmap's items are "road graph, car profile, turn restrictions and contract
 | 3.7 Route panel and directions list | **Done** 2026-10-28 | Panel at the top right: stops dragged, removed and reversed, avoid checkboxes, totals per leg, notices, directions with drawn icons (only the rows in view laid out); a step clicked flies there and is drawn over the route; restricted stretches in purple; dashed lines to stops off the road. Ohio bench frame p95 1.17 ms with route and panel against 0.90 without a route; coast to coast on North America shown 503 ms after asking, first route after opening |
 | 3.8 Side panel: one home for search, routing and the menus | **Done** 2026-10-28 | Opaque resizable panel on the left (300–480 points, at most 45% of the window, saved in `config.toml`): search box and ☰ menu, then Search, Route, Trips and Layers pages; the map beside it stays still as it opens, closes or resizes, and view fits use the visible map. Ohio bench frame p95 1.04 ms with route and route page against `ohio.toml`'s 0.82 on the same pack and day (3.7: 1.17 against 0.90) |
 | 3.9 Performance, accuracy and hardware checks | **Done** 2026-10-28 | Every criterion measured on the dev machine, the 7490 (Debian and Windows 11) and the E6430. Met: 1, 2, 3, 7, 8 and warm short routes everywhere. Missed, for the owner: the first route from a cold USB 2 stick (3.2–8.0 s; 3 s), warm coast to coast and ten stops on the laptops (E6430 2.5 and 2.2 s; 1.25 and 2 s), RSS (dev 322 MiB; 300 MB), criterion 4's hand-written routes (3.5) |
-| 3.10 Search and route polish from the hand checks | Not started | Route buttons for a picked search result; recent searches run as typed (done in 3.9) |
+| 3.10 Search and route polish from the hand checks | **Done** 2026-10-28 | A picked result opens "what's here" at it, under its name; it and a right-clicked point's "what's here" have Route from here, Route to here and Add stop buttons. Checked headless on stubs and on the North America pack (Columbus result to a Cleveland point, 230 km) |
 
 ## Environment notes
 
@@ -409,6 +409,15 @@ As phase 2 step 2.9, with routing added:
 - **Recent searches run as typed.** Picking one from the empty box's list fills the box and asks it as typing would, its suggestions filling in, rather than running it as Enter and flying to the first result. *Done in 3.9* (`SearchUi::choose`).
 
 **Done when:** a picked result and a "what's here" point can each be made the start, the destination or a stop from the Search page, checked by a headless UI test, on the North America pack.
+
+> **Done 2026-10-28** (this commit).
+>
+> - **Picked result:** picking a result, from the suggestions, the results of Enter or Enter's own first result, opens the "what's here" panel at it on the Search page (`HereUi::follow`, which follows the search's marker): the result's icon, name and place as its heading, then what "what's here" finds there (the address when it is not the result's own, the street, nearby places and the areas), the coordinates, and a row of **Route from here**, **Route to here** and **Add stop** buttons (`routing::stop_buttons`, disabled with the menu's reason when the pack has no routing). The stop is the result itself (`Place::of_hit`, snapped to its own street first). The red pin stands for the point; the blue dot is only for a right-clicked point. The × or Escape closes the panel and keeps the pin, and the panel does not come back until another result is picked; clearing the search closes it.
+> - **Right-clicked point:** its "what's here" has the same buttons; the stop is the point (`Place::at`), as the map's menu makes it.
+> - The route page's hint now reads "Pick a search result or right-click the map: …".
+> - **Tests:** `side_tests.rs` `picked_result_and_whats_here_set_stops` (stubs, runs in CI): a result made the start and another the destination, each with its street, a point added between, and the panel following the marker as above. `real_pack_result_and_point_route` (ignored; `OMP_TEST_PACK=<first chunk> cargo test -p omp-app --release -- --ignored real_pack`), run on the North America pack: "50 West Broad Street, Columbus" typed and its first suggestion picked with the arrow and Enter, "what's here" at it in 11 ms (Columbus, Franklin County, Ohio, United States), Route from here; a point in Cleveland, Route to here; the route 230.0 km, 163 min, in 20 ms. ("1 Capitol Square" has no street to snap to, as it is an address with no street of that name.)
+> - **Bench:** the bench does not open the panel for the results it picks, so its searches are timed as in 3.9.
+> - Left open: none. Worth a look by hand on the next pass with the app: how the buttons wrap in a narrow panel.
 
 ---
 

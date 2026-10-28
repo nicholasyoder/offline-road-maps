@@ -260,15 +260,15 @@ impl RouteUi {
         let Some(r) = &self.route else {
             let text = match (&self.error, self.from.is_some() && self.to.is_some()) {
                 (None, _) if !self.has_stops() => {
-                    "Right-click the map or a search result: “Route from here”, “Route to here”."
+                    "Pick a search result or right-click the map: “Route from here”, “Route to here”."
                         .into()
                 }
                 (Some(e), _) => format!("Routing failed: {e}"),
                 (None, true) => "Routing…".into(),
                 (None, false) if self.from.is_none() => {
-                    "Right-click the map or a search result: “Route from here”.".into()
+                    "Pick a search result or right-click the map: “Route from here”.".into()
                 }
-                (None, false) => "Right-click the map or a search result: “Route to here”.".into(),
+                (None, false) => "Pick a search result or right-click the map: “Route to here”.".into(),
             };
             ui.label(egui::RichText::new(text).color(WEAK));
             return;

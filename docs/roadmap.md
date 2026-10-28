@@ -128,8 +128,9 @@ Detailed plan: [refactor-plan.md](refactor-plan.md). Bug fixes, shared code, the
 ### Phase 3: Car routing
 Detailed plan: [phase3-plan.md](phase3-plan.md).
 
-- [ ] Builder: road graph, car profile, turn restrictions and contraction hierarchies.
-- [ ] App: A to B and multi-stop routing, a directions list, distance and time, a route overlay, and avoid options.
+- [x] Builder: road graph, car profile, turn restrictions and contraction hierarchies. Done 2026-10-27: [phase 3 steps 3.1–3.3](phase3-plan.md#33-routing-format-and-core-reader).
+- [x] App: A to B and multi-stop routing, a directions list, distance and time, a route overlay, and avoid options. Done 2026-10-28: [phase 3 steps 3.4–3.8 and 3.10](phase3-plan.md#310-search-and-route-polish-from-the-hand-checks).
+  Measured 2026-10-28 ([phase 3 step 3.9](phase3-plan.md#39-performance-accuracy-and-hardware-checks)), North America: exact against Dijkstra, the route set 72 of 72, 99.7% of address pairs routed, random pairs 98.6–99.4% within 15% of OSRM; routing adds 2,699.5 MiB; warm short routes 8–69 ms on every machine. Not met, accepted by the owner ([decisions 15 and 16](phase3-plan.md#decisions)): the first route from a cold USB 2 stick (3.2–8.0 s against 3 s), warm coast to coast on the laptops (1.9–2.5 s against 1.25 s), RSS (dev 322 MiB against 300 MB), and the hand-written routes against OSRM (76–77%).
 
 ### Phase 4: Trip planner features
 - [ ] Stop optimization (a travelling-salesman heuristic), with first and last stops fixed or open.
