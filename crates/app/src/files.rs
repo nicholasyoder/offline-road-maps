@@ -2,7 +2,7 @@
 //! TOML file per trip or pushpin set, named after it; and the in-app file browser, used
 //! where those folders cannot be written (a locked stick) and to open a file from
 //! elsewhere. No native dialog (decision 9): `rfd` would pull in GTK or a D-Bus portal on
-//! Linux. Steps 4.8 and 4.10 add their formats to the same browser.
+//! Linux. Step 4.10 adds its formats to the same browser.
 
 use std::io;
 use std::path::{Path, PathBuf};

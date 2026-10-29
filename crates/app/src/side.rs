@@ -68,11 +68,6 @@ pub fn later_in(ui: &mut egui::Ui, phase: u8, label: &str, what: &str) {
         .on_disabled_hover_text(format!("Phase {phase}: {what}"));
 }
 
-/// [`later_in`] phase 4, trip planning.
-pub fn later(ui: &mut egui::Ui, label: &str, what: &str) {
-    later_in(ui, 4, label, what);
-}
-
 /// The row of tabs. Returns where each was drawn, for the tests.
 pub fn tabs(ui: &mut egui::Ui, page: &mut Page) -> [Rect; 5] {
     let mut rects = [Rect::NOTHING; 5];

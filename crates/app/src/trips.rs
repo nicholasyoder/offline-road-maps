@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use crate::config;
 use crate::files::{self, Browser, Mode, Outcome, Saved};
 use crate::pins::{self, PinRef, PinsUi};
-use crate::side::later;
 use crate::theme::{ACCENT, APPROX, Glyph, INK, WEAK, glyph_button};
 
 /// The folder next to the executable.
@@ -443,8 +442,8 @@ impl TripsUi {
 
 impl TripsUi {
     /// The Trips page: the saved trips (open, rename, duplicate, delete, or open one from a
-    /// file), then the pushpin sets (show or hide, rename, delete, and a set's pins), then
-    /// the places kept for import and export (step 4.8). `can_open` is false while no pack
+    /// file), then the pushpin sets (show or hide, rename, delete, and a set's pins).
+    /// `can_open` is false while no pack
     /// with routing is open.
     pub fn page_ui(
         &mut self,
@@ -463,12 +462,6 @@ impl TripsUi {
                 self.trips_ui(ui, &current, can_open, exe_dir, &mut out);
                 ui.separator();
                 self.pins_ui(ui, pins, exe_dir, &mut out);
-                ui.separator();
-                ui.label(egui::RichText::new("Import and export").strong().color(INK));
-                ui.horizontal_wrapped(|ui| {
-                    later(ui, "Import…", "trips and pushpins from GPX, CSV or KML");
-                    later(ui, "Export…", "trips and pushpins as GPX, CSV or KML");
-                });
             });
         out
     }

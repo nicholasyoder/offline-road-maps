@@ -27,7 +27,6 @@ use super::{
 use crate::camera::{self, Camera};
 use crate::scale::Units;
 use crate::search::distance_text;
-use crate::side::later;
 use crate::theme::{ACCENT, APPROX, Glyph, INK, WEAK, glyph_button};
 
 const ICON: f32 = 20.0;
@@ -132,11 +131,6 @@ impl RouteUi {
         self.optimize_window(&ui.ctx().clone(), at, units, &mut edits);
         ui.separator();
         self.summary(ui, units, &mut edits);
-        if self.route.is_some() {
-            ui.horizontal_wrapped(|ui| {
-                later(ui, "Export…", "As a GPX or KML file");
-            });
-        }
         let left = ui.available_height();
         self.directions(ui, left.max(80.0), units, &mut edits);
         let mut fly = None;
