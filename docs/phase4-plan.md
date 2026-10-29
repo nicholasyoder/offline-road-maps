@@ -364,7 +364,7 @@ Two printouts (decision 17): **the map**, one page of exactly the area chosen on
 > **Done 2026-10-29**
 > - **Pages** (`pages.rs`, `print.rs`, `pdf.rs`): the map is `snapshot::draw_view` at `dpi/72 × text size` pixels per point, for a camera that shows exactly the rectangle (tested to 1e-12 world units); egui draws the label, border, stop pins, pushpin names, scale bar and credit on a transparent layer of the same size, composited on the CPU. Directions reuse the route page's own row drawing (`PrintRows`) and are paginated with page numbers. The PDF writer (one Flate image per page, PNG predictors) is the one 4.10 needs; poppler opens it.
 > - **App** (`printui.rs`): *Print map…* / *Print directions…* on the route page, ☰ menu, Ctrl+P. A `Print` side page (not a tab) with the settings kept in `config.toml` (`[print]`), the rectangle drawn over the map (drag inside to move, a corner to resize, aspect kept; tested with synthetic pointer events), and a thumbnail that opens larger, drawn by a worker thread with its own GPU device after a 250 ms pause. Seen working in the real app on North America.
-> - **Headless:** `omp-app --render --pack … --route … --print out.pdf [--directions --paper --orientation --text-size --label --dpi --units]`.
+> - **Headless:** `omp-app --render --pack … --route … --print out.pdf [--directions --paper --orientation --text-size (percent, or small/normal/large) --label --dpi --units]`.
 > - **Tweaks after the hand check (owner):** Print is a fifth tab, opening the print page as the menu does (no heading or Close button; Escape or another tab leaves it); the tabs sit closer; the preview shrinks to the room left above the buttons; the corner cursors follow each diagonal; no "Letter on paper" caption.
 > - **Open:** *Print…* and *Save as PDF…* are disabled placeholders for 4.10. Margins are a fixed 0.25 in. The night discs along a leg are not drawn on the printed map. Render time at 300 dpi and RSS on the E6430 are for 4.11.
 
@@ -496,3 +496,5 @@ Open: none.
 - **Free U-turns** (phase 3 decisions 13 and 16): 4.2's rescoring and 4.4's penalty.
 - **How the route page's buttons wrap in a narrow panel** (3.10): the page gains many controls here, so check it at 300 points.
 - **Phase 5's print style and UI size setting:** the print page should take a style and a text scale as parameters, so phase 5 only adds choices.
+
+> **Print page tweaks (2026-10-29):** the label is a row of the settings grid; text size is a 50–160 % slider (default 80 %, the old "Small"; old `small`/`normal`/`large` in config or `--text-size` read as 80/100/130 %); the scale cards, printed and on the map, are as wide as their contents.

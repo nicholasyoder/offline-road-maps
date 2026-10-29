@@ -2019,9 +2019,14 @@ fn scale_bar(ui: &mut egui::Ui, metres_per_point: f64, units: Units) {
         Units::Both => &[(true, true), (false, false)],
     };
     let stroke = Stroke::new(1.5, INK);
+    let font = FontId::proportional(11.0);
     for &(imperial, up) in bars {
         let (len, text) = scale::bar(metres_per_point, MAX, imperial);
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(MAX as f32 + 52.0, 13.0), Sense::hover());
+        let label = ui
+            .painter()
+            .layout_no_wrap(text.to_string(), font.clone(), INK);
+        let width = 1.0 + len as f32 + 5.0 + label.size().x;
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 13.0), Sense::hover());
         let p = ui.painter();
         let (x0, x1) = (rect.left() + 1.0, rect.left() + 1.0 + len as f32);
         let (y, tip) = match up {
@@ -2035,7 +2040,7 @@ fn scale_bar(ui: &mut egui::Ui, metres_per_point: f64, units: Units) {
             Pos2::new(x1 + 5.0, rect.center().y),
             Align2::LEFT_CENTER,
             text,
-            FontId::proportional(11.0),
+            font.clone(),
             INK,
         );
     }

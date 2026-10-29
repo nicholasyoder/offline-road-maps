@@ -352,14 +352,24 @@ fn scale_bar(p: &egui::Painter, corner: Pos2, metres_per_point: f64, units: Unit
         Units::Kilometres => &[false],
         Units::Both => &[true, false],
     };
+    let font = FontId::proportional(11.0);
+    let bar_of = |imperial| scale::bar(metres_per_point, MAX, imperial);
+    let width = bars
+        .iter()
+        .map(|&imperial| {
+            let (len, text) = bar_of(imperial);
+            let label = p.layout_no_wrap(text.to_string(), font.clone(), INK);
+            len as f32 + 5.0 + label.size().x
+        })
+        .fold(0.0, f32::max);
     let card = Rect::from_min_size(
         corner - Vec2::new(0.0, ROW * bars.len() as f32 + 6.0),
-        Vec2::new(MAX as f32 + 62.0, ROW * bars.len() as f32 + 6.0),
+        Vec2::new(width + 10.0, ROW * bars.len() as f32 + 6.0),
     );
     p.rect_filled(card, 3.0, Color32::from_white_alpha(225));
     let stroke = Stroke::new(1.5, INK);
     for (i, &imperial) in bars.iter().enumerate() {
-        let (len, text) = scale::bar(metres_per_point, MAX, imperial);
+        let (len, text) = bar_of(imperial);
         let top = card.top() + 3.0 + ROW * i as f32;
         let (x0, x1) = (card.left() + 5.0, card.left() + 5.0 + len as f32);
         let (y, tip) = (top + ROW - 2.0, top + 3.0);
@@ -370,7 +380,7 @@ fn scale_bar(p: &egui::Painter, corner: Pos2, metres_per_point: f64, units: Unit
             Pos2::new(x1 + 5.0, top + ROW / 2.0),
             Align2::LEFT_CENTER,
             text,
-            FontId::proportional(11.0),
+            font.clone(),
             INK,
         );
     }
@@ -581,10 +591,10 @@ mod tests {
 
     #[test]
     fn big_pages_are_given_less_dpi() {
-        let l = Layout::new(print::Paper::Tabloid, false, false, TextSize::Normal);
+        let l = Layout::new(print::Paper::Tabloid, false, false, TextSize::default());
         assert!(page_dpi(&l, 600.0) < 600.0);
         assert!(l.pixels(page_dpi(&l, 600.0))[1] <= 8192);
-        let l = Layout::new(print::Paper::Letter, false, false, TextSize::Normal);
+        let l = Layout::new(print::Paper::Letter, false, false, TextSize::default());
         assert_eq!(page_dpi(&l, 300.0), 300.0);
         assert_eq!(page_dpi(&l, 600.0), 600.0);
     }

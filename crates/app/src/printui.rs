@@ -234,13 +234,6 @@ impl PrintUi {
     /// The page in the side panel.
     pub fn page_ui(&mut self, ui: &mut egui::Ui, settings: &mut Settings, around: &Around) {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("Label").color(WEAK).size(12.0));
-        ui.add(
-            egui::TextEdit::singleline(&mut self.label)
-                .desired_width(f32::INFINITY)
-                .hint_text("Printed at the top of the page"),
-        );
-        ui.add_space(4.0);
         self.poll_printers();
         let chosen = self.chosen_printer(settings);
         let (caps, caps_ready) = self.capabilities(ui.ctx(), chosen.as_deref());
@@ -249,6 +242,13 @@ impl PrintUi {
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
+                ui.label("Label");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.label)
+                        .desired_width(180.0)
+                        .hint_text("Printed at the top of the page"),
+                );
+                ui.end_row();
                 ui.label("Printer");
                 ui.horizontal(|ui| {
                     if loading {
@@ -306,11 +306,16 @@ impl PrintUi {
                     ui.end_row();
                 }
                 ui.label("Text size");
-                ui.horizontal(|ui| {
-                    for t in TextSize::ALL {
-                        ui.selectable_value(&mut settings.text, t, t.name());
-                    }
-                });
+                let mut percent = settings.text.0;
+                if ui
+                    .add(egui::Slider::new(&mut percent, TextSize::MIN..=TextSize::MAX).suffix("%"))
+                    .on_hover_text(
+                        "How large the text and symbols print; smaller shows more ground",
+                    )
+                    .changed()
+                {
+                    settings.text = TextSize(percent);
+                }
                 ui.end_row();
                 ui.label("Copies");
                 ui.add(egui::DragValue::new(&mut settings.copies).range(1..=99));
@@ -953,7 +958,7 @@ impl PrintUi {
     fn signature(&self, inputs: &Inputs) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         let s = &inputs.settings;
-        (self.kind as u8, &self.label, s.paper as u8, s.text as u8).hash(&mut h);
+        (self.kind as u8, &self.label, s.paper as u8, s.text.0).hash(&mut h);
         s.orientation.landscape(self.wide).hash(&mut h);
         inputs.units.name().hash(&mut h);
         inputs.pack.hash(&mut h);
@@ -1361,7 +1366,7 @@ mod tests {
         let a = r.print.signature(&inputs(r.settings.clone()));
         assert_eq!(a, r.print.signature(&inputs(r.settings.clone())));
         let mut big = r.settings.clone();
-        big.text = TextSize::Large;
+        big.text = TextSize(130);
         assert_ne!(a, r.print.signature(&inputs(big)));
         // Copies are for printing, not for the page.
         let mut two = r.settings.clone();

@@ -122,40 +122,62 @@ impl Orientation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TextSize {
-    Small,
-    #[default]
-    Normal,
-    Large,
+/// The size of the printed text and symbols as a percentage of the screen's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct TextSize(pub u32);
+
+impl Default for TextSize {
+    fn default() -> Self {
+        TextSize(80)
+    }
+}
+
+impl<'de> Deserialize<'de> for TextSize {
+    /// A percentage, or one of the names the three buttons had (kept as they looked).
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Percent(u32),
+            Name(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Percent(p) => Ok(TextSize(p).clamped()),
+            Raw::Name(n) => TextSize::parse(&n)
+                .ok_or_else(|| serde::de::Error::custom(format!("unknown text size {n:?}"))),
+        }
+    }
 }
 
 impl TextSize {
-    pub const ALL: [TextSize; 3] = [TextSize::Small, TextSize::Normal, TextSize::Large];
+    pub const MIN: u32 = 50;
+    pub const MAX: u32 = 160;
 
-    pub fn name(self) -> &'static str {
-        match self {
-            TextSize::Small => "Small",
-            TextSize::Normal => "Normal",
-            TextSize::Large => "Large",
-        }
+    pub fn clamped(self) -> Self {
+        TextSize(self.0.clamp(Self::MIN, Self::MAX))
     }
 
     /// Printed size of the text and symbols against the screen's: the window the map is
     /// drawn for is the paper's divided by this.
     pub fn factor(self) -> f64 {
-        match self {
-            TextSize::Small => 0.8,
-            TextSize::Normal => 1.0,
-            TextSize::Large => 1.3,
-        }
+        self.clamped().0 as f64 / 100.0
     }
 
+    /// A percentage (`90` or `90%`), or small, normal or large.
     pub fn parse(s: &str) -> Option<TextSize> {
-        TextSize::ALL
-            .into_iter()
-            .find(|t| t.name().eq_ignore_ascii_case(s.trim()))
+        let s = s.trim();
+        match s.to_ascii_lowercase().as_str() {
+            "small" => return Some(TextSize(80)),
+            "normal" => return Some(TextSize(100)),
+            "large" => return Some(TextSize(130)),
+            _ => {}
+        }
+        s.trim_end_matches('%')
+            .trim()
+            .parse()
+            .ok()
+            .map(|p| TextSize(p).clamped())
     }
 }
 
@@ -381,18 +403,18 @@ mod tests {
     const WORLD: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
 
     fn layout() -> Layout {
-        Layout::new(Paper::Letter, true, true, TextSize::Normal)
+        Layout::new(Paper::Letter, true, true, TextSize::default())
     }
 
     #[test]
     fn letter_pages() {
-        let l = Layout::new(Paper::Letter, false, false, TextSize::Normal);
+        let l = Layout::new(Paper::Letter, false, false, TextSize(100));
         assert_eq!(l.page, [612.0, 792.0]);
         assert_eq!(l.header, None);
         assert_eq!(l.map, [18.0, 18.0, 594.0, 760.0]);
         // 300 dpi: 2550 x 3300.
         assert_eq!(l.pixels(300.0), [2550, 3300]);
-        let l = Layout::new(Paper::Letter, true, true, TextSize::Normal);
+        let l = Layout::new(Paper::Letter, true, true, TextSize(100));
         assert_eq!(l.page, [792.0, 612.0]);
         assert_eq!(l.header, Some([18.0, 18.0, 774.0, 40.0]));
         assert_eq!(l.map[1], 40.0);
@@ -401,7 +423,11 @@ mod tests {
     #[test]
     fn the_map_never_leaves_the_margins() {
         for paper in Paper::ALL {
-            for text in TextSize::ALL {
+            for text in [
+                TextSize(TextSize::MIN),
+                TextSize::default(),
+                TextSize(TextSize::MAX),
+            ] {
                 for (land, label) in [(false, false), (true, true)] {
                     let l = Layout::new(paper, land, label, text);
                     assert!(l.map[0] >= MARGIN_PT && l.map[1] >= MARGIN_PT);
@@ -443,7 +469,11 @@ mod tests {
             width: 0.01,
         };
         let mut zooms = Vec::new();
-        for text in TextSize::ALL {
+        for text in [
+            TextSize(TextSize::MIN),
+            TextSize::default(),
+            TextSize(TextSize::MAX),
+        ] {
             let l = Layout::new(Paper::Letter, true, true, text);
             let cam = area.camera(&l, WORLD);
             let want = area.rect(l.aspect());
@@ -544,12 +574,15 @@ mod tests {
             printer: "Office".into(),
             paper: Paper::A4,
             orientation: Orientation::Landscape,
-            text: TextSize::Large,
+            text: TextSize(130),
             copies: 2,
         };
         let text = toml::to_string(&s).unwrap();
         assert_eq!(toml::from_str::<Settings>(&text).unwrap(), s);
         assert_eq!(toml::from_str::<Settings>("").unwrap(), Settings::default());
+        // Settings from when the size was three buttons.
+        let old = toml::from_str::<Settings>("text = \"small\"").unwrap();
+        assert_eq!(old.text, TextSize(80));
     }
 
     #[test]
@@ -560,7 +593,9 @@ mod tests {
             Orientation::parse("Landscape"),
             Some(Orientation::Landscape)
         );
-        assert_eq!(TextSize::parse("LARGE"), Some(TextSize::Large));
+        assert_eq!(TextSize::parse("LARGE"), Some(TextSize(130)));
+        assert_eq!(TextSize::parse("90%"), Some(TextSize(90)));
+        assert_eq!(TextSize::parse("500"), Some(TextSize(TextSize::MAX)));
         assert_eq!(Paper::parse("foolscap"), None);
     }
 }
