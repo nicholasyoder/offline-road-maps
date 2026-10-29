@@ -38,6 +38,7 @@
 //! the flight is over.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omp_core::geo;
@@ -58,8 +59,11 @@ pub const SETTLE: Duration = Duration::from_secs(2);
 pub const IDLE: Duration = Duration::from_secs(10);
 /// Longest wait for a search answer.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest wait for a step's printout, and how long after it the memory is read again.
+const PRINT_TIMEOUT: Duration = Duration::from_secs(120);
+const PRINT_SETTLE: Duration = Duration::from_secs(3);
 /// Longest wait for a route.
-const ROUTE_TIMEOUT: Duration = Duration::from_secs(30);
+const ROUTE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Default time between keystrokes.
 const KEYSTROKE_MS: f64 = 150.0;
 /// With `OMP_BENCH_SHOTS`, the least time from the last keystroke to Enter.
@@ -119,6 +123,19 @@ pub struct Step {
     /// Stops to route through after the move, `lat,lon;lat,lon…`, replacing the route
     /// shown (not with `search` or `here`).
     pub route: Option<String>,
+    /// After the route is shown, press *Optimize stop order* with the ends free and record
+    /// its time (phase 4 step 4.11). Needs `route`.
+    #[serde(default)]
+    pub optimize: bool,
+    /// After the route (and its optimizing) is shown, open every leg's routes and record
+    /// the time to see them (phase 4 step 4.11). Needs `route`.
+    #[serde(default)]
+    pub alternatives: bool,
+    /// After the move (and the route), open the print page on `map` or `directions`, wait
+    /// for its preview, save a PDF at `print_dpi` (default 300) as *Save as PDF* does, and
+    /// record the time and the memory it took (phase 4 step 4.11, criterion 7).
+    pub print: Option<String>,
+    pub print_dpi: Option<f64>,
 }
 
 impl Flight {
@@ -152,6 +169,20 @@ impl Flight {
             ));
         }
         for s in &f.steps {
+            if let Some(k) = &s.print
+                && !matches!(k.as_str(), "map" | "directions")
+            {
+                return Err(format!(
+                    "{}: `print` wants map or directions",
+                    path.display()
+                ));
+            }
+            if (s.optimize || s.alternatives) && s.route.is_none() {
+                return Err(format!(
+                    "{}: a step has `optimize` or `alternatives` without `route`",
+                    path.display()
+                ));
+            }
             let Some(r) = &s.route else { continue };
             if s.here || s.search.is_some() {
                 return Err(format!(
@@ -203,6 +234,8 @@ enum Phase {
     Here,
     /// Waiting for the step's route.
     Route,
+    /// Printing the step's page to a PDF.
+    Print,
     Hold,
 }
 
@@ -234,6 +267,43 @@ struct StepLog {
     search: SearchLog,
     here: HereLog,
     route: RouteLog,
+    print: PrintLog,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PrintStage {
+    #[default]
+    Start,
+    /// The print page is open and its preview is being drawn.
+    Preview,
+    /// The preview is shown; the PDF is to be started.
+    Ready,
+    /// The PDF is being made.
+    Output,
+    /// The PDF is made and the page closed.
+    Settled,
+}
+
+#[derive(Default)]
+struct PrintLog {
+    stage: PrintStage,
+    started: Option<Instant>,
+    output_at: Option<Instant>,
+    closed: Option<Instant>,
+    rss_before: Option<u64>,
+    rss_preview: Option<u64>,
+    rss_after: Option<u64>,
+    preview_ms: Option<f64>,
+    output_ms: Option<f64>,
+    pdf_bytes: Option<u64>,
+    dpi: f64,
+    peak: Option<(
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    )>,
+    rss_peak: Option<u64>,
+    path: Option<PathBuf>,
+    error: Option<String>,
 }
 
 #[derive(Default)]
@@ -243,6 +313,12 @@ struct RouteLog {
     shown: Option<RouteReport>,
     error: Option<String>,
     timed_out: bool,
+    /// When *Optimize stop order* was pressed, and what it came to.
+    optimizing: Option<Instant>,
+    optimized: Option<OptimizeReport>,
+    /// The step's alternatives were asked for, and shown.
+    alt_asked: bool,
+    alt_done: bool,
 }
 
 #[derive(Default)]
@@ -624,10 +700,153 @@ impl Bench {
         }
     }
 
+    /// The print page is to be opened now, on this kind of page: once per step.
+    pub fn print_open(&mut self) -> Option<crate::printui::Kind> {
+        if self.phase != Phase::Print || self.logs[self.step].print.stage != PrintStage::Start {
+            return None;
+        }
+        let kind = match self.flight.steps[self.step].print.as_deref()? {
+            "directions" => crate::printui::Kind::Directions,
+            _ => crate::printui::Kind::Map,
+        };
+        let p = &mut self.logs[self.step].print;
+        p.stage = PrintStage::Preview;
+        p.started = Some(Instant::now());
+        p.rss_before = crate::memory::usage().map(|m| m.rss);
+        Some(kind)
+    }
+
+    /// The preview is being waited for.
+    pub fn print_previewing(&self) -> bool {
+        self.phase == Phase::Print && self.logs[self.step].print.stage == PrintStage::Preview
+    }
+
+    /// The preview is drawn this frame, or could not be.
+    pub fn print_previewed(&mut self, r: Result<(), String>) {
+        let p = &mut self.logs[self.step].print;
+        p.preview_ms = p.started.map(|t| t.elapsed().as_secs_f64() * 1e3);
+        p.rss_preview = crate::memory::usage().map(|m| m.rss);
+        match r {
+            Ok(()) => p.stage = PrintStage::Ready,
+            Err(e) => p.error = Some(e),
+        }
+    }
+
+    /// The PDF is to be started now: where, and at which resolution.
+    pub fn print_output(&mut self) -> Option<(PathBuf, f64)> {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        if self.phase != Phase::Print || self.logs[self.step].print.stage != PrintStage::Ready {
+            return None;
+        }
+        let dpi = self.flight.steps[self.step].print_dpi.unwrap_or(300.0);
+        let path = std::env::temp_dir().join(format!("omp-bench-print-{}.pdf", std::process::id()));
+        let p = &mut self.logs[self.step].print;
+        p.stage = PrintStage::Output;
+        p.dpi = dpi;
+        p.output_at = Some(Instant::now());
+        p.path = Some(path.clone());
+        // The process's highest RSS while the PDF is made, polled from a thread.
+        let (peak, stop) = (
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (t_peak, t_stop) = (peak.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !t_stop.load(Ordering::Relaxed) {
+                if let Some(m) = crate::memory::usage() {
+                    t_peak.fetch_max(m.rss, Ordering::Relaxed);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        p.peak = Some((peak, stop));
+        Some((path, dpi))
+    }
+
+    /// The PDF is waited for.
+    pub fn print_running(&self) -> bool {
+        self.phase == Phase::Print && self.logs[self.step].print.stage == PrintStage::Output
+    }
+
+    /// The PDF is written, or failed. The page is to be closed.
+    pub fn print_done(&mut self, r: Result<(), String>) {
+        use std::sync::atomic::Ordering;
+        let p = &mut self.logs[self.step].print;
+        p.output_ms = p.output_at.map(|t| t.elapsed().as_secs_f64() * 1e3);
+        if let Some((peak, stop)) = p.peak.take() {
+            stop.store(true, Ordering::Relaxed);
+            p.rss_peak = Some(peak.load(Ordering::Relaxed));
+        }
+        p.pdf_bytes = p
+            .path
+            .take()
+            .and_then(|f| {
+                std::fs::metadata(&f)
+                    .ok()
+                    .inspect(|_| drop(std::fs::remove_file(&f)))
+            })
+            .map(|m| m.len());
+        p.stage = PrintStage::Settled;
+        p.closed = Some(Instant::now());
+        if let Err(e) = r {
+            p.error = Some(e);
+        }
+    }
+
+    /// Whether the step's route is shown and *Optimize stop order* is to be pressed now:
+    /// once, after the route.
+    pub fn optimize_ask(&mut self) -> bool {
+        let want = self.flight.steps[self.step].optimize;
+        let log = &mut self.logs[self.step].route;
+        let go = self.phase == Phase::Route && want && log.done && log.optimizing.is_none();
+        if go {
+            log.optimizing = Some(Instant::now());
+        }
+        go
+    }
+
+    /// An optimize request is waiting for its answer.
+    pub fn optimize_pending(&self) -> bool {
+        let log = &self.logs[self.step].route;
+        self.phase == Phase::Route && log.optimizing.is_some() && log.optimized.is_none()
+    }
+
+    /// The reordered route is drawn this frame, or why it could not be.
+    pub fn optimize_answer(&mut self, r: Result<OptimizeReport, &str>) {
+        let log = &mut self.logs[self.step].route;
+        match r {
+            Ok(mut r) => {
+                r.latency_ms = log
+                    .optimizing
+                    .map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e3);
+                log.optimized = Some(r);
+            }
+            Err(why) => log.error = Some(format!("optimize: {why}")),
+        }
+        self.shot("optimized");
+    }
+
+    /// Whether the step's alternatives are to be asked for now: once, after the route and
+    /// its optimizing.
+    pub fn alternatives_ask(&mut self) -> bool {
+        let want = self.flight.steps[self.step].alternatives;
+        let log = &mut self.logs[self.step].route;
+        let ready = log.done
+            && (log.optimizing.is_none() || log.optimized.is_some() || log.error.is_some());
+        let go = self.phase == Phase::Route && want && ready && !log.alt_asked;
+        if go {
+            log.alt_asked = true;
+        }
+        go
+    }
+
     /// The alternatives to the latest route are drawn this frame: `n` of them, `ms` after
     /// its legs were opened. Recorded for the flight's route and a `route` step's.
     pub fn alternatives_shown(&mut self, n: usize, ms: f64) {
         let log = &mut self.logs[self.step].route;
+        if log.alt_asked {
+            log.alt_done = true;
+        }
         let r = match (self.phase == Phase::Route && log.done, &mut log.shown) {
             (true, Some(r)) => r,
             _ => match &mut self.route {
@@ -696,6 +915,8 @@ impl Bench {
                 Phase::Here
             } else if step.route.is_some() {
                 Phase::Route
+            } else if step.print.is_some() {
+                Phase::Print
             } else {
                 Phase::Hold
             };
@@ -722,6 +943,8 @@ impl Bench {
                 Phase::Here
             } else if step.route.is_some() {
                 Phase::Route
+            } else if step.print.is_some() {
+                Phase::Print
             } else {
                 Phase::Hold
             };
@@ -767,13 +990,36 @@ impl Bench {
         }
         if self.phase == Phase::Route {
             let r = &mut log.route;
-            if !r.done {
+            let finished = r.done
+                && (!step.optimize || r.optimized.is_some() || r.error.is_some())
+                && (!step.alternatives || r.alt_done);
+            if !finished {
                 if r.asked.is_none_or(|a| now - a < ROUTE_TIMEOUT) {
                     return None;
                 }
                 r.timed_out = true;
                 r.done = true;
             }
+            self.phase = if step.print.is_some() {
+                Phase::Print
+            } else {
+                Phase::Hold
+            };
+            self.phase_start = now;
+            return None;
+        }
+        if self.phase == Phase::Print {
+            let p = &mut log.print;
+            let done = p.stage == PrintStage::Settled
+                && p.closed.is_some_and(|c| now - c >= PRINT_SETTLE)
+                || p.error.is_some();
+            if !done {
+                if p.started.is_none_or(|a| now - a < PRINT_TIMEOUT) {
+                    return None;
+                }
+                p.error = Some("timed out".into());
+            }
+            p.rss_after = crate::memory::usage().map(|m| m.rss);
             self.phase = Phase::Hold;
             self.phase_start = now;
             return None;
@@ -905,8 +1151,21 @@ impl Bench {
                     timed_out: l.here.timed_out,
                     skipped: l.here.skipped,
                 }),
+                print: s.print.as_ref().map(|k| PrintReport {
+                    page: k.clone(),
+                    dpi: l.print.dpi,
+                    preview_ms: l.print.preview_ms,
+                    output_ms: l.print.output_ms,
+                    pdf_bytes: l.print.pdf_bytes,
+                    rss_before: l.print.rss_before,
+                    rss_preview: l.print.rss_preview,
+                    rss_peak: l.print.rss_peak,
+                    rss_after: l.print.rss_after,
+                    error: l.print.error.clone(),
+                }),
                 route: s.route.as_ref().map(|_| RouteStepReport {
                     shown: l.route.shown.clone(),
+                    optimized: l.route.optimized.clone(),
                     error: l.route.error.clone(),
                     timed_out: l.route.timed_out,
                 }),
@@ -1138,8 +1397,22 @@ pub struct SearchStepReport {
 #[derive(Debug, Serialize)]
 pub struct RouteStepReport {
     pub shown: Option<RouteReport>,
+    /// *Optimize stop order* on the route shown (step 4.11).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optimized: Option<OptimizeReport>,
     pub error: Option<String>,
     pub timed_out: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OptimizeReport {
+    /// From pressing the button to the frame showing the reordered route.
+    pub latency_ms: f64,
+    /// Time in the worker's matrix and order, part of the latency.
+    pub order_ms: f64,
+    /// The reordered route.
+    pub km: f64,
+    pub minutes: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1192,6 +1465,27 @@ pub struct StepReport {
     pub here: Option<HereStepReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route: Option<RouteStepReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub print: Option<PrintReport>,
+}
+
+/// A printout to PDF in the running app (step 4.11): memory is the process's.
+#[derive(Debug, Serialize)]
+pub struct PrintReport {
+    pub page: String,
+    pub dpi: f64,
+    /// From opening the print page to its preview shown.
+    pub preview_ms: Option<f64>,
+    /// From pressing *Save as PDF* to the file written.
+    pub output_ms: Option<f64>,
+    pub pdf_bytes: Option<u64>,
+    /// RSS before the page opened, with the preview shown, at its highest during the
+    /// printout, and a few seconds after it.
+    pub rss_before: Option<u64>,
+    pub rss_preview: Option<u64>,
+    pub rss_peak: Option<u64>,
+    pub rss_after: Option<u64>,
+    pub error: Option<String>,
 }
 
 impl Report {
@@ -1298,9 +1592,35 @@ impl Report {
             }
             if let Some(r) = &st.route {
                 s += &match (&r.shown, &r.error) {
-                    (Some(r), _) => format!("    route: {}\n", r.line()),
+                    (Some(shown), _) => format!("    route: {}\n", shown.line()),
                     (None, Some(e)) => format!("    route: {e}\n"),
                     (None, None) => "    route: timed out\n".to_string(),
+                };
+                if let Some(o) = &r.optimized {
+                    s += &format!(
+                        "    optimized: {:.1} km, {:.0} min; shown after {:.0} ms (order {:.1} ms)\n",
+                        o.km, o.minutes, o.latency_ms, o.order_ms
+                    );
+                } else if let (Some(e), Some(_)) = (&r.error, &r.shown) {
+                    s += &format!("    {e}\n");
+                }
+            }
+            if let Some(p) = &st.print {
+                let m = |v: Option<u64>| v.map_or("-".into(), |v| format!("{:.0}", mib(v)));
+                s += &match &p.error {
+                    Some(e) => format!("    print {}: {e}\n", p.page),
+                    None => format!(
+                        "    print {} at {:.0} dpi: preview {} ms, PDF {} ms ({} KiB); RSS MiB before {}, preview {}, peak {}, after {}\n",
+                        p.page,
+                        p.dpi,
+                        p.preview_ms.map_or("-".into(), |v| format!("{v:.0}")),
+                        p.output_ms.map_or("-".into(), |v| format!("{v:.0}")),
+                        p.pdf_bytes.map_or(0, |b| b / 1024),
+                        m(p.rss_before),
+                        m(p.rss_preview),
+                        m(p.rss_peak),
+                        m(p.rss_after),
+                    ),
                 };
             }
             if let Some(h) = &st.here {

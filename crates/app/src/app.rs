@@ -14,7 +14,9 @@ use std::time::{Duration, Instant, SystemTime};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use eframe::egui_wgpu::{self, wgpu};
 
-use crate::bench::{Bench, FrameSample, Poll, ReportContext, RouteReport, SearchContext};
+use crate::bench::{
+    Bench, FrameSample, OptimizeReport, Poll, ReportContext, RouteReport, SearchContext,
+};
 use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
 use crate::config::{self, Config, Location, View};
@@ -830,27 +832,51 @@ impl eframe::App for App {
                     (None, Some((c, z))) => m.motion.fly_to(&m.camera, c, z),
                     (Some(b), _) if waiting && m.routing.waiting.is_none() => {
                         let r = &m.routing;
-                        b.route_answer(match (&r.last, &r.route, &r.error) {
-                            (Some(t), Some(s), _) => Ok(RouteReport {
-                                stops: s.trip.snaps.len(),
-                                latency_ms: t.latency.as_secs_f64() * 1e3,
-                                trip_ms: t.trip.as_secs_f64() * 1e3,
-                                directions_ms: t.directions.as_secs_f64() * 1e3,
-                                steps: s.steps.len(),
-                                km: s.trip.metres() / 1000.0,
-                                minutes: s.trip.time_s() / 60.0,
-                                points: t.points,
-                                alternatives: None,
-                                alternatives_ms: None,
-                            }),
-                            (_, _, Some(e)) => Err(e.clone()),
-                            _ => Err("no route".into()),
-                        });
+                        if b.optimize_pending() {
+                            b.optimize_answer(match (&r.last, &r.route) {
+                                (Some(t), Some(s)) => Ok(OptimizeReport {
+                                    latency_ms: 0.0,
+                                    order_ms: t.optimize.as_secs_f64() * 1e3,
+                                    km: s.trip.metres() / 1000.0,
+                                    minutes: s.trip.time_s() / 60.0,
+                                }),
+                                _ => Err("no route"),
+                            });
+                        } else {
+                            b.route_answer(match (&r.last, &r.route, &r.error) {
+                                (Some(t), Some(s), _) => Ok(RouteReport {
+                                    stops: s.trip.snaps.len(),
+                                    latency_ms: t.latency.as_secs_f64() * 1e3,
+                                    trip_ms: t.trip.as_secs_f64() * 1e3,
+                                    directions_ms: t.directions.as_secs_f64() * 1e3,
+                                    steps: s.steps.len(),
+                                    km: s.trip.metres() / 1000.0,
+                                    minutes: s.trip.time_s() / 60.0,
+                                    points: t.points,
+                                    alternatives: None,
+                                    alternatives_ms: None,
+                                }),
+                                (_, _, Some(e)) => Err(e.clone()),
+                                _ => Err("no route".into()),
+                            });
+                        }
                         if b.flight.alternatives {
                             m.routing.expand_all();
                         }
                     }
                     _ => {}
+                }
+                if let Some(b) = &mut self.bench {
+                    if b.optimize_ask() {
+                        let why = m.routing.optimize_blocked();
+                        m.routing.optimize();
+                        if m.routing.waiting.is_none() {
+                            b.optimize_answer(Err(why.unwrap_or("not asked")));
+                        }
+                    }
+                    if b.alternatives_ask() {
+                        m.routing.expand_all();
+                    }
                 }
                 if self.bench.is_none() {
                     // The print page's rectangle takes a drag that starts on it.
@@ -930,6 +956,21 @@ impl eframe::App for App {
                 }
             });
 
+        let mut close_print = false;
+        if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map)
+            && let Some(kind) = b.print_open()
+        {
+            // As the Print tab opens it.
+            self.print.back = m.page;
+            m.page = Page::Print;
+            let around = printui::Around {
+                cam: &m.camera,
+                units: Units::Miles,
+                has_route: m.routing.route.is_some(),
+                route_bounds: m.routing.route_bounds(),
+            };
+            self.print.open(&ctx, kind, &around, &self.cfg.print);
+        }
         if let Some(m) = &self.map
             && m.page == Page::Print
         {
@@ -945,6 +986,25 @@ impl eframe::App for App {
             };
             self.print.tick(&ctx, &inputs);
             self.print.big_window(&ctx);
+            if let Some(b) = &mut self.bench {
+                if b.print_previewing()
+                    && let Some(r) = self.print.bench_previewed()
+                {
+                    b.print_previewed(r);
+                }
+                if let Some((path, dpi)) = b.print_output() {
+                    self.print.bench_start(&ctx, &inputs, path, dpi);
+                }
+                if b.print_running()
+                    && let Some(r) = self.print.bench_finished()
+                {
+                    b.print_done(r);
+                    close_print = true;
+                }
+            }
+        }
+        if close_print && let Some(m) = &mut self.map {
+            m.page = self.print.back;
         }
         if self.cfg.debug_overlay && self.bench.is_none() {
             self.overlay(&ctx, map_rect);

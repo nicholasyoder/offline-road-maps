@@ -1,0 +1,288 @@
+# The North America flight (north-america.toml) with 10,000 pushpins spread over the pack (phase 4
+# step 4.11): its frame times against north-america.toml's are what the pins cost.
+# omp-app --bench crates/app/bench/north-america-pins.toml --pack $OMP_WORK/packs/north-america
+#
+# Bench flight across North America: the exit-criteria flight of phase1-plan.md.
+# Jumps between cities, pans and zooms at every zoom from z3 to z17.
+# omp-app --bench crates/app/bench/north-america.toml --pack $OMP_WORK/packs/north-america
+#
+# Each step moves to lat/lon/zoom at once (seconds = 0, a jump, which then waits until the
+# view is fully detailed) or linearly over `seconds`. `hold` stays put afterwards.
+name = "north-america-pins"
+# 10,000 pushpins spread over the pack, the same each run.
+pins = 10000
+window = [1280, 800]
+# Miami to Seattle (phase3-plan.md 3.9), asked as the pack opens, so on a fresh start it is
+# the first route from a cold stick; shown until the route steps at the end.
+route = "25.7617,-80.1918;47.6062,-122.3321"
+
+[[step]]
+label = "continent z3"
+lat = 45.0
+lon = -100.0
+zoom = 3
+hold = 1
+
+[[step]]
+label = "zoom to z5"
+zoom = 5
+seconds = 3
+
+[[step]]
+label = "Manhattan z12"
+lat = 40.758
+lon = -73.9855
+zoom = 12
+
+[[step]]
+label = "zoom to z15"
+zoom = 15
+seconds = 3
+
+[[step]]
+label = "pan to Lower Manhattan"
+lat = 40.7075
+lon = -74.0113
+seconds = 4
+
+[[step]]
+label = "zoom to z17"
+zoom = 17
+seconds = 2
+
+[[step]]
+label = "zoom out to z9"
+zoom = 9
+seconds = 4
+
+[[step]]
+label = "Chicago z13"
+lat = 41.8781
+lon = -87.6298
+zoom = 13
+
+[[step]]
+label = "pan to O'Hare"
+lat = 41.9742
+lon = -87.9073
+seconds = 5
+
+[[step]]
+label = "Montreal z11"
+lat = 45.5019
+lon = -73.5674
+zoom = 11
+
+[[step]]
+label = "zoom to z14"
+zoom = 14
+seconds = 3
+
+[[step]]
+label = "Toronto z10"
+lat = 43.6532
+lon = -79.3832
+zoom = 10
+
+[[step]]
+label = "Toronto to Ottawa z10"
+lat = 45.4215
+lon = -75.6972
+seconds = 6
+
+[[step]]
+label = "Banff z9"
+lat = 51.1784
+lon = -115.5708
+zoom = 9
+
+[[step]]
+label = "zoom to z12"
+zoom = 12
+seconds = 3
+
+[[step]]
+label = "Vancouver z14"
+lat = 49.2827
+lon = -123.1207
+zoom = 14
+
+[[step]]
+label = "Mexico City z12"
+lat = 19.4326
+lon = -99.1332
+zoom = 12
+
+[[step]]
+label = "zoom out to z4"
+zoom = 4
+seconds = 6
+
+[[step]]
+label = "San Francisco z5"
+lat = 40.0
+lon = -122.0
+zoom = 5
+
+[[step]]
+label = "pan east at z5"
+lon = -75.0
+seconds = 8
+
+[[step]]
+label = "Arctic z4"
+lat = 70.0
+lon = -100.0
+zoom = 4
+
+[[step]]
+label = "zoom to z6"
+zoom = 6
+seconds = 3
+
+[[step]]
+label = "Anchorage z11"
+lat = 61.2181
+lon = -149.9003
+zoom = 11
+
+# "What's here" (phase2-plan.md 2.8): asked at the view's centre after a jump, as the
+# right-click menu does. Skipped on packs without search. They come before the searches,
+# so that both read search data cold on a fresh start (phase2-plan.md 2.9).
+
+[[step]]
+label = "here: Empire State Building"
+lat = 40.74844
+lon = -73.98566
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: Times Square"
+lat = 40.7580
+lon = -73.9855
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: Vieux-Québec"
+lat = 46.8139
+lon = -71.2080
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: Plateau, Montréal"
+lat = 45.5225
+lon = -73.5800
+zoom = 17
+here = true
+hold = 0.5
+
+[[step]]
+label = "here: Statehouse, Columbus"
+lat = 39.9612
+lon = -82.9988
+zoom = 17
+here = true
+hold = 0.5
+
+# Searches (phase2-plan.md 2.7): each typed one character at a time from the view the
+# previous step left, then the deeper search levels (2.7b), then Enter, which jumps to the
+# first result. `expect` is part of the name of the result the search should find. Skipped
+# on packs without search.
+
+[[step]]
+label = "search: address"
+search = "1100 E 9th St, Cleveland, OH"
+expect = "1100 East 9th"
+hold = 0.5
+
+[[step]]
+label = "search: address, town cut short"
+search = "8723 River Road, Amar"
+expect = "8723 River Road"
+hold = 0.5
+
+[[step]]
+label = "search: city and state"
+search = "Springfield, IL"
+hold = 0.5
+
+[[step]]
+label = "search: brand and town"
+search = "Tim Hortons Kingston"
+hold = 0.5
+
+[[step]]
+label = "search: French"
+search = "Rue Sainte-Catherine, Montréal"
+hold = 0.5
+
+[[step]]
+label = "search: feature"
+search = "Lac Saint-Jean"
+hold = 0.5
+
+[[step]]
+label = "search: postcode"
+search = "45201"
+hold = 0.5
+
+[[step]]
+label = "search: shared name"
+search = "London ON"
+hold = 0.5
+
+[[step]]
+label = "search: street"
+search = "Broadway, New York"
+hold = 0.5
+
+# Routes (phase3-plan.md 3.9): each replaces the stops after the move, as the right-click
+# menu does, and records the time to the route and its directions being shown.
+
+[[step]]
+label = "route: short, Columbus"
+lat = 40.02
+lon = -83.03
+zoom = 11
+route = "39.9612,-82.9988;40.0992,-83.1141"
+hold = 1
+
+[[step]]
+label = "route: short, Montreal"
+lat = 45.53
+lon = -73.62
+zoom = 11
+route = "45.5019,-73.5674;45.5576,-73.7517"
+hold = 1
+
+[[step]]
+label = "route: Cincinnati-Cleveland"
+lat = 40.3
+lon = -82.9
+zoom = 7
+route = "39.1031,-84.5120;41.4993,-81.6944"
+hold = 1
+
+[[step]]
+label = "route: Halifax-Los Angeles"
+lat = 40.0
+lon = -98.0
+zoom = 4
+route = "44.6488,-63.5752;34.0522,-118.2437"
+hold = 2
+
+[[step]]
+label = "route: 10 stops, Northeast"
+lat = 41.0
+lon = -76.5
+zoom = 6
+# Boston, Hartford, New York, Philadelphia, Baltimore, Washington, Richmond, Pittsburgh,
+# Cleveland, Columbus.
+route = "42.3601,-71.0589;41.7658,-72.6734;40.7128,-74.0060;39.9526,-75.1652;39.2904,-76.6122;38.9072,-77.0369;37.5407,-77.4360;40.4406,-79.9959;41.4993,-81.6944;39.9612,-82.9988"
+hold = 2

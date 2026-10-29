@@ -977,6 +977,30 @@ impl PrintUi {
         }
     }
 
+    /// The preview is up to date and drawn, or could not be (the bench).
+    pub fn bench_previewed(&self) -> Option<Result<(), String>> {
+        let current =
+            self.asked.is_none() && self.seen.is_some_and(|(s, _)| s == self.preview.signature);
+        match (current, &self.preview.error) {
+            (false, _) => None,
+            (true, Some(e)) => Some(Err(e.clone())),
+            (true, None) => Some(Ok(())),
+        }
+    }
+
+    /// Starts *Save as PDF* to `path` at `dpi` (the bench).
+    pub fn bench_start(&mut self, ctx: &egui::Context, inputs: &Inputs, path: PathBuf, dpi: f64) {
+        self.start_output(ctx, inputs, Output::Pdf(path), dpi);
+    }
+
+    /// How the printout started by [`Self::bench_start`] ended, once it has.
+    pub fn bench_finished(&mut self) -> Option<Result<(), String>> {
+        match self.output {
+            None => self.status.take().map(|r| r.map(drop)),
+            Some(_) => None,
+        }
+    }
+
     /// What the page is made from, as a number: when it changes the preview is out of date.
     fn signature(&self, inputs: &Inputs) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
