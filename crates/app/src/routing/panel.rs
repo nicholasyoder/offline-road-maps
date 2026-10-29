@@ -263,9 +263,24 @@ impl RouteUi {
                 ui.add(egui::Spinner::new().size(12.0).color(WEAK));
             }
         });
-        let more = egui::CollapsingHeader::new(more_title(self.avoid))
-            .id_salt("route-more-options")
-            .show(ui, |ui| {
+        let open = self.more_open;
+        let hover = match open {
+            true => "Hide these options",
+            false => "Avoid tolls or ferries",
+        };
+        let r = fold_row(
+            ui,
+            "more-options",
+            open,
+            &more_title(self.avoid),
+            Some(hover),
+        );
+        self.targets.push((Target::MoreOptions, r.rect));
+        if r.clicked() {
+            self.more_open = !open;
+        }
+        if open {
+            ui.indent("more-options", |ui| {
                 for (flag, label) in [(TOLL, "Avoid tolls"), (FERRY, "Avoid ferries")] {
                     let mut on = self.avoid & flag != 0;
                     let r = ui.checkbox(&mut on, label);
@@ -275,8 +290,7 @@ impl RouteUi {
                     }
                 }
             });
-        self.targets
-            .push((Target::MoreOptions, more.header_response.rect));
+        }
     }
 
     /// The *Optimize stop order* window: the ends it keeps, Optimize (or Cancel while it
@@ -296,7 +310,7 @@ impl RouteUi {
         egui::Window::new("Optimize stop order")
             .open(&mut open)
             .collapsible(false)
-            .resizable(false)
+            .auto_sized()
             .pivot(Align2::LEFT_TOP)
             .default_pos(at)
             .show(ctx, |ui| {
@@ -350,6 +364,14 @@ impl RouteUi {
                         }
                     });
                 }
+                let blocked = self.optimize_blocked();
+                if let Some(why) = blocked.filter(|_| self.optimizing.is_none()) {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(why).color(WEAK));
+                }
+                // Close at the window's right edge (which its title may set): a right-to-left
+                // layout would stretch the window to its widest.
+                let width = ui.min_rect().width().max(ui.available_width());
                 ui.separator();
                 ui.horizontal(|ui| {
                     if self.optimizing.is_some() {
@@ -363,22 +385,28 @@ impl RouteUi {
                         ui.add(egui::Spinner::new().size(12.0).color(WEAK));
                     } else {
                         let r = ui
-                            .add_enabled(self.can_optimize(), egui::Button::new("Optimize"))
-                            .on_hover_text("Reorder the stops, keeping the ends checked")
-                            .on_disabled_hover_text(
-                                "Needs a route with stops whose order can change: \
-                                 three or more, or a round trip",
-                            );
+                            .add_enabled(blocked.is_none(), egui::Button::new("Optimize"))
+                            .on_hover_text("Reorder the stops, keeping the ends checked");
                         self.targets.push((Target::Optimize, r.rect));
                         if r.clicked() {
                             edits.push(Edit::Optimize);
                         }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let r = ui.button("Close");
-                        self.targets.push((Target::CloseOptimize, r.rect));
-                        close = r.clicked();
-                    });
+                    let close_w = egui::WidgetText::from("Close")
+                        .into_galley(
+                            ui,
+                            Some(egui::TextWrapMode::Extend),
+                            f32::INFINITY,
+                            egui::TextStyle::Button,
+                        )
+                        .size()
+                        .x
+                        + 2.0 * ui.spacing().button_padding.x;
+                    let used = ui.min_rect().width() + ui.spacing().item_spacing.x;
+                    ui.add_space((width - used - close_w).max(0.0));
+                    let r = ui.button("Close");
+                    self.targets.push((Target::CloseOptimize, r.rect));
+                    close = r.clicked();
                 });
             });
         self.optimize_open = open && !close;
@@ -451,29 +479,12 @@ impl RouteUi {
                 ),
                 None => format!("{} to {}: no route", li + 1, li + 2),
             };
-            let row = ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(12.0, 16.0), Sense::hover());
-                if leg.is_some() {
-                    triangle(ui.painter(), rect.center(), open, WEAK);
-                }
-                ui.add(egui::Label::new(egui::RichText::new(text).color(INK)).truncate());
-            });
-            let rect = row.response.rect;
-            self.targets.push((Target::Leg(li), rect));
-            if leg.is_none() {
-                continue;
-            }
-            let resp = ui
-                .interact(rect, ui.scope_id().with(("leg", li)), Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(match open {
-                    true => "Hide the other routes",
-                    false => "Show other routes for this leg",
-                });
-            if resp.hovered() {
-                ui.painter()
-                    .rect_filled(rect, 3.0, Color32::from_black_alpha(8));
-            }
+            let hover = match open {
+                true => "Hide the other routes",
+                false => "Show other routes for this leg",
+            };
+            let resp = fold_row(ui, ("leg", li), open, &text, leg.map(|_| hover));
+            self.targets.push((Target::Leg(li), resp.rect));
             if resp.clicked() {
                 edits.push(Edit::Expand(li, !open));
             }
@@ -637,6 +648,37 @@ fn ranked_note(c: &Choices) -> Option<String> {
 }
 
 /// A small triangle at `c`: pointing right when closed, down when open.
+/// A row that opens and closes what is under it, with a triangle that says which: a leg's
+/// routes and *More options*. Without `hover` it is only a label, with no triangle.
+fn fold_row(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    open: bool,
+    text: &str,
+    hover: Option<&str>,
+) -> egui::Response {
+    let row = ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(12.0, 16.0), Sense::hover());
+        if hover.is_some() {
+            triangle(ui.painter(), rect.center(), open, WEAK);
+        }
+        ui.add(egui::Label::new(egui::RichText::new(text).color(INK)).truncate());
+    });
+    let rect = row.response.rect;
+    let Some(hover) = hover else {
+        return row.response;
+    };
+    let resp = ui
+        .interact(rect, ui.scope_id().with(id), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(hover);
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, 3.0, Color32::from_black_alpha(8));
+    }
+    resp
+}
+
 fn triangle(p: &egui::Painter, c: Pos2, open: bool, color: Color32) {
     let pts = match open {
         true => vec![

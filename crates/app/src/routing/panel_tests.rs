@@ -149,6 +149,9 @@ fn stop_list() {
     u.click(Target::Remove(1));
     assert_eq!(u.names(), "cb");
     u.answer();
+    // Two stops and both ends kept: nothing to reorder, and the window says so.
+    let why = u.r.optimize_blocked().unwrap();
+    assert!(why.starts_with("Already optimal"), "{why}");
     u.click(Target::Reverse);
     assert_eq!(u.names(), "bc");
     u.answer();
@@ -244,7 +247,7 @@ fn optimize_stop_order() {
     u.r.apply(StopAction::To, named("d", 40.6));
     u.frame(Vec::new());
     // Not before the route is shown.
-    assert!(!u.r.can_optimize());
+    assert_eq!(u.r.optimize_blocked(), Some("Waiting for the route…"));
     u.answer();
     assert!(u.r.can_optimize());
 

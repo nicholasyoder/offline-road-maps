@@ -338,6 +338,8 @@ pub struct RouteUi {
     pub ends: Ends,
     /// Whether the *Optimize stop order* window is open.
     pub optimize_open: bool,
+    /// Whether *More options* is open.
+    pub more_open: bool,
     /// While an optimize request is waiting: the stops before it, and those it sent.
     optimizing: Option<(Before, Vec<Place>)>,
     pub reordered: Option<Reordered>,
@@ -399,6 +401,7 @@ impl RouteUi {
                 round_trip: false,
             },
             optimize_open: false,
+            more_open: false,
             optimizing: None,
             reordered: None,
             next_id: 0,
@@ -541,11 +544,24 @@ impl RouteUi {
 
     /// The route is shown, with stops that a new order could change.
     pub fn can_optimize(&self) -> bool {
+        self.optimize_blocked().is_none()
+    }
+
+    /// Why *Optimize* cannot run now, said under its button; `None` when it can.
+    pub fn optimize_blocked(&self) -> Option<&'static str> {
+        if self.waiting.is_some() {
+            return Some("Waiting for the route…");
+        }
+        if !self.route.as_ref().is_some_and(|r| r.trip.complete()) {
+            return Some("Needs a route to every stop.");
+        }
         let places = self.to_optimize();
         let round =
             self.ends.round_trip && places.len() >= 2 && places.len() == self.places().len();
-        let shown = self.route.as_ref().is_some_and(|r| r.trip.complete());
-        shown && self.waiting.is_none() && (self.ends.free(places.len()) >= 2 || round)
+        match self.ends.free(places.len()) >= 2 || round {
+            true => None,
+            false => Some("Already optimal: with these ends kept, the stops have only one order."),
+        }
     }
 
     /// Asks for the route through the stops in their quickest order, keeping [`Self::ends`].
