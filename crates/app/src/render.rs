@@ -1000,6 +1000,9 @@ pub fn headless_device() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), S
     Ok((adapter, device, queue))
 }
 
+/// The longest a readback waits for the GPU before giving up.
+const READBACK_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// The format `--render` draws in: not sRGB, like egui's usual target, so colours match.
 pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
@@ -1095,10 +1098,22 @@ pub fn read_texture(
     );
     queue.submit(extra.into_iter().chain([enc.finish()]));
     let slice = out.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |_| {});
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(|e| format!("GPU: {e}"))?;
+    let mapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = mapped.clone();
+    slice.map_async(wgpu::MapMode::Read, move |_| {
+        flag.store(true, std::sync::atomic::Ordering::Release);
+    });
+    // The GL backend gives up a wait after a while (a big page on the E6430 took longer),
+    // so ask again until the buffer is mapped.
+    let start = std::time::Instant::now();
+    while !mapped.load(std::sync::atomic::Ordering::Acquire) {
+        match device.poll(wgpu::PollType::wait_indefinitely()) {
+            Err(wgpu::PollError::Timeout) if start.elapsed() < READBACK_LIMIT => {}
+            r => {
+                r.map_err(|e| format!("GPU: {e}"))?;
+            }
+        }
+    }
     let data = slice
         .get_mapped_range()
         .map_err(|e| format!("reading back the image: {e}"))?;
