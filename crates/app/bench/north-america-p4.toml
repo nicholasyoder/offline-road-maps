@@ -2,8 +2,8 @@
 # (`depart`, a Saturday in summer), alternatives for a short and a coast-to-coast trip,
 # *Optimize stop order* on 25 stops in a poor order, and the print page's preview and
 # *Save as PDF* in the running app, at 300 and 360 dpi (a Letter page), with the process's
-# RSS before, during and after. The main flight (north-america.toml) is idle RSS and frame
-# times with none of this in use.
+# times with none of this in use (north-america.toml); the pins (10,000, criterion 5) are
+# ohio-pins.toml against ohio.toml.
 # omp-app --bench crates/app/bench/north-america-p4.toml --pack $OMP_WORK/packs/north-america
 name = "north-america-p4"
 window = [1280, 800]
