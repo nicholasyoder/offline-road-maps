@@ -21,8 +21,12 @@ mod logger;
 mod memory;
 mod mesh;
 mod packs;
+mod pages;
+mod pdf;
 mod pins;
 mod pool;
+mod print;
+mod printui;
 mod render;
 mod routing;
 mod scale;
@@ -47,6 +51,9 @@ const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
        omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
        omp-app --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
                [--step <n>] [--alternatives] [--size <w>x<h>] [--scale <s>] [--msaa <n>] [--style <file>] <out.png>
+       omp-app --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
+               --print <out.pdf> [--paper <p>] [--orientation <o>] [--text-size <t>] [--label <text>]
+               [--directions] [--dpi <n>] [--units <u>]
 
   --pack <dir>   open the pack in <dir> (or the first chunk file itself); default:
                  maps/ next to the executable, else the pack used last
@@ -60,7 +67,13 @@ const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
                  the stops, and fits the view to it without --center and --zoom;
                  --step draws step <n> of its directions over it, and fits that;
                  --alternatives also finds each leg's alternatives and draws them
-                 grey, as the app does for a leg whose routes are open";
+                 grey, as the app does for a leg whose routes are open
+  --print <file> print a page instead of a view: the map fitted to the route (or the
+                 view --center, --zoom and --size give), or with --directions its
+                 directions, to a PDF, or a PNG per page if <file> does not end in .pdf;
+                 --paper letter (default), legal, tabloid, a5, a4 or a3; --orientation
+                 automatic (default), portrait or landscape; --text-size small, normal
+                 or large; --label is the page's header; --dpi 300 by default";
 
 #[derive(Default)]
 struct Args {
@@ -73,6 +86,15 @@ struct Args {
     route: Option<String>,
     step: Option<String>,
     alternatives: bool,
+    /// `--print`: the PDF, or PNG, to write.
+    print: Option<PathBuf>,
+    paper: Option<String>,
+    orientation: Option<String>,
+    text_size: Option<String>,
+    label: Option<String>,
+    directions: bool,
+    dpi: Option<String>,
+    units: Option<String>,
     size: Option<String>,
     scale: Option<String>,
     msaa: Option<String>,
@@ -101,6 +123,14 @@ fn parse_args() -> Result<Args, String> {
             Some("--route") => a.route = Some(text(value("--route")?)),
             Some("--step") => a.step = Some(text(value("--step")?)),
             Some("--alternatives") => a.alternatives = true,
+            Some("--print") => a.print = Some(value("--print")?),
+            Some("--paper") => a.paper = Some(text(value("--paper")?)),
+            Some("--orientation") => a.orientation = Some(text(value("--orientation")?)),
+            Some("--text-size") => a.text_size = Some(text(value("--text-size")?)),
+            Some("--label") => a.label = Some(text(value("--label")?)),
+            Some("--directions") => a.directions = true,
+            Some("--dpi") => a.dpi = Some(text(value("--dpi")?)),
+            Some("--units") => a.units = Some(text(value("--units")?)),
             Some("--size") => a.size = Some(text(value("--size")?)),
             Some("--scale") => a.scale = Some(text(value("--scale")?)),
             Some("--msaa") => a.msaa = Some(text(value("--msaa")?)),
@@ -287,9 +317,20 @@ fn main() -> ExitCode {
 }
 
 fn render(args: &Args, style: style::StyleFile) -> ExitCode {
-    let (Some(pack), Some(file)) = (&args.pack, &args.file) else {
-        eprintln!("--render needs --pack and an output file\n{USAGE}");
+    let Some(pack) = &args.pack else {
+        eprintln!("--render needs --pack\n{USAGE}");
         return ExitCode::from(2);
+    };
+    let Some(file) = args.file.as_ref().or(args.print.as_ref()) else {
+        eprintln!("--render needs an output file, or --print\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let job = match print_job(args) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("{e}\n{USAGE}");
+            return ExitCode::from(2);
+        }
     };
     let snap = snapshot::Snapshot::parse(
         pack.clone(),
@@ -316,7 +357,11 @@ fn render(args: &Args, style: style::StyleFile) -> ExitCode {
         alternatives,
         ..s
     });
-    match snap.and_then(|s| s.run()) {
+    let done = snap.and_then(|s| match &job {
+        Some(job) => s.print(job),
+        None => s.run(),
+    });
+    match done {
         Ok(msg) => {
             eprintln!("{msg}");
             ExitCode::SUCCESS
@@ -326,4 +371,41 @@ fn render(args: &Args, style: style::StyleFile) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `--print`'s job, from its options.
+fn print_job(args: &Args) -> Result<Option<snapshot::PrintJob>, String> {
+    let Some(out) = args.print.clone() else {
+        return Ok(None);
+    };
+    fn parse<T>(
+        s: &Option<String>,
+        what: &str,
+        f: fn(&str) -> Option<T>,
+    ) -> Result<Option<T>, String> {
+        s.as_deref()
+            .map(|s| f(s).ok_or_else(|| format!("unknown {what} {s}")))
+            .transpose()
+    }
+    let dpi = match args.dpi.as_deref().map(str::parse::<f64>) {
+        None => 300.0,
+        Some(Ok(d)) if (72.0..=1200.0).contains(&d) => d,
+        Some(_) => return Err("--dpi wants a number from 72 to 1200".into()),
+    };
+    let units = parse(&args.units, "units", |s| {
+        scale::Units::ALL
+            .into_iter()
+            .find(|u| u.name().eq_ignore_ascii_case(s))
+    })?;
+    Ok(Some(snapshot::PrintJob {
+        out,
+        paper: parse(&args.paper, "paper", print::Paper::parse)?.unwrap_or_default(),
+        orientation: parse(&args.orientation, "orientation", print::Orientation::parse)?
+            .unwrap_or_default(),
+        text: parse(&args.text_size, "text size", print::TextSize::parse)?.unwrap_or_default(),
+        label: args.label.clone().unwrap_or_default(),
+        directions: args.directions,
+        dpi,
+        units,
+    }))
 }

@@ -1,0 +1,1005 @@
+//! The print page of the side panel and its preview (phase 4 step 4.9): the label,
+//! paper, orientation, text size and copies; the rectangle on the map that is the page's
+//! ground, which can be moved and resized; and a preview of the page, drawn by a worker thread
+//! with [`crate::pages`] as the printer will get it, only less sharp.
+//!
+//! *Print map* and *Print directions* both open this page; the directions have no rectangle.
+//! Step 4.10 adds *Print* and *Save as PDF*.
+
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::{Duration, Instant};
+
+use eframe::egui::{
+    self, Align2, Color32, CursorIcon, Pos2, Rect, Response, Sense, Stroke, TextureHandle, Vec2,
+};
+
+use crate::camera::Camera;
+use crate::layers::Layers;
+use crate::packs;
+use crate::pages::{self, Egui, MapPage, Page as Printed};
+use crate::pins::PinsUi;
+use crate::print::{Area, Layout, Orientation, Paper, Settings, TextSize};
+use crate::routing::{DirectionsDoc, RouteUi};
+use crate::scale::Units;
+use crate::side;
+use crate::side::Page;
+use crate::snapshot::Gpu;
+use crate::style::{Style, StyleFile};
+use crate::theme::{ACCENT, INK, WEAK};
+
+/// The resolution of the previews: the page as it prints, only less sharp.
+const PREVIEW_DPI: f64 = 110.0;
+/// How long the page's settings must hold still before the preview is drawn again.
+const DEBOUNCE: Duration = Duration::from_millis(250);
+/// How near a point a corner's handle takes a click, in points.
+const GRAB: f32 = 11.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    #[default]
+    Map,
+    Directions,
+}
+
+/// What the preview is made from, which the app gathers each frame the page is open.
+pub struct Inputs<'a> {
+    pub pack: &'a Path,
+    pub style: &'a StyleFile,
+    pub layers: Layers,
+    pub units: Units,
+    pub msaa: u32,
+    pub settings: Settings,
+    pub routing: &'a RouteUi,
+    pub pins: &'a PinsUi,
+}
+
+/// What the page asks of the app.
+#[derive(Default)]
+pub struct Out {
+    pub close: bool,
+}
+
+/// What the side panel tells the page about the map.
+pub struct Around<'a> {
+    pub cam: &'a Camera,
+    pub units: Units,
+    pub has_route: bool,
+    pub route_bounds: Option<[f64; 4]>,
+}
+
+enum Drag {
+    /// The rectangle moves; the pointer holds it at this offset from its centre.
+    Move([f64; 2]),
+    /// A corner is resized; the opposite one stays at this world point.
+    Corner([f64; 2]),
+}
+
+/// The page drawn, as textures.
+#[derive(Default)]
+struct Preview {
+    signature: u64,
+    pages: Vec<TextureHandle>,
+    error: Option<String>,
+    took: Duration,
+    note: String,
+}
+
+pub struct PrintUi {
+    pub kind: Kind,
+    label: String,
+    area: Option<Area>,
+    /// The first area's shape, which *Automatic* orientation follows.
+    wide: bool,
+    drag: Option<Drag>,
+    worker: Option<Worker>,
+    /// The page to go back to when this one closes.
+    pub back: Page,
+    seq: u64,
+    /// The signature of what was last seen, and since when.
+    seen: Option<(u64, Instant)>,
+    /// What the worker was last asked, and for which request.
+    asked: Option<(u64, u64)>,
+    preview: Preview,
+    /// The large preview, open at this page.
+    big: Option<usize>,
+}
+
+impl PrintUi {
+    pub fn new() -> Self {
+        Self {
+            kind: Kind::Map,
+            label: String::new(),
+            area: None,
+            wide: false,
+            drag: None,
+            worker: None,
+            back: Page::default(),
+            seq: 0,
+            seen: None,
+            asked: None,
+            preview: Preview::default(),
+            big: None,
+        }
+    }
+
+    /// Opens the page for `kind`: the map fitted to the route if there is one, else to what
+    /// the map shows.
+    pub fn open(&mut self, kind: Kind, around: &Around, settings: &Settings) {
+        self.kind = kind;
+        self.big = None;
+        self.drag = None;
+        self.seen = None;
+        self.asked = None;
+        self.preview.signature = 0;
+        let [x0, y0, x1, y1] = around.cam.visible();
+        self.wide = match around.route_bounds {
+            Some(b) => b[2] - b[0] >= b[3] - b[1],
+            None => x1 - x0 >= y1 - y0,
+        };
+        let layout = self.layout(settings);
+        self.area = Some(self.initial_area(around, &layout));
+    }
+
+    fn initial_area(&self, around: &Around, layout: &Layout) -> Area {
+        match around.route_bounds {
+            Some(b) => Area::fit(b, layout.aspect(), 0.06),
+            None => Area::of_view(around.cam, layout.aspect()),
+        }
+        .clamped(layout)
+    }
+
+    pub fn layout(&self, s: &Settings) -> Layout {
+        Layout::new(
+            s.paper,
+            s.orientation.landscape(self.wide),
+            !self.label.is_empty(),
+            s.text,
+        )
+    }
+
+    /// Escape closes the page, unless a text box has the keys.
+    pub fn escape(&mut self, ctx: &egui::Context) -> bool {
+        if self.big.is_some() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.big = None;
+                return true;
+            }
+            return false;
+        }
+        !ctx.egui_wants_keyboard_input()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    }
+
+    /// The page in the side panel.
+    pub fn page_ui(&mut self, ui: &mut egui::Ui, settings: &mut Settings, around: &Around) -> Out {
+        let mut out = Out::default();
+        ui.horizontal(|ui| {
+            let title = match self.kind {
+                Kind::Map => "Print map",
+                Kind::Directions => "Print directions",
+            };
+            ui.label(egui::RichText::new(title).strong().size(15.0).color(INK));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Close").clicked() {
+                    out.close = true;
+                }
+            });
+        });
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Label").color(WEAK).size(12.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut self.label)
+                .desired_width(f32::INFINITY)
+                .hint_text("Printed at the top of the page"),
+        );
+        ui.add_space(4.0);
+        egui::Grid::new("print-settings")
+            .num_columns(2)
+            .spacing([8.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Paper");
+                egui::ComboBox::from_id_salt("print-paper")
+                    .selected_text(settings.paper.name())
+                    .show_ui(ui, |ui| {
+                        for p in Paper::ALL {
+                            ui.selectable_value(&mut settings.paper, p, p.name());
+                        }
+                    });
+                ui.end_row();
+                if self.kind == Kind::Map {
+                    ui.label("Orientation");
+                    egui::ComboBox::from_id_salt("print-orientation")
+                        .selected_text(settings.orientation.name())
+                        .show_ui(ui, |ui| {
+                            for o in Orientation::ALL {
+                                ui.selectable_value(&mut settings.orientation, o, o.name());
+                            }
+                        });
+                    ui.end_row();
+                }
+                ui.label("Text size");
+                ui.horizontal(|ui| {
+                    for t in TextSize::ALL {
+                        ui.selectable_value(&mut settings.text, t, t.name());
+                    }
+                });
+                ui.end_row();
+                ui.label("Copies");
+                ui.add(egui::DragValue::new(&mut settings.copies).range(1..=99));
+                ui.end_row();
+            });
+        if self.kind == Kind::Map {
+            let layout = self.layout(settings);
+            if let Some(area) = &self.area {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(area.scale_text(&layout, around.units)).color(INK));
+            }
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(around.has_route, egui::Button::new("Fit to route"))
+                    .clicked()
+                {
+                    self.area = Some(self.initial_area(around, &layout));
+                }
+                if ui.button("Use the view").clicked() {
+                    self.area = Some(Area::of_view(around.cam, layout.aspect()).clamped(&layout));
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Drag the rectangle on the map to move it, or a corner to resize it.",
+                )
+                .color(WEAK)
+                .size(12.0),
+            );
+        }
+        ui.add_space(6.0);
+        self.preview_ui(ui, settings);
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            side::later(ui, "Print…", "Step 4.10: to a printer");
+            side::later(ui, "Save as PDF…", "Step 4.10: to a file");
+        });
+        out
+    }
+
+    /// The thumbnail, or what is wrong.
+    fn preview_ui(&mut self, ui: &mut egui::Ui, settings: &Settings) {
+        let busy = self
+            .asked
+            .is_some_and(|(sig, _)| sig != self.preview.signature)
+            || self
+                .seen
+                .is_some_and(|(sig, _)| sig != self.preview.signature);
+        if let Some(e) = &self.preview.error {
+            ui.label(
+                egui::RichText::new(format!("The page could not be drawn: {e}"))
+                    .color(Color32::from_rgb(180, 30, 30)),
+            );
+        }
+        let Some(tex) = self.preview.pages.first() else {
+            if busy {
+                ui.label(egui::RichText::new("Drawing the page…").color(WEAK));
+            }
+            return;
+        };
+        let size = tex.size_vec2();
+        let w = ui.available_width().min(size.x.max(1.0) * 0.6);
+        let shown = Vec2::new(w, w * size.y / size.x);
+        let (rect, resp) = ui.allocate_exact_size(shown, Sense::click());
+        ui.painter()
+            .rect_filled(rect.expand(2.0), 2.0, Color32::from_gray(180));
+        ui.painter().image(
+            tex.id(),
+            rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        if busy {
+            ui.painter()
+                .rect_filled(rect, 0.0, Color32::from_white_alpha(130));
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                "Drawing the page…",
+                egui::FontId::proportional(13.0),
+                INK,
+            );
+        }
+        let pages = self.preview.pages.len();
+        let caption = match (self.kind, pages) {
+            (Kind::Directions, n) => format!(
+                "{n} page{}, {} on paper",
+                if n == 1 { "" } else { "s" },
+                settings.paper.name()
+            ),
+            _ => format!("{} on paper", settings.paper.name()),
+        };
+        ui.label(egui::RichText::new(caption).color(WEAK).size(12.0));
+        if resp
+            .on_hover_text("Click to see the page larger")
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .clicked()
+        {
+            self.big = Some(0);
+        }
+    }
+
+    /// The large preview over the map.
+    pub fn big_window(&mut self, ctx: &egui::Context) {
+        let Some(mut at) = self.big else { return };
+        let n = self.preview.pages.len();
+        if n == 0 {
+            self.big = None;
+            return;
+        }
+        at = at.min(n - 1);
+        let mut open = true;
+        let screen = ctx.content_rect();
+        let height = (screen.height() - 120.0).max(200.0);
+        egui::Window::new("Page preview")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                if n > 1 {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(at > 0, egui::Button::new("‹ Previous"))
+                            .clicked()
+                        {
+                            at -= 1;
+                        }
+                        ui.label(format!("Page {} of {n}", at + 1));
+                        if ui
+                            .add_enabled(at + 1 < n, egui::Button::new("Next ›"))
+                            .clicked()
+                        {
+                            at += 1;
+                        }
+                    });
+                }
+                let tex = &self.preview.pages[at];
+                let size = tex.size_vec2();
+                let scale = (height / size.y)
+                    .min((screen.width() - 60.0) / size.x)
+                    .min(1.5);
+                let shown = size * scale;
+                let (rect, _) = ui.allocate_exact_size(shown, Sense::hover());
+                ui.painter()
+                    .rect_filled(rect.expand(1.0), 0.0, Color32::from_gray(150));
+                ui.painter().image(
+                    tex.id(),
+                    rect,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            });
+        self.big = open.then_some(at);
+    }
+
+    /// Whether the rectangle is on the map: the print page shows a map page.
+    pub fn shows_rectangle(&self) -> bool {
+        self.kind == Kind::Map && self.area.is_some()
+    }
+
+    /// The area's corners on screen, `[x0, y0, x1, y1]`, for a map drawn at `origin`.
+    fn corners(&self, cam: &Camera, origin: Pos2, layout: &Layout) -> Option<Rect> {
+        let a = self.area?.rect(layout.aspect());
+        let p = |w: [f64; 2]| {
+            let s = cam.world_to_screen(w);
+            origin + Vec2::new(s[0] as f32, s[1] as f32)
+        };
+        Some(Rect::from_two_pos(p([a[0], a[1]]), p([a[2], a[3]])))
+    }
+
+    /// Draws the rectangle over the map: the rest dimmed, a border, and handles at the
+    /// corners.
+    pub fn draw_rectangle(
+        &self,
+        painter: &egui::Painter,
+        map: Rect,
+        cam: &Camera,
+        settings: &Settings,
+    ) {
+        let layout = self.layout(settings);
+        let Some(r) = self.corners(cam, map.min, &layout) else {
+            return;
+        };
+        let dim = Color32::from_black_alpha(95);
+        let inside = r.intersect(map);
+        if inside.is_positive() {
+            painter.rect_filled(
+                Rect::from_min_max(map.min, Pos2::new(map.max.x, inside.top())),
+                0.0,
+                dim,
+            );
+            painter.rect_filled(
+                Rect::from_min_max(Pos2::new(map.min.x, inside.bottom()), map.max),
+                0.0,
+                dim,
+            );
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(map.min.x, inside.top()),
+                    Pos2::new(inside.left(), inside.bottom()),
+                ),
+                0.0,
+                dim,
+            );
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(inside.right(), inside.top()),
+                    Pos2::new(map.max.x, inside.bottom()),
+                ),
+                0.0,
+                dim,
+            );
+        } else {
+            painter.rect_filled(map, 0.0, dim);
+        }
+        painter.rect_stroke(r, 0.0, Stroke::new(2.0, ACCENT), egui::StrokeKind::Outside);
+        for c in [
+            r.left_top(),
+            r.right_top(),
+            r.left_bottom(),
+            r.right_bottom(),
+        ] {
+            let h = Rect::from_center_size(c, Vec2::splat(9.0));
+            painter.rect(
+                h,
+                1.0,
+                Color32::WHITE,
+                Stroke::new(1.5, ACCENT),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
+    /// Moves or resizes the rectangle with the pointer. Returns whether the rectangle has
+    /// the pointer, so the map must not pan with it.
+    pub fn pointer(
+        &mut self,
+        ctx: &egui::Context,
+        resp: &Response,
+        origin: Pos2,
+        cam: &Camera,
+        settings: &Settings,
+    ) -> bool {
+        let layout = self.layout(settings);
+        let Some(area) = self.area else { return false };
+        let Some(r) = self.corners(cam, origin, &layout) else {
+            return false;
+        };
+        let (pos, pressed, down) = ctx.input(|i| {
+            (
+                i.pointer.interact_pos(),
+                i.pointer.primary_pressed(),
+                i.pointer.primary_down(),
+            )
+        });
+        let world =
+            |p: Pos2| cam.screen_to_world([f64::from(p.x - origin.x), f64::from(p.y - origin.y)]);
+        let corner_at = |p: Pos2| {
+            [
+                (r.left_top(), r.right_bottom()),
+                (r.right_top(), r.left_bottom()),
+                (r.left_bottom(), r.right_top()),
+                (r.right_bottom(), r.left_top()),
+            ]
+            .into_iter()
+            .find(|(c, _)| c.distance(p) <= GRAB)
+            .map(|(_, opposite)| opposite)
+        };
+        if self.drag.is_none() {
+            let Some(p) = pos.filter(|_| resp.hovered()) else {
+                return false;
+            };
+            let on_corner = corner_at(p);
+            if on_corner.is_some() {
+                ctx.set_cursor_icon(CursorIcon::ResizeNwSe);
+            } else if r.contains(p) {
+                ctx.set_cursor_icon(CursorIcon::Grab);
+            }
+            if !pressed {
+                return false;
+            }
+            self.drag = if let Some(opposite) = on_corner {
+                Some(Drag::Corner(world(opposite)))
+            } else if r.contains(p) {
+                let w = world(p);
+                Some(Drag::Move([w[0] - area.center[0], w[1] - area.center[1]]))
+            } else {
+                None
+            };
+            return self.drag.is_some();
+        }
+        if !down {
+            self.drag = None;
+            return true;
+        }
+        let Some(p) = pos else { return true };
+        let w = world(p);
+        let area = match self.drag {
+            Some(Drag::Move(grab)) => {
+                ctx.set_cursor_icon(CursorIcon::Grabbing);
+                Area {
+                    center: [w[0] - grab[0], w[1] - grab[1]],
+                    width: area.width,
+                }
+            }
+            Some(Drag::Corner(a)) => {
+                ctx.set_cursor_icon(CursorIcon::ResizeNwSe);
+                let (dx, dy) = (w[0] - a[0], w[1] - a[1]);
+                let aspect = layout.aspect();
+                let [lo, hi] = Area::width_range(&layout);
+                let width = dx.abs().max(dy.abs() / aspect).clamp(lo, hi);
+                Area {
+                    center: [
+                        a[0] + dx.signum() * width / 2.0,
+                        a[1] + dy.signum() * width * aspect / 2.0,
+                    ],
+                    width,
+                }
+            }
+            None => area,
+        };
+        self.area = Some(area);
+        true
+    }
+
+    /// Draws the preview again when what it is made from has held still for a moment, and
+    /// takes the worker's answer.
+    pub fn tick(&mut self, ctx: &egui::Context, inputs: &Inputs) {
+        let layout = self.layout(&inputs.settings);
+        // The area keeps its ground width and centre when the page changes shape; keep it
+        // within the zooms the page can draw.
+        if let Some(a) = self.area {
+            self.area = Some(a.clamped(&layout));
+        }
+        let sig = self.signature(inputs);
+        match self.seen {
+            Some((s, _)) if s == sig => {}
+            _ => self.seen = Some((sig, Instant::now())),
+        }
+        if let Some((s, since)) = self.seen
+            && self.asked.is_none_or(|(a, _)| a != s)
+            && s != self.preview.signature
+        {
+            let waited = since.elapsed();
+            if waited >= DEBOUNCE {
+                self.ask(ctx, inputs, s);
+            } else {
+                ctx.request_repaint_after(DEBOUNCE - waited);
+            }
+        }
+        while let Some(reply) = self.worker.as_ref().and_then(Worker::try_reply) {
+            if self.asked.is_none_or(|(_, seq)| seq != reply.seq) {
+                continue;
+            }
+            let (sig, _) = self.asked.take().unwrap_or_default();
+            self.preview.signature = sig;
+            match reply.result {
+                Ok(done) => {
+                    self.preview.error = None;
+                    self.preview.took = done.took;
+                    self.preview.note = done.note;
+                    self.preview.pages = done
+                        .pages
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            let img = egui::ColorImage::from_rgb(
+                                [p.size[0] as usize, p.size[1] as usize],
+                                &p.rgb,
+                            );
+                            ctx.load_texture(
+                                format!("print-page-{i}"),
+                                img,
+                                egui::TextureOptions::LINEAR,
+                            )
+                        })
+                        .collect();
+                }
+                Err(e) => {
+                    self.preview.error = Some(e);
+                    self.preview.pages.clear();
+                }
+            }
+            ctx.request_repaint();
+        }
+        if self.asked.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    fn ask(&mut self, ctx: &egui::Context, inputs: &Inputs, sig: u64) {
+        let s = &inputs.settings;
+        let what = match self.kind {
+            Kind::Map => {
+                let layout = self.layout(s);
+                let Some(area) = self.area else { return };
+                What::Map(Box::new(MapPage {
+                    layout,
+                    area,
+                    label: self.label.clone(),
+                    units: inputs.units,
+                    layers: inputs.layers,
+                    dpi: PREVIEW_DPI,
+                    msaa: inputs.msaa,
+                    lines: inputs.routing.print_lines(),
+                    stops: inputs.routing.stop_marks(),
+                    pins: inputs.pins.shown_pins(),
+                }))
+            }
+            Kind::Directions => {
+                let Some(doc) = inputs.routing.directions_doc(&self.label, inputs.units) else {
+                    self.preview.error = Some("there is no route to print".into());
+                    self.preview.pages.clear();
+                    self.preview.signature = sig;
+                    return;
+                };
+                What::Directions(Box::new(doc), s.paper, s.text)
+            }
+        };
+        self.seq += 1;
+        self.asked = Some((sig, self.seq));
+        self.worker.get_or_insert_with(Worker::start).send(Job {
+            seq: self.seq,
+            pack: inputs.pack.to_owned(),
+            style: inputs.style.clone(),
+            what,
+            ctx: ctx.clone(),
+        });
+    }
+
+    /// What the page is made from, as a number: when it changes the preview is out of date.
+    fn signature(&self, inputs: &Inputs) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let s = &inputs.settings;
+        (self.kind as u8, &self.label, s.paper as u8, s.text as u8).hash(&mut h);
+        s.orientation.landscape(self.wide).hash(&mut h);
+        inputs.units.name().hash(&mut h);
+        inputs.pack.hash(&mut h);
+        format!("{:?}", inputs.layers).hash(&mut h);
+        if self.kind == Kind::Map
+            && let Some(a) = self.area
+        {
+            [a.center[0], a.center[1], a.width]
+                .map(f64::to_bits)
+                .hash(&mut h);
+        }
+        for (look, line) in inputs.routing.print_lines() {
+            (look as u8, line.points).hash(&mut h);
+            line.bounds.map(f64::to_bits).hash(&mut h);
+        }
+        for m in inputs.routing.stop_marks() {
+            (m.p.map(f64::to_bits), &m.label).hash(&mut h);
+        }
+        inputs.pins.shown_count().hash(&mut h);
+        if self.kind == Kind::Directions
+            && let Some(d) = inputs.routing.directions_doc("", inputs.units)
+        {
+            (d.steps.len(), &d.totals, d.notes.len()).hash(&mut h);
+            d.step_times
+                .iter()
+                .map(|t| t.as_ref().map(|t| t.text.clone()))
+                .collect::<Vec<_>>()
+                .hash(&mut h);
+        }
+        h.finish()
+    }
+}
+
+enum What {
+    Map(Box<MapPage>),
+    Directions(Box<DirectionsDoc>, Paper, TextSize),
+}
+
+struct Job {
+    seq: u64,
+    pack: PathBuf,
+    style: StyleFile,
+    what: What,
+    ctx: egui::Context,
+}
+
+struct Done {
+    pages: Vec<Printed>,
+    took: Duration,
+    note: String,
+}
+
+struct Reply {
+    seq: u64,
+    result: Result<Done, String>,
+}
+
+/// The thread that draws the previews: it keeps its own GPU device, the open pack and
+/// egui's renderer, and draws only the latest request.
+struct Worker {
+    tx: Sender<Job>,
+    rx: Receiver<Reply>,
+}
+
+impl Worker {
+    fn start() -> Self {
+        let (tx, jobs) = mpsc::channel::<Job>();
+        let (replies, rx) = mpsc::channel::<Reply>();
+        let spawned = std::thread::Builder::new()
+            .name("print preview".into())
+            .spawn(move || {
+                let mut state = WorkerState::default();
+                while let Ok(mut job) = jobs.recv() {
+                    // Only the latest: older requests are out of date.
+                    while let Ok(newer) = jobs.try_recv() {
+                        job = newer;
+                    }
+                    let (seq, ctx) = (job.seq, job.ctx.clone());
+                    let result = state.run(job);
+                    if replies.send(Reply { seq, result }).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        if let Err(e) = spawned {
+            eprintln!("print preview: no thread: {e}");
+        }
+        Self { tx, rx }
+    }
+
+    fn send(&self, job: Job) {
+        let _ = self.tx.send(job);
+    }
+
+    fn try_reply(&self) -> Option<Reply> {
+        self.rx.try_recv().ok()
+    }
+}
+
+#[derive(Default)]
+struct WorkerState {
+    gpu: Option<(Gpu, Egui)>,
+    pack: Option<(PathBuf, packs::Opened)>,
+}
+
+impl WorkerState {
+    fn run(&mut self, job: Job) -> Result<Done, String> {
+        let t0 = Instant::now();
+        if self.gpu.is_none() {
+            let gpu = Gpu::headless()?;
+            let egui_pass = Egui::new(&gpu);
+            self.gpu = Some((gpu, egui_pass));
+        }
+        if self.pack.as_ref().is_none_or(|(p, _)| *p != job.pack) {
+            self.pack = Some((job.pack.clone(), packs::open(&job.pack)?));
+        }
+        let (gpu, egui_pass) = self.gpu.as_mut().ok_or("no GPU")?;
+        let opened = &self.pack.as_ref().ok_or("no pack")?.1;
+        let (style, _) = Style::compile(&job.style, &opened.schema);
+        let mut pages = Vec::new();
+        let mut note = String::new();
+        match job.what {
+            What::Map(page) => {
+                let (p, stats) = pages::render_map(gpu, opened, &style, egui_pass, &page)?;
+                note = format!(
+                    "z{:.1}, {} tiles, map {:.0} ms, overlay {:.0} ms",
+                    stats.z, stats.tiles, stats.map_ms, stats.egui_ms
+                );
+                pages.push(p);
+            }
+            What::Directions(doc, paper, text) => {
+                pages::render_directions(
+                    gpu,
+                    egui_pass,
+                    &doc,
+                    paper,
+                    text,
+                    PREVIEW_DPI,
+                    &mut |p| {
+                        pages.push(p);
+                        Ok(())
+                    },
+                )?;
+            }
+        }
+        Ok(Done {
+            pages,
+            took: t0.elapsed(),
+            note,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{Event, PointerButton};
+
+    /// The print page's rectangle on a 1000 x 800 map at (0, 0), driven by pointer events.
+    struct Rig {
+        ctx: egui::Context,
+        cam: Camera,
+        print: PrintUi,
+        settings: Settings,
+        held: bool,
+    }
+
+    const MAP: Rect = Rect::from_min_max(Pos2::ZERO, Pos2::new(1000.0, 800.0));
+
+    impl Rig {
+        fn new() -> Self {
+            let mut cam = Camera::new([0.0, 0.0, 1.0, 1.0]);
+            cam.size = [1000.0, 800.0];
+            cam.zoom = 10.0;
+            cam.center = [0.3, 0.4];
+            let settings = Settings::default();
+            let mut print = PrintUi::new();
+            print.open(
+                Kind::Map,
+                &Around {
+                    cam: &cam,
+                    units: Units::Miles,
+                    has_route: false,
+                    route_bounds: None,
+                },
+                &settings,
+            );
+            // Half the view's width, in the middle.
+            let width = (cam.visible()[2] - cam.visible()[0]) / 2.0;
+            print.area = Some(Area {
+                center: cam.center,
+                width,
+            });
+            Self {
+                ctx: egui::Context::default(),
+                cam,
+                print,
+                settings,
+                held: false,
+            }
+        }
+
+        fn frame(&mut self, events: Vec<Event>) {
+            let raw = egui::RawInput {
+                events,
+                screen_rect: Some(MAP),
+                focused: true,
+                ..Default::default()
+            };
+            let mut full = self.ctx.clone().run_ui(raw, |ui| {
+                let resp = ui.allocate_rect(MAP, Sense::click_and_drag());
+                self.held = self
+                    .print
+                    .pointer(ui.ctx(), &resp, MAP.min, &self.cam, &self.settings);
+            });
+            full.textures_delta.clear();
+        }
+
+        fn button(&mut self, pos: Pos2, pressed: bool) {
+            self.frame(vec![Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+        }
+
+        /// A drag from `from` to `to`, a frame for each step.
+        fn drag(&mut self, from: Pos2, to: Pos2) {
+            self.frame(vec![Event::PointerMoved(from)]);
+            self.button(from, true);
+            self.frame(vec![Event::PointerMoved((from + to.to_vec2()) / 2.0)]);
+            self.frame(vec![Event::PointerMoved(to)]);
+            self.button(to, false);
+        }
+
+        fn area(&self) -> Area {
+            self.print.area.unwrap()
+        }
+
+        fn screen(&self) -> Rect {
+            let layout = self.print.layout(&self.settings);
+            self.print.corners(&self.cam, MAP.min, &layout).unwrap()
+        }
+    }
+
+    #[test]
+    fn a_drag_inside_moves_the_rectangle() {
+        let mut r = Rig::new();
+        let (before, rect) = (r.area(), r.screen());
+        r.drag(rect.center(), rect.center() + Vec2::new(60.0, -40.0));
+        let after = r.area();
+        assert_eq!(after.width, before.width);
+        let per_pt = 1.0 / r.cam.scale();
+        assert!((after.center[0] - before.center[0] - 60.0 * per_pt).abs() < 1e-9);
+        assert!((after.center[1] - before.center[1] + 40.0 * per_pt).abs() < 1e-9);
+        assert!(r.print.drag.is_none(), "the pointer is let go");
+    }
+
+    #[test]
+    fn a_drag_on_a_corner_resizes_it_about_the_opposite_one() {
+        let mut r = Rig::new();
+        let rect = r.screen();
+        let layout = r.print.layout(&r.settings);
+        let before = r.area();
+        r.drag(
+            rect.right_bottom(),
+            rect.right_bottom() + Vec2::new(100.0, 10.0),
+        );
+        let after = r.area();
+        assert!(after.width > before.width);
+        // The top-left corner has not moved, and the shape is the page's.
+        let (w0, w1) = (before.rect(layout.aspect()), after.rect(layout.aspect()));
+        assert!((w0[0] - w1[0]).abs() < 1e-9 && (w0[1] - w1[1]).abs() < 1e-9);
+        let new = r.screen();
+        assert!((new.width() / new.height() - 1.0 / layout.aspect() as f32).abs() < 1e-3);
+        // Dragged up and to the left past the opposite corner: the same, mirrored.
+        let mut r = Rig::new();
+        let rect = r.screen();
+        r.drag(rect.left_top(), rect.left_top() - Vec2::new(50.0, 50.0));
+        let after = r.area();
+        let w = after.rect(layout.aspect());
+        let b = before.rect(layout.aspect());
+        assert!((w[2] - b[2]).abs() < 1e-9 && (w[3] - b[3]).abs() < 1e-9);
+        assert!(after.width > before.width);
+    }
+
+    #[test]
+    fn a_drag_outside_is_the_maps() {
+        let mut r = Rig::new();
+        let before = r.area();
+        r.drag(Pos2::new(20.0, 20.0), Pos2::new(120.0, 90.0));
+        assert_eq!(r.area(), before);
+        assert!(!r.held);
+    }
+
+    #[test]
+    fn the_rectangle_keeps_the_pages_zooms() {
+        let mut r = Rig::new();
+        let rect = r.screen();
+        // Drag a corner far past the opposite one: the width stays within what a page can show.
+        r.drag(rect.right_bottom(), rect.left_top() - Vec2::new(5.0, 5.0));
+        let layout = r.print.layout(&r.settings);
+        let [lo, hi] = Area::width_range(&layout);
+        assert!((lo..=hi).contains(&r.area().width));
+    }
+
+    #[test]
+    fn the_signature_follows_what_the_page_is_made_from() {
+        let mut r = Rig::new();
+        let routing = RouteUi::stub();
+        let pins = PinsUi::empty(PathBuf::from("pins"));
+        let style = StyleFile::builtin();
+        let inputs = |settings: Settings| Inputs {
+            pack: Path::new("pack.omp.000"),
+            style: &style,
+            layers: Layers::default(),
+            units: Units::Miles,
+            msaa: 1,
+            settings,
+            routing: &routing,
+            pins: &pins,
+        };
+        let a = r.print.signature(&inputs(r.settings));
+        assert_eq!(a, r.print.signature(&inputs(r.settings)));
+        let mut big = r.settings;
+        big.text = TextSize::Large;
+        assert_ne!(a, r.print.signature(&inputs(big)));
+        // Copies are for printing, not for the page.
+        let mut two = r.settings;
+        two.copies = 2;
+        assert_eq!(a, r.print.signature(&inputs(two)));
+        r.print.label = "Summer trip".into();
+        assert_ne!(a, r.print.signature(&inputs(r.settings)));
+        let b = r.print.signature(&inputs(r.settings));
+        let rect = r.screen();
+        r.drag(rect.center(), rect.center() + Vec2::new(5.0, 5.0));
+        assert_ne!(b, r.print.signature(&inputs(r.settings)));
+    }
+}

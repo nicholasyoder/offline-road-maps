@@ -1051,6 +1051,18 @@ pub fn draw_offscreen(
         });
         renderer.paint(&mut pass, frame, [0, 0], [0, 0, w, h]);
     }
+    read_texture((device, queue), enc, &resolved, [w, h], Vec::new())
+}
+
+/// Reads back `texture` (`size` pixels, [`OFFSCREEN_FORMAT`]) after the commands in `enc`
+/// and `extra` have run: RGBA, row by row.
+pub fn read_texture(
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
+    mut enc: wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    [w, h]: [u32; 2],
+    extra: Vec<wgpu::CommandBuffer>,
+) -> Result<Vec<u8>, String> {
     let row =
         (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let out = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1060,7 +1072,7 @@ pub fn draw_offscreen(
         mapped_at_creation: false,
     });
     enc.copy_texture_to_buffer(
-        resolved.as_image_copy(),
+        texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &out,
             layout: wgpu::TexelCopyBufferLayout {
@@ -1075,7 +1087,7 @@ pub fn draw_offscreen(
             depth_or_array_layers: 1,
         },
     );
-    queue.submit([enc.finish()]);
+    queue.submit(extra.into_iter().chain([enc.finish()]));
     let slice = out.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     device

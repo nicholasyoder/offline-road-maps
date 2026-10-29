@@ -143,6 +143,7 @@ pub struct Timed {
 
 /// A time as shown: "14:05 CDT", and if it is in another zone than the departure's, the
 /// difference and a tip with the time in the departure's zone and the computer's.
+#[derive(Clone, Debug)]
 pub struct Shown {
     pub text: String,
     /// "1 h behind departure"; `None` in the departure's zone.

@@ -44,7 +44,7 @@ The roadmap's items are stop optimization, departure and arrival times with over
 | 4.6 Fuel, rest and overnight suggestions (if cheap) | Not started | |
 | 4.7 Pushpins and saved trips | **Done** 2026-10-29 | TOML files in `trips/` and `pins/` next to the app, with an in-app file browser. Stops kept by name and coordinates: a trip saved on the Ohio pack opens on North America on the same street (IDs 131009 → 7204075), same 230.0 km route. 10,000 pins on the Ohio flight: frame p95 0.81–0.82 → 0.84 ms (budget +0.1). App +0.26 MB |
 | 4.8 GPX, KML and CSV (best effort) | Not started | |
-| 4.9 Print layout and preview | Not started | |
+| 4.9 Print layout and preview | **Done** 2026-10-29 | Pages drawn by the map renderer plus an egui layer at the printer's dpi (the spike passed: no atlas or texture limit at 300 dpi). Print page with rectangle, label, paper, orientation, text size, preview; directions paginated; `--print` writes PDF/PNG. New York–Los Angeles map page at 300 dpi 5 s in a debug build. Hand check of dragging the rectangle and of 4.10's buttons still to do |
 | 4.10 Printing and PDF | Not started | |
 | 4.11 Performance, accuracy and hardware checks | Not started | |
 
@@ -360,6 +360,12 @@ Not a hard requirement (owner's guidance): each format is kept only if it stays 
 ## 4.9 Print layout and preview
 
 Two printouts (decision 17): **the map**, one page of exactly the area chosen on screen, and **the directions**, from their own button. This step lays them out and previews them; 4.10 sends them to a printer.
+
+> **Done 2026-10-29**
+> - **Pages** (`pages.rs`, `print.rs`, `pdf.rs`): the map is `snapshot::draw_view` at `dpi/72 × text size` pixels per point, for a camera that shows exactly the rectangle (tested to 1e-12 world units); egui draws the label, border, stop pins, pushpin names, scale bar and credit on a transparent layer of the same size, composited on the CPU. Directions reuse the route page's own row drawing (`PrintRows`) and are paginated with page numbers. The PDF writer (one Flate image per page, PNG predictors) is the one 4.10 needs; poppler opens it.
+> - **App** (`printui.rs`): *Print map…* / *Print directions…* on the route page, ☰ menu, Ctrl+P. A `Print` side page (not a tab) with the settings kept in `config.toml` (`[print]`), the rectangle drawn over the map (drag inside to move, a corner to resize, aspect kept; tested with synthetic pointer events), and a thumbnail that opens larger, drawn by a worker thread with its own GPU device after a 250 ms pause. Seen working in the real app on North America.
+> - **Headless:** `omp-app --render --pack … --route … --print out.pdf [--directions --paper --orientation --text-size --label --dpi --units]`.
+> - **Open:** *Print…* and *Save as PDF…* are disabled placeholders for 4.10. Margins are a fixed 0.25 in. The night discs along a leg are not drawn on the printed map. Render time at 300 dpi and RSS on the E6430 are for 4.11.
 
 - **Print map**, from the ☰ menu, the route page or Ctrl+P, opens the print page in the side panel:
   - a **label** the user types for this printout ("Route to X for summer trip"), empty by default, printed as the page's one-line header (left out when empty);

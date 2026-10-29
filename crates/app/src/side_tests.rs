@@ -27,6 +27,7 @@ struct Window {
     dir: tempfile::TempDir,
     pins: PinsUi,
     trips: TripsUi,
+    print: crate::printui::PrintUi,
     /// What the Trips page asked for last.
     trips_out: Vec<trips::PageOut>,
 }
@@ -44,6 +45,7 @@ impl Window {
         Self {
             pins: PinsUi::load(dir.path()),
             trips: TripsUi::new(dir.path()),
+            print: crate::printui::PrintUi::new(),
             trips_out: Vec::new(),
             dir,
             ctx,
@@ -77,6 +79,7 @@ impl Window {
                 pack_units: Units::Kilometres,
                 pins: &mut self.pins,
                 trips: &mut self.trips,
+                print: &mut self.print,
                 exe_dir: self.dir.path(),
             };
             let o = side_panel(ui, &mut self.cfg, parts, &mut None);

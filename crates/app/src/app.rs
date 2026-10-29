@@ -26,6 +26,7 @@ use crate::mesh;
 use crate::packs::{self, Opened};
 use crate::pins::{self, PinRef, PinsUi};
 use crate::pool::Pool;
+use crate::printui::{self, PrintUi};
 use crate::render::{self, GpuMesh, MapCallback, Renderer};
 use crate::routing::{Place, RouteUi, StopAction};
 use crate::scale::{self, Units};
@@ -188,6 +189,8 @@ pub struct App {
     /// Saved trips and pushpins (phase 4 step 4.7).
     trips: TripsUi,
     pins: PinsUi,
+    /// The print page and its preview (phase 4 step 4.9).
+    print: PrintUi,
 }
 
 impl App {
@@ -217,6 +220,7 @@ impl App {
         let mut app = Self {
             trips: TripsUi::new(&s.exe_dir),
             pins,
+            print: PrintUi::new(),
             exe_dir: s.exe_dir,
             cfg_loc: s.config,
             saved: cfg.clone(),
@@ -492,15 +496,15 @@ impl MapState {
         }
     }
 
-    fn input(&mut self, ui: &egui::Ui, resp: &egui::Response, origin: Pos2, dt: f64) {
+    fn input(&mut self, ui: &egui::Ui, resp: &egui::Response, origin: Pos2, dt: f64, pan: bool) {
         let cam = &mut self.camera;
-        if resp.dragged() {
+        if resp.dragged() && pan {
             let d = resp.drag_delta();
             cam.pan([f64::from(d.x), f64::from(d.y)]);
             self.motion.stop_flying();
             self.motion.velocity = [0.0, 0.0];
         }
-        if resp.drag_stopped() {
+        if resp.drag_stopped() && pan {
             let v = ui.input(|i| i.pointer.velocity());
             self.motion.velocity = [f64::from(v.x), f64::from(v.y)];
         }
@@ -508,7 +512,7 @@ impl MapState {
         let anchor = resp.hover_pos().map_or(center, |p| {
             [f64::from(p.x - origin.x), f64::from(p.y - origin.y)]
         });
-        if resp.double_clicked() {
+        if resp.double_clicked() && pan {
             self.motion.zoom(1.0, anchor);
         }
         if resp.hovered() {
@@ -849,10 +853,17 @@ impl eframe::App for App {
                     _ => {}
                 }
                 if self.bench.is_none() {
-                    m.input(ui, &resp, rect.min, dt);
+                    // The print page's rectangle takes a drag that starts on it.
+                    let held = m.page == Page::Print
+                        && self.print.shows_rectangle()
+                        && self
+                            .print
+                            .pointer(&ctx, &resp, rect.min, &m.camera, &self.cfg.print);
+                    m.input(ui, &resp, rect.min, dt, !held);
                     // A click on a pushpin opens it; on an alternative's grey line or tag, picks
                     // it.
                     if resp.clicked()
+                        && !held
                         && let Some(p) = resp.interact_pointer_pos()
                     {
                         let at = [f64::from(p.x - rect.min.x), f64::from(p.y - rect.min.y)];
@@ -906,11 +917,31 @@ impl eframe::App for App {
                 }
                 m.routing.draw_markers(&painter, rect.min, &m.camera);
                 m.here.draw_marker(&painter, rect.min, &m.camera);
+                if m.page == Page::Print && self.print.shows_rectangle() {
+                    self.print
+                        .draw_rectangle(&painter, rect, &m.camera, &self.cfg.print);
+                }
                 if m.view.detailed && self.first_full.is_none() {
                     self.first_full = Some(self.started.elapsed());
                 }
             });
 
+        if let Some(m) = &self.map
+            && m.page == Page::Print
+        {
+            let inputs = printui::Inputs {
+                pack: &m.opened.first_chunk,
+                style: &self.style,
+                layers: self.cfg.layers,
+                units: self.cfg.units.unwrap_or(m.units),
+                msaa: render::samples(self.cfg.msaa),
+                settings: self.cfg.print,
+                routing: &m.routing,
+                pins: &self.pins,
+            };
+            self.print.tick(&ctx, &inputs);
+            self.print.big_window(&ctx);
+        }
         if self.cfg.debug_overlay && self.bench.is_none() {
             self.overlay(&ctx, map_rect);
         }
@@ -1196,6 +1227,7 @@ impl App {
             pack_units: m.units,
             pins: &mut self.pins,
             trips: &mut self.trips,
+            print: &mut self.print,
             exe_dir: &self.exe_dir,
         };
         let o = side_panel(ui, &mut self.cfg, parts, &mut self.bench);
@@ -1298,6 +1330,24 @@ impl App {
             Some(Action::Pick) => self.picker = true,
             Some(Action::Verify) => self.start_verify(ctx),
             Some(Action::About) => self.about = true,
+            Some(Action::Print) => {
+                if let Some(m) = &mut self.map {
+                    self.cfg.side_panel.open = true;
+                    let mut parts = Parts {
+                        search: &mut m.search,
+                        here: &mut m.here,
+                        routing: &mut m.routing,
+                        page: &mut m.page,
+                        camera: &m.camera,
+                        pack_units: m.units,
+                        pins: &mut self.pins,
+                        trips: &mut self.trips,
+                        print: &mut self.print,
+                        exe_dir: &self.exe_dir,
+                    };
+                    open_print(&mut parts, &self.cfg.print, printui::Kind::Map);
+                }
+            }
             None => {}
         }
     }
@@ -1663,6 +1713,7 @@ struct Parts<'a> {
     pack_units: Units,
     pins: &'a mut PinsUi,
     trips: &'a mut TripsUi,
+    print: &'a mut PrintUi,
     exe_dir: &'a Path,
 }
 
@@ -1730,6 +1781,15 @@ fn side_panel(
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
         side.open = !side.open;
     }
+    let print_kind = if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
+        Some(printui::Kind::Map)
+    } else {
+        p.routing.print.take()
+    };
+    if let Some(kind) = print_kind {
+        side.open = true;
+        open_print(&mut p, &cfg.print, kind);
+    }
     o.out = p.search.poll(recent);
     if p.search.shortcut(&ctx) {
         side.open = true;
@@ -1744,6 +1804,11 @@ fn side_panel(
                 p.routing.escape(&ctx);
             }
             Page::Trips | Page::Layers => {}
+            Page::Print => {
+                if p.print.escape(&ctx) {
+                    *p.page = p.print.back;
+                }
+            }
         }
     }
     // The bench asks "what's here" at the view's centre, as the right-click menu would, and
@@ -1794,6 +1859,7 @@ fn side_panel(
     let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(8);
     let (debug, layers, units_cfg) = (&mut cfg.debug_overlay, &mut cfg.layers, &mut cfg.units);
     let schedule = &mut cfg.schedule;
+    let print_cfg = &mut cfg.print;
     let r = egui::Panel::left("side-panel")
         .resizable(true)
         .default_size(asked)
@@ -1850,6 +1916,17 @@ fn side_panel(
                     o.trips = p.trips.page_ui(ui, p.pins, current, can_open, p.exe_dir);
                 }
                 Page::Layers => side::layers_ui(ui, layers, units_cfg, p.pack_units),
+                Page::Print => {
+                    let around = printui::Around {
+                        cam: p.camera,
+                        units,
+                        has_route: p.routing.route.is_some(),
+                        route_bounds: p.routing.route_bounds(),
+                    };
+                    if p.print.page_ui(ui, print_cfg, &around).close {
+                        *p.page = p.print.back;
+                    }
+                }
             }
         });
     let w = r.response.rect.width();
@@ -1857,6 +1934,21 @@ fn side_panel(
         side.width = w.round();
     }
     o
+}
+
+/// Opens the print page on `kind`, to go back to the page it was opened from.
+fn open_print(p: &mut Parts<'_>, settings: &crate::print::Settings, kind: printui::Kind) {
+    if *p.page != Page::Print {
+        p.print.back = *p.page;
+    }
+    *p.page = Page::Print;
+    let around = printui::Around {
+        cam: p.camera,
+        units: Units::Miles,
+        has_route: p.routing.route.is_some(),
+        route_bounds: p.routing.route_bounds(),
+    };
+    p.print.open(kind, &around, settings);
 }
 
 /// Moves the camera with the map's left edge, which the side panel moves when it opens,

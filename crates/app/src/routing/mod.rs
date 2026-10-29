@@ -53,8 +53,10 @@ use crate::scale::Units;
 use crate::search::{self, distance_text};
 
 pub use line::{GpuBand, Line, LineDraw, Look, RouteDraw, RouteSegment, band_for};
+pub use panel::{DirectionsDoc, PrintRows};
+pub use times::Note;
 pub use times::{Mode, parse_time};
-use times::{Note, Plan, Timed, Towns};
+use times::{Plan, Timed, Towns};
 pub use worker::{Choices, Quickest, choices};
 use worker::{Job, Reply, Request, Worker};
 pub use worker::{Routed, Status};
@@ -73,9 +75,9 @@ const CONNECTOR_M: f64 = 3.0;
 /// The farthest a stop may be from a road, as [`omp_core::route`] snaps (its last radius).
 const SNAP_MAX_KM: f64 = 50.0;
 
-const START: Color32 = Color32::from_rgb(40, 150, 70);
-const VIA: Color32 = Color32::from_rgb(230, 140, 20);
-const END: Color32 = Color32::from_rgb(208, 52, 44);
+pub(crate) const START: Color32 = Color32::from_rgb(40, 150, 70);
+pub(crate) const VIA: Color32 = Color32::from_rgb(230, 140, 20);
+pub(crate) const END: Color32 = Color32::from_rgb(208, 52, 44);
 /// Where a day's driving ends.
 const NIGHT: Color32 = Color32::from_rgb(52, 62, 120);
 
@@ -388,6 +390,8 @@ pub struct RouteUi {
     pub dropped: usize,
     /// A stop was set since the side panel last looked: it shows the route page.
     pub opened: bool,
+    /// A *Print* button was clicked since the side panel last looked (phase 4 step 4.9).
+    pub print: Option<crate::printui::Kind>,
     /// The step of the directions picked: drawn over the route.
     pub picked: Option<usize>,
     /// The request the route shown answered, whose alternatives are asked for.
@@ -476,6 +480,7 @@ impl RouteUi {
             last: None,
             dropped: 0,
             opened: false,
+            print: None,
             picked: None,
             shown: None,
             alts: Vec::new(),
@@ -1282,6 +1287,45 @@ impl RouteUi {
             },
         });
         self.put_stops(places, true, true);
+    }
+
+    /// The route's bounds, for fitting a printed page to it.
+    pub fn route_bounds(&self) -> Option<[f64; 4]> {
+        let r = self.route.as_ref().filter(|r| !r.line.is_empty())?;
+        Some(fit_bounds(std::iter::once(&r.line)))
+    }
+
+    /// The lines a printed page draws: those on the map, but not the step picked.
+    pub fn print_lines(&self) -> Vec<(Look, Line)> {
+        let Some(routed) = &self.route else {
+            return Vec::new();
+        };
+        let mut lines: Vec<(Look, Line)> = self
+            .overlays
+            .iter()
+            .filter(|(l, _)| !matches!(l, Look::Picked | Look::Route))
+            .cloned()
+            .collect();
+        lines.push((Look::Route, routed.line.clone()));
+        lines.sort_by_key(|(look, _)| *look as usize);
+        lines
+    }
+
+    /// The stops' numbered pins for a printed page.
+    pub fn stop_marks(&self) -> Vec<crate::pages::StopMark> {
+        self.stops()
+            .iter()
+            .enumerate()
+            .map(|(i, (kind, place))| crate::pages::StopMark {
+                p: geo::to_unit(place.p),
+                fill: match kind {
+                    StopAction::From => START,
+                    StopAction::To => END,
+                    _ => VIA,
+                },
+                label: (i + 1).to_string(),
+            })
+            .collect()
     }
 
     /// The lines to draw on `cam`'s view, each made again for a new band.

@@ -2344,6 +2344,7 @@ dependencies = [
  "jiff",
  "log",
  "lyon_tessellation",
+ "miniz_oxide 0.8.9",
  "omp-core",
  "png",
  "pollster",

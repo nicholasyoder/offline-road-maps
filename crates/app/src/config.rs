@@ -34,6 +34,8 @@ pub struct Config {
     pub side_panel: SidePanel,
     /// The schedule's settings last used (phase 4 step 4.5), for the next trip.
     pub schedule: Schedule,
+    /// The print page's settings (phase 4 step 4.9).
+    pub print: crate::print::Settings,
 }
 
 /// The schedule's settings, as the route page last had them: times are `HH:MM`, local.
@@ -243,6 +245,11 @@ mod tests {
                 max_drive: true,
                 max_drive_h: 8.5,
                 ..Schedule::default()
+            },
+            print: crate::print::Settings {
+                paper: crate::print::Paper::A4,
+                copies: 2,
+                ..Default::default()
             },
         };
         assert_eq!(cfg.pack.as_deref(), Some(Path::new("maps/ohio")));

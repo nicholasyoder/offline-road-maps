@@ -21,6 +21,8 @@ pub enum Page {
     Route,
     Trips,
     Layers,
+    /// The print page (phase 4 step 4.9): opened by a button or Ctrl+P, not a tab.
+    Print,
 }
 
 impl Page {
@@ -32,6 +34,7 @@ impl Page {
             Self::Route => "Route",
             Self::Trips => "Trips",
             Self::Layers => "Layers",
+            Self::Print => "Print",
         }
     }
 }
@@ -42,6 +45,7 @@ pub enum Action {
     Pick,
     Verify,
     About,
+    Print,
 }
 
 /// The widths the panel may take in a window `window` points wide.
@@ -83,6 +87,9 @@ pub fn menu(ui: &mut egui::Ui, debug_overlay: &mut bool) -> Option<Action> {
         }
         if ui.button("Verify pack…").clicked() {
             action = Some(Action::Verify);
+        }
+        if ui.button("Print map…  (Ctrl+P)").clicked() {
+            action = Some(Action::Print);
         }
         if ui.button("About this map…").clicked() {
             action = Some(Action::About);

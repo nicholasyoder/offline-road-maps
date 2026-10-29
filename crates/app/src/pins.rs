@@ -221,6 +221,88 @@ pub struct GpuPins {
     origin: Unit,
 }
 
+/// The names of `pins` in view, from [`NAMES_ZOOM`] on, beside their symbols, for at most
+/// [`MAX_NAMES`] of them.
+pub fn draw_names<'a>(
+    painter: &egui::Painter,
+    origin: Pos2,
+    cam: &Camera,
+    pins: impl Iterator<Item = &'a Pin>,
+) {
+    if cam.zoom < NAMES_ZOOM {
+        return;
+    }
+    let [x0, y0, x1, y1] = cam.visible();
+    let m = 100.0 / cam.scale();
+    let mut drawn = 0;
+    for pin in pins {
+        let q = geo::to_unit(pin.p);
+        if q[0] < x0 - m || q[0] > x1 + m || q[1] < y0 || q[1] > y1 + m {
+            continue;
+        }
+        if pin.name.is_empty() {
+            continue;
+        }
+        let s = cam.world_to_screen(q);
+        let at = Pos2::new(origin.x + s[0] as f32 + HALF + 3.0, origin.y + s[1] as f32);
+        let galley = painter.layout_no_wrap(pin.name.clone(), FontId::proportional(12.0), INK);
+        let rect = Rect::from_min_size(
+            at - Vec2::new(2.0, galley.size().y / 2.0),
+            galley.size() + Vec2::new(4.0, 0.0),
+        );
+        painter.rect_filled(rect, 3.0, Color32::from_white_alpha(210));
+        painter.galley(rect.min + Vec2::new(2.0, 0.0), galley, INK);
+        drawn += 1;
+        if drawn == MAX_NAMES {
+            break;
+        }
+    }
+}
+
+impl GpuPins {
+    /// The buffer for `pins`, if there are any.
+    pub fn upload(pool: &Arc<Pool>, pins: &[&Pin]) -> Option<GpuPins> {
+        let points: Vec<(Unit, &Pin)> = pins.iter().map(|p| (geo::to_unit(p.p), *p)).collect();
+        if points.is_empty() {
+            return None;
+        }
+        let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for (q, _) in &points {
+            b = [
+                b[0].min(q[0]),
+                b[1].min(q[1]),
+                b[2].max(q[0]),
+                b[3].max(q[1]),
+            ];
+        }
+        let origin = [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0];
+        let instances: Vec<PinInstance> = points
+            .iter()
+            .map(|(q, p)| PinInstance {
+                pos: [(q[0] - origin[0]) as f32, (q[1] - origin[1]) as f32],
+                look: [(PIN_PAINTS + p.colour as usize) as u16, p.shape as u16],
+            })
+            .collect();
+        Some(GpuPins {
+            instances: pool.upload(Kind::Vertex, bytemuck::cast_slice(&instances)),
+            n: instances.len() as u32,
+            origin,
+        })
+    }
+
+    /// The pins as `cam` draws them at `ppp` pixels per point.
+    pub fn draw(self: Arc<Self>, cam: &Camera, ppp: f32) -> PinDraw {
+        let ppp64 = f64::from(ppp);
+        let o = cam.world_to_screen(self.origin);
+        PinDraw {
+            origin: [(o[0] * ppp64) as f32, (o[1] * ppp64) as f32],
+            scale: (cam.scale() * ppp64) as f32,
+            half: HALF * ppp,
+            gpu: self,
+        }
+    }
+}
+
 /// The pins as a frame draws them: the buffer, its origin in viewport pixels, pixels per
 /// world unit, and the symbols' half size in pixels.
 pub struct PinDraw {
@@ -562,78 +644,25 @@ impl PinsUi {
     pub fn layout(&mut self, pool: &Arc<Pool>, cam: &Camera, ppp: f32) -> Option<PinDraw> {
         if self.stale {
             self.stale = false;
-            self.gpu = self.upload(pool).map(Arc::new);
+            let pins: Vec<&Pin> = self.shown().map(|(_, p)| p).collect();
+            self.gpu = GpuPins::upload(pool, &pins).map(Arc::new);
         }
-        let gpu = self.gpu.clone()?;
-        let ppp64 = f64::from(ppp);
-        let o = cam.world_to_screen(gpu.origin);
-        Some(PinDraw {
-            origin: [(o[0] * ppp64) as f32, (o[1] * ppp64) as f32],
-            scale: (cam.scale() * ppp64) as f32,
-            half: HALF * ppp,
-            gpu,
-        })
+        Some(self.gpu.clone()?.draw(cam, ppp))
     }
 
-    fn upload(&self, pool: &Arc<Pool>) -> Option<GpuPins> {
-        let points: Vec<(Unit, &Pin)> = self.shown().map(|(_, p)| (geo::to_unit(p.p), p)).collect();
-        if points.is_empty() {
-            return None;
-        }
-        let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-        for (q, _) in &points {
-            b = [
-                b[0].min(q[0]),
-                b[1].min(q[1]),
-                b[2].max(q[0]),
-                b[3].max(q[1]),
-            ];
-        }
-        let origin = [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0];
-        let instances: Vec<PinInstance> = points
-            .iter()
-            .map(|(q, p)| PinInstance {
-                pos: [(q[0] - origin[0]) as f32, (q[1] - origin[1]) as f32],
-                look: [(PIN_PAINTS + p.colour as usize) as u16, p.shape as u16],
-            })
-            .collect();
-        Some(GpuPins {
-            instances: pool.upload(Kind::Vertex, bytemuck::cast_slice(&instances)),
-            n: instances.len() as u32,
-            origin,
-        })
+    /// How many pins are shown.
+    pub fn shown_count(&self) -> usize {
+        self.shown().count()
+    }
+
+    /// The shown pins, for a printed page.
+    pub fn shown_pins(&self) -> Vec<Pin> {
+        self.shown().map(|(_, p)| p.clone()).collect()
     }
 
     /// The names of the pins in view, from [`NAMES_ZOOM`] on, beside their symbols.
     pub fn draw_names(&self, painter: &egui::Painter, origin: Pos2, cam: &Camera) {
-        if cam.zoom < NAMES_ZOOM {
-            return;
-        }
-        let [x0, y0, x1, y1] = cam.visible();
-        let m = 100.0 / cam.scale();
-        let mut drawn = 0;
-        for (_, pin) in self.shown() {
-            let q = geo::to_unit(pin.p);
-            if q[0] < x0 - m || q[0] > x1 + m || q[1] < y0 || q[1] > y1 + m {
-                continue;
-            }
-            if pin.name.is_empty() {
-                continue;
-            }
-            let s = cam.world_to_screen(q);
-            let at = Pos2::new(origin.x + s[0] as f32 + HALF + 3.0, origin.y + s[1] as f32);
-            let galley = painter.layout_no_wrap(pin.name.clone(), FontId::proportional(12.0), INK);
-            let rect = Rect::from_min_size(
-                at - Vec2::new(2.0, galley.size().y / 2.0),
-                galley.size() + Vec2::new(4.0, 0.0),
-            );
-            painter.rect_filled(rect, 3.0, Color32::from_white_alpha(210));
-            painter.galley(rect.min + Vec2::new(2.0, 0.0), galley, INK);
-            drawn += 1;
-            if drawn == MAX_NAMES {
-                break;
-            }
-        }
+        draw_names(painter, origin, cam, self.shown().map(|(_, p)| p));
     }
 
     /// The open pin, at the top of the Search page: its symbol and name, its note, its set

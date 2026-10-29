@@ -19,7 +19,7 @@ use omp_core::geo;
 use omp_core::route::{FERRY, Kind, Modifier, Step, TOLL};
 use omp_core::schedule::Stay;
 
-use super::times::{Mode, Note, NoteKind, Timed, parse_time};
+use super::times::{Mode, Note, NoteKind, parse_time};
 use super::worker::Choices;
 use super::{
     END, LegAlts, Place, Reordered, RouteUi, START, StopAction, VIA, delta_text, duration_text,
@@ -134,11 +134,21 @@ impl RouteUi {
         self.summary(ui, units, &mut edits);
         if self.route.is_some() {
             ui.horizontal_wrapped(|ui| {
-                later(
-                    ui,
-                    "Print or export directions",
-                    "As a page to print, or a file",
-                );
+                if ui
+                    .button("Print map…")
+                    .on_hover_text("The map as a page, with the route  (Ctrl+P)")
+                    .clicked()
+                {
+                    self.print = Some(crate::printui::Kind::Map);
+                }
+                if ui
+                    .button("Print directions…")
+                    .on_hover_text("The directions as pages")
+                    .clicked()
+                {
+                    self.print = Some(crate::printui::Kind::Directions);
+                }
+                later(ui, "Export…", "As a GPX or KML file");
             });
         }
         let left = ui.available_height();
@@ -901,7 +911,11 @@ impl RouteUi {
                         }
                         Row::Note(k) => {
                             let note = &self.notes[k];
-                            if let Some((event, button)) = note_row(ui, rect, k, note, timed) {
+                            let time = match (timed, &note.time) {
+                                (Some(t), Some(z)) => Some(t.show(z, false)),
+                                _ => None,
+                            };
+                            if let Some((event, button)) = note_row(ui, rect, k, note, time) {
                                 targets.push((Target::MakeOvernight(event), button.rect));
                                 if button.clicked() {
                                     edits.push(Edit::MakeOvernight(event));
@@ -1004,6 +1018,111 @@ fn triangle(p: &egui::Painter, c: Pos2, open: bool, color: Color32) {
         ],
     };
     p.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+}
+
+impl RouteUi {
+    /// The directions as a printout holds them, with `label` for its header.
+    pub fn directions_doc(&self, label: &str, units: Units) -> Option<DirectionsDoc> {
+        let r = self.route.as_ref().filter(|r| !r.steps.is_empty())?;
+        let timed = self.timed();
+        let stops = self
+            .stops()
+            .iter()
+            .enumerate()
+            .map(|(i, (kind, place))| {
+                let fill = match kind {
+                    StopAction::From => START,
+                    StopAction::To => END,
+                    _ => VIA,
+                };
+                let name = place
+                    .name
+                    .clone()
+                    .or_else(|| r.roads.get(i).filter(|r| !r.is_empty()).cloned())
+                    .unwrap_or_else(|| {
+                        let [lon, lat] = geo::unit_to_lonlat(geo::to_unit(place.p));
+                        format!("{lat:.4}, {lon:.4}")
+                    });
+                (fill, name)
+            })
+            .collect();
+        let step_times = (0..r.steps.len())
+            .map(|i| timed.and_then(|t| Some(t.show(t.steps.get(i)?, false))))
+            .collect();
+        let note_times = self
+            .notes
+            .iter()
+            .map(|n| match (timed, &n.time) {
+                (Some(t), Some(z)) => Some(t.show(z, false)),
+                _ => None,
+            })
+            .collect();
+        Some(DirectionsDoc {
+            label: label.to_owned(),
+            stops,
+            totals: format!(
+                "{} · {}",
+                distance_text(r.trip.metres(), units),
+                duration_text(r.trip.time_s())
+            ),
+            steps: r.steps.clone(),
+            notes: self.notes.clone(),
+            step_times,
+            note_times,
+            units,
+        })
+    }
+}
+
+/// What the directions' printout holds (phase 4 step 4.9), all of it plain data so a page can
+/// be drawn on another thread: the stops, the totals, and the rows as the route page has them.
+#[derive(Clone)]
+pub struct DirectionsDoc {
+    pub label: String,
+    /// Each stop's pin colour and name.
+    pub stops: Vec<(Color32, String)>,
+    pub totals: String,
+    pub steps: Vec<Step>,
+    pub notes: Vec<Note>,
+    /// The clock of each step and each note, when a time is set.
+    pub step_times: Vec<Option<super::times::Shown>>,
+    pub note_times: Vec<Option<super::times::Shown>>,
+    pub units: Units,
+}
+
+/// The directions' rows laid out for a printed page `width` points wide.
+pub struct PrintRows {
+    rows: Rows,
+}
+
+impl PrintRows {
+    pub fn new(ui: &egui::Ui, doc: &DirectionsDoc, width: f32) -> Self {
+        let timed = doc.step_times.iter().any(Option::is_some);
+        Self {
+            rows: Rows::new(ui, &doc.steps, &doc.notes, timed, width, doc.units),
+        }
+    }
+
+    /// Each row's height.
+    pub fn heights(&self) -> &[f32] {
+        &self.rows.heights
+    }
+
+    /// Draws row `i` in `rect`, as the route page does but without a click or a hover.
+    pub fn paint(&self, ui: &mut egui::Ui, rect: Rect, doc: &DirectionsDoc, i: usize) {
+        match self.rows.rows[i] {
+            Row::Step(s) => {
+                let time = doc.step_times.get(s).cloned().flatten();
+                step_row(ui, rect, s, &doc.steps[s], &self.rows.subs[s], false, time);
+            }
+            Row::Note(k) => {
+                let mut note = doc.notes[k].clone();
+                note.movable = false;
+                let time = doc.note_times.get(k).cloned().flatten();
+                note_row(ui, rect, k, &note, time);
+            }
+        }
+    }
 }
 
 /// A row of the directions: a step, or a row the schedule adds (a night, a break, a zone
@@ -1205,12 +1324,8 @@ fn note_row(
     rect: Rect,
     k: usize,
     n: &Note,
-    timed: Option<&Timed>,
+    time: Option<super::times::Shown>,
 ) -> Option<(usize, egui::Response)> {
-    let time = match (timed, &n.time) {
-        (Some(t), Some(z)) => Some(t.show(z, false)),
-        _ => None,
-    };
     let p = ui.painter().clone();
     p.rect_filled(rect.shrink2(Vec2::new(0.0, 1.0)), 3.0, NOTE_FILL);
     let c = rect.min + Vec2::new(2.0 + ICON / 2.0, 4.0 + ICON / 2.0);

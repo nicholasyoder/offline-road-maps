@@ -18,6 +18,8 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 # Already in the tree through wgpu; logger.rs prints its records.
 log = "0.4.34"
 lyon_tessellation = "1.0.23"
+# Already in the tree through png; pdf.rs compresses the pages with it.
+miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
 omp-core.workspace = true
 png = "0.18.1"
 pollster = "1.0.1"
