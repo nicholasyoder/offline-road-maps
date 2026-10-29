@@ -294,14 +294,14 @@ The owner asked for this only if it is easy and cheap. The plan expects it to be
 - **Settings**, with the schedule's: fuel every N km or miles (default 400 km); rest every N hours (from 4.5's breaks); overnight from 4.5's day ends. Each can be off, and all are off by default (decision 7).
 - **Where to look:** for each target point on the route (where the tank range is three quarters used, each break, each day end), look at a window of the route around it (for fuel, the last 25% of the range before it). In that window, find POIs of the classes wanted within 2 km of the route line, through `SENT`'s Morton runs in the class's importance bucket, or through the z12 tiles' `pois` layer if that reads less (measure both).
 - **Detour:** for the best few candidates by distance off the route, two CH queries (route to it, it to the next stop) give the real detour, with no unpacking. That also drops a motorway rest area on the far carriageway, whose detour is large. Suggest the three with the smallest detour, with their name and brand, the detour ("+3 min") and the distance along the route.
-- **App:** small icons along the route and a list in the route page under each target ("Fuel near 610 km: …"). **Add as stop** adds it with a default duration (fuel 10 min, rest 15, overnight to the next day's start).
+- **App:** small icons along the route, drawn by the map renderer rather than as egui shapes so 4.9's printed map shows them (4.9 comes first, decision 25), and a list in the route page under each target ("Fuel near 610 km: …"). **Add as stop** adds it with a default duration (fuel 10 min, rest 15, overnight to the next day's start).
 - **Measure** on the coast-to-coast routes on the dev machine and the E6430: time to the suggestions (aim: under 300 ms warm on the E6430), bytes read cold, and RSS. **If it is over budget, or the suggestions are poor** (wrong side of the road, closed POIs that OSM still has), write it up and drop or shrink it as the owner prefers. Charging stations come along for free, but range planning for electric cars is out of scope.
 
 **Done when:** suggestions work on the North America pack within the budget, or the measurements are written up and the owner has decided.
 
 ## 4.7 Pushpins and saved trips
 
-- **Files** (decision 8), next to the executable like `config.toml`: `trips/<name>.toml`, one file per trip; and `pins/<set>.toml`, one file per pushpin set. They are plain TOML, readable and copied with the app. If the folder is read-only (a locked stick), saving says so and offers the file browser (4.8).
+- **Files** (decision 8), next to the executable like `config.toml`: `trips/<name>.toml`, one file per trip; and `pins/<set>.toml`, one file per pushpin set. They are plain TOML, readable and copied with the app. If the folder is read-only (a locked stick), saving says so and offers the file browser, which is built in this step (decision 25) and reused by 4.8 and 4.10.
 - **A saved trip** holds the stops (name, latitude and longitude, the street's name, duration, and kind: stop, overnight or hidden via point from 4.3), avoid options, the schedule settings, the optimizer's options, a format version and the pack it was made on (for information only). **No pack IDs:** on open, a stop with a street name is matched to a street of that name near its point (the `SGRD` lookup "what's here" uses) and snapped to it first. Otherwise it snaps as a point. A stop that no longer snaps well gets the far-snap notice.
 - **Pushpins:** a point, a name, a note, and a symbol from a small set (shape × colour). Add one from the map's right-click menu, and from the "what's here" and search-result buttons ("Add pushpin"). They are drawn as instanced symbols over the map with their names from a zoom on, culled by view, under the route's pins. A click opens it on the Search page with its note and the route buttons. Pins are found by search (by name, in memory, listed above the pack's results).
 - **Trips page:** saved trips (open, rename, duplicate, delete) and pin sets (show or hide, rename, delete, a list of a set's pins). The route page's *Save trip* saves, or saves as, and shows when the trip has unsaved changes.
@@ -319,7 +319,7 @@ Not a hard requirement (owner's guidance): each format is kept only if it stays 
 | **KML 2.2** | Stops and pins as Placemarks, a set as a Folder, and the route as a LineString. | Point Placemarks → pins, a Folder → a set. Lines are not read. KMZ is not read (it needs a zip reader). |
 | **CSV** | Stops with their times, pins (name, latitude, longitude, note, symbol), and the directions. | Header detection (name, lat or latitude, lon, lng or longitude, note, address), with commas, semicolons or tabs. Rows with no coordinates but an address are **geocoded by search**: the top hit is taken, and weak matches are flagged in a list of rows to check. |
 
-- **Files** (decision 9): an in-app file browser in egui (folders, a file name box, the formats), starting next to the executable. No native dialog crate: `rfd` would pull in GTK or a D-Bus portal on Linux. The same browser serves 4.10's "Save as PDF".
+- **Files** (decision 9): an in-app file browser in egui (folders, a file name box, the formats), starting next to the executable. No native dialog crate: `rfd` would pull in GTK or a D-Bus portal on Linux. The browser is built in 4.7 (decision 25), and this step adds the formats to it. The same browser serves 4.10's "Save as PDF".
 - **Checks:** `xmllint --schema` for GPX 1.1 and KML 2.2, and GPSBabel reading our files on the dev machine. Our exports read back unchanged. Sample files from OsmAnd, Garmin BaseCamp and Google My Maps exports, kept under `crates/app/tests/` (owner to provide if wanted). Criterion 6's address CSV is made from search's address accuracy set (phase 2 step 2.9).
 
 **Done when:** each format kept passes its checks, and any dropped format is written up here.
@@ -368,20 +368,20 @@ As phase 3 step 3.9, with this phase's features:
 
 ## Order of work
 
+Reordered by the owner on 2026-10-29 (decision 25) so that saved trips and printing come before suggestions and exchange formats:
+
 ```
-4.1 optimize ──────────────────────────────────────┐
-4.2 alternatives (core) ─► 4.3 app ─┐               │
-4.4 U-turn measurement ─► (owner) ──┤               ├─► 4.11 checks
-4.5 schedule + TZON ─► 4.6 suggestions ─┐           │
-4.7 trips + pins ─► 4.8 GPX/KML/CSV ────┼─► 4.9 print layout ─► 4.10 printing + PDF
-                                        │
+Done:  4.1 optimize · 4.2 alternatives (core) ─► 4.3 app · 4.4 U-turns (not taken) · 4.5 schedule + TZON
+Next:  4.7 trips + pins + file browser ─► 4.9 print layout ─► 4.10 printing + PDF
+Then:  4.6 suggestions ─► 4.8 GPX/KML/CSV ─► 4.11 checks
 ```
 
-- 4.1, 4.2, 4.4, 4.5 and 4.7 are independent and can run side by side. 4.4's builds are long, so start them early and decide while other steps go on.
+- Printing needs what it prints: the schedule's times (4.5, done) and the pushpins (4.7). It does not need 4.6 or 4.8. A suggestion added as a stop prints as any stop does. 4.6's icons along the route must be drawn by the map renderer so they print (noted in 4.6).
+- The in-app file browser (decision 9) moves from 4.8 to 4.7: saved trips need it when their folder is read-only, and 4.10's *Save as PDF* needs it. 4.8 adds only the formats. Printing to CUPS on Linux does not need it, since the PDF goes to `lp` on stdin.
+- 4.9's test of egui at 300 dpi comes first in that step: it decides how pages are drawn.
+- 4.10 is done only after printing on paper from Windows and Linux. If time is short before a demo, Linux CUPS printing and *Save as PDF* can be shown before Windows GDI printing.
 - 4.4 was decided before 4.2 (decision 20: not taken), from its own numbers; 4.2 compares its rescoring with them.
 - 4.5's `TZON` is the only format change planned (0.6), and the only North America rebuild this phase needs now that 4.4's penalty is not taken.
-- Printing comes after trips, schedule and suggestions, so the printout has everything it prints: times, stops, pins.
-- 4.9's spike (egui at 300 dpi) comes first in that step: it decides how pages are drawn.
 
 ## Decisions
 
@@ -422,6 +422,10 @@ Settled by the owner (2026-10-28), from the hand check of step 4.3:
 
 23. **Alternatives are looked for when the user opens a leg, and shown only while it is open.** Routing finds the quickest route only. Each leg has one row in the route page, with its distance and time. Opening it looks for the leg's alternatives ("Checking for other routes…"), lists them and draws them grey on the map. Closing it leaves only the route picked, so the map shows, and prints, just that. The quickest stays shown until the user picks another. Turn costs (decision 3) no longer switch the route by themselves; the list says which route they rank best.
 24. **The route page's controls, top to bottom:** the stops; a row of Clear, Reverse and *Optimize…*; then *More options*, closed by default and drawn like a leg's row (same triangle, indent and hover), with Avoid tolls and Avoid ferries one under the other (closed, its title says what is avoided: "More options: avoiding tolls"). *Optimize…* opens a window beside the panel with the ends to keep, Optimize (Cancel while it runs), Close, what the last run saved, with Undo, and why Optimize is greyed out when it is ("Already optimal: with these ends kept, the stops have only one order."); closing it lets a run finish. The "Route" heading is gone (the tab says it). For 4.5: *Depart at / Arrive by* gets its own section under *More options*, which folds like the others; its title says the time set, so closed it still shows it (changed by the owner after trying 4.5: it was to stay open whenever a time is set); the driving window and breaks go in that section, a stop's time in its row (a field that opens from it), and 4.6's fuel and rest settings with the schedule's. 4.7's *Save trip* stays with *Print or export* under the totals.
+
+Settled by the owner (2026-10-29), for a demo:
+
+25. **Saved trips and printing come before suggestions and exchange formats:** 4.7, 4.9 and 4.10, then 4.6 and 4.8. The in-app file browser is built in 4.7 rather than 4.8. All of phase 4 is still planned; this changes only the order.
 
 Open: none.
 
