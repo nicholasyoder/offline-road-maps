@@ -205,6 +205,7 @@ fn whats_here_is_served_between_levels() {
         p: [1 << 30, 1 << 30],
         entries_m: 500.0,
         asked: Instant::now(),
+        stop: false,
     });
     let h = w.here_rx.recv_timeout(WAIT).expect("a here answer");
     assert_eq!(h.query.id, 7);

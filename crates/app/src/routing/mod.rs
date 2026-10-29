@@ -44,6 +44,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, Pos2};
 use omp_core::find::Hit;
 use omp_core::geo::{self, P};
+use omp_core::here::HereAddress;
 use omp_core::route::{Ends, FAR_SNAP_M, FERRY, Stop, TOLL};
 use omp_core::schedule::Stay;
 
@@ -103,6 +104,17 @@ impl Place {
             street: None,
             street_name: None,
             name: None,
+            stay: Stay::default(),
+        }
+    }
+
+    /// A point on the map named by the address found near it.
+    pub fn at_address(p: P, a: &HereAddress) -> Self {
+        Self {
+            p,
+            street: a.street,
+            street_name: None,
+            name: Some(a.label.clone()),
             stay: Stay::default(),
         }
     }
@@ -538,6 +550,28 @@ impl RouteUi {
         }
         self.opened = action != StopAction::Clear;
         self.reroute();
+    }
+
+    /// Names the unnamed stops at `p` by the address found near them, and snaps them to its
+    /// street.
+    pub fn name_stops_at(&mut self, p: P, a: &HereAddress) {
+        let mut found = false;
+        for s in self
+            .from
+            .iter_mut()
+            .chain(&mut self.via)
+            .chain(self.to.iter_mut())
+            .filter(|s| s.p == p && s.name.is_none())
+        {
+            *s = Place {
+                stay: s.stay,
+                ..Place::at_address(p, a)
+            };
+            found = true;
+        }
+        if found {
+            self.reroute();
+        }
     }
 
     /// Puts `places` back as the stops, the first as the start if `from` and the last as

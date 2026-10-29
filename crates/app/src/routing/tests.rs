@@ -645,3 +645,38 @@ fn saved_trips_open_unchanged_with_their_streets_and_routes() {
         "{n:?}"
     );
 }
+
+#[test]
+fn a_map_stop_is_named_by_the_address_found_near_it() {
+    let (worker, _tx) = Worker::stub();
+    let mut r = RouteUi::with_worker(worker);
+    let (at, other) = (place(40.0, -83.0), place(41.0, -82.0));
+    r.apply(StopAction::From, at.clone());
+    r.apply(StopAction::To, other.clone());
+    let a = omp_core::here::HereAddress {
+        label: "12 Main Street".into(),
+        p: at.p,
+        dist_m: 20.0,
+        approx: false,
+        street: Some(7),
+        postcode: None,
+        units: Vec::new(),
+    };
+    r.name_stops_at(at.p, &a);
+    let from = r.from.as_ref().unwrap();
+    assert_eq!(from.name.as_deref(), Some("12 Main Street"));
+    assert_eq!(from.street, Some(7));
+    // Another stop is left as it was, and a named one is not renamed.
+    assert_eq!(r.to, Some(other));
+    r.name_stops_at(
+        at.p,
+        &omp_core::here::HereAddress {
+            label: "9 Elm".into(),
+            ..a
+        },
+    );
+    assert_eq!(
+        r.from.as_ref().unwrap().name.as_deref(),
+        Some("12 Main Street")
+    );
+}

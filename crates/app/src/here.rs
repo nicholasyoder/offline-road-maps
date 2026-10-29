@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke};
 use omp_core::find::Hit;
 use omp_core::geo::{self, P};
-use omp_core::here::Shown;
+use omp_core::here::{HereAddress, Shown};
 
 use crate::camera::{self, Camera};
 use crate::routing::{self, MenuState, Place, StopAction};
@@ -40,6 +40,8 @@ pub struct HereQuery {
     /// How far to look for places and POIs, in metres.
     pub entries_m: f64,
     pub asked: Instant,
+    /// Asked to name a route stop, not for the panel: only the address matters.
+    pub stop: bool,
 }
 
 pub struct HereAnswer {
@@ -73,6 +75,8 @@ pub struct HereUi {
     /// Where the open menu was opened, in world coordinates.
     menu_at: Option<camera::Vec2>,
     pub panel: Option<Panel>,
+    /// Addresses found for stops set from the map's menu, not yet given to the route.
+    resolved: Vec<(P, HereAddress)>,
     pub last: Option<HereTaken>,
     /// Asked since the side panel last looked: it shows the search page.
     pub asked: bool,
@@ -115,6 +119,7 @@ impl HereUi {
             p: geo::from_unit(at),
             entries_m: (NEARBY_PX * mpp).clamp(NEARBY_M[0], NEARBY_M[1]),
             asked: Instant::now(),
+            stop: false,
         };
         search.ask_here(q);
         self.asked = true;
@@ -126,10 +131,33 @@ impl HereUi {
         });
     }
 
+    /// Looks for the address a stop at `at` should be named by, for [`Self::take_stops`].
+    pub fn ask_stop(&mut self, search: &SearchUi, at: camera::Vec2) {
+        self.next_id += 1;
+        search.ask_here(HereQuery {
+            id: self.next_id,
+            p: geo::from_unit(at),
+            entries_m: 0.0,
+            asked: Instant::now(),
+            stop: true,
+        });
+    }
+
+    /// The addresses found for stops, each with the stop's point.
+    pub fn take_stops(&mut self) -> Vec<(P, HereAddress)> {
+        std::mem::take(&mut self.resolved)
+    }
+
     /// Takes the worker's answers to the open panel, dropping the others.
     pub fn take(&mut self, search: &SearchUi) -> Vec<HereTaken> {
         let mut out = Vec::new();
         for a in search.here_answers() {
+            if a.query.stop {
+                if let Some(addr) = a.shown.ok().and_then(|s| s.address) {
+                    self.resolved.push((a.query.p, addr));
+                }
+                continue;
+            }
             let Some(panel) = self.panel.as_mut().filter(|p| p.id == a.query.id) else {
                 continue;
             };
@@ -332,9 +360,15 @@ impl HereUi {
                 add_pin = Some((panel.at, name));
             }
             chosen = a.map(|a| {
-                let place = match &panel.hit {
-                    Some(h) => Place::of_hit(h),
-                    None => Place::at(panel.at),
+                let place = match (&panel.hit, &panel.answer) {
+                    (Some(h), _) => Place::of_hit(h),
+                    (
+                        None,
+                        Some(Ok(Shown {
+                            address: Some(a), ..
+                        })),
+                    ) => Place::at_address(geo::from_unit(panel.at), a),
+                    _ => Place::at(panel.at),
                 };
                 (a, place)
             });
@@ -460,7 +494,6 @@ fn copy_text(lon: f64, lat: f64) -> String {
 mod tests {
     use super::*;
     use eframe::egui::{Event, PointerButton, Rect, Vec2};
-    use omp_core::here::HereAddress;
 
     fn shown(p: P) -> Shown {
         Shown {

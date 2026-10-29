@@ -881,7 +881,11 @@ impl eframe::App for App {
                     if let Some((a, at)) = picked {
                         let place = marker_at(&m.search, &m.camera, at)
                             .map_or_else(|| Place::at(at), Place::of_hit);
+                        let unnamed = place.name.is_none() && a != StopAction::Clear;
                         m.routing.apply(a, place);
+                        if unnamed {
+                            m.here.ask_stop(&m.search, at);
+                        }
                     }
                     m.motion.step(&mut m.camera, dt);
                     animate = m.motion.moving() || MapState::keys_held(ui) || m.view.fading;
@@ -1821,6 +1825,9 @@ fn side_panel(
         if let Some(b) = bench.as_mut() {
             b.here_answer(&t);
         }
+    }
+    for (at, address) in p.here.take_stops() {
+        p.routing.name_stops_at(at, &address);
     }
     let key = bench.as_mut().and_then(|b| b.search_key(available));
     if std::mem::take(&mut p.here.asked) || key.is_some() {
