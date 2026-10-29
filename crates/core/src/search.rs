@@ -28,6 +28,9 @@ pub const SPST: [u8; 4] = *b"SPST";
 pub const SHIFT: u32 = 6;
 /// Decoded entry blocks kept, in bytes.
 const CACHE_BYTES: usize = 12 << 20;
+/// How far [`Index::town_near`] looks for a city or town, and for a village.
+pub const TOWN_M: f64 = 25_000.0;
+pub const VILLAGE_M: f64 = 10_000.0;
 /// The first minor version whose search sections this reader understands (format 0.4).
 pub const MIN_MINOR: u16 = 4;
 
@@ -253,6 +256,15 @@ impl Index {
     /// bucket's part of a bbox is a few ID intervals; they are found from the blocks' first
     /// keys and are whole blocks, so they hold other entries too.
     pub fn intervals(&self, bboxes: &[[u32; 4]]) -> io::Result<Vec<(u32, u32)>> {
+        self.intervals_from(bboxes, 0)
+    }
+
+    /// [`Self::intervals`] in the importance buckets that hold `min_importance` and up.
+    fn intervals_from(
+        &self,
+        bboxes: &[[u32; 4]],
+        min_importance: u8,
+    ) -> io::Result<Vec<(u32, u32)>> {
         let mut ranges: Vec<(u64, u64)> = bboxes
             .iter()
             .flat_map(|b| geo::morton_ranges(*b))
@@ -261,7 +273,7 @@ impl Index {
         ranges.sort_unstable();
         let mut out = Vec::new();
         let blocks = self.sent.blocks();
-        for bucket in 0..16u64 {
+        for bucket in 0..=15 - u64::from(min_importance >> 4) {
             for &(lo, hi) in &ranges {
                 let (klo, khi) = ((bucket << 52) | lo, (bucket << 52) | hi);
                 let start = self.block_partition(|k| k < klo)?.saturating_sub(1);
@@ -289,13 +301,22 @@ impl Index {
 
     /// The entries in `bboxes`, with their IDs, in ID order.
     pub fn entries_in(&self, bboxes: &[[u32; 4]]) -> io::Result<Vec<(u32, Entry)>> {
+        self.entries_from(bboxes, 0)
+    }
+
+    /// [`Self::entries_in`] of `min_importance` and up (and some below it).
+    pub fn entries_from(
+        &self,
+        bboxes: &[[u32; 4]],
+        min_importance: u8,
+    ) -> io::Result<Vec<(u32, Entry)>> {
         let inside = |p: P| {
             bboxes
                 .iter()
                 .any(|b| b[0] <= p[0] && p[0] <= b[2] && b[1] <= p[1] && p[1] <= b[3])
         };
         let mut out = Vec::new();
-        for (a, b) in self.intervals(bboxes)? {
+        for (a, b) in self.intervals_from(bboxes, min_importance)? {
             let mut id = a;
             while id < b {
                 let block = self.sent.find(id).ok_or_else(|| invalid("no such entry"))?;
@@ -314,6 +335,30 @@ impl Index {
             }
         }
         Ok(out)
+    }
+
+    /// The town a point is near, with its distance in metres, for where a day's driving
+    /// ends (phase 4 step 4.5): the nearest city or town within [`TOWN_M`], else the
+    /// nearest village within [`VILLAGE_M`]. `places` names the `places` layer's classes,
+    /// from the schema.
+    pub fn town_near(&self, p: P, places: &[String]) -> io::Result<Option<(Entry, f64)>> {
+        let bbox = geo::bbox_around(p, TOWN_M);
+        let mut best: Option<(u8, f64, Entry)> = None;
+        // Villages are 105 and up, suburbs 95.
+        for (_, e) in self.entries_from(&[bbox], 96)? {
+            let rank = match places.get(e.class as usize).map(String::as_str) {
+                _ if e.kind != Kind::Place => continue,
+                Some("city" | "town") => 0,
+                Some("village") => 1,
+                _ => continue,
+            };
+            let d = geo::distance_m(geo::to_unit(p), geo::to_unit(e.p));
+            let within = if rank == 0 { TOWN_M } else { VILLAGE_M };
+            if d <= within && best.as_ref().is_none_or(|b| (rank, d) < (b.0, b.1)) {
+                best = Some((rank, d, e));
+            }
+        }
+        Ok(best.map(|(_, d, e)| (e, d)))
     }
 
     /// The postings of `token`, or `None` if no entry holds it.

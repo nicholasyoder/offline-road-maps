@@ -7,12 +7,20 @@
 //! saved and offers Undo. Under the totals, each leg has a row with its distance and time
 //! that opens to its routes (step 4.3): they are looked for then, listed with the one shown
 //! selected, and drawn grey on the map until the row is closed; clicking another shows it.
-//! The rest of phase 4's trip planning has its places here, disabled.
+//! *Depart at / Arrive by* (step 4.5) has its own section under *More options*, open while
+//! a time is set: the date and time, the driving day and the breaks. With a time, each
+//! stop's row says when it arrives and leaves, with a field for the time spent there, and
+//! the directions get a column of clock times and rows for each night ("Day 2"), break and
+//! zone crossing; a night along a leg can be made a stop. Times in another zone than the
+//! departure's are drawn in an accent colour. The rest of phase 4's trip planning has its
+//! places here, disabled.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use omp_core::geo;
 use omp_core::route::{FERRY, Kind, Modifier, Step, TOLL};
+use omp_core::schedule::Stay;
 
+use super::times::{Mode, Note, NoteKind, Timed, parse_time};
 use super::worker::Choices;
 use super::{
     END, LegAlts, Place, Reordered, RouteUi, START, StopAction, VIA, delta_text, duration_text,
@@ -21,7 +29,7 @@ use crate::camera::{self, Camera};
 use crate::scale::Units;
 use crate::search::distance_text;
 use crate::side::later;
-use crate::theme::{APPROX, Glyph, INK, WEAK, glyph_button};
+use crate::theme::{ACCENT, APPROX, Glyph, INK, WEAK, glyph_button};
 
 const ICON: f32 = 20.0;
 /// Where a step's text starts, from the row's left, and the line under it.
@@ -29,6 +37,13 @@ const TEXT_X: f32 = ICON + 14.0;
 const STEP_FONT: FontId = FontId::proportional(13.5);
 const SUB_H: f32 = 16.0;
 const PICKED_FILL: Color32 = Color32::from_rgb(222, 232, 250);
+/// The directions' column of clock times, when a time is set.
+const TIME_W: f32 = 64.0;
+const SMALL: FontId = FontId::proportional(11.5);
+/// The *Make overnight stop* button under a night's row.
+const BUTTON_H: f32 = 20.0;
+/// Behind the schedule's rows in the directions.
+const NOTE_FILL: Color32 = Color32::from_rgb(243, 244, 250);
 
 /// What a click or a drag in the page landed on, for the tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +70,14 @@ pub enum Target {
     /// A leg's route in its list.
     Alternative(usize, usize),
     Step(usize),
+    /// *Depart at / Arrive by*'s row, and its choices.
+    Times,
+    Mode(Mode),
+    /// A stop's time there, which opens its field.
+    Stay(usize),
+    Overnight(usize),
+    /// *Make overnight stop* under a night's row: the schedule's event.
+    MakeOvernight(usize),
 }
 
 /// A change asked for in the page, made once it is drawn.
@@ -70,6 +93,10 @@ enum Edit {
     Expand(usize, bool),
     Choose(usize, usize),
     Pick(usize),
+    Mode(Mode),
+    Retime,
+    Stay(usize, Stay),
+    MakeOvernight(usize),
 }
 
 impl RouteUi {
@@ -94,6 +121,7 @@ impl RouteUi {
         units: Units,
     ) -> Option<(camera::Vec2, f64)> {
         self.targets.clear();
+        self.refresh_times();
         let mut edits = Vec::new();
         if self.has_stops() {
             self.stop_rows(ui, &mut edits);
@@ -138,6 +166,17 @@ impl RouteUi {
                     self.pick(Some(i));
                     fly = self.step_view(i, cam.size);
                 }
+                Edit::Mode(m) => {
+                    let stops = self.stops();
+                    let at = self.plan.anchor(stops.len());
+                    let tz = stops.get(at).map(|(_, p)| self.tz_at(p.p));
+                    let tz = tz.unwrap_or(jiff::tz::TimeZone::UTC);
+                    self.plan.set_mode(m, &tz);
+                    self.retime();
+                }
+                Edit::Retime => self.retime(),
+                Edit::Stay(i, stay) => self.set_stay(i, stay),
+                Edit::MakeOvernight(k) => self.make_overnight(k),
             }
         }
         fly
@@ -211,7 +250,10 @@ impl RouteUi {
                     }
                 });
             });
-            let row = row.response;
+            let mut row = row.response;
+            if let Some(r) = self.stop_times(ui, i, n, edits) {
+                row = row.union(r);
+            }
             self.targets.push((Target::Row(i), row.rect));
             if let Some(from) = row.dnd_hover_payload::<usize>()
                 && *from != i
@@ -290,6 +332,263 @@ impl RouteUi {
                     }
                 }
             });
+        }
+        self.times_section(ui, edits);
+    }
+
+    /// Under stop `i`'s row, with a time set: when it arrives and leaves, and for a stop
+    /// between the ends, its time there, which opens a field to change it.
+    fn stop_times(
+        &mut self,
+        ui: &mut egui::Ui,
+        i: usize,
+        n: usize,
+        edits: &mut Vec<Edit>,
+    ) -> Option<egui::Response> {
+        let t = self.timed()?;
+        let days = t.sched.days() > 1;
+        let (arrive, depart) = (
+            t.sched.arrive.get(i)?.clone(),
+            t.sched.depart.get(i)?.clone(),
+        );
+        let main = arrive.as_ref().or(depart.as_ref())?;
+        let shown = t.show(main, days);
+        let text = match (&arrive, &depart) {
+            (None, Some(_)) => format!("Leaves {}", shown.text),
+            (Some(_), None) => format!("Arrives {}", shown.text),
+            (Some(a), Some(d)) if a.timestamp() == d.timestamp() => {
+                format!("Arrives {}", shown.text)
+            }
+            (Some(_), Some(d)) => {
+                let same_day = arrive.as_ref().is_some_and(|a| a.date() == d.date());
+                let leaves = super::times::clock(d, days && !same_day);
+                format!("Arrives {}, leaves {leaves}", shown.text)
+            }
+            (None, None) => return None,
+        };
+        let color = if shown.against.is_some() {
+            ACCENT
+        } else {
+            WEAK
+        };
+        let stay = self.stops().get(i).map(|(_, p)| p.stay).unwrap_or_default();
+        let between = i > 0 && i + 1 < n;
+        // Under the name, wrapping there: the times, and on a line of their own the
+        // difference from the departure's zone and the time spent there.
+        let r = ui.horizontal(|ui| {
+            ui.add_space(38.0);
+            ui.vertical(|ui| {
+                let label = ui.label(egui::RichText::new(text).size(11.5).color(color));
+                if let Some(h) = &shown.hover {
+                    label.on_hover_text(h);
+                }
+                if shown.against.is_none() && !between {
+                    return;
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(a) = &shown.against {
+                        ui.label(egui::RichText::new(a).size(11.5).color(ACCENT));
+                    }
+                    if !between {
+                        return;
+                    }
+                    let chip = match (stay.overnight, stay.s) {
+                        (true, _) => "overnight".to_string(),
+                        (false, s) if s > 0.0 => format!("{} here", duration_text(s)),
+                        _ => "time here…".into(),
+                    };
+                    let r = ui
+                        .add(egui::Button::new(egui::RichText::new(chip).size(11.5)).small())
+                        .on_hover_text("Time spent at this stop");
+                    self.targets.push((Target::Stay(i), r.rect));
+                    if r.clicked() {
+                        self.stay_open = match self.stay_open == Some(i) {
+                            true => None,
+                            false => Some(i),
+                        };
+                    }
+                });
+            });
+        });
+        if between && self.stay_open == Some(i) {
+            ui.horizontal(|ui| {
+                ui.add_space(38.0);
+                let mut s = stay;
+                let mut min = (s.s / 60.0).round();
+                ui.label(egui::RichText::new("Time here").size(11.5).color(INK));
+                let r = ui.add_enabled(
+                    !s.overnight,
+                    egui::DragValue::new(&mut min)
+                        .range(0.0..=24.0 * 60.0)
+                        .speed(1.0)
+                        .suffix(" min"),
+                );
+                if r.changed() {
+                    s.s = min * 60.0;
+                }
+                let r = ui
+                    .checkbox(&mut s.overnight, "Overnight")
+                    .on_hover_text("Stay the night here: the trip goes on at the next day's start");
+                self.targets.push((Target::Overnight(i), r.rect));
+                if s != stay {
+                    edits.push(Edit::Stay(i, s));
+                }
+            });
+        }
+        Some(r.response)
+    }
+
+    /// *Depart at / Arrive by*: closed by default and open while a time is set (decision
+    /// 24). Off, a departure time or an arrival time, in the zone of the stop it is at;
+    /// the driving day; the breaks.
+    fn times_section(&mut self, ui: &mut egui::Ui, edits: &mut Vec<Edit>) {
+        let set = self.plan.mode != Mode::Off;
+        let open = set || self.times_open;
+        let title = self.times_title();
+        let hover = (!set).then_some(match open {
+            true => "Hide these options",
+            false => "Time the trip: when to leave or arrive, and the hours to drive",
+        });
+        let r = fold_row(ui, "times", open, &title, hover);
+        self.targets.push((Target::Times, r.rect));
+        if !set && r.clicked() {
+            self.times_open = !open;
+        }
+        if !open {
+            return;
+        }
+        let mut changed = false;
+        ui.indent("times", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (m, label) in [
+                    (Mode::Off, "No time"),
+                    (Mode::Depart, "Depart at"),
+                    (Mode::ArriveBy, "Arrive by"),
+                ] {
+                    let r = ui.radio(self.plan.mode == m, label);
+                    self.targets.push((Target::Mode(m), r.rect));
+                    if r.clicked() && self.plan.mode != m {
+                        edits.push(Edit::Mode(m));
+                    }
+                }
+            });
+            if set {
+                ui.horizontal_wrapped(|ui| {
+                    let bad_date = self.plan.date.trim().parse::<jiff::civil::Date>().is_err();
+                    changed |= field(ui, &mut self.plan.date, 96.0, bad_date, "2026-11-01")
+                        .on_hover_text("The date, year-month-day")
+                        .changed();
+                    let bad = parse_time(&self.plan.time).is_none();
+                    changed |= field(ui, &mut self.plan.time, 52.0, bad, "08:00")
+                        .on_hover_text("The time, 24-hour")
+                        .changed();
+                    let at = match self.plan.mode {
+                        Mode::ArriveBy => "at the destination",
+                        _ => "at the start",
+                    };
+                    let zone = self.timed().and_then(|t| match self.plan.mode {
+                        Mode::ArriveBy => t.sched.arrival(),
+                        _ => t.sched.departure(),
+                    });
+                    let text = match zone {
+                        Some(z) => format!("{}, {at}", z.strftime("%Z")),
+                        None => at.to_string(),
+                    };
+                    ui.label(egui::RichText::new(text).size(11.5).color(WEAK));
+                });
+                if self.plan.time.trim() != self.plan.s.depart
+                    && parse_time(&self.plan.time).is_some()
+                {
+                    self.plan.s.depart = self.plan.time.trim().to_owned();
+                }
+            }
+            let s = &mut self.plan.s;
+            ui.horizontal_wrapped(|ui| {
+                changed |= ui.checkbox(&mut s.window, "Drive from").changed();
+                let bad = parse_time(&s.day_start).is_none();
+                changed |= field(ui, &mut s.day_start, 52.0, bad, "08:00").changed();
+                ui.label("to");
+                let bad = parse_time(&s.day_end).is_none();
+                changed |= field(ui, &mut s.day_end, 52.0, bad, "18:00").changed();
+            });
+            ui.horizontal_wrapped(|ui| {
+                changed |= ui.checkbox(&mut s.max_drive, "At most").changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut s.max_drive_h)
+                            .range(1.0..=24.0)
+                            .speed(0.25)
+                            .max_decimals(2)
+                            .suffix(" h"),
+                    )
+                    .changed();
+                ui.label("of driving a day");
+            });
+            ui.horizontal_wrapped(|ui| {
+                changed |= ui.checkbox(&mut s.breaks, "A break every").changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut s.break_every_h)
+                            .range(0.5..=12.0)
+                            .speed(0.25)
+                            .max_decimals(2)
+                            .suffix(" h"),
+                    )
+                    .changed();
+                ui.label("for");
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut s.break_min)
+                            .range(5.0..=240.0)
+                            .speed(1.0)
+                            .suffix(" min"),
+                    )
+                    .changed();
+            });
+            if let Some(e) = self.times_failed() {
+                ui.label(egui::RichText::new(e).size(11.5).color(APPROX));
+            }
+            if let Some(t) = self.timed().filter(|t| t.sched.waited) {
+                let d = t.sched.departure().map(|z| clock_short(z, false));
+                let text = format!(
+                    "Leaves at {}, the start of the driving day.",
+                    d.unwrap_or_default()
+                );
+                ui.label(egui::RichText::new(text).size(11.5).color(WEAK));
+            }
+            if set {
+                ui.label(
+                    egui::RichText::new("Times assume no traffic.")
+                        .size(11.5)
+                        .color(WEAK),
+                );
+            }
+        });
+        if changed {
+            edits.push(Edit::Retime);
+        }
+    }
+
+    /// *Depart at / Arrive by*'s title: the time set, in its stop's zone, "Depart Sat Oct
+    /// 10, 08:00 EDT".
+    fn times_title(&self) -> String {
+        let verb = match self.plan.mode {
+            Mode::Off => return "Depart at / Arrive by".into(),
+            Mode::Depart => "Depart",
+            Mode::ArriveBy => "Arrive by",
+        };
+        let tz = self.timed().and_then(|t| match self.plan.mode {
+            Mode::ArriveBy => t.sched.arrival(),
+            _ => t.sched.departure(),
+        });
+        let date = self.plan.date.trim().parse::<jiff::civil::Date>().ok();
+        let asked = match (tz, date, parse_time(&self.plan.time)) {
+            (Some(z), Some(d), Some(t)) => z.time_zone().to_zoned(d.to_datetime(t)).ok(),
+            _ => None,
+        };
+        match asked {
+            Some(z) => format!("{verb} {}", z.strftime("%a %b %-d, %H:%M %Z")),
+            None => verb.into(),
         }
     }
 
@@ -571,8 +870,11 @@ impl RouteUi {
             .as_ref()
             .is_none_or(|c| c.width != width || c.units != units)
         {
-            self.rows = Some(Rows::new(ui, &r.steps, width, units));
+            let timed = self.timed().is_some();
+            let rows = Rows::new(ui, &r.steps, &self.notes, timed, width, units);
+            self.rows = Some(rows);
         }
+        let timed = self.timed();
         let rows = self.rows.as_ref().unwrap();
         let total = rows.heights.iter().sum::<f32>();
         let mut targets = Vec::new();
@@ -586,17 +888,32 @@ impl RouteUi {
                 let (all, _) = ui.allocate_exact_size(Vec2::new(width, total), Sense::hover());
                 let clip = ui.clip_rect();
                 let mut y = all.top();
-                for (i, (s, &h)) in r.steps.iter().zip(&rows.heights).enumerate() {
+                for (row, &h) in rows.rows.iter().zip(&rows.heights) {
                     let rect = Rect::from_min_size(Pos2::new(all.left(), y), Vec2::new(width, h));
                     y += h;
                     if rect.bottom() < clip.top() || rect.top() > clip.bottom() {
                         continue;
                     }
-                    let picked = self.picked == Some(i);
-                    let resp = step_row(ui, rect, i, s, &rows.subs[i], picked);
-                    targets.push((Target::Step(i), resp.rect));
-                    if resp.clicked() {
-                        edits.push(Edit::Pick(i));
+                    match *row {
+                        Row::Step(i) => {
+                            let s = &r.steps[i];
+                            let time = timed.and_then(|t| Some(t.show(t.steps.get(i)?, false)));
+                            let picked = self.picked == Some(i);
+                            let resp = step_row(ui, rect, i, s, &rows.subs[i], picked, time);
+                            targets.push((Target::Step(i), resp.rect));
+                            if resp.clicked() {
+                                edits.push(Edit::Pick(i));
+                            }
+                        }
+                        Row::Note(k) => {
+                            let note = &self.notes[k];
+                            if let Some((event, button)) = note_row(ui, rect, k, note, timed) {
+                                targets.push((Target::MakeOvernight(event), button.rect));
+                                if button.clicked() {
+                                    edits.push(Edit::MakeOvernight(event));
+                                }
+                            }
+                        }
                     }
                 }
             });
@@ -695,17 +1012,33 @@ fn triangle(p: &egui::Painter, c: Pos2, open: bool, color: Color32) {
     p.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
 }
 
-/// The directions' rows as laid out for a width: their heights, and the distance and time
-/// under each instruction.
+/// A row of the directions: a step, or a row the schedule adds (a night, a break, a zone
+/// crossing).
+#[derive(Clone, Copy, Debug)]
+enum Row {
+    Step(usize),
+    Note(usize),
+}
+
+/// The directions' rows as laid out for a width: their order and heights, and the distance
+/// and time under each instruction.
 pub(super) struct Rows {
     width: f32,
     units: Units,
+    rows: Vec<Row>,
     heights: Vec<f32>,
     subs: Vec<Option<String>>,
 }
 
 impl Rows {
-    fn new(ui: &egui::Ui, steps: &[Step], width: f32, units: Units) -> Self {
+    fn new(
+        ui: &egui::Ui,
+        steps: &[Step],
+        notes: &[Note],
+        timed: bool,
+        width: f32,
+        units: Units,
+    ) -> Self {
         let subs: Vec<Option<String>> = steps
             .iter()
             .map(|s| {
@@ -718,24 +1051,77 @@ impl Rows {
                 })
             })
             .collect();
-        let heights = steps
+        let text_w = text_width(width, timed);
+        let mut rows = Vec::with_capacity(steps.len() + notes.len());
+        let mut next = 0;
+        for i in 0..steps.len() {
+            rows.push(Row::Step(i));
+            while notes.get(next).is_some_and(|n| n.after <= i) {
+                rows.push(Row::Note(next));
+                next += 1;
+            }
+        }
+        rows.extend((next..notes.len()).map(Row::Note));
+        let p = ui.painter();
+        let heights = rows
             .iter()
-            .zip(&subs)
-            .map(|(s, sub)| {
-                let g = ui
-                    .painter()
-                    .layout(s.text(), STEP_FONT, INK, width - TEXT_X);
-                let h = g.size().y + if sub.is_some() { SUB_H } else { 0.0 } + 8.0;
+            .map(|row| {
+                let h = match *row {
+                    Row::Step(i) => {
+                        let g = p.layout(steps[i].text(), STEP_FONT, INK, text_w);
+                        g.size().y + if subs[i].is_some() { SUB_H } else { 0.0 } + 8.0
+                    }
+                    Row::Note(k) => {
+                        let n = &notes[k];
+                        let g = p.layout(n.text.clone(), STEP_FONT, INK, text_w);
+                        let sub = n.sub.as_ref().map_or(0.0, |t| {
+                            p.layout(t.clone(), SMALL, WEAK, text_w).size().y + 1.0
+                        });
+                        let button = if n.movable { BUTTON_H + 4.0 } else { 0.0 };
+                        g.size().y + sub + button + 8.0
+                    }
+                };
                 h.max(ICON + 8.0)
             })
             .collect();
         Self {
             width,
             units,
+            rows,
             heights,
             subs,
         }
     }
+}
+
+/// The width of a row's text: less the clock column when a time is set.
+fn text_width(width: f32, timed: bool) -> f32 {
+    width - TEXT_X - if timed { TIME_W } else { 0.0 }
+}
+
+/// "14:35", or with `day` "Sun 08:00": a time beside one that gave its zone.
+fn clock_short(z: &jiff::Zoned, day: bool) -> String {
+    match day {
+        true => z.strftime("%a %H:%M").to_string(),
+        false => z.strftime("%H:%M").to_string(),
+    }
+}
+
+/// A short text field, outlined in the warning colour when `bad`.
+fn field(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    width: f32,
+    bad: bool,
+    hint: &str,
+) -> egui::Response {
+    let mut edit = egui::TextEdit::singleline(text)
+        .desired_width(width)
+        .hint_text(hint);
+    if bad {
+        edit = edit.background_color(Color32::from_rgb(253, 236, 220));
+    }
+    ui.add(edit)
 }
 
 /// A stop's number in a disc of its pin's colour.
@@ -759,6 +1145,7 @@ fn step_row(
     s: &Step,
     sub: &Option<String>,
     picked: bool,
+    time: Option<super::times::Shown>,
 ) -> egui::Response {
     let resp = ui.interact(rect, ui.scope_id().with(("step", i)), Sense::click());
     let p = ui.painter();
@@ -769,7 +1156,8 @@ fn step_row(
     }
     let icon = Rect::from_min_size(rect.min + Vec2::new(2.0, 4.0), Vec2::splat(ICON));
     draw_icon(p, icon, s);
-    let galley = p.layout(s.text(), STEP_FONT, INK, rect.width() - TEXT_X);
+    let text_w = text_width(rect.width(), time.is_some());
+    let galley = p.layout(s.text(), STEP_FONT, INK, text_w);
     let x = rect.left() + TEXT_X - 4.0;
     let text_h = galley.size().y;
     p.galley(Pos2::new(x, rect.top() + 4.0), galley, INK);
@@ -787,7 +1175,120 @@ fn step_row(
         rect.bottom() - 0.5,
         Stroke::new(0.5, Color32::from_black_alpha(25)),
     );
+    if let Some(t) = time {
+        time_cell(ui, rect, ("time", i), &t);
+    }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A row's clock, at its top right: in the accent colour, with its tip, in another zone
+/// than the departure's.
+fn time_cell(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    t: &super::times::Shown,
+) {
+    let color = if t.against.is_some() { ACCENT } else { WEAK };
+    let at = Pos2::new(rect.right() - 4.0, rect.top() + 6.0);
+    let r = ui
+        .painter()
+        .text(at, Align2::RIGHT_TOP, &t.text, SMALL, color);
+    if let Some(h) = &t.hover {
+        let tip = match &t.against {
+            Some(a) => format!("{}, {a}\n{h}", t.text),
+            None => h.clone(),
+        };
+        ui.interact(r, ui.scope_id().with(id), Sense::hover())
+            .on_hover_text(tip);
+    }
+}
+
+/// A row the schedule adds to the directions: its icon, text and clock, and under a night
+/// along a leg, *Make overnight stop*. Returns that button and the night's event.
+fn note_row(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    k: usize,
+    n: &Note,
+    timed: Option<&Timed>,
+) -> Option<(usize, egui::Response)> {
+    let time = match (timed, &n.time) {
+        (Some(t), Some(z)) => Some(t.show(z, false)),
+        _ => None,
+    };
+    let p = ui.painter().clone();
+    p.rect_filled(rect.shrink2(Vec2::new(0.0, 1.0)), 3.0, NOTE_FILL);
+    let c = rect.min + Vec2::new(2.0 + ICON / 2.0, 4.0 + ICON / 2.0);
+    match n.kind {
+        NoteKind::Night(_) => {
+            p.circle_filled(c, 8.5, super::NIGHT);
+            let day = n.text.split(' ').nth(1).unwrap_or_default().to_string();
+            p.text(
+                c,
+                Align2::CENTER_CENTER,
+                day,
+                FontId::proportional(10.5),
+                Color32::WHITE,
+            );
+        }
+        NoteKind::Break => {
+            for dx in [-2.5, 2.5] {
+                p.line_segment(
+                    [c + Vec2::new(dx, -5.0), c + Vec2::new(dx, 5.0)],
+                    Stroke::new(2.2, INK),
+                );
+            }
+        }
+        NoteKind::Zone => {
+            p.circle_stroke(c, 7.0, Stroke::new(1.6, INK));
+            p.line_segment([c, c + Vec2::new(0.0, -4.5)], Stroke::new(1.6, INK));
+            p.line_segment([c, c + Vec2::new(3.5, 0.0)], Stroke::new(1.6, INK));
+        }
+    }
+    let text_w = text_width(rect.width(), time.is_some());
+    let x = rect.left() + TEXT_X - 4.0;
+    let mut y = rect.top() + 4.0;
+    let g = p.layout(n.text.clone(), STEP_FONT, INK, text_w);
+    y += g.size().y;
+    p.galley(Pos2::new(x, rect.top() + 4.0), g, INK);
+    if let Some(sub) = &n.sub {
+        let g = p.layout(sub.clone(), SMALL, WEAK, text_w);
+        let h = g.size().y;
+        p.galley(Pos2::new(x, y + 1.0), g, WEAK);
+        y += h + 1.0;
+    }
+    if let Some(t) = time {
+        time_cell(ui, rect, ("note-time", k), &t);
+    }
+    let NoteKind::Night(event) = n.kind else {
+        return None;
+    };
+    if !n.movable {
+        return None;
+    }
+    let label = "Make overnight stop";
+    let g = p.layout_no_wrap(label.into(), SMALL, INK);
+    let button = Rect::from_min_size(
+        Pos2::new(x, y + 3.0),
+        Vec2::new(g.size().x + 14.0, BUTTON_H),
+    );
+    let resp = ui
+        .interact(button, ui.scope_id().with(("overnight", k)), Sense::click())
+        .on_hover_text("Add a stop here that stays the night");
+    let fill = match resp.hovered() {
+        true => Color32::from_gray(232),
+        false => Color32::from_gray(244),
+    };
+    p.rect(
+        button,
+        3.0,
+        fill,
+        Stroke::new(1.0, Color32::from_gray(190)),
+        egui::StrokeKind::Inside,
+    );
+    p.galley(button.center() - g.size() / 2.0, g, INK);
+    Some((event, resp.on_hover_cursor(egui::CursorIcon::PointingHand)))
 }
 
 /// A step's icon: an arrow bent by the turn, a ring for roundabouts, a boat for ferries,

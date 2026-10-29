@@ -25,7 +25,8 @@
 //! A flight with `route = "lat,lon;lat,lon…"` asks for the route through those stops when
 //! the pack opens (phase 3 step 3.6), as the right-click menu does, and shows it for the
 //! whole flight, so frame times include drawing it; the time to the frame showing it is
-//! recorded, and with `OMP_BENCH_SHOTS` that frame is saved.
+//! recorded, and with `OMP_BENCH_SHOTS` that frame is saved. With `depart`, the route is
+//! timed from then (phase 4 step 4.5), so the page shows its schedule.
 //!
 //! A step with `route = "lat,lon;lat,lon…"` replaces the stops with those after the move
 //! (phase 3 step 3.9), and records the time from the request to the answer reaching the UI,
@@ -77,6 +78,9 @@ pub struct Flight {
     /// step 4.3): they are looked for, drawn, and their time recorded.
     #[serde(default)]
     pub alternatives: bool,
+    /// Time the route from this local date and time at its start, `2026-07-15T08:00`, with
+    /// the schedule's default settings (phase 4 step 4.5).
+    pub depart: Option<String>,
     #[serde(rename = "step")]
     pub steps: Vec<Step>,
 }
@@ -120,6 +124,17 @@ impl Flight {
         let f: Self = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         if f.steps.is_empty() {
             return Err(format!("{}: the flight has no steps", path.display()));
+        }
+        if let Some(d) = &f.depart
+            && d.split_once('T').is_none_or(|(date, time)| {
+                date.parse::<jiff::civil::Date>().is_err()
+                    || crate::routing::parse_time(time).is_none()
+            })
+        {
+            return Err(format!(
+                "{}: `depart` wants a date and time, as 2026-07-15T08:00",
+                f.name
+            ));
         }
         if f.route_stops().is_err() {
             return Err(format!(

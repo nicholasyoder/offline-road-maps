@@ -66,6 +66,23 @@ impl Provenance {
         })
     }
 
+    /// Adds the source of another input file, `what` in the snapshot ("tz 2026e"), if the
+    /// manifest has it.
+    pub fn add_input(&mut self, file: &Path, what: &str) {
+        match manifest_entry(&self.manifest, &self.dir, file) {
+            Some(e) => {
+                self.sources.push(source(e));
+                let date = e.downloaded.get(..10).unwrap_or(&e.downloaded);
+                let id = e.source_id.as_deref().unwrap_or(date);
+                self.snapshot.push_str(&format!("; {what} {id}"));
+            }
+            None => eprintln!(
+                "  warning: {} is not in the manifest; META leaves it out",
+                file.display()
+            ),
+        }
+    }
+
     /// Adds the address files read, by manifest path.
     pub fn add_files(&mut self, files: &[String]) {
         for f in files {
@@ -150,6 +167,7 @@ pub struct Settings<'a> {
     pub input: &'a Path,
     pub water: Option<&'a Path>,
     pub clip_poly: Option<&'a Path>,
+    pub tz: Option<&'a Path>,
 }
 
 /// `META` for a pack of `region` covering `bbox` (west, south, east, north).
@@ -189,6 +207,10 @@ pub fn meta(
     settings.insert("input".into(), file_label(s.input).into());
     if let Some(z) = s.water {
         settings.insert("water".into(), file_label(z).into());
+    }
+    if let Some(z) = s.tz {
+        settings.insert("tz".into(), file_label(z).into());
+        settings.insert("tz_tolerance_m".into(), crate::tz::TOLERANCE_M.into());
     }
     if let Some(p) = s.clip_poly {
         settings.insert("clip_poly".into(), file_label(p).into());

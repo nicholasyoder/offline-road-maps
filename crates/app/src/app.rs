@@ -273,7 +273,9 @@ impl App {
         self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
         let units = packs::default_units(opened.meta.as_ref().ok());
         let search = SearchUi::start(opened.first_chunk.clone(), &opened.schema, ctx);
-        let routing = RouteUi::start(opened.first_chunk.clone(), ctx);
+        let mut routing = RouteUi::start(opened.first_chunk.clone(), ctx);
+        routing.plan.s = self.cfg.schedule.clone();
+        routing.plan.time = self.cfg.schedule.depart.clone();
         self.map = Some(MapState {
             opened,
             style,
@@ -306,6 +308,13 @@ impl App {
             b.start(&mut m.camera, m.opened.reader.bytes_read());
             // Checked when the flight was loaded.
             set_stops(&mut m.routing, &b.flight.route_stops().unwrap_or_default());
+            if let Some((date, time)) = b.flight.depart.as_deref().and_then(|d| d.split_once('T')) {
+                m.routing.plan.s = config::Schedule::default();
+                m.routing.plan.date = date.into();
+                m.routing.plan.time = time.into();
+                m.routing.plan.mode = crate::routing::Mode::Depart;
+                m.routing.retime();
+            }
         }
     }
 
@@ -1652,6 +1661,7 @@ fn side_panel(
     let asked = side.width.clamp(range.min, range.max);
     let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(8);
     let (debug, layers, units_cfg) = (&mut cfg.debug_overlay, &mut cfg.layers, &mut cfg.units);
+    let schedule = &mut cfg.schedule;
     let r = egui::Panel::left("side-panel")
         .resizable(true)
         .default_size(asked)
@@ -1690,7 +1700,13 @@ fn side_panel(
                         o.stop = search_page(ui, &mut p, units, &mut o.out);
                     }
                 }
-                Page::Route => o.fly = p.routing.page_ui(ui, p.camera, units),
+                Page::Route => {
+                    o.fly = p.routing.page_ui(ui, p.camera, units);
+                    // The settings last used are the next trip's.
+                    if *schedule != p.routing.plan.s {
+                        *schedule = p.routing.plan.s.clone();
+                    }
+                }
                 Page::Trips => side::trips_ui(ui),
                 Page::Layers => side::layers_ui(ui, layers, units_cfg, p.pack_units),
             }

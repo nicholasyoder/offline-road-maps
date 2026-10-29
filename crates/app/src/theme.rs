@@ -9,6 +9,8 @@ pub const INK: Color32 = Color32::from_gray(40);
 pub const WEAK: Color32 = Color32::from_gray(105);
 /// Marks a result or position that is only approximate.
 pub const APPROX: Color32 = Color32::from_rgb(176, 96, 0);
+/// A time in another zone than the trip's departure (phase 4 decision 14).
+pub const ACCENT: Color32 = Color32::from_rgb(0, 112, 140);
 
 /// Height of the search box and the buttons beside it.
 pub const HEADER_H: f32 = 26.0;

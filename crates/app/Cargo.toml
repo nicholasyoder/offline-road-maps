@@ -13,6 +13,8 @@ eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "de
 egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
 # Shaping and glyph outlines for labels: the versions egui already uses (text.rs).
 harfrust = { version = "0.12.0", default-features = false, features = ["std"] }
+# omp-core's, for the schedule's times (its features, the bundled tz database, come from there).
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 # Already in the tree through wgpu; logger.rs prints its records.
 log = "0.4.34"
 lyon_tessellation = "1.0.23"

@@ -11,10 +11,10 @@ use crate::varint::invalid;
 
 pub const MAGIC: [u8; 8] = *b"\x89OMP\r\n\x1a\n";
 pub const MAJOR: u16 = 0;
-pub const MINOR: u16 = 5;
+pub const MINOR: u16 = 6;
 /// The oldest minor version the reader opens: 0.4 only added sections (`SGRD`) and
 /// changed provisional ones that the 0.3 reader did not read; 0.5 added the routing
-/// sections.
+/// sections, and 0.6 the time zones (`TZON`).
 pub const MIN_MINOR: u16 = 3;
 /// Chunk pages and section alignment.
 pub const PAGE: u64 = 4096;

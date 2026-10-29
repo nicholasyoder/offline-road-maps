@@ -101,6 +101,14 @@ impl Poly {
             .any(|&(lon, lat)| geom::bbox_inside(&BBox::of([geom::project(lat, lon)]), &rect))
     }
 
+    /// The vertices, projected.
+    pub fn points(&self) -> impl Iterator<Item = P> + '_ {
+        self.rings
+            .iter()
+            .flatten()
+            .map(|&(lon, lat)| geom::project(lat.clamp(-85.0, 85.0), lon))
+    }
+
     /// The bounds, grown by `margin_deg` on every side, in projected coordinates.
     pub fn bbox(&self, margin_deg: f64) -> BBox {
         let (w, s, e, n) = self.bounds;

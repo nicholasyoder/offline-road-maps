@@ -114,7 +114,8 @@ fn stop_list() {
             Target::Clear,
             Target::Reverse,
             Target::OptimizeWindow,
-            Target::MoreOptions
+            Target::MoreOptions,
+            Target::Times
         ]
     );
 
@@ -421,4 +422,98 @@ fn alternatives_from_the_list() {
         "With turn costs, the route via US 33 ranks best: 4 min slower on paper, 2 fewer \
          U-turns."
     );
+}
+
+/// *Depart at*, a stop's time there, a night at a stop, and a night along a leg made a stop
+/// (step 4.5). The stub has no zones: times are in the computer's.
+#[test]
+fn schedule() {
+    use super::super::times::Mode;
+    let mut u = Ui::new();
+    u.r.apply(StopAction::From, named("a", 40.0));
+    u.r.apply(StopAction::Add, named("b", 40.2));
+    u.r.apply(StopAction::To, named("c", 40.4));
+    u.frame(Vec::new());
+    u.answer();
+    assert!(!u.r.targets.iter().any(|t| matches!(t.0, Target::Stay(_))));
+
+    // Closed and with no time: no choices. Opened, Depart at.
+    assert!(
+        !u.r.targets
+            .iter()
+            .any(|t| t.0 == Target::Mode(Mode::Depart))
+    );
+    u.click(Target::Times);
+    u.frame(Vec::new());
+    u.click(Target::Mode(Mode::Depart));
+    assert_eq!(u.r.plan.mode, Mode::Depart);
+    assert!(!u.r.plan.date.is_empty());
+    u.r.plan.date = "2026-09-01".into();
+    u.r.plan.time = "08:00".into();
+    u.r.plan.s.window = false;
+    u.r.retime();
+    u.frame(Vec::new());
+    let t = u.r.timed().expect("a schedule");
+    // Two legs of 3 minutes.
+    assert_eq!(
+        t.sched.departure().unwrap().strftime("%H:%M").to_string(),
+        "08:00"
+    );
+    assert_eq!(
+        t.sched.arrival().unwrap().strftime("%H:%M").to_string(),
+        "08:06"
+    );
+    assert_eq!(t.sched.days(), 1);
+    // Only the stop between the ends has a time there.
+    let stays: Vec<Target> =
+        u.r.targets
+            .iter()
+            .map(|t| t.0)
+            .filter(|t| matches!(t, Target::Stay(_)))
+            .collect();
+    assert_eq!(stays, [Target::Stay(1)]);
+
+    // Overnight at stop 2: on the next morning at 8:00.
+    u.click(Target::Stay(1));
+    u.frame(Vec::new());
+    u.click(Target::Overnight(1));
+    assert!(u.r.stops()[1].1.stay.overnight);
+    u.frame(Vec::new());
+    let t = u.r.timed().expect("a schedule");
+    assert_eq!(t.sched.days(), 2);
+    assert_eq!(t.sched.events[0].stop, Some(1));
+    let next = t.sched.depart[1].as_ref().unwrap();
+    assert_eq!(
+        next.strftime("%Y-%m-%d %H:%M").to_string(),
+        "2026-09-02 08:00"
+    );
+    // A night at a stop is not made a stop again.
+    assert!(
+        !u.r.targets
+            .iter()
+            .any(|t| matches!(t.0, Target::MakeOvernight(_)))
+    );
+
+    // A driving day of 2 minutes: the first leg ends on day 2, and its night can be made a
+    // stop.
+    u.click(Target::Overnight(1));
+    u.r.plan.s.window = true;
+    u.r.plan.s.day_start = "08:00".into();
+    u.r.plan.s.day_end = "08:02".into();
+    u.r.retime();
+    u.frame(Vec::new());
+    u.frame(Vec::new());
+    let t = u.r.timed().expect("a schedule");
+    let night = t
+        .sched
+        .events
+        .iter()
+        .position(|e| e.stop.is_none())
+        .unwrap();
+    assert_eq!(t.sched.events[night].leg, 0);
+    u.click(Target::MakeOvernight(night));
+    let stops = u.r.stops();
+    assert_eq!(stops.len(), 4);
+    assert!(stops[1].1.stay.overnight);
+    assert_eq!(u.answer(), 4);
 }

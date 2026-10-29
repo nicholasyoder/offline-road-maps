@@ -6,6 +6,8 @@
 //! - [`line`]: the route's lines, simplified per zoom band, as the renderer draws them.
 //! - [`panel`]: the route page of the side panel (steps 3.7 and 3.8): the stops, the avoid
 //!   options, the totals, the notices and the directions.
+//! - [`times`]: the schedule's settings, its times as shown, its rows in the directions,
+//!   and the towns its nights are near.
 //!
 //! Stops are kept in order: the start, the stops added between, and the destination. Each
 //! change asks for the route again once there is a start and a destination; the answer to
@@ -22,9 +24,16 @@
 //! a route in the leg's list, picks it: the leg, its directions and the totals are swapped
 //! for its own. Closing the row leaves only the route picked on the map. The choice holds
 //! until the stops or avoid options change; a leg left open is looked at again then.
+//!
+//! With a time set (phase 4 step 4.5, [`times`]), the route's schedule is worked out on the
+//! UI thread whenever the route, its settings or a stop's time there change, with the
+//! pack's time zones from the worker. Where a day's driving ends along a leg, the map gets
+//! a small disc with the next day's number, and *Make overnight stop* puts a stop there
+//! that stays the night.
 
 mod line;
 mod panel;
+mod times;
 mod worker;
 
 use std::path::PathBuf;
@@ -35,6 +44,7 @@ use eframe::egui::{self, Color32, Pos2};
 use omp_core::find::Hit;
 use omp_core::geo::{self, P};
 use omp_core::route::{Ends, FAR_SNAP_M, FERRY, Stop, TOLL};
+use omp_core::schedule::Stay;
 
 use crate::camera::{self, Camera, TILE_PX};
 use crate::pool::Pool;
@@ -42,6 +52,8 @@ use crate::scale::Units;
 use crate::search::{self, distance_text};
 
 pub use line::{GpuBand, Line, LineDraw, Look, RouteDraw, RouteSegment, band_for};
+pub use times::{Mode, parse_time};
+use times::{Note, Plan, Timed, Towns};
 pub use worker::{Choices, Quickest, choices};
 use worker::{Job, Reply, Request, Worker};
 pub use worker::{Routed, Status};
@@ -63,6 +75,8 @@ const SNAP_MAX_KM: f64 = 50.0;
 const START: Color32 = Color32::from_rgb(40, 150, 70);
 const VIA: Color32 = Color32::from_rgb(230, 140, 20);
 const END: Color32 = Color32::from_rgb(208, 52, 44);
+/// Where a day's driving ends.
+const NIGHT: Color32 = Color32::from_rgb(52, 62, 120);
 
 /// A point the route goes through.
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +86,8 @@ pub struct Place {
     pub street: Option<u32>,
     /// A search result's name; `None` for a point on the map.
     pub name: Option<String>,
+    /// Time spent there, for the schedule (phase 4 step 4.5).
+    pub stay: Stay,
 }
 
 impl Place {
@@ -80,6 +96,7 @@ impl Place {
             p: geo::from_unit(w),
             street: None,
             name: None,
+            stay: Stay::default(),
         }
     }
 
@@ -88,6 +105,7 @@ impl Place {
             p: h.p,
             street: h.street,
             name: Some(h.name.clone()),
+            stay: Stay::default(),
         }
     }
 
@@ -374,12 +392,37 @@ pub struct RouteUi {
     /// What the panel drew last frame, for the tests to click on.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) targets: Vec<(panel::Target, egui::Rect)>,
+    /// The schedule's settings (phase 4 step 4.5).
+    pub plan: Plan,
+    /// Whether *Depart at / Arrive by* is open while no time is set.
+    pub times_open: bool,
+    /// The stop whose time field is open.
+    pub stay_open: Option<usize>,
+    /// The route's schedule, and its rows in the directions.
+    times: Times,
+    notes: Vec<Note>,
+    towns: Towns,
+}
+
+/// What is known of the route's schedule.
+enum Times {
+    /// To work out again: the route or the settings changed.
+    Stale,
+    /// No time set, or no route.
+    Off,
+    Failed(String),
+    Ready(Box<Timed>),
 }
 
 impl RouteUi {
     pub fn start(first_chunk: PathBuf, ctx: &egui::Context) -> Self {
         let ctx = ctx.clone();
-        Self::with_worker(Worker::start(first_chunk, move || ctx.request_repaint()))
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
+        let towns = Towns::new(first_chunk.clone(), wake.clone());
+        Self {
+            towns,
+            ..Self::with_worker(Worker::start(first_chunk, move || wake()))
+        }
     }
 
     /// A route UI on a worker with no thread, which never answers.
@@ -388,6 +431,7 @@ impl RouteUi {
         Self::with_worker(Worker::stub().0)
     }
 
+    /// With no towns for the nights: [`Self::start`] gives them their thread.
     fn with_worker(worker: Worker) -> Self {
         Self {
             worker,
@@ -422,6 +466,12 @@ impl RouteUi {
             alt_taken: None,
             rows: None,
             targets: Vec::new(),
+            plan: Plan::new(Default::default()),
+            times_open: false,
+            stay_open: None,
+            times: Times::Off,
+            notes: Vec::new(),
+            towns: Towns::new(PathBuf::new(), Arc::new(|| {})),
         }
     }
 
@@ -604,6 +654,133 @@ impl RouteUi {
         }
     }
 
+    /// Works out the schedule again once the route or its settings changed, and takes the
+    /// towns found for its nights.
+    pub fn refresh_times(&mut self) {
+        let mut renote = self.towns.poll();
+        if matches!(self.times, Times::Stale) {
+            self.times = self.work_out_times();
+            renote = true;
+        }
+        if renote {
+            self.notes = match (&self.times, &self.route) {
+                (Times::Ready(t), Some(r)) => times::notes(&r.steps, t, &self.towns),
+                _ => Vec::new(),
+            };
+            let nights: Vec<P> = self
+                .notes
+                .iter()
+                .filter(|n| n.movable)
+                .map(|n| n.point)
+                .collect();
+            self.towns.ask(nights);
+            self.rows = None;
+        }
+    }
+
+    /// The pack's time zones, if it has them.
+    fn zones(&self) -> Option<Arc<omp_core::tz::Zones>> {
+        match self.status() {
+            Status::Ready { zones, .. } => zones,
+            _ => None,
+        }
+    }
+
+    /// The zone at `p`: the pack's, else the computer's.
+    pub fn tz_at(&self, p: P) -> jiff::tz::TimeZone {
+        let zones = self.zones();
+        local(zones.as_deref()).tz(p)
+    }
+
+    fn work_out_times(&self) -> Times {
+        let Some(r) = &self.route else {
+            return Times::Off;
+        };
+        let zones = self.zones();
+        let local = local(zones.as_deref());
+        let places = self.places();
+        let refs: Vec<&Place> = places.iter().collect();
+        match self.plan.settings(&refs, &self.routed_stops, &local) {
+            None => Times::Off,
+            Some(Err(e)) => Times::Failed(e),
+            Some(Ok(st)) => match Timed::new(r, &self.routed_stops, &st, &local) {
+                Some(t) => Times::Ready(Box::new(t)),
+                None => Times::Failed(match r.trip.complete() {
+                    true => "The driving window is too short to make progress.".into(),
+                    false => "The trip cannot be timed until every stop has a route.".into(),
+                }),
+            },
+        }
+    }
+
+    /// The schedule's settings or a stop's time changed: work it out again.
+    pub fn retime(&mut self) {
+        self.times = Times::Stale;
+    }
+
+    /// The schedule of the route shown, if a time is set and it could be worked out.
+    pub fn timed(&self) -> Option<&Timed> {
+        match &self.times {
+            Times::Ready(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Why the trip has no schedule although a time is set.
+    pub fn times_failed(&self) -> Option<&str> {
+        match &self.times {
+            Times::Failed(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// The day that starts after night `k` of the schedule.
+    fn night_day(&self, k: usize) -> u32 {
+        self.timed()
+            .and_then(|t| t.sched.events.get(k))
+            .map_or(0, |e| e.day)
+    }
+
+    /// Turns night `k` of the schedule into a stop that stays the night, named after the
+    /// town it is near.
+    pub fn make_overnight(&mut self, k: usize) {
+        let Some(e) = self.timed().and_then(|t| t.sched.events.get(k)).cloned() else {
+            return;
+        };
+        let mut places = self.places();
+        if e.leg + 1 > places.len() {
+            return;
+        }
+        let name = self.towns.get(e.point).cloned().flatten();
+        places.insert(
+            e.leg + 1,
+            Place {
+                p: e.point,
+                street: None,
+                name,
+                stay: Stay {
+                    s: 0.0,
+                    overnight: true,
+                },
+            },
+        );
+        let (f, t) = (self.from.is_some(), self.to.is_some());
+        self.set_stops(places, f, t);
+    }
+
+    /// Sets stop `i`'s time there.
+    pub fn set_stay(&mut self, i: usize, stay: Stay) {
+        let mut places = self.places();
+        let Some(p) = places.get_mut(i) else { return };
+        if p.stay == stay {
+            return;
+        }
+        p.stay = stay;
+        let (f, t) = (self.from.is_some(), self.to.is_some());
+        self.put_stops(places, f, t);
+        self.retime();
+    }
+
     /// Picks a step of the directions (or none), to draw over the route.
     pub fn pick(&mut self, step: Option<usize>) {
         if step == self.picked {
@@ -713,6 +890,7 @@ impl RouteUi {
             self.waiting = None;
             self.route = None;
             self.error = None;
+            self.times = Times::Stale;
             self.overlays.clear();
             self.bands = Default::default();
             self.picked = None;
@@ -789,6 +967,7 @@ impl RouteUi {
             }
             self.picked = None;
             self.rows = None;
+            self.times = Times::Stale;
             self.overlays.clear();
             self.alt_taken = None;
             self.shown = None;
@@ -919,6 +1098,7 @@ impl RouteUi {
         put_choices(r, &legs, &self.chosen);
         self.picked = None;
         self.rows = None;
+        self.times = Times::Stale;
         self.overlays = overlay_lines(r, &self.routed_stops, None);
         self.bands = Default::default();
         self.refresh_grey();
@@ -1083,6 +1263,26 @@ impl RouteUi {
     /// The alternatives' tags, then the stops' markers: numbered pins, green at the start and red at the destination.
     pub fn draw_markers(&self, painter: &egui::Painter, origin: Pos2, cam: &Camera) {
         self.draw_tags(painter, origin, cam);
+        // Where each day's driving ends along a leg: a small disc with the next day's number.
+        for n in self.notes.iter().filter(|n| n.movable) {
+            let s = cam.world_to_screen(geo::to_unit(n.point));
+            let c = Pos2::new(origin.x + s[0] as f32, origin.y + s[1] as f32);
+            if !painter.clip_rect().expand(12.0).contains(c) {
+                continue;
+            }
+            let day = match n.kind {
+                times::NoteKind::Night(k) => self.night_day(k),
+                _ => continue,
+            };
+            painter.circle(c, 7.5, NIGHT, egui::Stroke::new(1.5, Color32::WHITE));
+            painter.text(
+                c,
+                egui::Align2::CENTER_CENTER,
+                day.to_string(),
+                egui::FontId::proportional(10.0),
+                Color32::WHITE,
+            );
+        }
         let stops = self.stops();
         for (i, (kind, place)) in stops.iter().enumerate().rev() {
             let s = cam.world_to_screen(geo::to_unit(place.p));
@@ -1101,7 +1301,11 @@ impl RouteUi {
         let mib = |b: f64| b / (1024.0 * 1024.0);
         let mut lines = vec![match self.status() {
             Status::Opening => "routing: opening…".into(),
-            Status::Ready { reader, open } => {
+            Status::Ready {
+                reader,
+                open,
+                zones,
+            } => {
                 let h = &reader.header;
                 let r = reader.reads();
                 let top = match self.worker.top() {
@@ -1112,8 +1316,16 @@ impl RouteUi {
                     ),
                     None => ", reading the top…".into(),
                 };
+                let zones = match zones {
+                    Some(z) => format!(
+                        "; {} time zones, {:.1} MiB",
+                        z.zones().len(),
+                        mib(z.heap_bytes() as f64)
+                    ),
+                    None => "; no time zones".into(),
+                };
                 format!(
-                    "routing: opened in {:.0} ms, {} nodes, {} segments{top}; readers hold {:.1} MiB, {:.1} MiB read, {} stale answers dropped",
+                    "routing: opened in {:.0} ms, {} nodes, {} segments{top}; readers hold {:.1} MiB, {:.1} MiB read, {} stale answers dropped{zones}",
                     open.as_secs_f64() * 1e3,
                     h.nodes,
                     h.segments,
@@ -1171,6 +1383,14 @@ impl RouteUi {
 }
 
 /// Per leg, its routes once found.
+/// Finds zones in `zones`, else takes the computer's.
+fn local(zones: Option<&omp_core::tz::Zones>) -> omp_core::schedule::Local<'_> {
+    omp_core::schedule::Local {
+        zones,
+        fallback: jiff::tz::TimeZone::try_system().unwrap_or(jiff::tz::TimeZone::UTC),
+    }
+}
+
 fn found_in(alts: &[LegAlts]) -> Vec<Option<&Choices>> {
     alts.iter()
         .map(|a| match a {

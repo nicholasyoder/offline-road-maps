@@ -19,6 +19,7 @@ mod routing;
 mod search;
 mod street;
 mod tiles;
+mod tz;
 
 /// Builds offline map packs from OSM and address sources.
 #[derive(Parser)]

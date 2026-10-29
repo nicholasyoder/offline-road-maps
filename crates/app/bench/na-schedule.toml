@@ -1,0 +1,18 @@
+# A schedule on the North America pack (phase 4 step 4.5): New York to Los Angeles by
+# Chicago and Denver, leaving at 8:00 on a Saturday in summer, with the schedule's default
+# settings (driving 8:00 to 18:00). It crosses four zones and Arizona's MST, and drives on
+# four days. With OMP_BENCH_SHOTS, the route page shows the stops' times and the start of
+# the directions.
+# omp-app --bench crates/app/bench/na-schedule.toml --pack $OMP_WORK/packs/north-america
+name = "na-schedule"
+window = [1280, 800]
+# New York, Chicago, Denver, Phoenix, Los Angeles.
+route = "40.7128,-74.0060;41.8781,-87.6298;39.7392,-104.9903;33.4484,-112.0740;34.0522,-118.2437"
+depart = "2026-07-11T08:00"
+
+[[step]]
+label = "USA"
+lat = 38.0
+lon = -98.0
+zoom = 4.2
+hold = 4

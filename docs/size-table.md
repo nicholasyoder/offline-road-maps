@@ -288,6 +288,18 @@ Within criterion 7's 4.5 GiB. The North America build took 48.5 min, peak 49.7 G
 
 **Phase 3 as measured in [step 3.9](phase3-plan.md#39-performance-accuracy-and-hardware-checks):** this North America pack is the one phase 3 ships, **9,995.6 MiB (9.8 GiB, 10.5 GB) in 3 chunks**, 0.45× CoMaps: tiles and index 6,299.4 MiB, search and addresses 996.6 (as in phase 2), routing 2,699.5. The routing stages take 12.1 of the build's 48.5 min (graph 258 s, CH 354 s, sections 113 s).
 
+### Phase 4 step 4.5: time zones
+
+`TZON` ([step 4.5](phase4-plan.md#45-schedule-times-stops-and-overnights), format 0.6): timezone-boundary-builder 2026e's zones that meet the region, simplified to 100 m, in `$OMP_WORK/measure/tz45/`.
+
+| | Indiana | North America |
+|---|---:|---:|
+| Zones / vertices | 12 / 1,947 | 74 / 108,281 |
+| `TZON` (MiB) | 0.01 | **0.39** (aim ≤ 5) |
+| Reader's RAM (MiB) | | 2.2 |
+
+The North America pack rebuilt with it is **9,910.4 MiB in 3 chunks**. That is 85 MiB less than phase 3's 9,995.6, not 0.4 more, because this build used `--clip-poly` and the phase 3 build did not: ocean pieces that do not meet the region are left out (`TDAT` −84.1, `TIDX` −1.5). Every other section is unchanged. The app binary grows by 0.79 MiB for `jiff` and its bundled tz database.
+
 ### Phase 4 step 4.4: the U-turn penalty (experiment)
 
 The routing sections with a U-turn penalty at junctions of three or more roads ([step 4.4](phase4-plan.md#44-u-turn-penalty-measured-first), `build --uturn-penalty <s>`), on Ohio and Quebec without addresses, in `$OMP_WORK/measure/uturn44/`. Not built for North America: the owner decides with these numbers. MiB:

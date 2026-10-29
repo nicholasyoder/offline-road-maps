@@ -2,6 +2,8 @@
 //! `META`, `SCHM`, `TDIC`, `TDAT` and `TIDX` (see `docs/format.md`). [`run`] lists the
 //! stages:
 //!
+//! 0. The time zones (`TZON`, phase 4 step 4.5), from timezone-boundary-builder's polygons
+//!    ([`tz::read`]), first while memory is free.
 //! 1. Admin areas (`SADM`, `SAPL`), so every place and POI can be given its chain of admin
 //!    areas (for now only the coverage is reported).
 //! 2. [`read_bands`]: the whitelisted features ([`features::read`]: needed-nodes store, ring
@@ -70,7 +72,7 @@ use crate::routing::{self, layout};
 use crate::search::{self, AddressStreet, encode as search_encode};
 use crate::street::{self, encode as street_encode, grid};
 use crate::tiles::{self, Band, Entry, Store, compress, water};
-use crate::{ch, graph};
+use crate::{ch, graph, tz};
 use cache::{Cache, Key};
 use meta::Provenance;
 use report::{ChainStats, Timer, ZoomTotals};
@@ -100,6 +102,10 @@ pub struct BuildArgs {
     /// osmdata.openstreetmap.de water polygons [default: <work dir>/inputs/osmdata/water-polygons-split-4326.zip, skipped if missing].
     #[arg(long)]
     water: Option<PathBuf>,
+
+    /// timezone-boundary-builder's zones, for `TZON` [default: <work dir>/inputs/tz/timezones-<release>.geojson.zip from `fetch`, skipped if missing].
+    #[arg(long)]
+    tz: Option<PathBuf>,
 
     /// Keep only the ocean pieces that meet this boundary (`.poly`), as in `measure`.
     #[arg(long)]
@@ -206,6 +212,7 @@ struct Setup {
     /// West, south, east, north, from the PBF header.
     bounds: [f64; 4],
     water: Option<PathBuf>,
+    tz: Option<PathBuf>,
     clip: Option<Poly>,
     /// Regions the route coverage is reported by.
     regions: Vec<(String, Poly)>,
@@ -307,7 +314,22 @@ impl Setup {
             .manifest
             .clone()
             .unwrap_or_else(|| work_dir.join("inputs/manifest.toml"));
-        let provenance = Provenance::load(&manifest_path, &args.input, water.as_deref())?;
+        let mut provenance = Provenance::load(&manifest_path, &args.input, water.as_deref())?;
+        let tz = args.tz.clone().unwrap_or_else(|| {
+            provenance
+                .dir
+                .join(crate::fetch::tz_path(crate::fetch::TZ_RELEASE))
+        });
+        let tz = match tz.exists() {
+            true => {
+                provenance.add_input(&tz, "tz");
+                Some(tz)
+            }
+            false => {
+                eprintln!("  tz: no time zone polygons, TZON left out");
+                None
+            }
+        };
         let bounds = pbf::header_bounds(&args.input)?
             .context("the PBF header has no bounding box; the pack needs one")?;
         let clip = args.clip_poly.as_deref().map(Poly::read).transpose()?;
@@ -344,6 +366,7 @@ impl Setup {
             staging,
             bounds,
             water,
+            tz,
             clip,
             regions,
             addresses,
@@ -358,6 +381,16 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let mut setup = Setup::new(&args, work_dir)?;
     eprintln!("build {}: {}", setup.name, args.input.display());
     let mut t = Timer::new();
+    // First, while memory is free: the GeoJSON is a few hundred MiB parsed.
+    let tzon = match &setup.tz {
+        Some(z) => Some(tz::section(&tz::read(
+            z,
+            setup.bounds,
+            setup.clip.as_ref(),
+        )?)?),
+        None => None,
+    };
+    t.stage("time zones");
     let admin = admin::load_from(|| {
         cache::stage(Stages::at(&setup.stages, |s| &s.admin), || {
             admin::read::read(&setup.pbf)
@@ -438,6 +471,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
             input: &args.input,
             water: setup.water.as_deref(),
             clip_poly: args.clip_poly.as_deref(),
+            tz: setup.tz.as_deref(),
         },
     );
     let address_sizes = streets.addresses.as_ref().map(|a| a.sizes.clone());
@@ -451,6 +485,9 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         (street_encode::SGEO, sgeo),
         (grid::SGRD, streets.sgrd),
     ];
+    if let Some((bytes, _)) = &tzon {
+        sections.push((tz::TZON, bytes.clone()));
+    }
     sections.extend(search_sections.list());
     if let Some(a) = streets.addresses {
         sections.extend(a.sections.list());
@@ -475,6 +512,14 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
         mib(admin_sizes.sapl),
         admin_sizes.sapl_blocks
     );
+    if let Some((_, s)) = &tzon {
+        eprintln!(
+            "  time zones: {} zones, {} vertices, TZON {:.2} MiB",
+            s.zones,
+            s.vertices,
+            mib(s.bytes as u64)
+        );
+    }
     bands.chains.print();
     street::print_sizes(&street_sizes);
     routing::print_sizes(&route_sizes);

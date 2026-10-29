@@ -32,6 +32,43 @@ pub struct Config {
     /// The last few searches, newest first, offered when the search box is empty.
     pub recent_searches: Vec<String>,
     pub side_panel: SidePanel,
+    /// The schedule's settings last used (phase 4 step 4.5), for the next trip.
+    pub schedule: Schedule,
+}
+
+/// The schedule's settings, as the route page last had them: times are `HH:MM`, local.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Schedule {
+    /// The time *Depart at* starts at when it is turned on.
+    pub depart: String,
+    /// Drive only between `day_start` and `day_end`.
+    pub window: bool,
+    pub day_start: String,
+    pub day_end: String,
+    /// Drive at most `max_drive_h` hours a day.
+    pub max_drive: bool,
+    pub max_drive_h: f64,
+    /// A break of `break_min` minutes every `break_every_h` hours of driving.
+    pub breaks: bool,
+    pub break_every_h: f64,
+    pub break_min: f64,
+}
+
+impl Default for Schedule {
+    fn default() -> Self {
+        Self {
+            depart: "08:00".into(),
+            window: true,
+            day_start: "08:00".into(),
+            day_end: "18:00".into(),
+            max_drive: false,
+            max_drive_h: 9.0,
+            breaks: false,
+            break_every_h: 2.0,
+            break_min: 15.0,
+        }
+    }
 }
 
 /// The side panel (phase 3 step 3.8): open or closed, and its width in points.
@@ -200,6 +237,12 @@ mod tests {
             side_panel: SidePanel {
                 open: false,
                 width: 412.0,
+            },
+            schedule: Schedule {
+                window: false,
+                max_drive: true,
+                max_drive_h: 8.5,
+                ..Schedule::default()
             },
         };
         assert_eq!(cfg.pack.as_deref(), Some(Path::new("maps/ohio")));

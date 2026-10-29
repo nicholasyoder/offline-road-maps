@@ -57,6 +57,28 @@ pub fn water() -> Vec<Job> {
     }]
 }
 
+/// timezone-boundary-builder's time zone polygons, made from OSM boundaries (ODbL), without
+/// the ocean zones. Global; pinned by release.
+pub fn tz(release: &str) -> Vec<Job> {
+    let name = "timezones.geojson.zip";
+    vec![Job {
+        path: super::tz_path(release),
+        source: Source::Tz,
+        source_id: Some(release.to_owned()),
+        url: format!(
+            "https://github.com/evansiroky/timezone-boundary-builder/releases/download/{release}/{name}"
+        ),
+        expected_size: None,
+        expected_md5: None,
+        license: LicenseSpec::Known(License {
+            attribution: Some(
+                "Time zones: timezone-boundary-builder, © OpenStreetMap contributors".into(),
+            ),
+            ..odbl()
+        }),
+    }]
+}
+
 /// Boundary polygons (`.poly`) of Geofabrik extracts: the region's own, saved as
 /// `poly/<region id>.poly` (for `--clip-poly`), and each subdivision's, saved as
 /// `poly/<ISO code>.poly` (for `build --addresses`). Geofabrik publishes only the current

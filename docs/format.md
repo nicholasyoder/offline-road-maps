@@ -1,6 +1,6 @@
 # Pack format
 
-*Version 0.5 (draft), 2026-10-27. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom. 0.4 (phase 2 step 2.5): the search, address, admin and street sections are specified, with their readers in `omp-core`; `SGRD` (the spatial grid) is new, and `SAPL` takes the block layout the other sections share. 0.5 (phase 3 step 3.3): the routing sections are specified, and a blocked section may be spanning.*
+*Version 0.6 (draft), 2026-10-28. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom. 0.4 (phase 2 step 2.5): the search, address, admin and street sections are specified, with their readers in `omp-core`; `SGRD` (the spatial grid) is new, and `SAPL` takes the block layout the other sections share. 0.5 (phase 3 step 3.3): the routing sections are specified, and a blocked section may be spanning. 0.6 (phase 4 step 4.5): the time zones (`TZON`).*
 
 A **pack** holds everything the app needs for one region: map tiles, addresses, and later routing and search data. It is built by `omp-builder` and read by `omp-app`, usually from a USB flash drive. This document is the contract between the two.
 
@@ -13,6 +13,7 @@ Status of each part:
 | Tiles (`TIDX`, `TDIC`, `TDAT`) | **Specified** (encoding V4 from phase 0). Codec in `omp-core::tile`, reader and writer in `omp-core::tiles`, with round-trip tests. |
 | Addresses (`ASTR`, `ASUF`, `AUNI`, `ALSE`, `ARNG`, `APCD`) | **Specified** (0.4; encoding A3 from phase 0, blocked for random access in phase 2 step 2.4). Reader in `omp-core::addr`. |
 | Routing (`RHDR`, `RCHE`, `RGEO`, `RNAM`, `RGRD`, `RCPY`, `RJCT`) | **Specified** (0.5, phase 3 step 3.3). Reader in `omp-core::route`, with a round-trip test against the builder's encoder that compares every route with Dijkstra. |
+| Time zones (`TZON`) | **Specified** (0.6, phase 4 step 4.5). Reader and encoder in `omp-core::tz`. |
 | Admin areas (`SADM`, `SAPL`) | **Specified** (0.4, phase 2 step 2.1). Reader in `omp-core::admin`. |
 | Streets (`SSTR`, `SGEO`) and the spatial grid (`SGRD`) | **Specified** (0.4, phase 2 steps 2.2 and 2.5). Readers in `omp-core::street` and `omp-core::grid`. |
 | Search (`SENT`, `STWN`, `SFST`, `SPST`) | **Specified** (0.4, phase 2 step 2.3). Reader in `omp-core::search`, whose `Search` opens all of the above together. Round-trip tests against a test writer in `omp-core` (`search_tests.rs`) and against the builder's encoders. |
@@ -55,7 +56,7 @@ The tile data of a continent is several GiB, so it must be spanning. So are the 
 |---:|---|---|
 | 0 | `[u8; 8]` | Magic `89 4F 4D 50 0D 0A 1A 0A` (`\x89OMP\r\n\x1a\n`). Like PNG's, it catches text-mode and 7-bit transfers. |
 | 8 | `u16` | Major version (currently 0) |
-| 10 | `u16` | Minor version (currently 5) |
+| 10 | `u16` | Minor version (currently 6) |
 | 12 | `u32` | Header length used, in bytes (fields plus strings; the rest of the page is zero) |
 | 16 | `[u8; 16]` | Pack ID: random, chosen at build time. Each chunk header repeats it. |
 | 32 | `u64` | Chunk capacity |
@@ -102,7 +103,7 @@ Each section ID appears at most once. Sections do not overlap. The table itself 
 
 - **Major** version: the reader opens a pack only if the major version equals its own. Any change that an old reader would misread bumps it: a changed field, encoding or meaning.
 - **Minor** version: additions only. New sections, and new fields in space that older versions wrote as zero (the header's tail, reserved flag bits). A reader ignores section IDs it does not know, and accepts any minor version. It may show "built by a newer builder".
-- Version 0.x is the development series. Until 1.0, the app and builder are released together and the major version stays 0. Breaking changes bump the minor version, and the reader requires a minor version it knows: 0.5, 0.4, and 0.3, since 0.4 only changed sections the 0.3 reader never read (`SAPL`) and added others, and 0.5 only added the routing sections. A 0.3 pack opens with its tiles; the search readers need 0.4 and the routing reader 0.5, so the app hides what an older pack lacks.
+- Version 0.x is the development series. Until 1.0, the app and builder are released together and the major version stays 0. Breaking changes bump the minor version, and the reader requires a minor version it knows: 0.6, 0.5, 0.4, and 0.3, since 0.4 only changed sections the 0.3 reader never read (`SAPL`) and added others, 0.5 only added the routing sections, and 0.6 only `TZON`. A 0.3 pack opens with its tiles; the search readers need 0.4, the routing reader 0.5 and the time zones 0.6, so the app hides what an older pack lacks (without `TZON`, a schedule's times are all in the computer's zone).
 
 ## Checksums
 
@@ -114,7 +115,7 @@ Every section has an XXH3-64 checksum in the section table. The app does **not**
 ## `META`: metadata and attribution (contiguous)
 
 A UTF-8 JSON object, zstd-compressed (one frame). Fields:
-- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.5"`).
+- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.6"`).
 - `sources`: the `fetch` manifest. For each input: `name`, `url`, `date` (of download, RFC 3339), `sha256`, `license`, and optionally `license_url` and `attribution`. Every OpenAddresses source is listed, including those whose license is `unspecified` (decision 13).
 - `attribution`: the text the app shows on its "About this map" screen, built from `sources` (e.g. "© OpenStreetMap contributors, ODbL", the Statistics Canada NAR licence, each OpenAddresses source's attribution).
 - `settings`: the build options that shaped the data (whitelist version, simplification tolerances, address dedup and attach distances).
@@ -548,6 +549,22 @@ list = n:varint  total:varint  bytes:varint  id_delta:varint*      ; n deltas in
 
 - The entry IDs holding the token, ascending (so by importance bucket), as deltas from the previous ID, the first from 0. `bytes` lets a reader read the list in one go, or stop after the first IDs.
 - `total` is the number of entries holding the token. It equals `n`, except for **generic tokens left out of postings**: a token in more than 100,000 entries that names a kind of street, a direction or an article (`omp_core::normalize::is_generic`: "street", "road", "north", "de") lists only the entries all of whose tokens are left out ("Avenue Road", "North Street"). Every other entry holding it is found by its other tokens, and the query checks the generic word against the name.
+
+## Time zones
+
+### `TZON`: time zones (contiguous)
+
+Each zone's IANA name and polygon (0.6, phase 4 step 4.5), so the schedule shows each time in the zone where it happens. The polygons are [timezone-boundary-builder](https://github.com/evansiroky/timezone-boundary-builder)'s (made from OSM boundaries, ODbL; `fetch --sources tz` pins a release, 2026e, the tz database version `jiff` bundles), without the ocean zones. The builder keeps a zone if its polygon meets the region (its `--clip-poly`, else its bounding box), simplifies each ring to 100 m and clips it to the bounding box. One zstd frame:
+
+```
+TZON = count:varint  zone*
+zone = name:str  min_x:u32  min_y:u32  max_x:u32  max_y:u32
+       nrings:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
+```
+
+Zones are sorted by name. The bounding box is in world coordinates. Points are in units of 2⁶ world units, as deltas from a cursor that starts at (0, 0) for each zone and runs on across its rings. Rings are not closed; a point is in a zone if it is inside an odd number of its rings. Zones do not overlap, but borders simplified apart leave slivers up to about 100 m wide: a point in none takes the nearest zone within 1 km.
+
+The rules (offsets, abbreviations, DST) are not in the pack: the app takes them from `jiff`'s bundled tz database by name, the same on every computer. North America: 74 zones, 108,281 vertices, **0.39 MiB** (aim ≤ 5 MiB); the reader holds 2.2 MiB, its edges bucketed in horizontal bands of 2²⁰ world units for point in polygon.
 
 ## Style
 

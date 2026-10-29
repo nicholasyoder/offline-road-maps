@@ -6,11 +6,13 @@
 //! ([`snaps`]) measures how far address points snap. `route --optimize` reorders the
 //! stops first (phase 4 step 4.1), and `--optimize-random` ([`optimize`]) measures that on
 //! random stops. `route --alternatives` ([`alt`]) finds each leg's alternatives (step 4.2),
-//! and `--alternatives-random` measures them on random pairs.
+//! and `--alternatives-random` measures them on random pairs. `route --depart` and
+//! `--arrive-by` ([`schedule`]) print the trip's schedule (step 4.5).
 
 pub mod alt;
 pub mod check;
 pub mod optimize;
+pub mod schedule;
 pub mod set;
 pub mod snaps;
 
@@ -165,6 +167,35 @@ pub struct RouteArgs {
     /// With the alternatives, search with stall-on-demand.
     #[arg(long)]
     stall: bool,
+
+    /// Print the schedule leaving at this local time at the first stop, e.g.
+    /// 2026-07-15T08:00.
+    #[arg(long)]
+    depart: Option<String>,
+
+    /// Print the schedule arriving by this local time at the last stop.
+    #[arg(long)]
+    arrive_by: Option<String>,
+
+    /// With the schedule, the daily driving window, e.g. 8:00-18:00, or `off`.
+    #[arg(long, default_value = "8:00-18:00")]
+    window: Option<String>,
+
+    /// With the schedule, the most hours of driving a day.
+    #[arg(long)]
+    max_drive: Option<f64>,
+
+    /// With the schedule, a break after every this many hours of driving.
+    #[arg(long)]
+    break_every: Option<f64>,
+
+    /// With `--break-every`, the break's minutes.
+    #[arg(long, default_value_t = 15.0)]
+    break_for: f64,
+
+    /// With the schedule, minutes at each stop between the first and the last.
+    #[arg(long, default_value_t = 0.0)]
+    stay: f64,
 
     /// MiB of decoded hierarchy blocks to keep [default: the reader's].
     #[arg(long)]
@@ -467,6 +498,32 @@ pub fn run(args: RouteArgs) -> Result<()> {
         let ms = t.elapsed().as_secs_f64() * 1e3;
         set::print_steps(&steps, args.miles, " ");
         println!("directions: {} steps, {ms:.1} ms", steps.len());
+    }
+    if args.depart.is_some() || args.arrive_by.is_some() {
+        let (zones, places) = schedule::open(&pack)?;
+        let local = omp_core::schedule::Local {
+            zones: zones.as_ref(),
+            fallback: jiff::tz::TimeZone::UTC,
+        };
+        let points: Vec<P> = only.iter().map(|s| s.p).collect();
+        let st = schedule::settings(&args, &points, &local)?.expect("a time is given");
+        let index = search.as_ref().map(|s| &s.index);
+        let opened = match index {
+            Some(_) => None,
+            None => omp_core::search::Index::open(pack.clone())?,
+        };
+        let steps = r.directions(&trip, &only, names)?;
+        let names: Vec<String> = stops.iter().map(|s| s.1.clone()).collect();
+        schedule::print(
+            index.or(opened.as_ref()),
+            &places,
+            &local,
+            &trip,
+            &points,
+            &names,
+            &steps,
+            &st,
+        )?;
     }
     if let Some(path) = &args.geojson {
         write_geojson(path, &stops, &trip, &alts)?;

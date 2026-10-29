@@ -40,7 +40,7 @@ The roadmap's items are stop optimization, departure and arrival times with over
 | 4.2 Alternative routes (`omp-core`) | **Done** 2026-10-28 | Via nodes over the CH, T-test, turn-cost ranking. Over 50 km, one alternative for 85.5% of Ohio's pairs, 75.6% of North America's, 68.9% of Quebec's (OSRM: 52.2%; criterion restated for Quebec, decision 21). Coast to coast 0.47 s with directions. Turn costs pick another route on 1% of legs: U-turns 4.7% → 4.6% (Ohio), 11.2% → 10.7% (Quebec) |
 | 4.3 Alternatives in the app | **Done** 2026-10-28 | Each leg's row in the route page opens to its routes, looked for then (decision 23) and drawn grey with a "+10 min" tag while open; picked by a click on the map or in the list. Ohio flight with every leg open: frame p95 1.07–1.08 ms against 1.07 before. New York–Los Angeles: alternatives with directions 0.48 s warm. Directions now stop on a newer request |
 | 4.4 U-turn penalty, measured first | **Done** 2026-10-28 | Built behind `--uturn-penalty` and measured on Ohio and Quebec: routing ×2.2–2.5, contraction ×8–24, U-turn routes 4.7% → 3.3% (Ohio) and 11.2% → 9.5% (Quebec) at any penalty. **Not built for North America** (owner, decision 20); the flag stays, off by default |
-| 4.5 Schedule: times, stops and overnights | Not started | |
+| 4.5 Schedule: times, stops and overnights | **Done** 2026-10-28 | Format 0.6, `TZON` from timezone-boundary-builder 2026e: North America 74 zones, **0.39 MiB**, 2.2 MiB in RAM; app +0.79 MiB. Criterion 4's trips pass (12 tests); New York–Los Angeles on North America: 6 days, 4 crossings, 0.3 ms to work out. Frame p95 unchanged with no time set (1.02–1.03 ms), 1.38 ms with a coast-to-coast schedule shown |
 | 4.6 Fuel, rest and overnight suggestions (if cheap) | Not started | |
 | 4.7 Pushpins and saved trips | Not started | |
 | 4.8 GPX, KML and CSV (best effort) | Not started | |
@@ -232,6 +232,60 @@ From the roadmap (phase 3 decisions 13 and 16): a hidden penalty of a few minute
 - **Tests:** the cross-zone trips of criterion 4, a trip that crosses a DST change at night, arrive-by over several days, and a window shorter than the first leg (the stop then falls on day 2).
 
 **Done when:** criterion 4's test set passes, the schedule shows in the panel and directions on the North America pack, and `TZON`'s size is in the size table and format.md.
+
+> **Done 2026-10-28** (commit "Step 4.5 done: schedule, local times and overnights"). Logs, screenshots and bench reports in `$OMP_WORK/measure/tz45/`; the North America pack is `measure/tz45/na-pack`.
+>
+> - **Time zones (`TZON`, format 0.6):** `fetch --sources tz` downloads timezone-boundary-builder's `timezones.geojson.zip`, pinned to release 2026e, the tz database version `jiff`'s bundled copy has (`fetch --tz-release`). It is in the manifest (ODbL, "Time zones: timezone-boundary-builder, © OpenStreetMap contributors"), so `META`'s sources and the About screen list it, and the snapshot says `tz 2026e`. `build` reads it first, while memory is free (1.3 s, 150 MiB), and keeps the zones whose polygons meet the region. A zone is kept if a vertex of either polygon is inside the other, using `--clip-poly` if given, else the bounding box. North America's header box spans all longitudes, so the box alone would keep most of the world. Rings are simplified to 100 m and clipped to the box. The encoding is in [format.md](format.md#tzon-time-zones-contiguous). North America: **74 zones, 108,281 vertices, 0.39 MiB** (aim ≤ 5 MiB). Indiana: 12 zones, 0.01 MiB.
+> - **Reader (`omp_core::tz`):** the section is decoded whole when the routing worker opens the pack, and held in RAM: 2.2 MiB on North America, with each zone's edges bucketed in horizontal bands of 2²⁰ world units, so a point tests only the edges of its band. Rules come from `jiff`'s bundled database (`TimeZoneDatabase::bundled()`, features `tzdb-bundle-always` and `tz-system`), so Windows and Linux give the same answers. A point in no zone, in a sliver between borders simplified apart, takes the nearest zone within 1 km. The app binary grows from 14.66 to 15.47 MB (+0.79 MiB, `jiff` and its 200 KiB database).
+> - **Schedule (`omp_core::schedule`):** from a departure or an arrive-by time, each stop's time there, an optional driving day and optional breaks, it gives each stop's arrival and departure, the nights and breaks, and the clock at any driving second (`Schedule::clock`). The driving day is a start and an end (8:00 to 18:00), an end past midnight, or at most N hours a day. Choices made here:
+>   - The day's end is read in the zone where the driver is when it comes: in the start's zone, then in the zone where the stretch would end, until the two agree. A day that starts at 8:00 CDT and crosses into Mountain time ends at 18:00 MDT.
+>   - A departure outside the driving day waits for its start, and the panel says "Leaves at 08:00, the start of the driving day." A stop whose time there runs past the day's end stays the night. *Overnight* at a stop goes on at the next day's start, with or without a driving day (8:00 by default).
+>   - A break of M minutes comes after every N hours of driving. A night resets the count, and so does a stop at least as long as a break.
+>   - Arrive-by finds the latest departure, to the minute, that arrives in time, by bisection: a later departure never arrives earlier. This gives what working back day by day would, and the forward pass then places the breaks and nights.
+> - **Zone crossings** (`schedule::crossings`): each step's start is tested, and where the next step starts in another zone, the step's line is tested point by point. So a crossing is placed where the road crosses the border ("near Wolcott" on I-65, at the Jasper and White county line), not at the next turn. A zone left within 90 s of driving is a sliver and never counts as entered. Without this, I-69 near Princeton flickered Chicago, Petersburg, Chicago within 500 m. A crossing is shown only where the clock reads differently in offset or abbreviation, so America/Indiana/Indianapolis to America/New_York shows nothing, and Phoenix to Los Angeles in summer shows "Enter Pacific Time: clocks stay the same".
+> - **Route page** (decision 24): *Depart at / Arrive by* has its own fold row under *More options*. It is closed by default and always open while a time is set, and its title says what is set ("Depart Sat Jul 11, 08:00 EDT"). Its controls:
+>   - No time, Depart at or Arrive by.
+>   - A date and a time field, outlined when they don't parse, with the zone of the stop they are at ("EDT, at the start").
+>   - Drive from … to …, At most … h of driving a day, and A break every … h for … min.
+>   - "Times assume no traffic."
+>
+>   With a time set:
+>   - Each stop's row says "Arrives Sun 11:50 CDT, leaves Sun 12:20 CDT". Its difference from the departure's zone is on a line of its own ("1 h behind departure"), in the accent colour, with a tip giving the time in the departure's zone and in the computer's when that differs. A stop between the ends has a "time here…" button that opens its field: minutes, and *Overnight*.
+>   - The directions get a column of clock times, each in its step's zone. Rows for the schedule are added: "Day 2 · Sunday Jul 12" with "Day 1 ends near Fremont at 18:00 EDT; on at 08:00 EDT" and *Make overnight stop*; "Break, 15 min"; and "Enter Central Time: clocks go back 1 h".
+>   - The map draws a navy disc with the day's number where each day ends along a leg.
+>   - *Make overnight stop* inserts a stop there named after the town and marked *Overnight*, and routes again.
+>   - A trip in one zone shows no marks.
+>
+>   The settings last used are saved in `config.toml` (`[schedule]`), for the next trip (4.7 saves each trip's own). The schedule is worked out on the UI thread when the route, its settings or a stop's time change: 0.3 ms for New York–Los Angeles with its crossings.
+> - **Towns** for the nights: `search::Index::town_near` gives the nearest city or town within 25 km, else the nearest village within 10 km, reading only the importance buckets places are in. The app asks a thread of its own, which opens the search index the first time a night needs a town (about 6 MiB), so a trip without times costs nothing.
+> - **Without a window:** `omp-builder route … --depart 2026-07-11T08:00` (or `--arrive-by`, with `--window 8:00-18:00|off`, `--max-drive`, `--break-every`, `--break-for`, `--stay`) prints each stop's times, nights and breaks with their towns, and each crossing with its point and zone. Bench flights take `depart = "…"`: `crates/app/bench/na-schedule.toml` is New York–Chicago–Denver–Phoenix–Los Angeles from Saturday 8:00.
+> - **Tests** (criterion 4, `schedule_tests.rs`): straight legs through boxes named after the real zones, timed with the real rules:
+>   - Across Arizona in summer: Los Angeles 08:00 PDT, Phoenix 13:00 MST (same offset), Albuquerque 21:00 MDT.
+>   - Indiana's split counties: Gary, Indianapolis and Evansville, with an Eastern pocket between Central corners.
+>   - Saskatchewan: in summer, Winnipeg to Regina goes back 1 h and Regina to Calgary is the same; in winter, Winnipeg to Regina shows no crossing.
+>   - Newfoundland's half hour: Halifax 06:00 ADT to St. John's 18:30 NDT, with the crossing placed at 59.5° W.
+>   - A DST change during the night: 18:00 CDT on Oct 31 to 08:00 CST, 15 h later.
+>   - Arrive-by over four days (Sep 16 12:00, so leave Sep 13 17:00).
+>   - A window shorter than the first leg (the stop falls on day 2), at most 8 h a day, a departure before the window, and an overnight stop.
+>   - Breaks every 2 h, the day ending by the clock in the zone it ends in (twice), slivers, and times as typed.
+>
+>   `tz` tests cover holes, unknown zones, the nearest zone and long edges. The builder reads a test zip with a polygon covering the box. The headless panel test `schedule` covers turning on *Depart at*, a stop's time and *Overnight*, the night at a stop, and *Make overnight stop* along a leg.
+> - **On North America** (`na-schedule.log`): New York–Los Angeles via Chicago, Denver and Phoenix, Saturday 08:00 EDT, 8:00 to 18:00. It takes 6 days and arrives Thu 09:52 PDT. The nights fall near Fremont OH, Johnston IA, Lochbuie CO, Mexican Water AZ (Navajo Nation, MDT) and Desert Hot Springs CA. The crossings are Central near New Carlisle IN, Mountain near Paxton NE, MST entering Arizona's own zone from the Navajo Nation, and Pacific (clocks stay the same) near Blythe. Screenshot: [`docs/screenshots/route-schedule.png`](screenshots/route-schedule.png). Indiana (`measure/tz45/indiana`, the builder loop's test pack): Gary 09:00 CDT, Indianapolis 12:54 EDT, Evansville 15:06 CDT.
+> - **Measured:**
+>
+>   | | Before (9eecca2) | With 4.5 |
+>   |---|---:|---:|
+>   | Ohio route flight, no time set (2 runs each): frame interval p50 / p95 | 0.79–0.80 / 1.03 ms | 0.79–0.80 / 1.02–1.03 ms |
+>   | — RSS peak | 219 MiB | 217–219 MiB |
+>   | North America, `na-schedule.toml` with the schedule shown: frame p95, RSS | – | 1.38 ms, 231 MiB |
+>   | App binary (release) | 14.66 MB | 15.47 MB |
+> - **The North America pack** was rebuilt for `TZON` (50.9 min, peak 49.5 GiB, the same peak as before): 9,910.4 MiB in 3 chunks. Every section but the tiles has the same size as phase 3's pack. The tiles are 84 MiB smaller (`TDAT` 6,229.9 → 6,145.8, `TIDX` 67.2 → 65.7), because this build used `--clip-poly north-america.poly`, as phase 1 documented, and the phase 3 build did not: the ocean pieces that do not meet the region are left out (9.9M ocean tiles against 26.0M). This is the pack to use from now on.
+> - **Left open:**
+>   - The owner's hand check in the app.
+>   - The E6430 (4.11).
+>   - A step that leaves a zone and comes back within itself is not seen, since only steps whose start is in another zone are tested point by point.
+>   - Driving into a zone whose day is already over (east at 17:30 CDT, which is 18:30 EDT) stops by the start zone's 18:00, not at the border.
+>   - The page is not checked at a 300-point panel.
 
 ## 4.6 Fuel, rest and overnight suggestions (if cheap)
 

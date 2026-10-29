@@ -21,6 +21,14 @@ const OSM_SNAPSHOT: &str = "261001";
 const TIGER_YEAR: u16 = 2026;
 /// NAR release, `YYYYMM`.
 const NAR_RELEASE: &str = "202606";
+/// timezone-boundary-builder release: the tz database version its zones match, the one
+/// `jiff`'s bundled database has (phase 4 step 4.5).
+pub const TZ_RELEASE: &str = "2026e";
+
+/// Where `fetch` puts a release's time zone polygons, under the inputs directory.
+pub fn tz_path(release: &str) -> String {
+    format!("tz/timezones-{release}.geojson.zip")
+}
 
 #[derive(Args)]
 pub struct FetchArgs {
@@ -33,7 +41,7 @@ pub struct FetchArgs {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "osm,water,poly,openaddresses,tiger,oda,nar"
+        default_value = "osm,water,poly,openaddresses,tiger,oda,nar,tz"
     )]
     sources: Vec<Source>,
 
@@ -51,6 +59,10 @@ pub struct FetchArgs {
     /// National Address Register release, YYYYMM.
     #[arg(long, default_value = NAR_RELEASE)]
     nar_release: String,
+
+    /// timezone-boundary-builder release, e.g. 2026e.
+    #[arg(long, default_value = TZ_RELEASE)]
+    tz_release: String,
 
     /// Parallel downloads.
     #[arg(long, default_value_t = 4)]
@@ -81,6 +93,8 @@ enum Source {
     Oda,
     /// StatCan National Address Register.
     Nar,
+    /// timezone-boundary-builder's zone polygons (global, one file).
+    Tz,
 }
 
 impl Source {
@@ -93,6 +107,7 @@ impl Source {
             Self::Tiger => "tiger",
             Self::Oda => "oda",
             Self::Nar => "nar",
+            Self::Tz => "tz",
         }
     }
 }
@@ -145,6 +160,7 @@ pub fn run(args: FetchArgs, work_dir: &Path) -> Result<()> {
             Source::Tiger => sources::tiger(&agent, &region, args.tiger_year)?,
             Source::Oda => sources::oda(&region),
             Source::Nar => sources::nar(&region, &args.nar_release),
+            Source::Tz => sources::tz(&args.tz_release),
         };
         println!("{}: {} files", source.as_str(), planned.len());
         jobs.extend(planned);

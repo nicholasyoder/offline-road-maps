@@ -12,6 +12,8 @@
 //! same way. The worker keeps the last route it sent, and finds the alternatives to its
 //! legs when asked (step 4.3: when a leg's routes are opened in the route page), with
 //! their own directions, sending each leg's as it is done; a newer request stops that too.
+//! It also reads the pack's time zones (step 4.5), which the schedule uses on the UI
+//! thread.
 
 use std::io;
 use std::ops::Range;
@@ -25,6 +27,7 @@ use omp_core::geo::P;
 use omp_core::pack::Pack;
 use omp_core::route::{self, AltParams, Ends, Leg, Names, Road, Step, Stop, Trip, Turns};
 use omp_core::street::Streets;
+use omp_core::tz::Zones;
 
 use super::line::Line;
 
@@ -35,6 +38,8 @@ pub enum Status {
     Ready {
         reader: Arc<route::Routing>,
         open: Duration,
+        /// The pack's time zones (format 0.6), for the schedule (phase 4 step 4.5).
+        zones: Option<Arc<Zones>>,
     },
     /// No routing sections; the pack's minor version.
     Missing(u16),
@@ -353,11 +358,12 @@ fn work(
     let opened = Pack::open(&first_chunk).map(Arc::new).and_then(|p| {
         let minor = p.minor;
         let streets = Streets::open(p.clone())?;
-        route::Routing::open(p).map(|r| (r, streets, minor))
+        let zones = Zones::open(&p)?;
+        route::Routing::open(p).map(|r| (r, streets, zones, minor))
     });
-    let (reader, streets) = match opened {
-        Ok((Some(r), streets, _)) => (Arc::new(r), streets),
-        Ok((None, _, minor)) => {
+    let (reader, streets, zones) = match opened {
+        Ok((Some(r), streets, zones, _)) => (Arc::new(r), streets, zones.map(Arc::new)),
+        Ok((None, _, _, minor)) => {
             shared.slot.lock().unwrap().status = Status::Missing(minor);
             wake();
             return;
@@ -371,6 +377,7 @@ fn work(
     shared.slot.lock().unwrap().status = Status::Ready {
         reader: reader.clone(),
         open: t0.elapsed(),
+        zones,
     };
     wake();
     let (r, s, w) = (reader.clone(), shared.clone(), wake.clone());
