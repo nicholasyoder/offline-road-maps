@@ -41,7 +41,7 @@ The roadmap's items are stop optimization, departure and arrival times with over
 | 4.3 Alternatives in the app | **Done** 2026-10-28 | Each leg's row in the route page opens to its routes, looked for then (decision 23) and drawn grey with a "+10 min" tag while open; picked by a click on the map or in the list. Ohio flight with every leg open: frame p95 1.07–1.08 ms against 1.07 before. New York–Los Angeles: alternatives with directions 0.48 s warm. Directions now stop on a newer request |
 | 4.4 U-turn penalty, measured first | **Done** 2026-10-28 | Built behind `--uturn-penalty` and measured on Ohio and Quebec: routing ×2.2–2.5, contraction ×8–24, U-turn routes 4.7% → 3.3% (Ohio) and 11.2% → 9.5% (Quebec) at any penalty. **Not built for North America** (owner, decision 20); the flag stays, off by default |
 | 4.5 Schedule: times, stops and overnights | **Done** 2026-10-28 | Format 0.6, `TZON` from timezone-boundary-builder 2026e: North America 74 zones, **0.39 MiB**, 2.2 MiB in RAM; app +0.79 MiB. Criterion 4's trips pass (12 tests); New York–Los Angeles on North America: 6 days, 4 crossings, 0.3 ms to work out. Frame p95 unchanged with no time set (1.02–1.03 ms), 1.38 ms with a coast-to-coast schedule shown |
-| 4.6 Fuel, rest and overnight suggestions (if cheap) | Not started | |
+| 4.6 Fuel, rest and overnight suggestions (if cheap) | **Deferred** 2026-10-29 | Not built; the owner does not want it in this phase. Kept as an optional idea in the roadmap's *Later or optional* |
 | 4.7 Pushpins and saved trips | **Done** 2026-10-29 | TOML files in `trips/` and `pins/` next to the app, with an in-app file browser. Stops kept by name and coordinates: a trip saved on the Ohio pack opens on North America on the same street (IDs 131009 → 7204075), same 230.0 km route. 10,000 pins on the Ohio flight: frame p95 0.81–0.82 → 0.84 ms (budget +0.1). App +0.26 MB |
 | 4.8 GPX, KML and CSV (best effort) | Not started | |
 | 4.9 Print layout and preview | **Done** 2026-10-29 | Pages drawn by the map renderer plus an egui layer at the printer's dpi (the spike passed: no atlas or texture limit at 300 dpi). Print page with rectangle, label, paper, orientation, text size, preview; directions paginated; `--print` writes PDF/PNG. New York–Los Angeles map page at 300 dpi 5 s in a debug build. Hand check of dragging the rectangle and of 4.10's buttons still to do |
@@ -288,6 +288,8 @@ From the roadmap (phase 3 decisions 13 and 16): a hidden penalty of a few minute
 >   - The page is not checked at a 300-point panel.
 
 ## 4.6 Fuel, rest and overnight suggestions (if cheap)
+
+> **Deferred 2026-10-29** (owner). Nothing was built; only the code reading (`SENT`'s `entries_from`, `Index::town_near`, `Routing::snap` and `leg_between` for the detour queries) was done. The plan below stays as written for whoever picks it up later, and the roadmap lists it under *Later or optional*. Phase 4's other steps do not depend on it: a stop added by hand has the same effect, and 4.9's map needs nothing from it. Exit criteria and decisions 7 and 19 apply only if it is taken up.
 
 The owner asked for this only if it is easy and cheap. The plan expects it to be. **No new data:** fuel, charging stations, rest areas and services, hotels, campgrounds and towns are already in `SENT` (kind 3 POIs, kind 1 places). It costs **no standing RAM** beyond search's caches. **CPU is spent only at a few points:** where a trip needs something, not along its whole length.
 
