@@ -162,11 +162,13 @@ impl PrintUi {
         self.preview.signature = 0;
         self.status = None;
         self.unavailable = printer::unavailable();
+        log::info!("print: listing printers");
         self.printers = if self.unavailable.is_none() {
             printer::list()
         } else {
             Vec::new()
         };
+        log::info!("print: {} printers", self.printers.len());
         self.caps = None;
         let [x0, y0, x1, y1] = around.cam.visible();
         self.wide = match around.route_bounds {
@@ -394,7 +396,9 @@ impl PrintUi {
             return Capabilities::default();
         };
         if self.caps.as_ref().is_none_or(|(n, _)| n != name) {
+            log::info!("print: asking {name} what it can do");
             self.caps = Some((name.to_owned(), printer::capabilities(name)));
+            log::info!("print: {:?}", self.caps.as_ref().map(|c| &c.1));
         }
         self.caps
             .as_ref()
@@ -1026,6 +1030,8 @@ impl Worker {
         let (replies, rx) = mpsc::channel::<Reply>();
         let spawned = std::thread::Builder::new()
             .name("print preview".into())
+            // Drawing a page nests deeply; Windows threads start small.
+            .stack_size(32 << 20)
             .spawn(move || {
                 let mut state = WorkerState::default();
                 while let Ok(mut job) = jobs.recv() {
@@ -1034,7 +1040,11 @@ impl Worker {
                         job = newer;
                     }
                     let (seq, ctx) = (job.seq, job.ctx.clone());
-                    let result = state.run(job);
+                    log::info!("print worker: job {seq}");
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| state.run(job)))
+                            .unwrap_or_else(|_| Err("the page drawing thread panicked".into()));
+                    log::info!("print worker: job {seq} done, ok = {}", result.is_ok());
                     if replies.send(Reply { seq, result }).is_err() {
                         return;
                     }
@@ -1066,12 +1076,16 @@ impl WorkerState {
     fn run(&mut self, job: Job) -> Result<Done, String> {
         let t0 = Instant::now();
         if self.gpu.is_none() {
+            log::info!("print worker: opening a GPU device");
             let gpu = Gpu::headless()?;
+            log::info!("print worker: device ready");
             let egui_pass = Egui::new(&gpu);
             self.gpu = Some((gpu, egui_pass));
         }
         if self.pack.as_ref().is_none_or(|(p, _)| *p != job.pack) {
+            log::info!("print worker: opening {}", job.pack.display());
             self.pack = Some((job.pack.clone(), packs::open(&job.pack)?));
+            log::info!("print worker: pack open");
         }
         let (gpu, egui_pass) = self.gpu.as_mut().ok_or("no GPU")?;
         let opened = &self.pack.as_ref().ok_or("no pack")?.1;
@@ -1084,7 +1098,9 @@ impl WorkerState {
         let mut sink = Sink::new(job.output, &title)?;
         match job.what {
             What::Map(page) => {
+                log::info!("print worker: drawing the map page at {} dpi", page.dpi);
                 let (p, stats) = pages::render_map(gpu, opened, &style, egui_pass, &page)?;
+                log::info!("print worker: map page drawn");
                 note = format!(
                     "z{:.1}, {} tiles, map {:.0} ms, overlay {:.0} ms",
                     stats.z, stats.tiles, stats.map_ms, stats.egui_ms
