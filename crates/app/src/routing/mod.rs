@@ -32,7 +32,7 @@
 //! that stays the night.
 
 mod line;
-pub(crate) mod panel;
+mod panel;
 mod saved;
 mod times;
 mod worker;
@@ -415,8 +415,6 @@ pub struct RouteUi {
     towns: Towns,
     /// The saved trip shown, once saved or opened (phase 4 step 4.7).
     pub named: Option<crate::trips::Named>,
-    /// *Save trip* or *Save as…* was clicked: the app saves.
-    pub save_asked: Option<crate::trips::SaveAsk>,
     /// Per leg of a trip just opened, the via point of its route saved, until its
     /// alternatives come and the one passing it is picked.
     wanted: Vec<Option<P>>,
@@ -493,7 +491,6 @@ impl RouteUi {
             notes: Vec::new(),
             towns: Towns::new(PathBuf::new(), Arc::new(|| {})),
             named: None,
-            save_asked: None,
             wanted: Vec::new(),
             lost: Vec::new(),
         }

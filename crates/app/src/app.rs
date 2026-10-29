@@ -1246,7 +1246,7 @@ impl App {
         {
             m.routing.named = None;
         }
-        if let Some(ask) = m.routing.save_asked.take() {
+        if let Some(ask) = o.trips.save {
             let file = m.routing.to_file(&pack_label(&m.opened));
             if let Some(n) = self.trips.save(ask, file, m.routing.named.as_ref()) {
                 m.routing.named = Some(n);
@@ -1842,7 +1842,12 @@ fn side_panel(
                 }
                 Page::Trips => {
                     let can_open = p.routing.status().usable();
-                    o.trips = p.trips.page_ui(ui, p.pins, can_open, p.exe_dir);
+                    let current = trips::Current {
+                        can_save: p.routing.from.is_some() && p.routing.to.is_some(),
+                        named: p.routing.named.as_ref(),
+                        unsaved: p.routing.unsaved(),
+                    };
+                    o.trips = p.trips.page_ui(ui, p.pins, current, can_open, p.exe_dir);
                 }
                 Page::Layers => side::layers_ui(ui, layers, units_cfg, p.pack_units),
             }

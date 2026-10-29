@@ -29,7 +29,6 @@ use crate::scale::Units;
 use crate::search::distance_text;
 use crate::side::later;
 use crate::theme::{ACCENT, APPROX, Glyph, INK, WEAK, glyph_button};
-use crate::trips::SaveAsk;
 
 const ICON: f32 = 20.0;
 /// Where a step's text starts, from the row's left, and the line under it.
@@ -78,9 +77,6 @@ pub enum Target {
     Overnight(usize),
     /// *Make overnight stop* under a night's row: the schedule's event.
     MakeOvernight(usize),
-    /// *Save trip* and *Save as…*.
-    SaveTrip,
-    SaveAs,
 }
 
 /// A change asked for in the page, made once it is drawn.
@@ -136,8 +132,14 @@ impl RouteUi {
         self.optimize_window(&ui.ctx().clone(), at, units, &mut edits);
         ui.separator();
         self.summary(ui, units, &mut edits);
-        if self.from.is_some() && self.to.is_some() {
-            self.save_row(ui);
+        if self.route.is_some() {
+            ui.horizontal_wrapped(|ui| {
+                later(
+                    ui,
+                    "Print or export directions",
+                    "As a page to print, or a file",
+                );
+            });
         }
         let left = ui.available_height();
         self.directions(ui, left.max(80.0), units, &mut edits);
@@ -172,49 +174,6 @@ impl RouteUi {
             }
         }
         fly
-    }
-
-    /// *Save trip* and *Save as…* (step 4.7), with the trip's name and whether it has
-    /// unsaved changes, and the place kept for printing.
-    fn save_row(&mut self, ui: &mut egui::Ui) {
-        let unsaved = self.unsaved();
-        ui.horizontal_wrapped(|ui| {
-            let tip = match &self.named {
-                Some(n) => format!("Save to {}", n.path.display()),
-                None => {
-                    "Keep this trip with its stops and options, in trips/ next to the app".into()
-                }
-            };
-            let r = ui
-                .add_enabled(unsaved, egui::Button::new("Save trip").small())
-                .on_hover_text(tip)
-                .on_disabled_hover_text("Saved: no changes since");
-            self.targets.push((Target::SaveTrip, r.rect));
-            if r.clicked() {
-                self.save_asked = Some(SaveAsk::Save);
-            }
-            if self.named.is_some() {
-                let r = ui
-                    .small_button("Save as…")
-                    .on_hover_text("Save under another name");
-                self.targets.push((Target::SaveAs, r.rect));
-                if r.clicked() {
-                    self.save_asked = Some(SaveAsk::SaveAs);
-                }
-            }
-            later(
-                ui,
-                "Print or export directions",
-                "As a page to print, or a file",
-            );
-        });
-        if let Some(n) = &self.named {
-            let (text, color) = match unsaved {
-                true => (format!("Trip “{}” · unsaved changes", n.name), ACCENT),
-                false => (format!("Trip “{}”", n.name), WEAK),
-            };
-            ui.label(egui::RichText::new(text).size(11.5).color(color));
-        }
     }
 
     /// The stops, each with its handle, numbered pin, name and remove button.

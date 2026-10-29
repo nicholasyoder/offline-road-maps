@@ -1,7 +1,7 @@
 //! The look of the app's own UI, apart from the map's style: colours (search, "what's here",
 //! the scale bar), egui's style as the app sets it, and buttons with drawn symbols.
 
-use eframe::egui::{self, Color32, CornerRadius, Stroke, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Pos2, Stroke, Vec2};
 
 /// Main text, and the scale bar and credits over the map.
 pub const INK: Color32 = Color32::from_gray(40);
@@ -65,6 +65,10 @@ pub enum Glyph {
     /// « and »: hide and show the side panel.
     Hide,
     Show,
+    /// A pencil, two sheets and a bin: rename, copy and delete a saved item.
+    Rename,
+    Copy,
+    Delete,
 }
 
 /// A square button `side` points wide with `glyph` on it.
@@ -88,6 +92,61 @@ pub fn glyph_button(ui: &mut egui::Ui, glyph: Glyph, side: f32) -> egui::Respons
                 let back = Vec2::new(s * h, h);
                 p.line_segment([tip, tip + back], stroke);
                 p.line_segment([tip, tip + Vec2::new(back.x, -back.y)], stroke);
+            }
+        }
+        Glyph::Rename => {
+            // A pencil from the bottom left (its point) to the top right.
+            let s = Stroke::new(1.25, stroke.color);
+            let d = Vec2::new(1.0, -1.0) / 2f32.sqrt();
+            let n = Vec2::new(-d.y, d.x);
+            let tip = c + Vec2::new(-1.1 * h, 1.1 * h);
+            let (a, b) = (tip + d * 0.9 * h, tip + d * 3.1 * h);
+            for k in [-1.0, 1.0] {
+                let o = n * (0.42 * h) * k;
+                p.line_segment([a + o, b + o], s);
+                p.line_segment([tip, a + o], s);
+            }
+            p.line_segment([b - n * 0.42 * h, b + n * 0.42 * h], s);
+        }
+        Glyph::Copy => {
+            let s = Stroke::new(1.25, stroke.color);
+            let side = Vec2::splat(1.35 * h);
+            let back = egui::Rect::from_min_size(c + Vec2::new(-0.55 * h, -1.1 * h), side);
+            let front = egui::Rect::from_min_size(c + Vec2::new(-h, -0.45 * h), side);
+            p.rect_stroke(back, 1.0, s, egui::StrokeKind::Middle);
+            p.rect_filled(front, 1.0, ui.style().interact(&r).bg_fill);
+            p.rect_stroke(front, 1.0, s, egui::StrokeKind::Middle);
+        }
+        Glyph::Delete => {
+            // A bin: its lid and handle, and the can narrowing to its foot.
+            let s = Stroke::new(1.25, stroke.color);
+            let top = c.y - 0.75 * h;
+            p.line_segment(
+                [Pos2::new(c.x - 1.1 * h, top), Pos2::new(c.x + 1.1 * h, top)],
+                s,
+            );
+            p.line_segment(
+                [
+                    Pos2::new(c.x - 0.35 * h, top - 0.4 * h),
+                    Pos2::new(c.x + 0.35 * h, top - 0.4 * h),
+                ],
+                s,
+            );
+            let can = vec![
+                Pos2::new(c.x - 0.8 * h, top),
+                Pos2::new(c.x - 0.6 * h, c.y + 1.1 * h),
+                Pos2::new(c.x + 0.6 * h, c.y + 1.1 * h),
+                Pos2::new(c.x + 0.8 * h, top),
+            ];
+            p.add(egui::Shape::line(can, s));
+            for dx in [-0.25 * h, 0.25 * h] {
+                p.line_segment(
+                    [
+                        Pos2::new(c.x + dx, top + 0.45 * h),
+                        Pos2::new(c.x + dx, c.y + 0.75 * h),
+                    ],
+                    s,
+                );
             }
         }
     }

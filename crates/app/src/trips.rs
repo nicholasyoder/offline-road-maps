@@ -19,7 +19,7 @@ use crate::config;
 use crate::files::{self, Browser, Mode, Outcome, Saved};
 use crate::pins::{self, PinRef, PinsUi};
 use crate::side::later;
-use crate::theme::{APPROX, INK, WEAK};
+use crate::theme::{ACCENT, APPROX, Glyph, INK, WEAK, glyph_button};
 
 /// The folder next to the executable.
 pub const DIR: &str = "trips";
@@ -230,7 +230,21 @@ pub struct PageOut {
     pub deleted: Option<PathBuf>,
     /// A pushpin clicked in a set's list.
     pub show_pin: Option<PinRef>,
+    /// *Save trip* or *Save as…* was clicked: the app saves the route shown.
+    pub save: Option<SaveAsk>,
 }
+
+/// The route shown, as the Trips page's save buttons see it.
+pub struct Current<'a> {
+    /// It has a start and a destination.
+    pub can_save: bool,
+    /// Its saved trip, if any.
+    pub named: Option<&'a Named>,
+    pub unsaved: bool,
+}
+
+/// The side of the buttons on a saved item's row.
+const ROW_H: f32 = 20.0;
 
 impl TripsUi {
     pub fn new(exe_dir: &Path) -> Self {
@@ -435,6 +449,7 @@ impl TripsUi {
         &mut self,
         ui: &mut egui::Ui,
         pins: &mut PinsUi,
+        current: Current<'_>,
         can_open: bool,
         exe_dir: &Path,
     ) -> PageOut {
@@ -444,10 +459,10 @@ impl TripsUi {
             .id_salt("trips-page")
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                self.trips_ui(ui, can_open, exe_dir, &mut out);
-                ui.add_space(10.0);
+                self.trips_ui(ui, &current, can_open, exe_dir, &mut out);
+                ui.separator();
                 self.pins_ui(ui, pins, exe_dir, &mut out);
-                ui.add_space(10.0);
+                ui.separator();
                 ui.label(egui::RichText::new("Import and export").strong().color(INK));
                 ui.horizontal_wrapped(|ui| {
                     later(ui, "Import…", "trips and pushpins from GPX, CSV or KML");
@@ -481,7 +496,63 @@ impl TripsUi {
         clicked
     }
 
-    fn trips_ui(&mut self, ui: &mut egui::Ui, can_open: bool, exe_dir: &Path, out: &mut PageOut) {
+    /// *Save trip* and *Save as…* for the route shown, and what it is.
+    fn save_ui(&mut self, ui: &mut egui::Ui, current: &Current<'_>, out: &mut PageOut) {
+        ui.horizontal_wrapped(|ui| {
+            let tip = match current.named {
+                Some(n) => format!("Save to {}", n.path.display()),
+                None => "Keep the route shown, with its stops and options, as a trip".into(),
+            };
+            let enabled = current.can_save && current.unsaved;
+            let why = match current.can_save {
+                true => "Saved: no changes since",
+                false => "Plan a route on the Route page to save it",
+            };
+            let r = ui
+                .add_enabled(enabled, egui::Button::new("Save trip"))
+                .on_hover_text(tip)
+                .on_disabled_hover_text(why);
+            self.targets.push(("save-trip".into(), r.rect));
+            if r.clicked() {
+                out.save = Some(SaveAsk::Save);
+            }
+            if current.named.is_some() {
+                let r = ui
+                    .add_enabled(current.can_save, egui::Button::new("Save as…"))
+                    .on_hover_text("Save under another name");
+                self.targets.push(("save-as".into(), r.rect));
+                if r.clicked() {
+                    out.save = Some(SaveAsk::SaveAs);
+                }
+            }
+        });
+        let (text, color) = match (current.can_save, current.named, current.unsaved) {
+            (false, _, _) => (
+                "Plan a route on the Route page to save it as a trip.".into(),
+                WEAK,
+            ),
+            (true, Some(n), false) => (format!("The route shown is the trip “{}”.", n.name), WEAK),
+            (true, Some(n), true) => (
+                format!(
+                    "The route shown is the trip “{}”, with unsaved changes.",
+                    n.name
+                ),
+                ACCENT,
+            ),
+            (true, None, _) => ("The route shown is not saved.".into(), WEAK),
+        };
+        ui.label(egui::RichText::new(text).size(11.5).color(color));
+        ui.add_space(4.0);
+    }
+
+    fn trips_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        current: &Current<'_>,
+        can_open: bool,
+        exe_dir: &Path,
+        out: &mut PageOut,
+    ) {
         let tip = match can_open {
             true => "Open a trip saved elsewhere",
             false => "Open a map with routing to open a trip",
@@ -490,6 +561,7 @@ impl TripsUi {
         if browse {
             self.browse_open(exe_dir);
         }
+        self.save_ui(ui, current, out);
         let list = match self.list() {
             Ok(l) => l.clone(),
             Err(e) => {
@@ -499,12 +571,7 @@ impl TripsUi {
             }
         };
         if list.is_empty() {
-            ui.label(
-                egui::RichText::new(
-                    "No saved trips. Plan a route, then Save trip on the Route page.",
-                )
-                .color(WEAK),
-            );
+            ui.label(egui::RichText::new("No saved trips yet.").color(WEAK));
         }
         for t in &list {
             match self.renaming.as_mut().filter(|(p, _)| *p == t.path) {
@@ -532,7 +599,10 @@ impl TripsUi {
                         self.renaming = None;
                     }
                 }
-                None => self.trip_row(ui, t, can_open, out),
+                None => {
+                    let open = current.named.is_some_and(|n| n.path == t.path);
+                    self.trip_row(ui, t, open, can_open, out);
+                }
             }
         }
         if let Some(e) = &self.error {
@@ -540,35 +610,42 @@ impl TripsUi {
         }
     }
 
-    fn trip_row(&mut self, ui: &mut egui::Ui, t: &Saved, can_open: bool, out: &mut PageOut) {
+    /// A saved trip's row; `open` if it is the route shown.
+    fn trip_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Saved,
+        open: bool,
+        can_open: bool,
+        out: &mut PageOut,
+    ) {
         let deleting = self.deleting.as_ref() == Some(&t.path);
         ui.horizontal(|ui| {
-            let (mut open, mut rename, mut copy, mut delete) = (false, false, false, false);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if deleting { "Delete?" } else { "Delete" };
-                let d = ui.small_button(label).on_hover_text(match deleting {
-                    true => "Click again to delete this trip's file",
-                    false => "Delete this trip",
-                });
-                self.targets.push((format!("delete:{}", t.name), d.rect));
-                delete = d.clicked();
-                let c = ui.small_button("Copy").on_hover_text("Duplicate this trip");
-                self.targets.push((format!("copy:{}", t.name), c.rect));
-                copy = c.clicked();
-                let r = ui.small_button("Rename");
-                self.targets.push((format!("rename:{}", t.name), r.rect));
-                rename = r.clicked();
-                let o = ui
-                    .add_enabled(
-                        can_open,
-                        egui::Button::selectable(false, egui::RichText::new(&t.name).color(INK))
-                            .truncate(),
-                    )
-                    .on_hover_text("Open in the Route page")
-                    .on_disabled_hover_text("Open a map with routing to open a trip");
-                self.targets.push((format!("open:{}", t.name), o.rect));
-                open = o.clicked();
+            let text = egui::RichText::new(&t.name).color(INK);
+            let text = if open { text.strong() } else { text };
+            let row = item_row(ui, text, can_open, true, deleting);
+            let o = row
+                .name
+                .on_hover_text("Open in the Route page")
+                .on_disabled_hover_text("Open a map with routing to open a trip");
+            let r = row.rename.on_hover_text("Rename");
+            let c = row.copy.map(|c| c.on_hover_text("Duplicate"));
+            let d = row.delete.on_hover_text(match deleting {
+                true => "Click again to delete this trip's file",
+                false => "Delete",
             });
+            for (k, resp) in [
+                ("open", Some(&o)),
+                ("rename", Some(&r)),
+                ("copy", c.as_ref()),
+                ("delete", Some(&d)),
+            ] {
+                if let Some(resp) = resp {
+                    self.targets.push((format!("{k}:{}", t.name), resp.rect));
+                }
+            }
+            let (open, rename, delete) = (o.clicked(), r.clicked(), d.clicked());
+            let copy = c.is_some_and(|c| c.clicked());
             if open {
                 out.open = Some(t.path.clone());
             }
@@ -656,31 +733,35 @@ impl TripsUi {
                 if r.changed() {
                     act = Some(SetAct::Shown(i, shown));
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = if deleting { "Delete?" } else { "Delete" };
-                    let d = ui.small_button(label).on_hover_text(match deleting {
-                        true => "Click again to delete this set and its file",
-                        false => "Delete this set",
-                    });
-                    self.targets
-                        .push((format!("delete-set:{}", set.name), d.rect));
-                    if d.clicked() {
-                        act = Some(SetAct::Delete(i, deleting));
-                    }
-                    if ui.small_button("Rename").clicked() {
-                        act = Some(SetAct::StartRename(i));
-                    }
-                    let fold = if set.expanded { "⏷" } else { "⏵" };
-                    let text = format!("{fold} {} ({})", set.name, set.pins.len());
-                    let r = ui.add(
-                        egui::Button::selectable(false, egui::RichText::new(text).color(INK))
-                            .truncate(),
-                    );
-                    self.targets.push((format!("set:{}", set.name), r.rect));
-                    if r.clicked() {
-                        act = Some(SetAct::Fold(i));
-                    }
+                let fold = if set.expanded { "⏷" } else { "⏵" };
+                let text = format!("{fold} {} ({})", set.name, set.pins.len());
+                let row = item_row(
+                    ui,
+                    egui::RichText::new(text).color(INK),
+                    true,
+                    false,
+                    deleting,
+                );
+                let r = row.name.on_hover_text(match set.expanded {
+                    true => "Hide its pushpins",
+                    false => "List its pushpins",
                 });
+                self.targets.push((format!("set:{}", set.name), r.rect));
+                if r.clicked() {
+                    act = Some(SetAct::Fold(i));
+                }
+                if row.rename.on_hover_text("Rename").clicked() {
+                    act = Some(SetAct::StartRename(i));
+                }
+                let d = row.delete.on_hover_text(match deleting {
+                    true => "Click again to delete this set and its file",
+                    false => "Delete",
+                });
+                self.targets
+                    .push((format!("delete-set:{}", set.name), d.rect));
+                if d.clicked() {
+                    act = Some(SetAct::Delete(i, deleting));
+                }
             });
             if let Some(e) = &set.error {
                 ui.add(egui::Label::new(egui::RichText::new(e).color(APPROX)).wrap());
@@ -733,6 +814,67 @@ impl TripsUi {
         for e in &pins.errors {
             ui.add(egui::Label::new(egui::RichText::new(e).color(APPROX)).wrap());
         }
+    }
+}
+
+/// A saved item's row, as [`item_row`] draws it.
+struct ItemRow {
+    name: egui::Response,
+    rename: egui::Response,
+    copy: Option<egui::Response>,
+    delete: egui::Response,
+}
+
+/// A saved item's row in what is left of `ui`'s line: its name, left aligned and cut to
+/// fit, clickable when `enabled`; then the buttons that rename it, copy it (with `copy`) and
+/// delete it, the last asking "Delete?" while `deleting`.
+fn item_row(
+    ui: &mut egui::Ui,
+    text: egui::RichText,
+    enabled: bool,
+    copy: bool,
+    deleting: bool,
+) -> ItemRow {
+    let gap = ui.spacing().item_spacing.x;
+    let delete_w = if deleting { 56.0 } else { ROW_H };
+    let buttons = (1 + usize::from(copy)) as f32 * (ROW_H + gap) + delete_w + gap;
+    let w = (ui.available_width() - buttons).max(40.0);
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, name) = ui.allocate_exact_size(egui::vec2(w, ROW_H), sense);
+    if enabled && name.hovered() {
+        let fill = ui.visuals().widgets.hovered.weak_bg_fill;
+        ui.painter().rect_filled(rect, 3.0, fill);
+    }
+    let mut job = egui::text::LayoutJob::default();
+    let text = if enabled { text } else { text.color(WEAK) };
+    text.append_to(
+        &mut job,
+        ui.style(),
+        egui::FontSelection::Default,
+        egui::Align::Center,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(w - 8.0);
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    let at = egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(at, galley, INK);
+    let rename = glyph_button(ui, Glyph::Rename, ROW_H);
+    let copy = copy.then(|| glyph_button(ui, Glyph::Copy, ROW_H));
+    let delete = match deleting {
+        true => ui.add(
+            egui::Button::new(egui::RichText::new("Delete?").color(APPROX))
+                .min_size(egui::vec2(delete_w, ROW_H)),
+        ),
+        false => glyph_button(ui, Glyph::Delete, ROW_H),
+    };
+    ItemRow {
+        name,
+        rename,
+        copy,
+        delete,
     }
 }
 

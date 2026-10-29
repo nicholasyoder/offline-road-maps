@@ -99,7 +99,7 @@ impl Window {
             }
             self.trips_out.push(o.trips);
             // Saved as the app saves, through the save window.
-            if let Some(ask) = self.routing.save_asked.take() {
+            if let Some(ask) = self.trips_out.last().and_then(|o| o.save) {
                 let file = self.routing.to_file("Test");
                 if let Some(n) = self.trips.save(ask, file, self.routing.named.as_ref()) {
                     self.routing.named = Some(n);
@@ -406,19 +406,14 @@ fn real_pack_result_and_point_route() {
         "the worker names the result's street"
     );
 
-    // Saved from the route page, through the save window, as "Columbus to Cleveland".
-    w.click(w.tabs[1].center());
-    let save = w
-        .routing
-        .targets
-        .iter()
-        .find(|t| t.0 == crate::routing::panel::Target::SaveTrip);
-    w.click(save.unwrap().1.center());
-    w.frame(Vec::new());
+    // Saved from the Trips page, through the save window, as "Columbus to Cleveland".
     let at = |w: &Window, t: &str| {
         let r = w.trips.targets.iter().find(|(k, _)| k == t);
         r.unwrap_or_else(|| panic!("{t} not drawn")).1.center()
     };
+    w.click(w.tabs[2].center());
+    w.click(at(&w, "save-trip"));
+    w.frame(Vec::new());
     w.click(at(&w, "save-window"));
     let named = w.routing.named.clone().expect("saved");
     eprintln!("saved as {} in {}", named.name, named.path.display());
