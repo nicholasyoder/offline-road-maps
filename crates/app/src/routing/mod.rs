@@ -394,7 +394,7 @@ pub struct RouteUi {
     pub(crate) targets: Vec<(panel::Target, egui::Rect)>,
     /// The schedule's settings (phase 4 step 4.5).
     pub plan: Plan,
-    /// Whether *Depart at / Arrive by* is open while no time is set.
+    /// Whether *Depart at / Arrive by* is open.
     pub times_open: bool,
     /// The stop whose time field is open.
     pub stay_open: Option<usize>,

@@ -313,6 +313,7 @@ impl App {
                 m.routing.plan.date = date.into();
                 m.routing.plan.time = time.into();
                 m.routing.plan.mode = crate::routing::Mode::Depart;
+                m.routing.times_open = true;
                 m.routing.retime();
             }
         }

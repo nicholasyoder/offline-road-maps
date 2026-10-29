@@ -7,8 +7,7 @@
 //! saved and offers Undo. Under the totals, each leg has a row with its distance and time
 //! that opens to its routes (step 4.3): they are looked for then, listed with the one shown
 //! selected, and drawn grey on the map until the row is closed; clicking another shows it.
-//! *Depart at / Arrive by* (step 4.5) has its own section under *More options*, open while
-//! a time is set: the date and time, the driving day and the breaks. With a time, each
+//! *Depart at / Arrive by* (step 4.5) has its own section under *More options*: the date and time, the driving day and the breaks. With a time, each
 //! stop's row says when it arrives and leaves, with a field for the time spent there, and
 //! the directions get a column of clock times and rows for each night ("Day 2"), break and
 //! zone crossing; a night along a leg can be made a stop. Times in another zone than the
@@ -438,20 +437,20 @@ impl RouteUi {
         Some(r.response)
     }
 
-    /// *Depart at / Arrive by*: closed by default and open while a time is set (decision
-    /// 24). Off, a departure time or an arrival time, in the zone of the stop it is at;
+    /// *Depart at / Arrive by*: closed by default, and closed or opened like *More
+    /// options* whether a time is set or not; closed, its title says what is set. Off, a departure time or an arrival time, in the zone of the stop it is at;
     /// the driving day; the breaks.
     fn times_section(&mut self, ui: &mut egui::Ui, edits: &mut Vec<Edit>) {
         let set = self.plan.mode != Mode::Off;
-        let open = set || self.times_open;
+        let open = self.times_open;
         let title = self.times_title();
-        let hover = (!set).then_some(match open {
+        let hover = match open {
             true => "Hide these options",
             false => "Time the trip: when to leave or arrive, and the hours to drive",
-        });
-        let r = fold_row(ui, "times", open, &title, hover);
+        };
+        let r = fold_row(ui, "times", open, &title, Some(hover));
         self.targets.push((Target::Times, r.rect));
-        if !set && r.clicked() {
+        if r.clicked() {
             self.times_open = !open;
         }
         if !open {

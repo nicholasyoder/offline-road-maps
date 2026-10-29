@@ -453,6 +453,14 @@ fn schedule() {
     u.r.plan.s.window = false;
     u.r.retime();
     u.frame(Vec::new());
+    // With a time set, the section still closes, and opens again.
+    u.click(Target::Times);
+    u.frame(Vec::new());
+    assert!(!u.r.targets.iter().any(|t| t.0 == Target::Mode(Mode::Depart)));
+    assert_eq!(u.r.plan.mode, Mode::Depart);
+    u.click(Target::Times);
+    u.frame(Vec::new());
+    assert!(u.r.targets.iter().any(|t| t.0 == Target::Mode(Mode::Depart)));
     let t = u.r.timed().expect("a schedule");
     // Two legs of 3 minutes.
     assert_eq!(
