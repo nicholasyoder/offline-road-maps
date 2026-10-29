@@ -104,6 +104,11 @@ pub(super) fn answer(r: &Request) -> Answer {
     };
     Answer {
         request: r.clone(),
+        street_names: r
+            .stops
+            .iter()
+            .map(|s| s.street.map(|i| format!("Street {i}")))
+            .collect(),
         routed: Ok(routed),
         order: None,
         optimize: Duration::ZERO,
@@ -159,9 +164,9 @@ pub(super) fn alternatives(a: &Answer, best: &[usize]) -> Vec<Reply> {
             let alt = worker::Route {
                 line: Line::new([other.points.as_slice()]),
                 tag: Some(other.points[1]),
+                via: Some(other.points[1]),
                 leg: other,
                 turns: Default::default(),
-                via: Some(leg.points[1]),
                 road: "US 33".into(),
                 steps,
                 restricted: Vec::new(),
@@ -504,4 +509,139 @@ fn notices_and_steps() {
     assert!(r.overlays.iter().all(|o| o.0 != Look::Picked));
     assert_eq!(duration_text(20.0), "under a minute");
     assert_eq!(duration_text(3.0 * 3600.0 + 290.0), "3 h 05 min");
+}
+
+#[test]
+fn saved_trips_open_unchanged_with_their_streets_and_routes() {
+    let (worker, tx) = Worker::stub();
+    let mut r = RouteUi::with_worker(worker);
+    let cam = Camera::new([0.2, 0.3, 0.3, 0.4]);
+    // A search result's stop, on its street; a point that stays the night; a point.
+    let mut start = place(40.0, -83.0);
+    start.street = Some(7);
+    start.name = Some("1 Main St, Columbus".into());
+    r.apply(StopAction::From, start);
+    let mut night = place(40.5, -82.5);
+    night.stay = Stay {
+        s: 1800.0,
+        overnight: true,
+    };
+    r.apply(StopAction::Add, night);
+    r.apply(StopAction::To, place(41.0, -82.0));
+    r.set_avoid(FERRY, true);
+    r.ends.round_trip = true;
+    let req = r.worker.take_request().unwrap();
+    let a = answer(&req);
+    let alts = alternatives(&a, &[]);
+    tx.send(a.into()).unwrap();
+    r.take(&cam);
+    // The worker names the result's street, which the file keeps.
+    assert_eq!(
+        r.from.as_ref().unwrap().street_name.as_deref(),
+        Some("Street 7")
+    );
+    // The second leg's alternative picked.
+    r.expand(1, true);
+    for x in alts {
+        tx.send(x).unwrap();
+    }
+    r.take(&cam);
+    r.choose(1, 1);
+    let file = r.to_file("Test pack");
+    let kinds: Vec<StopKind> = file.stops.iter().map(|s| s.kind).collect();
+    use crate::trips::StopKind;
+    assert_eq!(
+        kinds,
+        [
+            StopKind::Stop,
+            StopKind::Overnight,
+            StopKind::Via,
+            StopKind::Stop
+        ]
+    );
+    assert_eq!(file.stops[0].street.as_deref(), Some("Street 7"));
+    assert_eq!(file.stops[1].minutes, 30.0);
+    assert!(file.avoid_ferries && file.optimize.round_trip);
+
+    // Written and read back as it was.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.toml");
+    crate::files::write(&path, &file).unwrap();
+    let back = crate::trips::TripFile::read(&path).unwrap();
+    assert_eq!(back, file);
+
+    // Opened on another build: the street is found again by name, by the worker, and the
+    // alternative passing the via point is picked again.
+    let (worker, tx) = Worker::stub();
+    let mut o = RouteUi::with_worker(worker);
+    let named = crate::trips::Named {
+        name: "t".into(),
+        path: path.clone(),
+        file: back.clone(),
+    };
+    o.open_file(&back, named);
+    assert!(o.opened);
+    let mut req = o.worker.take_request().unwrap();
+    assert_eq!(req.names, [Some("Street 7".into()), None, None]);
+    assert_eq!(
+        req.stops.iter().map(|s| s.p).collect::<Vec<_>>(),
+        r.routed_stops
+    );
+    assert!(req.stops[0].street.is_none());
+    req.stops[0].street = Some(9);
+    let a = answer(&req);
+    let alts = alternatives(&a, &[]);
+    tx.send(a.into()).unwrap();
+    o.take(&cam);
+    let from = o.from.as_ref().unwrap();
+    assert_eq!(
+        (from.street, from.street_name.as_deref()),
+        (Some(9), Some("Street 7"))
+    );
+    // The leg with a route saved is looked at at once, without opening it.
+    assert_eq!(o.worker.take_alternatives(), Some((req.id, vec![1])));
+    assert!(!o.unsaved(), "a trip just opened has no changes");
+    for x in alts {
+        tx.send(x).unwrap();
+    }
+    o.take(&cam);
+    assert_eq!(o.chosen, [0, 1]);
+    assert_eq!(o.expanded, [false, false]);
+    assert_eq!(o.to_file("Test pack"), file);
+    assert!(!o.unsaved());
+    o.set_stay(1, Stay::default());
+    assert!(o.unsaved());
+
+    // On a build where no alternative passes it, the quickest is shown, and said so.
+    let (worker, tx) = Worker::stub();
+    let mut o = RouteUi::with_worker(worker);
+    let named = crate::trips::Named {
+        name: "t".into(),
+        path,
+        file: back.clone(),
+    };
+    o.open_file(&back, named);
+    let req = o.worker.take_request().unwrap();
+    let a = answer(&req);
+    let mut alts = alternatives(&a, &[]);
+    if let Reply::Alternatives(x) = &mut alts[1]
+        && let Ok(Some(c)) = &mut x.choices
+    {
+        for p in &mut c.routes[1].leg.points {
+            p[1] += 900_000;
+        }
+    }
+    tx.send(a.into()).unwrap();
+    o.take(&cam);
+    for x in alts {
+        tx.send(x).unwrap();
+    }
+    o.take(&cam);
+    assert_eq!(o.chosen, [0, 0]);
+    let n = o.notices(Units::Kilometres);
+    assert!(
+        n.iter()
+            .any(|t| t.contains("stop 2 to the destination was not found")),
+        "{n:?}"
+    );
 }

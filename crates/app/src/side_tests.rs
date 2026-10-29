@@ -23,6 +23,12 @@ struct Window {
     map: Rect,
     tabs: [Rect; 4],
     hide: Rect,
+    /// Where trips and pushpins are kept, as next to the executable.
+    dir: tempfile::TempDir,
+    pins: PinsUi,
+    trips: TripsUi,
+    /// What the Trips page asked for last.
+    trips_out: Vec<trips::PageOut>,
 }
 
 impl Window {
@@ -34,7 +40,12 @@ impl Window {
     fn with(ctx: egui::Context, search: SearchUi, routing: RouteUi) -> Self {
         let mut cam = Camera::new([0.2, 0.3, 0.3, 0.4]);
         cam.zoom = 10.0;
+        let dir = tempfile::tempdir().unwrap();
         Self {
+            pins: PinsUi::load(dir.path()),
+            trips: TripsUi::new(dir.path()),
+            trips_out: Vec::new(),
+            dir,
             ctx,
             cfg: Config::default(),
             search,
@@ -64,9 +75,39 @@ impl Window {
                 page: &mut self.page,
                 camera: &self.cam,
                 pack_units: Units::Kilometres,
+                pins: &mut self.pins,
+                trips: &mut self.trips,
+                exe_dir: self.dir.path(),
             };
             let o = side_panel(ui, &mut self.cfg, parts, &mut None);
             (self.tabs, self.hide) = (o.tabs, o.hide);
+            if let Some((at, name)) = self.here.add_pin.take() {
+                let name = name.unwrap_or_else(|| self.pins.next_name());
+                self.pins.add(&name, geo::from_unit(at));
+            }
+            if let Some(r) = o.pin.or(o.trips.show_pin) {
+                self.pins.show(r);
+            }
+            if let Some(path) = &o.trips.open {
+                let file = TripFile::read(path).unwrap();
+                let named = Named {
+                    name: crate::files::stem(path),
+                    path: path.clone(),
+                    file: file.clone(),
+                };
+                self.routing.open_file(&file, named);
+            }
+            self.trips_out.push(o.trips);
+            // Saved as the app saves, through the save window.
+            if let Some(ask) = self.routing.save_asked.take() {
+                let file = self.routing.to_file("Test");
+                if let Some(n) = self.trips.save(ask, file, self.routing.named.as_ref()) {
+                    self.routing.named = Some(n);
+                }
+            }
+            if let Some(n) = self.trips.save_window(ui.ctx(), self.dir.path()) {
+                self.routing.named = Some(n);
+            }
             // As the app does with what was picked.
             if let Some((a, h)) = o.out.route {
                 self.routing.apply(a, Place::of_hit(&h));
@@ -357,4 +398,162 @@ fn real_pack_result_and_point_route() {
     let km = trip.metres() / 1000.0;
     eprintln!("route: {km:.1} km, {:.0} min", trip.time_s() / 60.0);
     assert!(trip.complete() && (180.0..260.0).contains(&km), "{km} km");
+    let street = w.routing.from.as_ref().unwrap().street;
+    let street_name = w.routing.from.as_ref().unwrap().street_name.clone();
+    eprintln!("start's street: {street:?} {street_name:?}");
+    assert!(
+        street_name.is_some(),
+        "the worker names the result's street"
+    );
+
+    // Saved from the route page, through the save window, as "Columbus to Cleveland".
+    w.click(w.tabs[1].center());
+    let save = w
+        .routing
+        .targets
+        .iter()
+        .find(|t| t.0 == crate::routing::panel::Target::SaveTrip);
+    w.click(save.unwrap().1.center());
+    w.frame(Vec::new());
+    let at = |w: &Window, t: &str| {
+        let r = w.trips.targets.iter().find(|(k, _)| k == t);
+        r.unwrap_or_else(|| panic!("{t} not drawn")).1.center()
+    };
+    w.click(at(&w, "save-window"));
+    let named = w.routing.named.clone().expect("saved");
+    eprintln!("saved as {} in {}", named.name, named.path.display());
+    assert!(named.path.is_file() && !w.routing.unsaved());
+    let text = std::fs::read_to_string(&named.path).unwrap();
+    assert!(text.contains(street_name.as_deref().unwrap()), "{text}");
+
+    // Cleared, then opened from the Trips page: the start is snapped to its street again,
+    // found by name, and the route is the same.
+    w.routing.apply(StopAction::Clear, Place::at([0.0, 0.0]));
+    w.click(w.tabs[2].center());
+    w.click(at(&w, &format!("open:{}", named.name)));
+    assert_eq!(w.page, Page::Route);
+    until(&mut w, "the route of the trip opened", &|w| {
+        w.routing.route.is_some() && w.routing.waiting.is_none()
+    });
+    let from = w.routing.from.as_ref().unwrap();
+    assert_eq!(from.street, street, "the same street, found by its name");
+    let again = w.routing.route.as_ref().unwrap().trip.metres() / 1000.0;
+    assert!((again - km).abs() < 0.01, "{again} km against {km}");
+    assert!(!w.routing.unsaved());
+
+    let on_street = |w: &Window| {
+        w.routing.route.as_ref().unwrap().trip.snaps[0]
+            .as_ref()
+            .unwrap()
+            .on_street
+    };
+    assert!(on_street(&w));
+
+    // With OMP_TEST_PACK2, another build (its street IDs differ): opened there, the start is
+    // on a street of the same name, which it snaps to.
+    if let Some(other) = std::env::var_os("OMP_TEST_PACK2") {
+        let opened = crate::packs::open(std::path::Path::new(&other)).unwrap();
+        let ctx = w.ctx.clone();
+        let mut o = Window::with(
+            ctx.clone(),
+            SearchUi::stub().0,
+            RouteUi::start(opened.first_chunk.clone(), &ctx),
+        );
+        o.frame(Vec::new());
+        let file = TripFile::read(&named.path).unwrap();
+        o.routing.open_file(&file, named.clone());
+        until(&mut o, "the trip on the other pack", &|w| {
+            w.routing.route.is_some() && w.routing.waiting.is_none()
+        });
+        let f = o.routing.from.as_ref().unwrap();
+        eprintln!(
+            "on the other pack: street {:?} {:?}",
+            f.street, f.street_name
+        );
+        assert!(f.street.is_some() && f.street != street);
+        assert_eq!(f.street_name, street_name);
+        assert!(on_street(&o));
+        let there = o.routing.route.as_ref().unwrap().trip.metres() / 1000.0;
+        eprintln!("route there: {there:.1} km");
+        assert!(!o.routing.unsaved());
+    }
+
+    // A pushpin at the start, saved in its set and read back.
+    w.here.add_pin = Some((geo::to_unit(from.p), Some("Start".into())));
+    w.frame(Vec::new());
+    let back = PinsUi::load(w.dir.path());
+    assert_eq!(back.sets[0].pins[0].name, "Start");
+    assert_eq!(back.sets[0].pins[0].p, w.routing.from.as_ref().unwrap().p);
+}
+
+#[test]
+fn trips_page_opens_renames_copies_and_deletes() {
+    let mut w = Window::new();
+    let sample = crate::trips::tests::sample();
+    let lake = crate::files::path_for(&w.trips.dir, "Lake Erie");
+    crate::files::write(&lake, &sample).unwrap();
+    w.frame(Vec::new());
+    w.click(w.tabs[2].center());
+    assert_eq!(w.page, Page::Trips);
+    let at = |w: &Window, t: &str| {
+        let r = w.trips.targets.iter().find(|(k, _)| k == t);
+        r.unwrap_or_else(|| panic!("{t} not drawn")).1.center()
+    };
+
+    // Opened: in the route page, its stops without the via point, and no changes.
+    w.click(at(&w, "open:Lake Erie"));
+    assert_eq!(w.page, Page::Route);
+    let names: Vec<_> = w
+        .routing
+        .stops()
+        .iter()
+        .map(|(_, p)| p.name.clone())
+        .collect();
+    assert_eq!(names.len(), 3);
+    assert_eq!(names[1].as_deref(), Some("Mansfield"));
+    assert!(w.routing.via[0].stay.overnight);
+    assert_eq!(w.routing.named.as_ref().unwrap().name, "Lake Erie");
+    assert!(!w.routing.unsaved());
+
+    // Renamed, by typing a new name and Enter.
+    w.click(w.tabs[2].center());
+    w.click(at(&w, "rename:Lake Erie"));
+    w.trips.renaming.as_mut().unwrap().1 = "Erie".into();
+    w.key(Key::Enter, Modifiers::NONE);
+    let erie = crate::files::path_for(&w.trips.dir, "Erie");
+    assert!(erie.is_file() && !lake.exists());
+    assert!(
+        w.trips_out
+            .iter()
+            .any(|o| o.renamed == Some((lake.clone(), erie.clone())))
+    );
+    // Copied, then the copy deleted: the first click asks, the second deletes.
+    w.click(at(&w, "copy:Erie"));
+    let copy = crate::files::path_for(&w.trips.dir, "Erie copy");
+    assert!(copy.is_file());
+    w.click(at(&w, "delete:Erie copy"));
+    assert!(copy.is_file());
+    w.click(at(&w, "delete:Erie copy"));
+    assert!(!copy.exists() && erie.is_file());
+
+    // A pushpin from the map's menu goes to a new set, and opens on the Search page.
+    w.here.add_pin = Some((w.cam.center, None));
+    w.frame(Vec::new());
+    w.frame(Vec::new());
+    assert_eq!(w.page, Page::Search);
+    assert_eq!(w.pins.open, Some((0, 0)));
+    assert_eq!(w.pins.pin((0, 0)).unwrap().name, "Pushpin 1");
+    assert!(w.pins.buttons.iter().any(|b| b.0 == "delete"));
+    let set_file = w.pins.sets[0].path.clone();
+    assert!(set_file.is_file());
+
+    // On the Trips page: its set lists it, hides, and is deleted with its file.
+    w.click(w.tabs[2].center());
+    w.click(at(&w, "set:Pushpins"));
+    assert!(w.pins.sets[0].expanded);
+    w.click(at(&w, "show:Pushpins"));
+    assert!(!w.pins.sets[0].shown);
+    w.click(at(&w, "delete-set:Pushpins"));
+    w.click(at(&w, "delete-set:Pushpins"));
+    assert!(w.pins.sets.is_empty() && !set_file.exists());
 }

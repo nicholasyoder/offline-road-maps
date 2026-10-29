@@ -303,11 +303,13 @@ pub struct RoadProps {
     pub tunnel: Option<u8>,
 }
 
-/// The GPU style table holds this many entries (render.rs): the style's, then the route's.
+/// The GPU style table holds this many entries (render.rs): the style's, then the route's,
+/// then the pushpins'.
 pub const MAX_PAINTS: usize = 128;
-/// The route overlay's paints, the table's last entries, one per
-/// [`crate::routing::Look`].
-pub const ROUTE_PAINTS: usize = MAX_PAINTS - crate::routing::Look::ALL.len();
+/// The pushpins' paints, the table's last entries, one per [`crate::pins::Colour`].
+pub const PIN_PAINTS: usize = MAX_PAINTS - crate::pins::Colour::ALL.len();
+/// The route overlay's paints, before the pushpins', one per [`crate::routing::Look`].
+pub const ROUTE_PAINTS: usize = PIN_PAINTS - crate::routing::Look::ALL.len();
 
 impl Style {
     /// Resolves `file` against `schema`. Also returns warnings: rules for layers and classes

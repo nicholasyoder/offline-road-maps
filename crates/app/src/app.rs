@@ -1,8 +1,10 @@
 //! The window: the side panel on the left (search, "what's here", the route, trips, layers
 //! and the ☰ menu; phase 3 step 3.8), the map beside it with its input, the controls over the
 //! map (scale bar, cursor coordinates, zoom buttons, credit line, and a button to open the
-//! panel when it is closed), the dialogs (pack picker, About this map, Verify pack, errors)
-//! and the debug overlay (F3, with tile outlines).
+//! panel when it is closed), the dialogs (pack picker, About this map, Verify pack, errors,
+//! and saving a trip and the file browser, phase 4 step 4.7) and the debug overlay (F3, with
+//! tile outlines). Saved trips and pushpins live next to the executable and outlast the
+//! pack: they belong to the app, not to the open map.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -22,6 +24,7 @@ use crate::layers::{Hidden, Layers};
 use crate::loader::{self, Done, Loader};
 use crate::mesh;
 use crate::packs::{self, Opened};
+use crate::pins::{self, PinRef, PinsUi};
 use crate::pool::Pool;
 use crate::render::{self, GpuMesh, MapCallback, Renderer};
 use crate::routing::{Place, RouteUi, StopAction};
@@ -31,6 +34,7 @@ use crate::side::{self, Action, Page};
 use crate::style::{Style, StyleFile};
 use crate::theme::{Glyph, INK, glyph_button};
 use crate::tiles::{self, Cover, Known, Resolved, TileId};
+use crate::trips::{self, Browsed, Named, TripFile, TripsUi};
 use crate::verify::{Outcome, Verify};
 
 /// Tile cache budget: the tiles' vertex data, which lives on the GPU (phase1-plan.md 1.4).
@@ -181,6 +185,9 @@ pub struct App {
     about: bool,
     /// The picker's folder field.
     path_input: String,
+    /// Saved trips and pushpins (phase 4 step 4.7).
+    trips: TripsUi,
+    pins: PinsUi,
 }
 
 impl App {
@@ -202,7 +209,14 @@ impl App {
             let r = Renderer::new(&rs.device, rs.target_format, s.msaa);
             rs.renderer.write().callback_resources.insert(r);
         }
+        let pins = match s.bench {
+            // The bench draws its own pins, or none, whatever is next to it.
+            Some(_) => PinsUi::empty(s.exe_dir.join(pins::DIR)),
+            None => PinsUi::load(&s.exe_dir),
+        };
         let mut app = Self {
+            trips: TripsUi::new(&s.exe_dir),
+            pins,
             exe_dir: s.exe_dir,
             cfg_loc: s.config,
             saved: cfg.clone(),
@@ -308,6 +322,9 @@ impl App {
             b.start(&mut m.camera, m.opened.reader.bytes_read());
             // Checked when the flight was loaded.
             set_stops(&mut m.routing, &b.flight.route_stops().unwrap_or_default());
+            if let Some(n) = b.flight.pins {
+                self.pins.replace(vec![pins::bench_set(n, m.opened.bounds)]);
+            }
             if let Some((date, time)) = b.flight.depart.as_deref().and_then(|d| d.split_once('T')) {
                 m.routing.plan.s = config::Schedule::default();
                 m.routing.plan.date = date.into();
@@ -562,6 +579,7 @@ impl MapState {
         layers: &Layers,
         outlines: bool,
         pool: &Arc<Pool>,
+        pins: &mut PinsUi,
     ) {
         if self.hidden_for.as_ref() != Some(layers) {
             self.hidden = Hidden::new(layers, &self.style, &self.opened.schema);
@@ -632,6 +650,7 @@ impl MapState {
         let paints = render::paints(&self.style, &self.hidden, cam.zoom, ppp, srgb);
         let mut frame = render::layout(cam, ppp, paints, draws, capped, &self.style.pass_cap);
         frame.route = self.routing.layout(pool, cam, ppp);
+        frame.pins = pins.layout(pool, cam, ppp);
         let t0 = Instant::now();
         let sources: Vec<labels::Source> = plan
             .labels
@@ -831,12 +850,18 @@ impl eframe::App for App {
                 }
                 if self.bench.is_none() {
                     m.input(ui, &resp, rect.min, dt);
-                    // A click on an alternative's grey line or tag picks it.
+                    // A click on a pushpin opens it; on an alternative's grey line or tag, picks
+                    // it.
                     if resp.clicked()
                         && let Some(p) = resp.interact_pointer_pos()
                     {
                         let at = [f64::from(p.x - rect.min.x), f64::from(p.y - rect.min.y)];
-                        m.routing.click(&m.camera, at);
+                        match self.pins.hit(&m.camera, at) {
+                            Some(r) => self.pins.show(r),
+                            None => {
+                                m.routing.click(&m.camera, at);
+                            }
+                        }
                     }
                     let menu = m.routing.menu_state();
                     let picked = m
@@ -872,8 +897,10 @@ impl eframe::App for App {
                         &layers,
                         outlines,
                         pool,
+                        &mut self.pins,
                     );
                 }
+                self.pins.draw_names(&painter, rect.min, &m.camera);
                 if let Some(h) = &m.search.session.marker {
                     search::draw_marker(&painter, rect.min, &m.camera, h);
                 }
@@ -893,6 +920,7 @@ impl eframe::App for App {
         self.verify_window(&ctx);
         self.error_windows(&ctx);
         self.notices_window(&ctx);
+        self.trip_windows(&ctx);
 
         let cpu = t0.elapsed();
         self.frames
@@ -976,6 +1004,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.pins.flush();
         self.save_config();
     }
 }
@@ -1057,6 +1086,11 @@ impl App {
             lines.extend(m.routing.overlay_lines());
             lines.extend(m.here.overlay_line());
         }
+        lines.push(format!(
+            "pushpins: {} in {} sets",
+            self.pins.count(),
+            self.pins.sets.len()
+        ));
         if let Some(u) = crate::memory::usage() {
             lines.push(format!(
                 "RSS {:.0} MiB (peak {:.0})",
@@ -1160,6 +1194,9 @@ impl App {
             page: &mut m.page,
             camera: &m.camera,
             pack_units: m.units,
+            pins: &mut self.pins,
+            trips: &mut self.trips,
+            exe_dir: &self.exe_dir,
         };
         let o = side_panel(ui, &mut self.cfg, parts, &mut self.bench);
         // A result picked: fly there. The bench records it, and jumps there itself.
@@ -1181,8 +1218,79 @@ impl App {
         if let Some((c, z)) = o.fly {
             m.motion.fly_to(&m.camera, c, z);
         }
+        // A pushpin added: from the map's menu, "what's here" or a picked result.
+        if let Some((at, name)) = m.here.add_pin.take() {
+            let name = name.unwrap_or_else(|| self.pins.next_name());
+            self.pins.add(&name, omp_core::geo::from_unit(at));
+            m.here.panel = None;
+        }
+        // A pushpin picked in search or on the Trips page: open it and fly there.
+        if let Some(r) = o.pin.or(o.trips.show_pin) {
+            self.pins.show(r);
+            if let Some((c, z)) = self.pins.view_of(r, &m.camera) {
+                m.motion.fly_to(&m.camera, c, z);
+            }
+        }
+        if let Some(path) = o.trips.open {
+            self.open_trip(&path);
+        }
+        let Some(m) = &mut self.map else { return };
+        if let Some((from, to)) = o.trips.renamed
+            && let Some(n) = m.routing.named.as_mut().filter(|n| n.path == from)
+        {
+            n.name = trips_name(&to);
+            n.path = to;
+        }
+        if let Some(gone) = o.trips.deleted
+            && m.routing.named.as_ref().is_some_and(|n| n.path == gone)
+        {
+            m.routing.named = None;
+        }
+        if let Some(ask) = m.routing.save_asked.take() {
+            let file = m.routing.to_file(&pack_label(&m.opened));
+            if let Some(n) = self.trips.save(ask, file, m.routing.named.as_ref()) {
+                m.routing.named = Some(n);
+            }
+        }
         let ctx = ui.ctx().clone();
         self.act(&ctx, o.action);
+    }
+
+    /// Opens the trip in `path` in the route page.
+    fn open_trip(&mut self, path: &Path) {
+        let Some(m) = &mut self.map else { return };
+        match TripFile::read(path) {
+            Ok(file) => {
+                let named = Named {
+                    name: trips_name(path),
+                    path: path.to_path_buf(),
+                    file: file.clone(),
+                };
+                m.routing.open_file(&file, named);
+                self.trips.error = None;
+            }
+            Err(e) => self.trips.error = Some(e),
+        }
+    }
+
+    /// The save window and the file browser, for trips and pushpin sets.
+    fn trip_windows(&mut self, ctx: &egui::Context) {
+        if let Some(n) = self.trips.save_window(ctx, &self.exe_dir)
+            && let Some(m) = &mut self.map
+        {
+            m.routing.named = Some(n);
+        }
+        match self.trips.browser_window(ctx) {
+            Some(Browsed::Saved(n)) => {
+                if let Some(m) = &mut self.map {
+                    m.routing.named = Some(*n);
+                }
+            }
+            Some(Browsed::OpenTrip(path)) => self.open_trip(&path),
+            Some(Browsed::SavePins(set, path)) => self.pins.save_as(set, path),
+            Some(Browsed::OpenPins(path)) => self.pins.open_file(path),
+            None => {}
+        }
     }
 
     fn act(&mut self, ctx: &egui::Context, action: Option<Action>) {
@@ -1534,7 +1642,17 @@ fn marker_at<'a>(
     on.then_some(h)
 }
 
-/// The parts of the open map that the side panel shows.
+/// "Ohio, built 2026-10-28": the pack a trip is saved on, for its file.
+fn pack_label(opened: &Opened) -> String {
+    let info = &opened.reader.pack().info;
+    format!("{}, built {}", info.name, packs::date(info.build_time))
+}
+
+fn trips_name(path: &Path) -> String {
+    crate::files::stem(path)
+}
+
+/// The parts of the open map that the side panel shows, and the app's trips and pushpins.
 struct Parts<'a> {
     search: &'a mut SearchUi,
     here: &'a mut HereUi,
@@ -1543,6 +1661,9 @@ struct Parts<'a> {
     camera: &'a Camera,
     /// The units the pack suggests.
     pack_units: Units,
+    pins: &'a mut PinsUi,
+    trips: &'a mut TripsUi,
+    exe_dir: &'a Path,
 }
 
 /// What was picked in the side panel, done once it is drawn.
@@ -1553,6 +1674,10 @@ struct SideOut {
     /// A step of the directions: its view.
     fly: Option<(crate::camera::Vec2, f64)>,
     action: Option<Action>,
+    /// A pushpin found by search, clicked.
+    pin: Option<PinRef>,
+    /// What the Trips page asked for.
+    trips: trips::PageOut,
     /// Where the tabs and the button that hides the panel were drawn, for the tests.
     #[cfg_attr(not(test), allow(dead_code))]
     tabs: [Rect; 4],
@@ -1594,6 +1719,8 @@ fn side_panel(
         stop: None,
         fly: None,
         action: None,
+        pin: None,
+        trips: trips::PageOut::default(),
         tabs: [Rect::NOTHING; 4],
         hide: Rect::NOTHING,
     };
@@ -1611,7 +1738,7 @@ fn side_panel(
     if !p.search.box_was_focused() {
         match p.page {
             Page::Search => {
-                let _ = p.here.escape(&ctx) || p.search.escape(&ctx);
+                let _ = p.pins.escape(&ctx) || p.here.escape(&ctx) || p.search.escape(&ctx);
             }
             Page::Route => {
                 p.routing.escape(&ctx);
@@ -1643,6 +1770,10 @@ fn side_panel(
     if std::mem::take(&mut p.routing.opened) {
         side.open = true;
         *p.page = Page::Route;
+    }
+    if std::mem::take(&mut p.pins.opened) {
+        side.open = true;
+        *p.page = Page::Search;
     }
     if let Some(page) = bench.as_mut().and_then(Bench::page_shot) {
         *p.page = page;
@@ -1694,6 +1825,7 @@ fn side_panel(
             ui.add_space(3.0);
             match p.page {
                 Page::Search => {
+                    o.pin = p.pins.found_ui(ui, &p.search.text);
                     if !p
                         .search
                         .suggestions_ui(ui, p.camera, units, recent, &mut o.out)
@@ -1708,7 +1840,10 @@ fn side_panel(
                         *schedule = p.routing.plan.s.clone();
                     }
                 }
-                Page::Trips => side::trips_ui(ui),
+                Page::Trips => {
+                    let can_open = p.routing.status().usable();
+                    o.trips = p.trips.page_ui(ui, p.pins, can_open, p.exe_dir);
+                }
                 Page::Layers => side::layers_ui(ui, layers, units_cfg, p.pack_units),
             }
         });
@@ -1738,16 +1873,23 @@ fn search_page(
     units: Units,
     out: &mut search::Out,
 ) -> Option<(StopAction, Place)> {
-    let here = p.here.panel.is_some();
     let menu = p.routing.menu_state();
-    let stop = p.here.page_ui(ui, units, p.search.icons(), &menu);
+    let pin_stop = p.pins.panel_ui(ui, &menu);
+    if p.pins.open.is_some() && p.here.panel.is_some() {
+        ui.separator();
+    }
+    let here = p.here.panel.is_some() || p.pins.open.is_some();
+    let stop = p
+        .here
+        .page_ui(ui, units, p.search.icons(), &menu)
+        .or(pin_stop);
     if !p.search.has_results() {
         if !here {
             let weak = |t: &str| egui::RichText::new(t).color(crate::theme::WEAK);
             ui.label(weak("Type a place, an address, a postcode or a business."));
             ui.add_space(4.0);
             ui.label(weak(
-                "Right-click the map for what is there, or to route from or to a point.",
+                "Right-click the map for what is there, to route from or to a point, or to add a pushpin.",
             ));
         }
         return stop;

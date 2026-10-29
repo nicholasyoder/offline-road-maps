@@ -18,7 +18,9 @@ cargo run --release -p omp-app -- --pack $OMP_WORK/packs/ohio
 
 Controls: drag to pan, scroll or double-click to zoom, arrow keys to pan, `+`/`-` to zoom, F3 for the debug overlay.
 
-The side panel on the left holds the search box, the ☰ menu (open or verify a pack, About this map, the debug overlay) and four pages: Search, Route, Trips (a placeholder for now) and Layers (the layer toggles and the scale bar's units). Ctrl+B or the « and » buttons hide and show it; drag its edge to resize it. Right-clicking the map offers "What's here?" and the route items.
+The side panel on the left holds the search box, the ☰ menu (open or verify a pack, About this map, the debug overlay) and four pages: Search, Route, Trips (saved trips and pushpin sets) and Layers (the layer toggles and the scale bar's units). Ctrl+B or the « and » buttons hide and show it; drag its edge to resize it. Right-clicking the map offers "What's here?", the route items and *Add pushpin*.
+
+Trips and pushpins are plain TOML files next to the executable, so they travel with the app on a stick: `trips/<name>.toml` (from *Save trip* on the Route page) and `pins/<set>.toml`. A trip keeps its stops by name and coordinates, never by the pack's IDs, so it opens on a newer build of the pack. Where that folder cannot be written, saving offers a file browser.
 
 Search: Ctrl+F or `/` goes to the search box, opening the panel if needed. Suggestions show in the panel as you type; the arrow keys move through them, Enter or a click picks one and flies there with a marker, and Enter with none selected lists every result. Escape closes the suggestions, then leaves the box, then steps back in the page: on the search page it closes "what's here", then the results list, then removes the marker; on the route page it lets go of the step picked (the × in the box clears the search). A pack built before search (format 0.3 or older) opens with the box disabled.
 

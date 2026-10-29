@@ -81,6 +81,9 @@ pub struct Flight {
     /// Time the route from this local date and time at its start, `2026-07-15T08:00`, with
     /// the schedule's default settings (phase 4 step 4.5).
     pub depart: Option<String>,
+    /// Pushpins spread over the pack for the whole flight, the same each run (phase 4 step
+    /// 4.7, criterion 5: 10,000 on the Ohio flight).
+    pub pins: Option<usize>,
     #[serde(rename = "step")]
     pub steps: Vec<Step>,
 }

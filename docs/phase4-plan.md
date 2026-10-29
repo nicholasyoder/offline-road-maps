@@ -42,7 +42,7 @@ The roadmap's items are stop optimization, departure and arrival times with over
 | 4.4 U-turn penalty, measured first | **Done** 2026-10-28 | Built behind `--uturn-penalty` and measured on Ohio and Quebec: routing ×2.2–2.5, contraction ×8–24, U-turn routes 4.7% → 3.3% (Ohio) and 11.2% → 9.5% (Quebec) at any penalty. **Not built for North America** (owner, decision 20); the flag stays, off by default |
 | 4.5 Schedule: times, stops and overnights | **Done** 2026-10-28 | Format 0.6, `TZON` from timezone-boundary-builder 2026e: North America 74 zones, **0.39 MiB**, 2.2 MiB in RAM; app +0.79 MiB. Criterion 4's trips pass (12 tests); New York–Los Angeles on North America: 6 days, 4 crossings, 0.3 ms to work out. Frame p95 unchanged with no time set (1.02–1.03 ms), 1.38 ms with a coast-to-coast schedule shown |
 | 4.6 Fuel, rest and overnight suggestions (if cheap) | Not started | |
-| 4.7 Pushpins and saved trips | Not started | |
+| 4.7 Pushpins and saved trips | **Done** 2026-10-29 | TOML files in `trips/` and `pins/` next to the app, with an in-app file browser. Stops kept by name and coordinates: a trip saved on the Ohio pack opens on North America on the same street (IDs 131009 → 7204075), same 230.0 km route. 10,000 pins on the Ohio flight: frame p95 0.81–0.82 → 0.84 ms (budget +0.1). App +0.26 MB |
 | 4.8 GPX, KML and CSV (best effort) | Not started | |
 | 4.9 Print layout and preview | Not started | |
 | 4.10 Printing and PDF | Not started | |
@@ -308,6 +308,39 @@ The owner asked for this only if it is easy and cheap. The plan expects it to be
 - **Tests:** round trips of both files, matching a stop's street after a pack rebuild (a test pack with the street IDs shuffled), and the Trips page headless. Bench: 10,000 pins on the Ohio flight (criterion 5).
 
 **Done when:** criterion 5 is met and trips and pins can be made, saved, opened and deleted from the panel on the North America pack.
+
+> **Done 2026-10-29** (commit "Step 4.7 done: saved trips, pushpins and the file browser"). Bench logs in `$OMP_WORK/measure/pins47/`.
+>
+> - **Files** (`files.rs`): `trips/<name>.toml` and `pins/<set>.toml` next to the executable, written through a temporary file. A folder that cannot be written makes the save window say so, with *Save elsewhere…*. That opens the **in-app file browser**: Up, a folder field, subfolders and `.toml` files, a name box, and Replace for an existing file. *Open file…* on the Trips page uses it for trips and pin sets from anywhere. Steps 4.8 and 4.10 add their formats to it.
+> - **A trip file** (`trips.rs`, version 1) holds `pack` (for information only), `avoid_tolls`, `avoid_ferries`, `[optimize]`, `[schedule]` (mode, date, time and the driving settings) and `[[stop]]` entries: name, lat, lon, `street`, `minutes` and `kind` (`stop`, `overnight` or `via`). Points are written to full precision, so the app's points come back to the world unit, and a trip saved and opened is unchanged (tested exactly).
+> - **Streets by name, not ID:** the routing worker names each stop's street (`SSTR`). When a trip is opened, a stop with a street name gets the nearest street of that name within 1 km before routing (`Streets::named_near`, through `SGRD`, shared with "what's here"). A stop with no match snaps as a point, with the far-snap notice when it applies.
+>   - Core test: the test pack built again with its street IDs reversed; every stop finds its street.
+>   - Real packs: 50 West Broad Street, Columbus, saved from the panel on the Ohio pack (street 131009), opened on the North America pack, lands on West Broad Street there (street 7204075), on its street. The route to Cleveland is the same 230.0 km on both.
+> - **A leg's alternative picked** is saved as a `via` entry where it passes its via node. **Changed from the plan:** the point is not routed through as a hidden stop, which would have split the leg and its row. Opening the trip looks for that leg's alternatives at once, without opening its row, and picks the one passing within 100 m. If none does on a newer pack, the quickest is shown, with a notice saying so.
+> - **Route page:** *Save trip* asks for a name the first time (suggested "First to Last"), then saves in place. *Save as…* asks again. The row says "Trip “Name” · unsaved changes" when the trip differs from its file. The stops' street names, which routing fills in, and coordinates within the world unit are not counted as changes. Clear forgets the file.
+> - **Pushpins** (`pins.rs`): name, note, lat, lon, shape (circle, square, diamond, triangle) and colour (6), in sets. *Add pushpin* is in the map's right-click menu and under "what's here" and a picked result, named after the result, the address found, or "Pushpin N". A new pin opens at the top of the Search page with its name selected. There you edit its note, symbol and set, use the route buttons, or delete it. A click on a pin on the map opens it there too.
+>   - The map renderer draws pins as instanced quads over the labels, each shape from its distance in the shader (`vs_pin`/`fs_pin`). Their buffer is made only when pins change, so they cost one draw call a frame. Names are drawn by egui from z12, for at most 200 pins in view, under the route's markers.
+>   - Search lists the shown sets' pins whose name or note matches, above the pack's results, worked out again only when the text or the pins change.
+>   - A set's file is written when a pin is added, moved, deleted or given another symbol, and when its name or note field is left.
+> - **Trips page:** saved trips (click to open in the Route page, Rename, Copy, Delete with a second click to confirm) and pushpin sets (shown or hidden, its pins listed with a click to fly to one, Rename, Delete with a confirm, New set, *Save elsewhere…* for a set that could not be written). Import and export keep their 4.8 placeholders.
+> - **Tests:** file and set round trips, names and copies, saving with and without a name, the route page's trip to a file and back (street found by name, the alternative picked again, and a lost one with its notice), the Trips page headless (open, rename, copy, delete, a pin from the menu, a set listed, hidden and deleted), and the real-pack test above (`OMP_TEST_PACK`, and `OMP_TEST_PACK2` for the second build), run on Ohio and on North America.
+> - **Measured** (Ohio flight, 2 runs each, `ohio-pins.toml` = `ohio.toml` with `pins = 10000` spread over the pack):
+>
+>   | | Before (1017b39) `ohio.toml` | With 4.7 `ohio.toml` | With 4.7 `ohio-pins.toml` |
+>   |---|---:|---:|---:|
+>   | Frame interval p50 / p95 | 0.64–0.65 / 0.82–0.83 ms | 0.64–0.65 / 0.81–0.82 ms | 0.66 / 0.84 ms |
+>   | CPU p95 | 0.20 ms | 0.20 ms | 0.21 ms |
+>   | RSS peak | 188–189 MiB | 186 MiB | 187–189 MiB |
+>   | App binary (release) | 15.47 MB | 15.74 MB | |
+>
+>   Criterion 5's 10,000 pins cost +0.02–0.03 ms of frame p95 (budget 0.1 ms). Frame times with no pins are unchanged.
+> - **Left open:**
+>   - The owner's hand check in the app.
+>   - Opening a trip replaces the one shown without asking about its unsaved changes.
+>   - A pin set opened from elsewhere is not remembered at the next start.
+>   - A result's street name comes with its route, so a trip saved before the route arrives keeps that stop as a point.
+>   - Pins' names are drawn by egui, so 4.9's printed map needs them drawn for the page; the symbols are the renderer's already.
+>   - The page is not checked at a 300-point panel.
 
 ## 4.8 GPX, KML and CSV (best effort)
 

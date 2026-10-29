@@ -8,7 +8,8 @@
 //!
 //! A search result picked opens the same panel at the result, under its name (step 3.10).
 //! Both have the route items as buttons; a result's stop is the result itself, snapped to
-//! its own street first ([`Place::of_hit`]).
+//! its own street first ([`Place::of_hit`]). The menu and the panel also add a pushpin
+//! there (phase 4 step 4.7), named after the result or the address found.
 
 use std::time::{Duration, Instant};
 
@@ -80,6 +81,8 @@ pub struct HereUi {
     /// Where the route buttons were drawn last frame, for the tests.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) buttons: Option<[Rect; 3]>,
+    /// *Add pushpin* was picked: the point (world), and a name for it if there is one.
+    pub add_pin: Option<(camera::Vec2, Option<String>)>,
 }
 
 impl HereUi {
@@ -190,6 +193,11 @@ impl HereUi {
                 ui.close();
             }
             ui.separator();
+            if ui.button("Add pushpin").clicked() {
+                self.add_pin = Some((at, None));
+                ui.close();
+            }
+            ui.separator();
             let [lon, lat] = geo::unit_to_lonlat(at);
             let r = ui
                 .button(lonlat_text(lon, lat))
@@ -254,6 +262,7 @@ impl HereUi {
         let panel = self.panel.as_ref()?;
         let mut close = false;
         let mut chosen = None;
+        let mut add_pin = None;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.horizontal(|ui| {
@@ -314,6 +323,14 @@ impl HereUi {
             ui.add_space(3.0);
             let (a, rects) = routing::stop_buttons(ui, route);
             self.buttons = Some(rects);
+            if ui.small_button("Add pushpin").clicked() {
+                let name = match (&panel.hit, &panel.answer) {
+                    (Some(h), _) => Some(h.name.clone()),
+                    (None, Some(Ok(s))) => s.address.as_ref().map(|a| a.label.clone()),
+                    _ => None,
+                };
+                add_pin = Some((panel.at, name));
+            }
             chosen = a.map(|a| {
                 let place = match &panel.hit {
                     Some(h) => Place::of_hit(h),
@@ -324,6 +341,9 @@ impl HereUi {
         });
         if close {
             self.panel = None;
+        }
+        if add_pin.is_some() {
+            self.add_pin = add_pin;
         }
         chosen
     }

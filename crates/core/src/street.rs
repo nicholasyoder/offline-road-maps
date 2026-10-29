@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::blocked::{Blocked, Cache, string, strings};
 use crate::geo::{self, P};
+use crate::grid::Grid;
 use crate::pack::Pack;
 use crate::varint::{Reader, invalid};
 
@@ -382,6 +383,44 @@ impl Streets {
 
     pub fn heap_bytes(&self) -> usize {
         self.sstr.heap_bytes() + self.sgeo.heap_bytes() + self.records.held() + self.geometry.held()
+    }
+
+    /// The streets within `radius_m` of `p`, found through `grid`, nearest first.
+    pub fn near(&self, grid: &Grid, p: P, radius_m: f64) -> io::Result<Vec<(u32, Spot)>> {
+        let mut ids: Vec<u32> = grid
+            .around(p, radius_m)?
+            .into_iter()
+            .flat_map(|(_, c)| c.streets)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut out = Vec::new();
+        for s in ids {
+            let spot = self.geometry(s)?.project(p);
+            if spot.dist_m <= radius_m {
+                out.push((s, spot));
+            }
+        }
+        out.sort_by(|a, b| a.1.dist_m.total_cmp(&b.1.dist_m).then(a.0.cmp(&b.0)));
+        Ok(out)
+    }
+
+    /// The nearest street within `radius_m` of `p` named `name` (case aside), as a saved
+    /// trip finds its stops' streets again in another build of the pack, whose street IDs
+    /// differ (phase 4 step 4.7).
+    pub fn named_near(
+        &self,
+        grid: &Grid,
+        p: P,
+        name: &str,
+        radius_m: f64,
+    ) -> io::Result<Option<(u32, Spot)>> {
+        for (id, spot) in self.near(grid, p, radius_m)? {
+            if self.street(id)?.name.to_lowercase() == name.to_lowercase() {
+                return Ok(Some((id, spot)));
+            }
+        }
+        Ok(None)
     }
 
     pub fn bytes_read(&self) -> u64 {

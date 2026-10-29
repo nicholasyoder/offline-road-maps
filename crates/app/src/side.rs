@@ -1,13 +1,13 @@
 //! The side panel's own parts (phase 3 step 3.8): its pages and their tabs, the ☰ menu, the
-//! trips and layers pages, and the disabled places kept for what phases 4 and 5 add. The
-//! panel itself, with the search box and the search and route pages, is drawn by
-//! [`crate::app`].
+//! layers page, and the disabled places kept for what phases 4 and 5 add. The panel itself,
+//! with the search box and the search and route pages, is drawn by [`crate::app`]; the
+//! Trips page by [`crate::trips`].
 
 use eframe::egui::{self, Rangef, Rect, Vec2};
 
 use crate::layers::Layers;
 use crate::scale::Units;
-use crate::theme::{HEADER_H, INK, WEAK};
+use crate::theme::{HEADER_H, INK};
 
 /// The panel's width range, in points, and the most of a narrow window it may take.
 const WIDTH: [f32; 2] = [300.0, 480.0];
@@ -115,27 +115,6 @@ pub fn menu(ui: &mut egui::Ui, debug_overlay: &mut bool) -> Option<Action> {
         ui.painter().rect_filled(bar, 0.0, color);
     }
     action
-}
-
-/// The trips page: phase 4's saved trips and pushpins, and import and export.
-pub fn trips_ui(ui: &mut egui::Ui) {
-    ui.label(egui::RichText::new("Saved trips").strong().color(INK));
-    ui.label(egui::RichText::new("No saved trips.").color(WEAK));
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        later(
-            ui,
-            "Save the route",
-            "keep the route with its stops and options",
-        );
-        later(ui, "Add a pushpin", "a marked place with a note");
-    });
-    ui.add_space(8.0);
-    ui.label(egui::RichText::new("Import and export").strong().color(INK));
-    ui.horizontal_wrapped(|ui| {
-        later(ui, "Import…", "trips and pushpins from GPX, CSV or KML");
-        later(ui, "Export…", "trips and pushpins as GPX, CSV or KML");
-    });
 }
 
 /// The layers page: the layer toggles and the scale bar's units. `pack_units` are the units

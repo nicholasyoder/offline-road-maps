@@ -24,6 +24,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use omp_core::geo::P;
+use omp_core::grid::Grid;
 use omp_core::pack::Pack;
 use omp_core::route::{self, AltParams, Ends, Leg, Names, Road, Step, Stop, Trip, Turns};
 use omp_core::street::Streets;
@@ -75,7 +76,14 @@ pub struct Request {
     pub asked: Instant,
     /// Reorder the stops for the quickest trip first, keeping these ends.
     pub optimize: Option<Ends>,
+    /// Per stop, the name of its street when it has no ID in this pack: a saved trip's
+    /// (phase 4 step 4.7), found again near the stop before routing.
+    pub names: Vec<Option<String>>,
 }
+
+/// How far from a saved stop its street is looked for, as [`route`] prefers a stop's own
+/// street within this distance.
+pub const NAMED_M: f64 = 1_000.0;
 
 /// A trip and what the UI shows of it.
 pub struct Routed {
@@ -208,8 +216,11 @@ impl From<Answer> for Reply {
 
 pub struct Answer {
     /// What was asked; for an optimize request, with its stops in the new order (and back
-    /// to the first for a round trip), as the trip was routed.
+    /// to the first for a round trip), as the trip was routed. A stop whose street was
+    /// found by name has its ID.
     pub request: Request,
+    /// Per stop of `request`, the name of its street, if it has one.
+    pub street_names: Vec<Option<String>>,
     pub routed: Result<Routed, String>,
     /// For an optimize request: the new order, as indices of the stops asked, or why
     /// there is none (the trip is then not routed).
@@ -358,8 +369,9 @@ fn work(
     let opened = Pack::open(&first_chunk).map(Arc::new).and_then(|p| {
         let minor = p.minor;
         let streets = Streets::open(p.clone())?;
+        let grid = Grid::open(p.clone())?;
         let zones = Zones::open(&p)?;
-        route::Routing::open(p).map(|r| (r, streets, zones, minor))
+        route::Routing::open(p).map(|r| (r, streets.zip(grid), zones, minor))
     });
     let (reader, streets, zones) = match opened {
         Ok((Some(r), streets, zones, _)) => (Arc::new(r), streets, zones.map(Arc::new)),
@@ -395,6 +407,9 @@ fn work(
     serve(shared, &reader, streets.as_ref(), tx, &*wake);
 }
 
+/// The street table, and the grid that finds streets near a point.
+type Table = (Streets, Grid);
+
 /// The last route sent, kept for its legs' alternatives.
 struct Kept {
     id: u64,
@@ -409,7 +424,7 @@ struct Kept {
 fn serve(
     shared: &Arc<Shared>,
     reader: &route::Routing,
-    streets: Option<&Streets>,
+    table: Option<&Table>,
     tx: &Sender<Reply>,
     wake: &dyn Fn(),
 ) {
@@ -428,8 +443,9 @@ fn serve(
             }
         };
         let stop = || shared.generation.load(Ordering::Relaxed) != generation;
+        let streets = table.map(|t| &t.0);
         let sent = match job {
-            Job::Route(request) => route(reader, streets, request, &stop, &mut kept, tx),
+            Job::Route(request) => route(reader, table, request, &stop, &mut kept, tx),
             Job::Alternatives { id, legs } => match kept.as_ref().filter(|k| k.id == id) {
                 Some(k) => alternatives(reader, streets, k, &legs, &stop, tx, wake),
                 // Not the last route: the UI has a newer one coming.
@@ -443,31 +459,53 @@ fn serve(
     }
 }
 
+/// Gives each stop of `request` that has a street name but no ID the nearest street of
+/// that name within [`NAMED_M`], if there is one; the others snap as points.
+fn find_streets(streets: &Streets, grid: &Grid, request: &mut Request) {
+    for (s, name) in request.stops.iter_mut().zip(&request.names) {
+        if let (None, Some(name)) = (s.street, name) {
+            s.street = streets
+                .named_near(grid, s.p, name, NAMED_M)
+                .ok()
+                .flatten()
+                .map(|(id, _)| id);
+        }
+    }
+}
+
 /// Routes `request` and sends it; keeps it in `kept`. `Err` once the UI is gone.
 fn route(
     reader: &route::Routing,
-    streets: Option<&Streets>,
+    table: Option<&Table>,
     mut request: Request,
     stop: &dyn Fn() -> bool,
     kept: &mut Option<Kept>,
     tx: &Sender<Reply>,
 ) -> Result<(), ()> {
+    let streets = table.map(|t| &t.0);
     let t = Instant::now();
+    if let Some((streets, grid)) = table {
+        find_streets(streets, grid, &mut request);
+    }
     let mut order = None;
     if let Some(ends) = request.optimize {
         match reader.optimize_until(&request.stops, request.avoid, ends, stop) {
             Ok(None) => return Ok(()),
             Ok(Some(o)) => {
                 let mut stops: Vec<Stop> = o.order.iter().map(|&i| request.stops[i]).collect();
+                let mut names: Vec<_> = o.order.iter().map(|&i| request.names[i].clone()).collect();
                 if ends.round_trip {
                     stops.push(stops[0]);
+                    names.push(names[0].clone());
                 }
                 request.stops = stops;
+                request.names = names;
                 order = Some(Ok(o.order));
             }
             Err(e) => {
                 let e = e.to_string();
                 let answer = Answer {
+                    street_names: Vec::new(),
                     request,
                     routed: Err(e.clone()),
                     order: Some(Err(e)),
@@ -517,7 +555,16 @@ fn route(
         }
         Err(e) => Err(e),
     };
+    let street_names = request
+        .stops
+        .iter()
+        .map(|s| {
+            let id = s.street?;
+            streets?.street(id).ok().map(|r| r.name)
+        })
+        .collect();
     let answer = Answer {
+        street_names,
         request,
         routed,
         order,

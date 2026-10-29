@@ -853,6 +853,73 @@ fn packs_without_search_open_without_it() {
     assert!(s.addresses_near(at(0.0, 0.0), 50.0).unwrap().is_empty());
 }
 
+#[test]
+fn streets_are_found_again_by_name_in_a_build_with_other_ids() {
+    // A saved trip keeps a stop's street by name (phase 4 step 4.7). Another build of the
+    // pack numbers its streets differently: here, in reverse.
+    let f = fixture();
+    let n = f.streets.len() as u32;
+    let new = |i: u32| n - 1 - i;
+    let mut g = fixture();
+    g.streets.reverse();
+    for a in &mut g.addresses {
+        a.street = new(a.street);
+    }
+    g.addresses.sort_by(|a, b| {
+        (a.street, a.number, &a.suffix, a.offset).cmp(&(b.street, b.number, &b.suffix, b.offset))
+    });
+    for r in &mut g.ranges {
+        r.street = new(r.street);
+    }
+    g.ranges.sort_by_key(|r| r.street);
+    for e in g.entries.iter_mut().filter(|e| e.kind == Kind::Street) {
+        e.reference = u64::from(new(e.reference as u32));
+    }
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = Search::open(write_pack(da.path(), &sections(&f, 2)))
+        .unwrap()
+        .unwrap();
+    let b = Search::open(write_pack(db.path(), &sections(&g, 2)))
+        .unwrap()
+        .unwrap();
+    for (i, (rec, parts)) in f.streets.iter().enumerate() {
+        let i = i as u32;
+        // A stop beside the street, a few metres off it.
+        let part = &parts[0];
+        let p = part[part.len() / 2];
+        let p = [p[0] + 300, p[1] + 300];
+        let name = a.streets.street(i).unwrap().name.to_uppercase();
+        assert_eq!(name, rec.name.to_uppercase());
+        let (id, spot) = b
+            .streets
+            .named_near(&b.grid, p, &name, 1_000.0)
+            .unwrap()
+            .unwrap_or_else(|| panic!("{} not found", rec.name));
+        assert_eq!(id, new(i), "{}", rec.name);
+        assert_eq!(b.streets.geometry(id).unwrap().parts, *parts);
+        assert!(spot.dist_m < 10.0, "{} m", spot.dist_m);
+    }
+    // Nearer streets of other names are passed over; none of that name within the radius
+    // is no match.
+    let near_main = at(50.0, -60.0);
+    let (id, _) = b
+        .streets
+        .named_near(&b.grid, near_main, "Main Street", 1_000.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(id, new(0));
+    assert_eq!(
+        b.streets.near(&b.grid, near_main, 1_000.0).unwrap()[0].0,
+        new(1)
+    );
+    assert!(
+        b.streets
+            .named_near(&b.grid, at(0.0, 0.0), "Road 3", 1_000.0)
+            .unwrap()
+            .is_none()
+    );
+}
+
 /// Search entries for the query engine, in the order format.md gives entry IDs.
 fn query_entries() -> Vec<Entry> {
     let e = |kind, importance, name: &str, p, admin, town, reference| Entry {

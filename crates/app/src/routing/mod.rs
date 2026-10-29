@@ -32,7 +32,8 @@
 //! that stays the night.
 
 mod line;
-mod panel;
+pub(crate) mod panel;
+mod saved;
 mod times;
 mod worker;
 
@@ -84,6 +85,9 @@ pub struct Place {
     pub p: P,
     /// A search result's own street, to snap to first.
     pub street: Option<u32>,
+    /// That street's name, which a saved trip keeps instead of its pack-specific ID (phase 4
+    /// step 4.7): the routing worker finds a street of that name near the stop again.
+    pub street_name: Option<String>,
     /// A search result's name; `None` for a point on the map.
     pub name: Option<String>,
     /// Time spent there, for the schedule (phase 4 step 4.5).
@@ -95,6 +99,7 @@ impl Place {
         Self {
             p: geo::from_unit(w),
             street: None,
+            street_name: None,
             name: None,
             stay: Stay::default(),
         }
@@ -104,6 +109,7 @@ impl Place {
         Self {
             p: h.p,
             street: h.street,
+            street_name: None,
             name: Some(h.name.clone()),
             stay: Stay::default(),
         }
@@ -114,6 +120,11 @@ impl Place {
             p: self.p,
             street: self.street,
         }
+    }
+
+    /// Its street's name, for the worker to find when it has no street ID yet.
+    fn name_to_find(&self) -> Option<String> {
+        self.street.is_none().then(|| self.street_name.clone())?
     }
 }
 
@@ -402,6 +413,15 @@ pub struct RouteUi {
     times: Times,
     notes: Vec<Note>,
     towns: Towns,
+    /// The saved trip shown, once saved or opened (phase 4 step 4.7).
+    pub named: Option<crate::trips::Named>,
+    /// *Save trip* or *Save as…* was clicked: the app saves.
+    pub save_asked: Option<crate::trips::SaveAsk>,
+    /// Per leg of a trip just opened, the via point of its route saved, until its
+    /// alternatives come and the one passing it is picked.
+    wanted: Vec<Option<P>>,
+    /// Legs whose saved route was not found again.
+    lost: Vec<usize>,
 }
 
 /// What is known of the route's schedule.
@@ -472,6 +492,10 @@ impl RouteUi {
             times: Times::Off,
             notes: Vec::new(),
             towns: Towns::new(PathBuf::new(), Arc::new(|| {})),
+            named: None,
+            save_asked: None,
+            wanted: Vec::new(),
+            lost: Vec::new(),
         }
     }
 
@@ -510,6 +534,7 @@ impl RouteUi {
                 self.from = None;
                 self.via.clear();
                 self.to = None;
+                self.named = None;
             }
         }
         self.opened = action != StopAction::Clear;
@@ -634,6 +659,7 @@ impl RouteUi {
             avoid: self.avoid,
             asked: Instant::now(),
             optimize: Some(self.ends),
+            names: places.iter().map(Place::name_to_find).collect(),
         }));
         self.optimizing = Some((before, places));
     }
@@ -757,6 +783,7 @@ impl RouteUi {
             Place {
                 p: e.point,
                 street: None,
+                street_name: None,
                 name,
                 stay: Stay {
                     s: 0.0,
@@ -852,6 +879,13 @@ impl RouteUi {
                 out.push(format!("No road goes from {} to {}.", who(i), who(i + 1)));
             }
         }
+        for &leg in &self.lost {
+            out.push(format!(
+                "The route saved from {} to {} was not found on this map: the quickest is shown.",
+                who(leg),
+                who(leg + 1)
+            ));
+        }
         let broken = trip.broken();
         if broken & TOLL != 0 {
             out.push("This route uses a toll road: no route avoids them.".into());
@@ -885,6 +919,8 @@ impl RouteUi {
     pub fn reroute(&mut self) {
         self.optimizing = None;
         self.reordered = None;
+        self.wanted.clear();
+        self.lost.clear();
         let (Some(from), Some(to)) = (&self.from, &self.to) else {
             self.worker.cancel();
             self.waiting = None;
@@ -900,19 +936,19 @@ impl RouteUi {
             self.chosen.clear();
             return;
         };
-        let stops = std::iter::once(from)
+        let places: Vec<&Place> = std::iter::once(from)
             .chain(&self.via)
             .chain(std::iter::once(to))
-            .map(Place::stop)
             .collect();
         self.next_id += 1;
         self.waiting = Some(self.next_id);
         self.worker.ask(Job::Route(Request {
             id: self.next_id,
-            stops,
+            stops: places.iter().map(|p| p.stop()).collect(),
             avoid: self.avoid,
             asked: Instant::now(),
             optimize: None,
+            names: places.iter().map(|p| p.name_to_find()).collect(),
         }));
     }
 
@@ -943,6 +979,7 @@ impl RouteUi {
                         Err(e) => LegAlts::Failed(e),
                     };
                     self.refresh_grey();
+                    self.pick_wanted(x.leg);
                     continue;
                 }
             };
@@ -965,6 +1002,7 @@ impl RouteUi {
                     }
                 }
             }
+            self.fill_streets(&a.request.stops, &a.street_names);
             self.picked = None;
             self.rows = None;
             self.times = Times::Stale;
@@ -1007,13 +1045,37 @@ impl RouteUi {
             }
             self.bands = Default::default();
             for leg in 0..self.expanded.len() {
-                if self.expanded[leg] {
+                // A saved trip's legs with a route picked are looked at at once.
+                let wanted = self.wanted.get(leg).is_some_and(Option::is_some);
+                if self.expanded[leg] || wanted {
                     self.look_for(leg);
                 }
             }
             self.ask_alternatives();
         }
         fit
+    }
+
+    /// Takes what the worker found of the stops' streets: the ID of a street found by name,
+    /// and the name of a street given by ID, for the stops as they were routed.
+    fn fill_streets(&mut self, stops: &[Stop], names: &[Option<String>]) {
+        let mut places = self.places();
+        if places.len() != stops.len() {
+            return;
+        }
+        for (i, (p, s)) in places.iter_mut().zip(stops).enumerate() {
+            if p.p != s.p {
+                return;
+            }
+            if p.street.is_none() {
+                p.street = s.street;
+            }
+            if p.street_name.is_none() {
+                p.street_name = names.get(i).cloned().flatten();
+            }
+        }
+        let (f, t) = (self.from.is_some(), self.to.is_some());
+        self.put_stops(places, f, t);
     }
 
     /// The alternatives found to the route shown, over every leg.

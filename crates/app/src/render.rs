@@ -17,6 +17,9 @@
 //! (routing/line.rs), in the paint after the style's.
 //!
 //! Labels go on top, as glyph quads from the distance field atlas (text.rs, `text.wgsl`).
+//!
+//! Pushpins (phase 4 step 4.7) go over the labels: one instanced quad each, a shape drawn by
+//! its distance in the shader, from a buffer made when they change (pins.rs).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,6 +31,7 @@ use wgpu::util::DeviceExt;
 use crate::camera::Camera;
 use crate::layers::Hidden;
 use crate::mesh::{Mesh, Segment, Vertex};
+use crate::pins::{self, PinDraw, PinInstance};
 use crate::pool::{Alloc, Kind, Pool};
 use crate::routing::{Look, RouteDraw, RouteSegment};
 use crate::style::{FILL_PASSES, LINE_PASSES, MAX_PAINTS, PASSES, Pass, ROUTE_PAINTS, Rgba, Style};
@@ -121,6 +125,8 @@ pub struct Frame {
     pub route: Option<RouteDraw>,
     /// Label glyphs, drawn over the map.
     pub glyphs: Vec<GlyphInstance>,
+    /// The pushpins, drawn over the labels.
+    pub pins: Option<PinDraw>,
     /// Glyphs new to the atlas.
     pub atlas: Vec<Upload>,
 }
@@ -241,6 +247,12 @@ pub fn paints(
                 ..GpuPaint::default()
             }
         }))
+        .chain(pins::Colour::ALL.map(|c| GpuPaint {
+            color: color(c.rgba()),
+            casing: color([255; 4]),
+            width: [pins::EDGE * ppp, 0.0],
+            ..GpuPaint::default()
+        }))
         .collect()
 }
 
@@ -310,6 +322,7 @@ pub fn layout(
         sources,
         route: None,
         glyphs: Vec::new(),
+        pins: None,
         atlas: Vec::new(),
     }
 }
@@ -321,6 +334,7 @@ pub struct Renderer {
     casing: wgpu::RenderPipeline,
     route: wgpu::RenderPipeline,
     route_halo: wgpu::RenderPipeline,
+    pin: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     paints: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
@@ -422,6 +436,13 @@ impl Renderer {
         };
         let route = pipeline("route line", "vs_route", route_buf.clone(), "fs_line");
         let route_halo = pipeline("route halo", "vs_route_halo", route_buf, "fs_line");
+        let pin_attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Uint16x2];
+        let pin_buf = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<PinInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &pin_attrs,
+        };
+        let pin = pipeline("pushpins", "vs_pin", pin_buf, "fs_pin");
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("map globals"),
@@ -474,6 +495,7 @@ impl Renderer {
             casing,
             route,
             route_halo,
+            pin,
             glyph,
             halo,
             atlas,
@@ -674,7 +696,9 @@ impl Renderer {
                 l.pieces.iter().map(move |p| (p.1, p.2, paint))
             })
             .collect();
-        let n_transforms = frame.tiles.len() + frame.sources.len() + route.len();
+        let pins = frame.pins.as_ref().map(|p| (p.origin, p.scale, p.half));
+        let n_transforms =
+            frame.tiles.len() + frame.sources.len() + route.len() + usize::from(pins.is_some());
         if n_transforms > self.capacity {
             self.capacity = n_transforms.next_power_of_two();
             (self.transforms, self.transforms_bg) =
@@ -722,11 +746,12 @@ impl Renderer {
         if n_transforms == 0 {
             return;
         }
-        // The tiles' transforms, then the sources', then the route pieces'.
+        // The tiles' transforms, then the sources', then the route pieces', then the pins'
+        // (their half size in `paint`).
         let mut data = vec![0u8; self.stride as usize * n_transforms];
         let placed = frame.tiles.iter().map(|t| (t.origin, t.scale, 0.0));
         let placed = placed.chain(frame.sources.iter().map(|s| (s.origin, s.scale, 0.0)));
-        let placed = placed.chain(route);
+        let placed = placed.chain(route).chain(pins);
         for (i, (origin, scale, paint)) in placed.enumerate() {
             let tr = TileTransform {
                 origin,
@@ -881,6 +906,24 @@ impl Renderer {
                 pass.set_pipeline(pl);
                 pass.draw(0..6, 0..n);
             }
+        }
+        if let Some(p) = &frame.pins
+            && clip[2] > clip[0]
+            && clip[3] > clip[1]
+        {
+            pass.set_scissor_rect(clip[0], clip[1], clip[2] - clip[0], clip[3] - clip[1]);
+            pass.set_bind_group(0, &self.globals_bg, &[]);
+            let route: usize = frame.route.as_ref().map_or(0, |r| r.pieces());
+            let slot = frame.tiles.len() + frame.sources.len() + route;
+            pass.set_bind_group(
+                1,
+                &self.transforms_bg,
+                &[(slot as u64 * self.stride) as u32],
+            );
+            let bytes = u64::from(p.gpu.n) * std::mem::size_of::<PinInstance>() as u64;
+            pass.set_pipeline(&self.pin);
+            pass.set_vertex_buffer(0, p.gpu.instances.slice(0..bytes));
+            pass.draw(0..6, 0..p.gpu.n);
         }
     }
 }

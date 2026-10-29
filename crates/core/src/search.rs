@@ -531,23 +531,7 @@ impl Search {
 
     /// The streets within `radius_m` of `p`, nearest first, with where `p` lies on each.
     pub fn streets_near(&self, p: P, radius_m: f64) -> io::Result<Vec<(u32, Spot)>> {
-        let mut ids: Vec<u32> = self
-            .grid
-            .around(p, radius_m)?
-            .into_iter()
-            .flat_map(|(_, c)| c.streets)
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
-        let mut out = Vec::new();
-        for s in ids {
-            let spot = self.streets.geometry(s)?.project(p);
-            if spot.dist_m <= radius_m {
-                out.push((s, spot));
-            }
-        }
-        out.sort_by(|a, b| a.1.dist_m.total_cmp(&b.1.dist_m).then(a.0.cmp(&b.0)));
-        Ok(out)
+        self.streets.near(&self.grid, p, radius_m)
     }
 
     /// The point addresses within `radius_m` of `p`, on streets and unattached, nearest
