@@ -1,13 +1,13 @@
 //! The route page of the side panel (phase 3 steps 3.7 and 3.8): the stops in order (drag a
-//! stop's handle to move it, × to remove it, a button to reverse them), the avoid options,
-//! the distance and driving time in all and per leg, notices about the route, and the
-//! directions. Clicking a step flies to it and draws its stretch over the route; Escape
-//! lets go of it. *Optimize stop order* (phase 4 step 4.1) reorders the stops, keeping the
-//! ends checked, says what it saved and offers Undo. Under the totals, each leg has a row
-//! with its distance and time that opens to its routes (step 4.3): they are looked for
-//! then, listed with the one shown selected, and drawn grey on the map until the row is
-//! closed; clicking another shows it. The rest of phase 4's trip planning has its places
-//! here, disabled.
+//! stop's handle to move it, × to remove it), a row of Clear, Reverse and *Optimize…*, the
+//! avoid options under *More options*, the distance and driving time in all and per leg,
+//! notices about the route, and the directions. Clicking a step flies to it and draws its
+//! stretch over the route; Escape lets go of it. *Optimize…* (phase 4 step 4.1) opens a
+//! window beside the panel that reorders the stops, keeping the ends checked, says what it
+//! saved and offers Undo. Under the totals, each leg has a row with its distance and time
+//! that opens to its routes (step 4.3): they are looked for then, listed with the one shown
+//! selected, and drawn grey on the map until the row is closed; clicking another shows it.
+//! The rest of phase 4's trip planning has its places here, disabled.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use omp_core::geo;
@@ -39,9 +39,13 @@ pub enum Target {
     Row(usize),
     Remove(usize),
     Reverse,
+    /// *Optimize…*, which opens and closes the window.
+    OptimizeWindow,
+    MoreOptions,
     Avoid(u8),
     Optimize,
     CancelOptimize,
+    CloseOptimize,
     KeepFirst,
     KeepLast,
     RoundTrip,
@@ -91,12 +95,14 @@ impl RouteUi {
     ) -> Option<(camera::Vec2, f64)> {
         self.targets.clear();
         let mut edits = Vec::new();
-        self.header(ui, &mut edits);
-        ui.separator();
         if self.has_stops() {
             self.stop_rows(ui, &mut edits);
+            ui.add_space(4.0);
         }
-        self.options(ui, units, &mut edits);
+        self.options(ui, &mut edits);
+        // Beside the panel, level with its buttons.
+        let at = Pos2::new(ui.max_rect().right() + 12.0, ui.min_rect().top());
+        self.optimize_window(&ui.ctx().clone(), at, units, &mut edits);
         ui.separator();
         self.summary(ui, units, &mut edits);
         if self.route.is_some() {
@@ -135,26 +141,6 @@ impl RouteUi {
             }
         }
         fly
-    }
-
-    fn header(&mut self, ui: &mut egui::Ui, edits: &mut Vec<Edit>) {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Route").strong().color(INK));
-            if self.waiting.is_some() {
-                ui.add(egui::Spinner::new().size(12.0).color(WEAK));
-            }
-            if self.has_stops() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui
-                        .small_button("Clear")
-                        .on_hover_text("Remove every stop and the route");
-                    self.targets.push((Target::Clear, r.rect));
-                    if r.clicked() {
-                        edits.push(Edit::Clear);
-                    }
-                });
-            }
-        });
     }
 
     /// The stops, each with its handle, numbered pin, name and remove button.
@@ -244,110 +230,158 @@ impl RouteUi {
         }
     }
 
-    fn options(&mut self, ui: &mut egui::Ui, units: Units, edits: &mut Vec<Edit>) {
+    /// Clear, Reverse and *Optimize…* in a row, a spinner while a route is looked for, and
+    /// the avoid options under *More options*.
+    fn options(&mut self, ui: &mut egui::Ui, edits: &mut Vec<Edit>) {
+        let full = self.from.is_some() && self.to.is_some();
         ui.horizontal(|ui| {
-            let full = self.from.is_some() && self.to.is_some();
             let r = ui
-                .add_enabled(full, egui::Button::new("Reverse").small())
+                .add_enabled(self.has_stops(), egui::Button::new("Clear"))
+                .on_hover_text("Remove every stop and the route");
+            self.targets.push((Target::Clear, r.rect));
+            if r.clicked() {
+                edits.push(Edit::Clear);
+            }
+            let r = ui
+                .add_enabled(full, egui::Button::new("Reverse"))
                 .on_hover_text("Swap the start and the destination, and reverse the stops between");
             self.targets.push((Target::Reverse, r.rect));
             if r.clicked() {
                 edits.push(Edit::Reverse);
             }
-            ui.add_space(8.0);
-            for (flag, label) in [(TOLL, "Avoid tolls"), (FERRY, "Avoid ferries")] {
-                let mut on = self.avoid & flag != 0;
-                let r = ui.checkbox(&mut on, label);
-                self.targets.push((Target::Avoid(flag), r.rect));
-                if r.changed() {
-                    edits.push(Edit::Avoid(flag, on));
-                }
+            let r = ui
+                .add_enabled(
+                    full,
+                    egui::Button::new("Optimize…").selected(self.optimize_open),
+                )
+                .on_hover_text("Put the stops in the order that makes the trip quickest");
+            self.targets.push((Target::OptimizeWindow, r.rect));
+            if r.clicked() {
+                self.optimize_open = !self.optimize_open;
+            }
+            if self.waiting.is_some() {
+                ui.add(egui::Spinner::new().size(12.0).color(WEAK));
             }
         });
-        self.order_options(ui, units, edits);
-        ui.horizontal_wrapped(|ui| {
-            later(
-                ui,
-                "Depart at / Arrive by",
-                "Times along the route, with overnight and fuel stops",
-            );
-        });
+        let more = egui::CollapsingHeader::new(more_title(self.avoid))
+            .id_salt("route-more-options")
+            .show(ui, |ui| {
+                for (flag, label) in [(TOLL, "Avoid tolls"), (FERRY, "Avoid ferries")] {
+                    let mut on = self.avoid & flag != 0;
+                    let r = ui.checkbox(&mut on, label);
+                    self.targets.push((Target::Avoid(flag), r.rect));
+                    if r.changed() {
+                        edits.push(Edit::Avoid(flag, on));
+                    }
+                }
+            });
+        self.targets
+            .push((Target::MoreOptions, more.header_response.rect));
     }
 
-    /// *Optimize stop order* (or Cancel while it runs), the ends it keeps, and what it did
-    /// last, with Undo.
-    fn order_options(&mut self, ui: &mut egui::Ui, units: Units, edits: &mut Vec<Edit>) {
-        ui.horizontal_wrapped(|ui| {
-            if self.optimizing.is_some() {
-                let r = ui
-                    .button("Cancel")
-                    .on_hover_text("Stop looking for a quicker order");
-                self.targets.push((Target::CancelOptimize, r.rect));
-                if r.clicked() {
-                    edits.push(Edit::CancelOptimize);
+    /// The *Optimize stop order* window: the ends it keeps, Optimize (or Cancel while it
+    /// runs), and what it did last, with Undo. Closing it lets a search running finish.
+    fn optimize_window(
+        &mut self,
+        ctx: &egui::Context,
+        at: Pos2,
+        units: Units,
+        edits: &mut Vec<Edit>,
+    ) {
+        if !self.optimize_open {
+            return;
+        }
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new("Optimize stop order")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .pivot(Align2::LEFT_TOP)
+            .default_pos(at)
+            .show(ctx, |ui| {
+                ui.set_max_width(280.0);
+                let round = self.ends.round_trip;
+                let boxes = [
+                    (Target::KeepFirst, "Keep first stop", round),
+                    (Target::KeepLast, "Keep last stop", round),
+                    (Target::RoundTrip, "Round trip", false),
+                ];
+                for (target, label, disabled) in boxes {
+                    let ends = &mut self.ends;
+                    let on = match target {
+                        Target::KeepFirst => &mut ends.keep_first,
+                        Target::KeepLast => &mut ends.keep_last,
+                        _ => &mut ends.round_trip,
+                    };
+                    let r = ui.add_enabled(!disabled, egui::Checkbox::new(on, label));
+                    let r = match target {
+                        Target::RoundTrip => r.on_hover_text("End back at the first stop"),
+                        _ => r.on_disabled_hover_text(
+                            "A round trip starts and ends at the first stop",
+                        ),
+                    };
+                    self.targets.push((target, r.rect));
                 }
-            } else {
-                let r = ui
-                    .add_enabled(
-                        self.can_optimize(),
-                        egui::Button::new("Optimize stop order"),
-                    )
-                    .on_hover_text("Put the stops in the order that makes the trip quickest")
-                    .on_disabled_hover_text(
-                        "Needs a route with stops whose order can change: \
-                         three or more, or a round trip",
-                    );
-                self.targets.push((Target::Optimize, r.rect));
-                if r.clicked() {
-                    edits.push(Edit::Optimize);
+                if let Some(done) = &self.reordered {
+                    ui.add_space(4.0);
+                    let text = match done {
+                        Reordered::Saved { time_s, metres, .. } => {
+                            let d = distance_text(metres.abs(), units);
+                            let m = match *metres < 0.0 {
+                                true => format!("; {d} longer"),
+                                false => format!(", {d}"),
+                            };
+                            format!("Saves {}{m}", duration_text(time_s.max(0.0)))
+                        }
+                        Reordered::Already => "The stops are already in the quickest order.".into(),
+                        Reordered::Failed(e) => format!("Could not optimize: {e}"),
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(text).color(INK));
+                        if matches!(done, Reordered::Saved { .. }) {
+                            let r = ui
+                                .small_button("Undo")
+                                .on_hover_text("Put the stops back in their order before");
+                            self.targets.push((Target::Undo, r.rect));
+                            if r.clicked() {
+                                edits.push(Edit::Undo);
+                            }
+                        }
+                    });
                 }
-            }
-            let round = self.ends.round_trip;
-            let boxes = [
-                (Target::KeepFirst, "Keep first stop", round),
-                (Target::KeepLast, "Keep last stop", round),
-                (Target::RoundTrip, "Round trip", false),
-            ];
-            for (target, label, disabled) in boxes {
-                let ends = &mut self.ends;
-                let on = match target {
-                    Target::KeepFirst => &mut ends.keep_first,
-                    Target::KeepLast => &mut ends.keep_last,
-                    _ => &mut ends.round_trip,
-                };
-                let r = ui.add_enabled(!disabled, egui::Checkbox::new(on, label));
-                let r = match target {
-                    Target::RoundTrip => r.on_hover_text("End back at the first stop"),
-                    _ => r.on_disabled_hover_text("A round trip starts and ends at the first stop"),
-                };
-                self.targets.push((target, r.rect));
-            }
-        });
-        let Some(done) = &self.reordered else { return };
-        let text = match done {
-            Reordered::Saved { time_s, metres, .. } => {
-                let d = distance_text(metres.abs(), units);
-                let m = match *metres < 0.0 {
-                    true => format!("; {d} longer"),
-                    false => format!(", {d}"),
-                };
-                format!("Saves {}{m}", duration_text(time_s.max(0.0)))
-            }
-            Reordered::Already => "The stops are already in the quickest order.".into(),
-            Reordered::Failed(e) => format!("Could not optimize: {e}"),
-        };
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(text).color(INK));
-            if matches!(done, Reordered::Saved { .. }) {
-                let r = ui
-                    .small_button("Undo")
-                    .on_hover_text("Put the stops back in their order before");
-                self.targets.push((Target::Undo, r.rect));
-                if r.clicked() {
-                    edits.push(Edit::Undo);
-                }
-            }
-        });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if self.optimizing.is_some() {
+                        let r = ui
+                            .button("Cancel")
+                            .on_hover_text("Stop looking for a quicker order");
+                        self.targets.push((Target::CancelOptimize, r.rect));
+                        if r.clicked() {
+                            edits.push(Edit::CancelOptimize);
+                        }
+                        ui.add(egui::Spinner::new().size(12.0).color(WEAK));
+                    } else {
+                        let r = ui
+                            .add_enabled(self.can_optimize(), egui::Button::new("Optimize"))
+                            .on_hover_text("Reorder the stops, keeping the ends checked")
+                            .on_disabled_hover_text(
+                                "Needs a route with stops whose order can change: \
+                                 three or more, or a round trip",
+                            );
+                        self.targets.push((Target::Optimize, r.rect));
+                        if r.clicked() {
+                            edits.push(Edit::Optimize);
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let r = ui.button("Close");
+                        self.targets.push((Target::CloseOptimize, r.rect));
+                        close = r.clicked();
+                    });
+                });
+            });
+        self.optimize_open = open && !close;
     }
 
     /// The totals, each leg's row, and the notices.
@@ -562,6 +596,20 @@ impl RouteUi {
 /// Which route turn costs rank best when it is not the quickest (decisions 3 and 23):
 /// "With turn costs, the route via US 33 ranks best: 1 min slower on paper, 2 fewer
 /// U-turns."
+/// *More options*' title, which says what is avoided, so that closed it still says why a
+/// route leaves out tolls.
+fn more_title(avoid: u8) -> String {
+    let avoiding: Vec<&str> = [(TOLL, "tolls"), (FERRY, "ferries")]
+        .into_iter()
+        .filter(|(f, _)| avoid & f != 0)
+        .map(|(_, what)| what)
+        .collect();
+    match avoiding.is_empty() {
+        true => "More options".into(),
+        false => format!("More options: avoiding {}", avoiding.join(" and ")),
+    }
+}
+
 fn ranked_note(c: &Choices) -> Option<String> {
     if c.best == 0 {
         return None;

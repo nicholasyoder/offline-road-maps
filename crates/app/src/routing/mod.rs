@@ -336,6 +336,8 @@ pub struct RouteUi {
     pub avoid: u8,
     /// The ends *Optimize stop order* keeps.
     pub ends: Ends,
+    /// Whether the *Optimize stop order* window is open.
+    pub optimize_open: bool,
     /// While an optimize request is waiting: the stops before it, and those it sent.
     optimizing: Option<(Before, Vec<Place>)>,
     pub reordered: Option<Reordered>,
@@ -396,6 +398,7 @@ impl RouteUi {
                 keep_last: true,
                 round_trip: false,
             },
+            optimize_open: false,
             optimizing: None,
             reordered: None,
             next_id: 0,

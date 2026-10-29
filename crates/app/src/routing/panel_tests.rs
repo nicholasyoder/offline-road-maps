@@ -23,8 +23,11 @@ impl Ui {
         let (worker, tx) = Worker::stub();
         let mut cam = Camera::new([0.2, 0.3, 0.3, 0.4]);
         cam.size = [1000.0, 800.0];
+        // No animations: a section opened or closed is so on the next frame.
+        let ctx = egui::Context::default();
+        ctx.all_styles_mut(|s| s.animation_time = 0.0);
         Self {
-            ctx: egui::Context::default(),
+            ctx,
             r: RouteUi::with_worker(worker),
             tx,
             cam,
@@ -102,17 +105,18 @@ fn named(n: &str, lat: f64) -> Place {
 #[test]
 fn stop_list() {
     let mut u = Ui::new();
-    // No stops: the options only.
+    // No stops: the buttons, and More options closed.
     u.frame(Vec::new());
-    assert!(u.r.targets.iter().all(|t| matches!(
-        t.0,
-        Target::Reverse
-            | Target::Avoid(_)
-            | Target::Optimize
-            | Target::KeepFirst
-            | Target::KeepLast
-            | Target::RoundTrip
-    )));
+    let drawn: Vec<Target> = u.r.targets.iter().map(|t| t.0).collect();
+    assert_eq!(
+        drawn,
+        [
+            Target::Clear,
+            Target::Reverse,
+            Target::OptimizeWindow,
+            Target::MoreOptions
+        ]
+    );
 
     u.r.apply(StopAction::From, named("a", 40.0));
     u.r.apply(StopAction::Add, named("b", 40.2));
@@ -148,9 +152,21 @@ fn stop_list() {
     u.click(Target::Reverse);
     assert_eq!(u.names(), "bc");
     u.answer();
+    u.click(Target::MoreOptions);
+    u.frame(Vec::new());
     u.click(Target::Avoid(FERRY));
     assert_eq!(u.r.avoid, FERRY);
     u.answer();
+    // Closed again, it still says what is avoided.
+    u.click(Target::MoreOptions);
+    u.frame(Vec::new());
+    assert!(!u.drawn(Target::Avoid(FERRY)));
+    assert_eq!(more_title(u.r.avoid), "More options: avoiding ferries");
+    assert_eq!(
+        more_title(TOLL | FERRY),
+        "More options: avoiding tolls and ferries"
+    );
+    assert_eq!(more_title(0), "More options");
 
     // A step clicked is drawn over the route, and the view flies to it.
     u.click(Target::Step(1));
@@ -232,6 +248,12 @@ fn optimize_stop_order() {
     u.answer();
     assert!(u.r.can_optimize());
 
+    // The window opens beside the panel, off the page's own rows.
+    assert!(!u.drawn(Target::Optimize));
+    u.click(Target::OptimizeWindow);
+    u.frame(Vec::new());
+    assert!(u.r.optimize_open && u.at(Target::Optimize).x > 360.0);
+
     // Keeping both ends by default: b and c swap, and it says what that saved.
     u.click(Target::Optimize);
     u.frame(Vec::new());
@@ -300,6 +322,16 @@ fn optimize_stop_order() {
     assert!(matches!(&u.r.reordered, Some(Reordered::Failed(e)) if e.contains("stop 2")));
     assert!(u.r.route.is_some());
     assert_eq!(u.names(), "dcabd");
+
+    // Close, and Optimize… again, close and open it.
+    u.click(Target::CloseOptimize);
+    u.frame(Vec::new());
+    assert!(!u.r.optimize_open && !u.drawn(Target::Optimize));
+    u.click(Target::OptimizeWindow);
+    u.frame(Vec::new());
+    assert!(u.drawn(Target::Optimize));
+    u.click(Target::OptimizeWindow);
+    assert!(!u.r.optimize_open);
 }
 
 #[test]
