@@ -55,12 +55,6 @@ pub struct Inputs<'a> {
     pub pins: &'a PinsUi,
 }
 
-/// What the page asks of the app.
-#[derive(Default)]
-pub struct Out {
-    pub close: bool,
-}
-
 /// What the side panel tells the page about the map.
 pub struct Around<'a> {
     pub cam: &'a Camera,
@@ -73,7 +67,7 @@ enum Drag {
     /// The rectangle moves; the pointer holds it at this offset from its centre.
     Move([f64; 2]),
     /// A corner is resized; the opposite one stays at this world point.
-    Corner([f64; 2]),
+    Corner([f64; 2], bool),
 }
 
 /// The page drawn, as textures.
@@ -173,20 +167,7 @@ impl PrintUi {
     }
 
     /// The page in the side panel.
-    pub fn page_ui(&mut self, ui: &mut egui::Ui, settings: &mut Settings, around: &Around) -> Out {
-        let mut out = Out::default();
-        ui.horizontal(|ui| {
-            let title = match self.kind {
-                Kind::Map => "Print map",
-                Kind::Directions => "Print directions",
-            };
-            ui.label(egui::RichText::new(title).strong().size(15.0).color(INK));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Close").clicked() {
-                    out.close = true;
-                }
-            });
-        });
+    pub fn page_ui(&mut self, ui: &mut egui::Ui, settings: &mut Settings, around: &Around) {
         ui.add_space(4.0);
         ui.label(egui::RichText::new("Label").color(WEAK).size(12.0));
         ui.add(
@@ -257,17 +238,16 @@ impl PrintUi {
             );
         }
         ui.add_space(6.0);
-        self.preview_ui(ui, settings);
+        self.preview_ui(ui);
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             side::later(ui, "Print…", "Step 4.10: to a printer");
             side::later(ui, "Save as PDF…", "Step 4.10: to a file");
         });
-        out
     }
 
     /// The thumbnail, or what is wrong.
-    fn preview_ui(&mut self, ui: &mut egui::Ui, settings: &Settings) {
+    fn preview_ui(&mut self, ui: &mut egui::Ui) {
         let busy = self
             .asked
             .is_some_and(|(sig, _)| sig != self.preview.signature)
@@ -287,7 +267,12 @@ impl PrintUi {
             return;
         };
         let size = tex.size_vec2();
-        let w = ui.available_width().min(size.x.max(1.0) * 0.6);
+        // Never taller than what is left above the buttons under it.
+        let room = (ui.available_height() - 40.0).max(60.0);
+        let w = ui
+            .available_width()
+            .min(size.x.max(1.0) * 0.6)
+            .min(room * size.x / size.y.max(1.0));
         let shown = Vec2::new(w, w * size.y / size.x);
         let (rect, resp) = ui.allocate_exact_size(shown, Sense::click());
         ui.painter()
@@ -309,16 +294,6 @@ impl PrintUi {
                 INK,
             );
         }
-        let pages = self.preview.pages.len();
-        let caption = match (self.kind, pages) {
-            (Kind::Directions, n) => format!(
-                "{n} page{}, {} on paper",
-                if n == 1 { "" } else { "s" },
-                settings.paper.name()
-            ),
-            _ => format!("{} on paper", settings.paper.name()),
-        };
-        ui.label(egui::RichText::new(caption).color(WEAK).size(12.0));
         if resp
             .on_hover_text("Click to see the page larger")
             .on_hover_cursor(CursorIcon::PointingHand)
@@ -484,32 +459,37 @@ impl PrintUi {
         });
         let world =
             |p: Pos2| cam.screen_to_world([f64::from(p.x - origin.x), f64::from(p.y - origin.y)]);
+        // The opposite corner, and whether the pair runs from top right to bottom left.
         let corner_at = |p: Pos2| {
             [
-                (r.left_top(), r.right_bottom()),
-                (r.right_top(), r.left_bottom()),
-                (r.left_bottom(), r.right_top()),
-                (r.right_bottom(), r.left_top()),
+                (r.left_top(), r.right_bottom(), false),
+                (r.right_top(), r.left_bottom(), true),
+                (r.left_bottom(), r.right_top(), true),
+                (r.right_bottom(), r.left_top(), false),
             ]
             .into_iter()
-            .find(|(c, _)| c.distance(p) <= GRAB)
-            .map(|(_, opposite)| opposite)
+            .find(|(c, ..)| c.distance(p) <= GRAB)
+            .map(|(_, opposite, anti)| (opposite, anti))
+        };
+        let resize = |anti: bool| match anti {
+            true => CursorIcon::ResizeNeSw,
+            false => CursorIcon::ResizeNwSe,
         };
         if self.drag.is_none() {
             let Some(p) = pos.filter(|_| resp.hovered()) else {
                 return false;
             };
             let on_corner = corner_at(p);
-            if on_corner.is_some() {
-                ctx.set_cursor_icon(CursorIcon::ResizeNwSe);
+            if let Some((_, anti)) = on_corner {
+                ctx.set_cursor_icon(resize(anti));
             } else if r.contains(p) {
                 ctx.set_cursor_icon(CursorIcon::Grab);
             }
             if !pressed {
                 return false;
             }
-            self.drag = if let Some(opposite) = on_corner {
-                Some(Drag::Corner(world(opposite)))
+            self.drag = if let Some((opposite, anti)) = on_corner {
+                Some(Drag::Corner(world(opposite), anti))
             } else if r.contains(p) {
                 let w = world(p);
                 Some(Drag::Move([w[0] - area.center[0], w[1] - area.center[1]]))
@@ -532,8 +512,8 @@ impl PrintUi {
                     width: area.width,
                 }
             }
-            Some(Drag::Corner(a)) => {
-                ctx.set_cursor_icon(CursorIcon::ResizeNwSe);
+            Some(Drag::Corner(a, anti)) => {
+                ctx.set_cursor_icon(resize(anti));
                 let (dx, dy) = (w[0] - a[0], w[1] - a[1]);
                 let aspect = layout.aspect();
                 let [lo, hi] = Area::width_range(&layout);

@@ -27,6 +27,14 @@ pub enum Page {
 
 impl Page {
     pub const ALL: [Self; 4] = [Self::Search, Self::Route, Self::Trips, Self::Layers];
+    /// The tabs, Print last.
+    pub const TABS: [Self; 5] = [
+        Self::Search,
+        Self::Route,
+        Self::Trips,
+        Self::Layers,
+        Self::Print,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -66,10 +74,11 @@ pub fn later(ui: &mut egui::Ui, label: &str, what: &str) {
 }
 
 /// The row of tabs. Returns where each was drawn, for the tests.
-pub fn tabs(ui: &mut egui::Ui, page: &mut Page) -> [Rect; 4] {
-    let mut rects = [Rect::NOTHING; 4];
+pub fn tabs(ui: &mut egui::Ui, page: &mut Page) -> [Rect; 5] {
+    let mut rects = [Rect::NOTHING; 5];
     ui.horizontal(|ui| {
-        for (i, p) in Page::ALL.into_iter().enumerate() {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (i, p) in Page::TABS.into_iter().enumerate() {
             rects[i] = ui.selectable_value(page, p, p.name()).rect;
         }
     });

@@ -21,7 +21,7 @@ struct Window {
     size: Vec2,
     /// The map's rectangle this frame and the one before.
     map: Rect,
-    tabs: [Rect; 4],
+    tabs: [Rect; 5],
     hide: Rect,
     /// Where trips and pushpins are kept, as next to the executable.
     dir: tempfile::TempDir,
@@ -57,7 +57,7 @@ impl Window {
             cam,
             size: Vec2::new(1200.0, 800.0),
             map: Rect::NOTHING,
-            tabs: [Rect::NOTHING; 4],
+            tabs: [Rect::NOTHING; 5],
             hide: Rect::NOTHING,
         }
     }

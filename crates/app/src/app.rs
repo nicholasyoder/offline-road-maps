@@ -1731,7 +1731,7 @@ struct SideOut {
     trips: trips::PageOut,
     /// Where the tabs and the button that hides the panel were drawn, for the tests.
     #[cfg_attr(not(test), allow(dead_code))]
-    tabs: [Rect; 4],
+    tabs: [Rect; 5],
     #[cfg_attr(not(test), allow(dead_code))]
     hide: Rect,
 }
@@ -1772,7 +1772,7 @@ fn side_panel(
         action: None,
         pin: None,
         trips: trips::PageOut::default(),
-        tabs: [Rect::NOTHING; 4],
+        tabs: [Rect::NOTHING; 5],
         hide: Rect::NOTHING,
     };
     let units = cfg.units.unwrap_or(p.pack_units);
@@ -1886,7 +1886,13 @@ fn side_panel(
             }
             // More room above the tabs than below them.
             ui.add_space(5.0);
+            let before = *p.page;
             o.tabs = side::tabs(ui, p.page);
+            // The Print tab opens the print page as the menu does.
+            if *p.page == Page::Print && before != Page::Print {
+                *p.page = before;
+                open_print(&mut p, print_cfg, printui::Kind::Map);
+            }
             ui.add(egui::Separator::default().spacing(2.0));
             ui.add_space(3.0);
             match p.page {
@@ -1923,9 +1929,7 @@ fn side_panel(
                         has_route: p.routing.route.is_some(),
                         route_bounds: p.routing.route_bounds(),
                     };
-                    if p.print.page_ui(ui, print_cfg, &around).close {
-                        *p.page = p.print.back;
-                    }
+                    p.print.page_ui(ui, print_cfg, &around);
                 }
             }
         });
