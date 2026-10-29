@@ -35,8 +35,9 @@ impl Capabilities {
     }
 }
 
-/// The dpi pages are drawn at for a printer whose resolution is `native`: that, up to 300
-/// unless `OMP_PRINT_DPI` says otherwise (step 4.10 measures whether more helps).
+/// The dpi pages are drawn at for a printer whose resolution is `native`: that, or 300 when
+/// it does not say (CUPS does not), up to 600 for memory (a Letter page is 100 MiB there).
+/// `OMP_PRINT_DPI` overrides it, for comparisons.
 pub fn dpi_for(native: Option<u32>) -> f64 {
     if let Some(v) = std::env::var("OMP_PRINT_DPI")
         .ok()
@@ -45,10 +46,11 @@ pub fn dpi_for(native: Option<u32>) -> f64 {
     {
         return v;
     }
-    f64::from(native.unwrap_or(300)).clamp(150.0, DEFAULT_DPI)
+    f64::from(native.unwrap_or(DEFAULT_DPI as u32)).clamp(72.0, MAX_DPI)
 }
 
 const DEFAULT_DPI: f64 = 300.0;
+const MAX_DPI: f64 = 600.0;
 
 #[cfg(target_os = "linux")]
 mod cups;
