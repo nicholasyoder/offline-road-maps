@@ -969,8 +969,14 @@ impl egui_wgpu::CallbackTrait for MapCallback {
 
 /// A device without a window, for `--render`.
 pub fn headless_device() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), String> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    // As the window does (main.rs): Intel's Vulkan driver crashes on Windows.
+    #[cfg(windows)]
+    if wgpu::Backends::from_env().is_none() {
+        desc.backends = wgpu::Backends::DX12 | wgpu::Backends::GL;
+    }
+    let instance = wgpu::Instance::new(desc);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
