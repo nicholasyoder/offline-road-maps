@@ -1345,7 +1345,7 @@ impl App {
                         print: &mut self.print,
                         exe_dir: &self.exe_dir,
                     };
-                    open_print(&mut parts, &self.cfg.print, printui::Kind::Map);
+                    open_print(ctx, &mut parts, &self.cfg.print, printui::Kind::Map);
                 }
             }
             None => {}
@@ -1788,7 +1788,7 @@ fn side_panel(
     };
     if let Some(kind) = print_kind {
         side.open = true;
-        open_print(&mut p, &cfg.print, kind);
+        open_print(&ctx, &mut p, &cfg.print, kind);
     }
     o.out = p.search.poll(recent);
     if p.search.shortcut(&ctx) {
@@ -1891,7 +1891,7 @@ fn side_panel(
             // The Print tab opens the print page as the menu does.
             if *p.page == Page::Print && before != Page::Print {
                 *p.page = before;
-                open_print(&mut p, print_cfg, printui::Kind::Map);
+                open_print(&ctx, &mut p, print_cfg, printui::Kind::Map);
             }
             ui.add(egui::Separator::default().spacing(2.0));
             ui.add_space(3.0);
@@ -1941,7 +1941,12 @@ fn side_panel(
 }
 
 /// Opens the print page on `kind`, to go back to the page it was opened from.
-fn open_print(p: &mut Parts<'_>, settings: &crate::print::Settings, kind: printui::Kind) {
+fn open_print(
+    ctx: &egui::Context,
+    p: &mut Parts<'_>,
+    settings: &crate::print::Settings,
+    kind: printui::Kind,
+) {
     if *p.page != Page::Print {
         p.print.back = *p.page;
     }
@@ -1952,7 +1957,7 @@ fn open_print(p: &mut Parts<'_>, settings: &crate::print::Settings, kind: printu
         has_route: p.routing.route.is_some(),
         route_bounds: p.routing.route_bounds(),
     };
-    p.print.open(kind, &around, settings);
+    p.print.open(ctx, kind, &around, settings);
 }
 
 /// Moves the camera with the map's left edge, which the side panel moves when it opens,

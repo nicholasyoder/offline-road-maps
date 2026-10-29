@@ -103,8 +103,12 @@ pub struct PrintUi {
     big: Option<usize>,
     /// The printers, read when the page opens.
     printers: Vec<Printer>,
+    /// The printers being asked for, off the UI thread (the system can be slow to answer).
+    listing: Option<Receiver<(Option<String>, Vec<Printer>)>>,
     /// What the chosen printer can do, and for which printer.
     caps: Option<(String, Capabilities)>,
+    /// A printer being asked what it can do.
+    asking: Option<(String, Receiver<Capabilities>)>,
     /// Why printing is not possible on this system.
     unavailable: Option<String>,
     /// Save as PDF's file browser, and the folder it last saved in.
@@ -141,7 +145,9 @@ impl PrintUi {
             preview: Preview::default(),
             big: None,
             printers: Vec::new(),
+            listing: None,
             caps: None,
+            asking: None,
             unavailable: None,
             browser: None,
             pdf_dir: None,
@@ -153,7 +159,7 @@ impl PrintUi {
 
     /// Opens the page for `kind`: the map fitted to the route if there is one, else to what
     /// the map shows.
-    pub fn open(&mut self, kind: Kind, around: &Around, settings: &Settings) {
+    pub fn open(&mut self, ctx: &egui::Context, kind: Kind, around: &Around, settings: &Settings) {
         self.kind = kind;
         self.big = None;
         self.drag = None;
@@ -161,15 +167,31 @@ impl PrintUi {
         self.asked = None;
         self.preview.signature = 0;
         self.status = None;
-        self.unavailable = printer::unavailable();
-        log::info!("print: listing printers");
-        self.printers = if self.unavailable.is_none() {
-            printer::list()
-        } else {
-            Vec::new()
-        };
-        log::info!("print: {} printers", self.printers.len());
+        self.unavailable = None;
+        self.printers = Vec::new();
         self.caps = None;
+        self.asking = None;
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        self.listing = Some(rx);
+        let spawned = std::thread::Builder::new()
+            .name("printers".into())
+            .spawn(move || {
+                log::info!("print: listing printers");
+                let unavailable = printer::unavailable();
+                let printers = if unavailable.is_none() {
+                    printer::list()
+                } else {
+                    Vec::new()
+                };
+                log::info!("print: {} printers", printers.len());
+                let _ = tx.send((unavailable, printers));
+                ctx.request_repaint();
+            });
+        if spawned.is_err() {
+            self.listing = None;
+            self.unavailable = Some("Printers could not be listed.".into());
+        }
         let [x0, y0, x1, y1] = around.cam.visible();
         self.wide = match around.route_bounds {
             Some(b) => b[2] - b[0] >= b[3] - b[1],
@@ -219,15 +241,20 @@ impl PrintUi {
                 .hint_text("Printed at the top of the page"),
         );
         ui.add_space(4.0);
+        self.poll_printers();
         let chosen = self.chosen_printer(settings);
-        let caps = self.capabilities(chosen.as_deref());
+        let (caps, caps_ready) = self.capabilities(ui.ctx(), chosen.as_deref());
+        let loading = self.listing.is_some();
         egui::Grid::new("print-settings")
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
                 ui.label("Printer");
                 ui.horizontal(|ui| {
-                    if let Some(reason) = &self.unavailable {
+                    if loading {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("Loading printers…").color(WEAK));
+                    } else if let Some(reason) = &self.unavailable {
                         ui.label(egui::RichText::new(reason).color(WEAK).size(12.0));
                     } else if self.printers.is_empty() {
                         ui.label(egui::RichText::new("No printers found").color(WEAK));
@@ -342,7 +369,11 @@ impl PrintUi {
         ui.add_space(6.0);
         let working = self.output.is_some();
         ui.horizontal_wrapped(|ui| {
-            let can = self.unavailable.is_none() && chosen.is_some() && !working;
+            let can = self.unavailable.is_none()
+                && chosen.is_some()
+                && caps_ready
+                && !loading
+                && !working;
             let print = ui.add_enabled(can, egui::Button::new("Print"));
             let print = match (&self.unavailable, chosen.is_some()) {
                 (Some(why), _) => print.on_disabled_hover_text(why),
@@ -390,20 +421,51 @@ impl PrintUi {
             .map(|p| p.name.clone())
     }
 
-    /// What `printer` can do, asked once per printer.
-    fn capabilities(&mut self, printer: Option<&str>) -> Capabilities {
-        let Some(name) = printer else {
-            return Capabilities::default();
-        };
-        if self.caps.as_ref().is_none_or(|(n, _)| n != name) {
-            log::info!("print: asking {name} what it can do");
-            self.caps = Some((name.to_owned(), printer::capabilities(name)));
-            log::info!("print: {:?}", self.caps.as_ref().map(|c| &c.1));
+    /// Takes the printer list from the thread that is reading it.
+    fn poll_printers(&mut self) {
+        if let Some(rx) = &self.listing
+            && let Ok((unavailable, printers)) = rx.try_recv()
+        {
+            self.unavailable = unavailable;
+            self.printers = printers;
+            self.listing = None;
         }
-        self.caps
-            .as_ref()
-            .map(|(_, c)| c.clone())
-            .unwrap_or_default()
+    }
+
+    /// What `printer` can do, asked once per printer on a thread of its own; all the sizes
+    /// until it answers, and whether it has.
+    fn capabilities(&mut self, ctx: &egui::Context, printer: Option<&str>) -> (Capabilities, bool) {
+        let Some(name) = printer else {
+            return (Capabilities::default(), true);
+        };
+        if let Some((n, rx)) = &self.asking
+            && let Ok(c) = rx.try_recv()
+        {
+            log::info!("print: {n}: {c:?}");
+            self.caps = Some((n.clone(), c));
+            self.asking = None;
+        }
+        if let Some((n, c)) = &self.caps
+            && n == name
+        {
+            return (c.clone(), true);
+        }
+        if self.asking.as_ref().is_none_or(|(n, _)| n != name) {
+            log::info!("print: asking {name} what it can do");
+            let (tx, rx) = mpsc::channel();
+            let (owned, ctx) = (name.to_owned(), ctx.clone());
+            let spawned = std::thread::Builder::new()
+                .name("printer capabilities".into())
+                .spawn(move || {
+                    let _ = tx.send(printer::capabilities(&owned));
+                    ctx.request_repaint();
+                });
+            if spawned.is_err() {
+                return (Capabilities::default(), true);
+            }
+            self.asking = Some((name.to_owned(), rx));
+        }
+        (Capabilities::default(), false)
     }
 
     /// The thumbnail, or what is wrong.
@@ -863,7 +925,7 @@ impl PrintUi {
             let Some(name) = self.chosen_printer(&inputs.settings) else {
                 return;
             };
-            let caps = self.capabilities(Some(&name));
+            let (caps, _) = self.capabilities(ctx, Some(&name));
             let s = &inputs.settings;
             let landscape =
                 self.kind == Kind::Map && self.layout(s).page[0] > self.layout(s).page[1];
@@ -1150,6 +1212,7 @@ mod tests {
             let settings = Settings::default();
             let mut print = PrintUi::new();
             print.open(
+                &egui::Context::default(),
                 Kind::Map,
                 &Around {
                     cam: &cam,
