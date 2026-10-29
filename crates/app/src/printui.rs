@@ -4,7 +4,8 @@
 //! with [`crate::pages`] as the printer will get it, only less sharp.
 //!
 //! *Print map* and *Print directions* both open this page; the directions have no rectangle.
-//! Step 4.10 adds *Print* and *Save as PDF*.
+//! *Print* sends the pages to the chosen printer and *Save as PDF* writes them to a file (step
+//! 4.10), both from a second worker that draws them at the printer's resolution, one page at a time.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -16,14 +17,16 @@ use eframe::egui::{
 };
 
 use crate::camera::Camera;
+use crate::files::{self, Browser, Mode, Outcome};
 use crate::layers::Layers;
 use crate::packs;
 use crate::pages::{self, Egui, MapPage, Page as Printed};
+use crate::pdf::Pdf;
 use crate::pins::PinsUi;
 use crate::print::{Area, Layout, Orientation, Paper, Settings, TextSize};
+use crate::printer::{self, Capabilities, Printer};
 use crate::routing::{DirectionsDoc, RouteUi};
 use crate::scale::Units;
-use crate::side;
 use crate::side::Page;
 use crate::snapshot::Gpu;
 use crate::style::{Style, StyleFile};
@@ -98,6 +101,28 @@ pub struct PrintUi {
     preview: Preview,
     /// The large preview, open at this page.
     big: Option<usize>,
+    /// The printers, read when the page opens.
+    printers: Vec<Printer>,
+    /// What the chosen printer can do, and for which printer.
+    caps: Option<(String, Capabilities)>,
+    /// Why printing is not possible on this system.
+    unavailable: Option<String>,
+    /// Save as PDF's file browser, and the folder it last saved in.
+    browser: Option<Browser>,
+    pdf_dir: Option<PathBuf>,
+    /// *Print* was clicked and waits for the next tick, which has the page's inputs.
+    want_print: bool,
+    /// The worker making a printout, and what it was asked.
+    output: Option<(Worker, u64)>,
+    /// What the last printout did.
+    status: Option<Result<String, String>>,
+}
+
+/// Where a printout goes.
+enum Output {
+    Preview,
+    Pdf(PathBuf),
+    Print(printer::Request),
 }
 
 impl PrintUi {
@@ -115,6 +140,14 @@ impl PrintUi {
             asked: None,
             preview: Preview::default(),
             big: None,
+            printers: Vec::new(),
+            caps: None,
+            unavailable: None,
+            browser: None,
+            pdf_dir: None,
+            want_print: false,
+            output: None,
+            status: None,
         }
     }
 
@@ -127,6 +160,14 @@ impl PrintUi {
         self.seen = None;
         self.asked = None;
         self.preview.signature = 0;
+        self.status = None;
+        self.unavailable = printer::unavailable();
+        self.printers = if self.unavailable.is_none() {
+            printer::list()
+        } else {
+            Vec::new()
+        };
+        self.caps = None;
         let [x0, y0, x1, y1] = around.cam.visible();
         self.wide = match around.route_bounds {
             Some(b) => b[2] - b[0] >= b[3] - b[1],
@@ -176,16 +217,51 @@ impl PrintUi {
                 .hint_text("Printed at the top of the page"),
         );
         ui.add_space(4.0);
+        let chosen = self.chosen_printer(settings);
+        let caps = self.capabilities(chosen.as_deref());
         egui::Grid::new("print-settings")
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
+                ui.label("Printer");
+                ui.horizontal(|ui| {
+                    if let Some(reason) = &self.unavailable {
+                        ui.label(egui::RichText::new(reason).color(WEAK).size(12.0));
+                    } else if self.printers.is_empty() {
+                        ui.label(egui::RichText::new("No printers found").color(WEAK));
+                    } else {
+                        egui::ComboBox::from_id_salt("print-printer")
+                            .selected_text(chosen.clone().unwrap_or_default())
+                            .width(180.0)
+                            .show_ui(ui, |ui| {
+                                for p in &self.printers {
+                                    let on = chosen.as_deref() == Some(p.name.as_str());
+                                    if ui.selectable_label(on, &p.name).clicked() {
+                                        settings.printer = p.name.clone();
+                                    }
+                                }
+                            });
+                        if printer::HAS_PROPERTIES
+                            && let Some(name) = &chosen
+                            && ui
+                                .button("Properties…")
+                                .on_hover_text("The printer driver's own settings")
+                                .clicked()
+                            && let Err(e) = printer::properties(name)
+                        {
+                            self.status = Some(Err(e));
+                        }
+                    }
+                });
+                ui.end_row();
                 ui.label("Paper");
                 egui::ComboBox::from_id_salt("print-paper")
                     .selected_text(settings.paper.name())
                     .show_ui(ui, |ui| {
                         for p in Paper::ALL {
-                            ui.selectable_value(&mut settings.paper, p, p.name());
+                            if caps.takes(p) || p == settings.paper {
+                                ui.selectable_value(&mut settings.paper, p, p.name());
+                            }
                         }
                     });
                 ui.end_row();
@@ -237,13 +313,93 @@ impl PrintUi {
                 .size(12.0),
             );
         }
+        if chosen.is_some() && !caps.takes(settings.paper) {
+            ui.label(
+                egui::RichText::new(format!(
+                    "The printer does not list {}.",
+                    settings.paper.name()
+                ))
+                .color(Color32::from_rgb(180, 30, 30))
+                .size(12.0),
+            );
+        }
+        if let Some(m) = caps.margin_pt
+            && m > crate::print::MARGIN_PT + 0.5
+        {
+            ui.label(
+                egui::RichText::new(format!(
+                    "This printer cannot print the outer {:.2} in; the page's edge is trimmed.",
+                    m / 72.0
+                ))
+                .color(WEAK)
+                .size(12.0),
+            );
+        }
         ui.add_space(6.0);
         self.preview_ui(ui);
         ui.add_space(6.0);
+        let working = self.output.is_some();
         ui.horizontal_wrapped(|ui| {
-            side::later(ui, "Print…", "Step 4.10: to a printer");
-            side::later(ui, "Save as PDF…", "Step 4.10: to a file");
+            let can = self.unavailable.is_none() && chosen.is_some() && !working;
+            let print = ui.add_enabled(can, egui::Button::new("Print"));
+            let print = match (&self.unavailable, chosen.is_some()) {
+                (Some(why), _) => print.on_disabled_hover_text(why),
+                (None, false) => print.on_disabled_hover_text("There is no printer to print on"),
+                _ => print,
+            };
+            if print.clicked() {
+                self.want_print = true;
+            }
+            if ui
+                .add_enabled(!working, egui::Button::new("Save as PDF…"))
+                .clicked()
+            {
+                let dir = self.pdf_dir.clone().unwrap_or_else(exe_dir);
+                let name = match (self.label.trim(), self.kind) {
+                    ("", Kind::Map) => "Map".to_owned(),
+                    ("", Kind::Directions) => "Directions".to_owned(),
+                    (l, _) => files::file_name(l),
+                };
+                self.browser =
+                    Some(Browser::new("Save as PDF", Mode::Save, &dir, &name).with_ext("pdf"));
+            }
         });
+        if working {
+            ui.label(egui::RichText::new("Drawing the pages and sending them…").color(WEAK));
+        }
+        match &self.status {
+            Some(Ok(m)) => {
+                ui.label(egui::RichText::new(m).color(INK));
+            }
+            Some(Err(e)) => {
+                ui.label(egui::RichText::new(e).color(Color32::from_rgb(180, 30, 30)));
+            }
+            None => {}
+        }
+    }
+
+    /// The printer in use: the one chosen if it still exists, else the system's default, else
+    /// the first.
+    fn chosen_printer(&self, settings: &Settings) -> Option<String> {
+        let by = |f: &dyn Fn(&Printer) -> bool| self.printers.iter().find(|p| f(p));
+        by(&|p| p.name == settings.printer)
+            .or_else(|| by(&|p| p.is_default))
+            .or_else(|| self.printers.first())
+            .map(|p| p.name.clone())
+    }
+
+    /// What `printer` can do, asked once per printer.
+    fn capabilities(&mut self, printer: Option<&str>) -> Capabilities {
+        let Some(name) = printer else {
+            return Capabilities::default();
+        };
+        if self.caps.as_ref().is_none_or(|(n, _)| n != name) {
+            self.caps = Some((name.to_owned(), printer::capabilities(name)));
+        }
+        self.caps
+            .as_ref()
+            .map(|(_, c)| c.clone())
+            .unwrap_or_default()
     }
 
     /// The thumbnail, or what is wrong.
@@ -595,35 +751,47 @@ impl PrintUi {
         if self.asked.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+        self.outputs(ctx, inputs);
     }
 
-    fn ask(&mut self, ctx: &egui::Context, inputs: &Inputs, sig: u64) {
+    /// The page as `dpi` draws it, or why it cannot be.
+    fn make(&self, inputs: &Inputs, dpi: f64) -> Result<What, String> {
         let s = &inputs.settings;
-        let what = match self.kind {
+        match self.kind {
             Kind::Map => {
                 let layout = self.layout(s);
-                let Some(area) = self.area else { return };
-                What::Map(Box::new(MapPage {
+                let area = self.area.ok_or("no area chosen")?;
+                Ok(What::Map(Box::new(MapPage {
                     layout,
                     area,
                     label: self.label.clone(),
                     units: inputs.units,
                     layers: inputs.layers,
-                    dpi: PREVIEW_DPI,
+                    dpi,
                     msaa: inputs.msaa,
                     lines: inputs.routing.print_lines(),
                     stops: inputs.routing.stop_marks(),
                     pins: inputs.pins.shown_pins(),
-                }))
+                })))
             }
             Kind::Directions => {
-                let Some(doc) = inputs.routing.directions_doc(&self.label, inputs.units) else {
-                    self.preview.error = Some("there is no route to print".into());
-                    self.preview.pages.clear();
-                    self.preview.signature = sig;
-                    return;
-                };
-                What::Directions(Box::new(doc), s.paper, s.text)
+                let doc = inputs
+                    .routing
+                    .directions_doc(&self.label, inputs.units)
+                    .ok_or("there is no route to print")?;
+                Ok(What::Directions(Box::new(doc), s.paper, s.text, dpi))
+            }
+        }
+    }
+
+    fn ask(&mut self, ctx: &egui::Context, inputs: &Inputs, sig: u64) {
+        let what = match self.make(inputs, PREVIEW_DPI) {
+            Ok(w) => w,
+            Err(e) => {
+                self.preview.error = Some(e);
+                self.preview.pages.clear();
+                self.preview.signature = sig;
+                return;
             }
         };
         self.seq += 1;
@@ -633,8 +801,86 @@ impl PrintUi {
             pack: inputs.pack.to_owned(),
             style: inputs.style.clone(),
             what,
+            output: Output::Preview,
             ctx: ctx.clone(),
         });
+    }
+
+    /// Starts a printout: the pages drawn at the printer's resolution, one at a time, and
+    /// sent to `output`.
+    fn start_output(&mut self, ctx: &egui::Context, inputs: &Inputs, output: Output, dpi: f64) {
+        let what = match self.make(inputs, dpi) {
+            Ok(w) => w,
+            Err(e) => {
+                self.status = Some(Err(e));
+                return;
+            }
+        };
+        self.seq += 1;
+        self.status = None;
+        let worker = Worker::start();
+        worker.send(Job {
+            seq: self.seq,
+            pack: inputs.pack.to_owned(),
+            style: inputs.style.clone(),
+            what,
+            output,
+            ctx: ctx.clone(),
+        });
+        self.output = Some((worker, self.seq));
+        ctx.request_repaint_after(Duration::from_millis(100));
+    }
+
+    /// Print was clicked, the file browser answered, or a printout finished.
+    fn outputs(&mut self, ctx: &egui::Context, inputs: &Inputs) {
+        if let Some((worker, seq)) = &self.output
+            && let Some(reply) = worker.try_reply()
+            && reply.seq == *seq
+        {
+            self.status = Some(reply.result.map(|d| d.note));
+            self.output = None;
+            ctx.request_repaint();
+        } else if self.output.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+        if let Some(b) = &mut self.browser {
+            match b.ui(ctx) {
+                Some(Outcome::Chosen(path)) => {
+                    self.browser = None;
+                    self.pdf_dir = path.parent().map(Path::to_path_buf);
+                    let dpi = printer::dpi_for(None);
+                    self.start_output(ctx, inputs, Output::Pdf(path), dpi);
+                }
+                Some(Outcome::Cancelled) => self.browser = None,
+                None => {}
+            }
+        }
+        if std::mem::take(&mut self.want_print) && self.output.is_none() {
+            let Some(name) = self.chosen_printer(&inputs.settings) else {
+                return;
+            };
+            let caps = self.capabilities(Some(&name));
+            let s = &inputs.settings;
+            let landscape =
+                self.kind == Kind::Map && self.layout(s).page[0] > self.layout(s).page[1];
+            let request = printer::Request {
+                printer: name,
+                paper: s.paper,
+                landscape,
+                copies: s.copies,
+                title: if self.label.trim().is_empty() {
+                    "Offline Road Maps".into()
+                } else {
+                    self.label.trim().to_owned()
+                },
+            };
+            self.start_output(
+                ctx,
+                inputs,
+                Output::Print(request),
+                printer::dpi_for(caps.dpi),
+            );
+        }
     }
 
     /// What the page is made from, as a number: when it changes the preview is out of date.
@@ -677,7 +923,74 @@ impl PrintUi {
 
 enum What {
     Map(Box<MapPage>),
-    Directions(Box<DirectionsDoc>, Paper, TextSize),
+    /// The document, its paper and text size, and the dpi.
+    Directions(Box<DirectionsDoc>, Paper, TextSize, f64),
+}
+
+/// Where the pages of a job go as they are drawn.
+enum Sink {
+    Collect(Vec<Printed>),
+    Pdf(Pdf<std::io::BufWriter<std::fs::File>>, PathBuf),
+    Spool(printer::Spool),
+}
+
+impl Sink {
+    fn new(output: Output, title: &str) -> Result<Self, String> {
+        Ok(match output {
+            Output::Preview => Self::Collect(Vec::new()),
+            Output::Pdf(path) => {
+                let file = std::fs::File::create(&path)
+                    .map_err(|e| files::save_error(path.parent().unwrap_or(Path::new(".")), &e))?;
+                let title = if title.is_empty() {
+                    "Offline Road Maps"
+                } else {
+                    title
+                };
+                let pdf = Pdf::new(std::io::BufWriter::new(file), title)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                Self::Pdf(pdf, path)
+            }
+            Output::Print(request) => Self::Spool(printer::Spool::open(&request)?),
+        })
+    }
+
+    fn add(&mut self, page: Printed) -> Result<(), String> {
+        match self {
+            Self::Collect(v) => {
+                v.push(page);
+                Ok(())
+            }
+            Self::Pdf(pdf, path) => pdf
+                .page(&page.rgb, page.size, page.size_pt)
+                .map_err(|e| format!("{}: {e}", path.display())),
+            Self::Spool(spool) => spool.page(&page),
+        }
+    }
+
+    /// Closes the document; the pages kept (a preview's) and what to tell the user.
+    fn finish(self) -> Result<(Vec<Printed>, String), String> {
+        match self {
+            Self::Collect(v) => Ok((v, String::new())),
+            Self::Pdf(pdf, path) => {
+                let w = pdf
+                    .finish()
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                w.into_inner()
+                    .map_err(|e| format!("{}: {e}", path.display()))?
+                    .sync_all()
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                Ok((Vec::new(), format!("Saved {}.", path.display())))
+            }
+            Self::Spool(spool) => Ok((Vec::new(), spool.finish()?)),
+        }
+    }
+}
+
+fn exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 struct Job {
@@ -685,6 +998,7 @@ struct Job {
     pack: PathBuf,
     style: StyleFile,
     what: What,
+    output: Output,
     ctx: egui::Context,
 }
 
@@ -762,8 +1076,12 @@ impl WorkerState {
         let (gpu, egui_pass) = self.gpu.as_mut().ok_or("no GPU")?;
         let opened = &self.pack.as_ref().ok_or("no pack")?.1;
         let (style, _) = Style::compile(&job.style, &opened.schema);
-        let mut pages = Vec::new();
         let mut note = String::new();
+        let title = match &job.what {
+            What::Map(p) => p.label.clone(),
+            What::Directions(d, ..) => d.label.clone(),
+        };
+        let mut sink = Sink::new(job.output, &title)?;
         match job.what {
             What::Map(page) => {
                 let (p, stats) = pages::render_map(gpu, opened, &style, egui_pass, &page)?;
@@ -771,22 +1089,17 @@ impl WorkerState {
                     "z{:.1}, {} tiles, map {:.0} ms, overlay {:.0} ms",
                     stats.z, stats.tiles, stats.map_ms, stats.egui_ms
                 );
-                pages.push(p);
+                sink.add(p)?;
             }
-            What::Directions(doc, paper, text) => {
-                pages::render_directions(
-                    gpu,
-                    egui_pass,
-                    &doc,
-                    paper,
-                    text,
-                    PREVIEW_DPI,
-                    &mut |p| {
-                        pages.push(p);
-                        Ok(())
-                    },
-                )?;
+            What::Directions(doc, paper, text, dpi) => {
+                pages::render_directions(gpu, egui_pass, &doc, paper, text, dpi, &mut |p| {
+                    sink.add(p)
+                })?;
             }
+        }
+        let (pages, said) = sink.finish()?;
+        if !said.is_empty() {
+            note = said;
         }
         Ok(Done {
             pages,
@@ -966,20 +1279,20 @@ mod tests {
             routing: &routing,
             pins: &pins,
         };
-        let a = r.print.signature(&inputs(r.settings));
-        assert_eq!(a, r.print.signature(&inputs(r.settings)));
-        let mut big = r.settings;
+        let a = r.print.signature(&inputs(r.settings.clone()));
+        assert_eq!(a, r.print.signature(&inputs(r.settings.clone())));
+        let mut big = r.settings.clone();
         big.text = TextSize::Large;
         assert_ne!(a, r.print.signature(&inputs(big)));
         // Copies are for printing, not for the page.
-        let mut two = r.settings;
+        let mut two = r.settings.clone();
         two.copies = 2;
         assert_eq!(a, r.print.signature(&inputs(two)));
         r.print.label = "Summer trip".into();
-        assert_ne!(a, r.print.signature(&inputs(r.settings)));
-        let b = r.print.signature(&inputs(r.settings));
+        assert_ne!(a, r.print.signature(&inputs(r.settings.clone())));
+        let b = r.print.signature(&inputs(r.settings.clone()));
         let rect = r.screen();
         r.drag(rect.center(), rect.center() + Vec2::new(5.0, 5.0));
-        assert_ne!(b, r.print.signature(&inputs(r.settings)));
+        assert_ne!(b, r.print.signature(&inputs(r.settings.clone())));
     }
 }

@@ -935,7 +935,7 @@ impl eframe::App for App {
                 layers: self.cfg.layers,
                 units: self.cfg.units.unwrap_or(m.units),
                 msaa: render::samples(self.cfg.msaa),
-                settings: self.cfg.print,
+                settings: self.cfg.print.clone(),
                 routing: &m.routing,
                 pins: &self.pins,
             };

@@ -160,9 +160,11 @@ impl TextSize {
 }
 
 /// The print settings kept in `config.toml`; the label is typed for each printout.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// The printer last used; empty, the system's default.
+    pub printer: String,
     pub paper: Paper,
     pub orientation: Orientation,
     pub text: TextSize,
@@ -172,6 +174,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            printer: String::new(),
             paper: Paper::default(),
             orientation: Orientation::default(),
             text: TextSize::default(),
@@ -538,6 +541,7 @@ mod tests {
     #[test]
     fn settings_round_trip_through_toml() {
         let s = Settings {
+            printer: "Office".into(),
             paper: Paper::A4,
             orientation: Orientation::Landscape,
             text: TextSize::Large,

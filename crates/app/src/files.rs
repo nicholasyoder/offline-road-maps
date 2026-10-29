@@ -166,6 +166,8 @@ pub struct Browser {
     path_field: String,
     /// Saving over an existing file was asked: it needs a second click.
     replace: Option<PathBuf>,
+    /// The extension of the files it lists and saves, without the dot.
+    ext: &'static str,
 }
 
 impl Browser {
@@ -178,7 +180,14 @@ impl Browser {
             entries: None,
             path_field: dir.display().to_string(),
             replace: None,
+            ext: EXT,
         }
+    }
+
+    /// The same browser for files with another extension (`pdf` for *Save as PDF*).
+    pub fn with_ext(mut self, ext: &'static str) -> Self {
+        self.ext = ext;
+        self
     }
 
     fn go(&mut self, dir: PathBuf) {
@@ -200,7 +209,7 @@ impl Browser {
                 let path = e.path();
                 if path.is_dir() {
                     dirs.push(name);
-                } else if path.extension().is_some_and(|x| x == EXT) {
+                } else if path.extension().is_some_and(|x| x == self.ext) {
                     files.push(name);
                 }
             }
@@ -218,7 +227,7 @@ impl Browser {
             return None;
         }
         let path = match self.mode {
-            Mode::Save => path_for(&self.dir, name),
+            Mode::Save => self.dir.join(format!("{}.{}", file_name(name), self.ext)),
             Mode::Open => self.dir.join(name),
         };
         Some(path)
@@ -301,7 +310,10 @@ impl Browser {
         let mut submit = false;
         if let Some((f, twice)) = picked {
             self.name = match self.mode {
-                Mode::Save => f.strip_suffix(&format!(".{EXT}")).unwrap_or(&f).to_string(),
+                Mode::Save => f
+                    .strip_suffix(&format!(".{}", self.ext))
+                    .unwrap_or(&f)
+                    .to_string(),
                 Mode::Open => f,
             };
             self.replace = None;
@@ -315,7 +327,7 @@ impl Browser {
                 self.replace = None;
             }
             if self.mode == Mode::Save {
-                ui.label(egui::RichText::new(format!(".{EXT}")).color(WEAK));
+                ui.label(egui::RichText::new(format!(".{}", self.ext)).color(WEAK));
             }
             submit |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         });

@@ -26,6 +26,7 @@ mod pdf;
 mod pins;
 mod pool;
 mod print;
+mod printer;
 mod printui;
 mod render;
 mod routing;
