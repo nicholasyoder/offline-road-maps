@@ -558,7 +558,26 @@ pub struct Gpu {
     pub pool: Arc<Pool>,
 }
 
+/// The window's own adapter, device and queue, which the print page's workers draw with
+/// instead of opening a second device (step 4.11).
+pub type Shared = (
+    eframe::wgpu::Adapter,
+    eframe::wgpu::Device,
+    eframe::wgpu::Queue,
+);
+
 impl Gpu {
+    /// Draws on `shared`: no new device, so no second GL context or driver state.
+    pub fn shared((adapter, device, queue): Shared) -> Self {
+        let pool = Pool::new(device.clone(), queue.clone());
+        Self {
+            adapter,
+            device,
+            queue,
+            pool,
+        }
+    }
+
     pub fn headless() -> Result<Self, String> {
         let (adapter, device, queue) = render::headless_device()?;
         let pool = Pool::new(device.clone(), queue.clone());

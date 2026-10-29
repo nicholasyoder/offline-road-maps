@@ -65,6 +65,8 @@ pub struct Inputs<'a> {
     pub settings: Settings,
     pub routing: &'a RouteUi,
     pub pins: &'a PinsUi,
+    /// The window's GPU, for the workers; they open their own without it.
+    pub gpu: Option<crate::snapshot::Shared>,
 }
 
 /// What the side panel tells the page about the map.
@@ -897,6 +899,7 @@ impl PrintUi {
             what,
             output: Output::Preview,
             ctx: ctx.clone(),
+            gpu: inputs.gpu.clone(),
         });
     }
 
@@ -920,6 +923,7 @@ impl PrintUi {
             what,
             output,
             ctx: ctx.clone(),
+            gpu: inputs.gpu.clone(),
         });
         self.output = Some((worker, self.seq));
         ctx.request_repaint_after(Duration::from_millis(100));
@@ -1118,6 +1122,7 @@ struct Job {
     what: What,
     output: Output,
     ctx: egui::Context,
+    gpu: Option<crate::snapshot::Shared>,
 }
 
 struct Done {
@@ -1190,8 +1195,16 @@ impl WorkerState {
     fn run(&mut self, job: Job) -> Result<Done, String> {
         let t0 = Instant::now();
         if self.gpu.is_none() {
-            log::info!("print worker: opening a GPU device");
-            let gpu = Gpu::headless()?;
+            let gpu = match job.gpu.clone() {
+                Some(shared) if std::env::var_os("OMP_PRINT_OWN_DEVICE").is_none() => {
+                    log::info!("print worker: using the window's GPU device");
+                    Gpu::shared(shared)
+                }
+                _ => {
+                    log::info!("print worker: opening a GPU device");
+                    Gpu::headless()?
+                }
+            };
             log::info!("print worker: device ready");
             let egui_pass = Egui::new(&gpu);
             self.gpu = Some((gpu, egui_pass));
@@ -1401,6 +1414,7 @@ mod tests {
         let pins = PinsUi::empty(PathBuf::from("pins"));
         let style = StyleFile::builtin();
         let inputs = |settings: Settings| Inputs {
+            gpu: None,
             pack: Path::new("pack.omp.000"),
             style: &style,
             layers: Layers::default(),

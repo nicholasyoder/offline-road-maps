@@ -171,6 +171,8 @@ pub struct App {
     cursor: Option<[f64; 2]>,
     adapter: String,
     device: Option<wgpu::Device>,
+    /// The window's adapter, device and queue, shared with the print page's workers.
+    gpu: Option<crate::snapshot::Shared>,
     /// Tile geometry on the GPU.
     pool: Option<Arc<Pool>>,
     srgb: bool,
@@ -241,6 +243,7 @@ impl App {
             cursor: None,
             adapter,
             device: rs.map(|rs| rs.device.clone()),
+            gpu: rs.map(|rs| (rs.adapter.clone(), rs.device.clone(), rs.queue.clone())),
             pool: rs.map(|rs| Pool::new(rs.device.clone(), rs.queue.clone())),
             srgb: rs.is_some_and(|rs| rs.target_format.is_srgb()),
             style: s.style,
@@ -983,6 +986,7 @@ impl eframe::App for App {
                 settings: self.cfg.print.clone(),
                 routing: &m.routing,
                 pins: &self.pins,
+                gpu: self.gpu.clone(),
             };
             self.print.tick(&ctx, &inputs);
             self.print.big_window(&ctx);
