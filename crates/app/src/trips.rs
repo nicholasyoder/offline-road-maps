@@ -243,8 +243,9 @@ pub struct Current<'a> {
     pub unsaved: bool,
 }
 
-/// The side of the buttons on a saved item's row.
+/// The side of the buttons on a saved item's row, and the space between them.
 const ROW_H: f32 = 20.0;
+const BUTTON_GAP: f32 = 2.0;
 
 impl TripsUi {
     pub fn new(exe_dir: &Path) -> Self {
@@ -472,23 +473,25 @@ impl TripsUi {
         out
     }
 
-    /// A heading with buttons on its right; returns the ones clicked.
-    fn heading<const N: usize>(
+    /// A heading with buttons on its right, in order: each `(id, label, enabled, tip, why
+    /// not)`. Returns whether each was clicked.
+    fn heading(
         &mut self,
         ui: &mut egui::Ui,
         text: &str,
-        buttons: [(&'static str, bool, &str); N],
-    ) -> [bool; N] {
-        let mut clicked = [false; N];
+        buttons: &[(&str, &str, bool, String, &str)],
+    ) -> Vec<bool> {
+        let mut clicked = vec![false; buttons.len()];
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(text).strong().color(INK));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                for (i, (label, enabled, tip)) in buttons.into_iter().enumerate().rev() {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (i, (id, label, enabled, tip, why)) in buttons.iter().enumerate().rev() {
                     let r = ui
-                        .add_enabled(enabled, egui::Button::new(label).small())
+                        .add_enabled(*enabled, egui::Button::new(*label).small())
                         .on_hover_text(tip)
-                        .on_disabled_hover_text(tip);
-                    self.targets.push((label.to_string(), r.rect));
+                        .on_disabled_hover_text(*why);
+                    self.targets.push((id.to_string(), r.rect));
                     clicked[i] = r.clicked();
                 }
             });
@@ -496,36 +499,8 @@ impl TripsUi {
         clicked
     }
 
-    /// *Save trip* and *Save as…* for the route shown, and what it is.
-    fn save_ui(&mut self, ui: &mut egui::Ui, current: &Current<'_>, out: &mut PageOut) {
-        ui.horizontal_wrapped(|ui| {
-            let tip = match current.named {
-                Some(n) => format!("Save to {}", n.path.display()),
-                None => "Keep the route shown, with its stops and options, as a trip".into(),
-            };
-            let enabled = current.can_save && current.unsaved;
-            let why = match current.can_save {
-                true => "Saved: no changes since",
-                false => "Plan a route on the Route page to save it",
-            };
-            let r = ui
-                .add_enabled(enabled, egui::Button::new("Save trip"))
-                .on_hover_text(tip)
-                .on_disabled_hover_text(why);
-            self.targets.push(("save-trip".into(), r.rect));
-            if r.clicked() {
-                out.save = Some(SaveAsk::Save);
-            }
-            if current.named.is_some() {
-                let r = ui
-                    .add_enabled(current.can_save, egui::Button::new("Save as…"))
-                    .on_hover_text("Save under another name");
-                self.targets.push(("save-as".into(), r.rect));
-                if r.clicked() {
-                    out.save = Some(SaveAsk::SaveAs);
-                }
-            }
-        });
+    /// The line saying what the route shown is, under the save buttons.
+    fn save_note(ui: &mut egui::Ui, current: &Current<'_>) {
         let (text, color) = match (current.can_save, current.named, current.unsaved) {
             (false, _, _) => (
                 "Plan a route on the Route page to save it as a trip.".into(),
@@ -553,15 +528,49 @@ impl TripsUi {
         exe_dir: &Path,
         out: &mut PageOut,
     ) {
-        let tip = match can_open {
-            true => "Open a trip saved elsewhere",
-            false => "Open a map with routing to open a trip",
+        let save_tip = match current.named {
+            Some(n) => format!("Save to {}", n.path.display()),
+            None => "Keep the route shown, with its stops and options, as a trip".into(),
         };
-        let [browse] = self.heading(ui, "Saved trips", [("Open file…", can_open, tip)]);
-        if browse {
+        let save_why = match current.can_save {
+            true => "Saved: no changes since",
+            false => "Plan a route on the Route page to save it",
+        };
+        let mut buttons = vec![(
+            "save-trip",
+            "Save",
+            current.can_save && current.unsaved,
+            save_tip,
+            save_why,
+        )];
+        if current.named.is_some() {
+            buttons.push((
+                "save-as",
+                "Save as…",
+                current.can_save,
+                "Save under another name".into(),
+                "Plan a route on the Route page to save it",
+            ));
+        }
+        buttons.push((
+            "open-file",
+            "Open…",
+            can_open,
+            "Open a trip saved elsewhere".into(),
+            "Open a map with routing to open a trip",
+        ));
+        let clicked = self.heading(ui, "Saved trips", &buttons);
+        let n = buttons.len();
+        if clicked[0] {
+            out.save = Some(SaveAsk::Save);
+        }
+        if current.named.is_some() && clicked[1] {
+            out.save = Some(SaveAsk::SaveAs);
+        }
+        if clicked[n - 1] {
             self.browse_open(exe_dir);
         }
-        self.save_ui(ui, current, out);
+        Self::save_note(ui, current);
         let list = match self.list() {
             Ok(l) => l.clone(),
             Err(e) => {
@@ -675,14 +684,27 @@ impl TripsUi {
     }
 
     fn pins_ui(&mut self, ui: &mut egui::Ui, pins: &mut PinsUi, exe_dir: &Path, out: &mut PageOut) {
-        let [new, browse] = self.heading(
+        let clicked = self.heading(
             ui,
             "Pushpins",
-            [
-                ("New set", true, "An empty set; new pushpins go to it"),
-                ("Open file…", true, "Open a set saved elsewhere"),
+            &[
+                (
+                    "new-set",
+                    "New set",
+                    true,
+                    "An empty set; new pushpins go to it".into(),
+                    "",
+                ),
+                (
+                    "open-set",
+                    "Open…",
+                    true,
+                    "Open a set saved elsewhere".into(),
+                    "",
+                ),
             ],
         );
+        let (new, browse) = (clicked[0], clicked[1]);
         if new {
             pins.current = pins.new_set("Pushpins");
         }
@@ -725,6 +747,7 @@ impl TripsUi {
             let set = &pins.sets[i];
             let deleting = pins.deleting == Some(i);
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
                 let mut shown = set.shown;
                 let r = ui
                     .checkbox(&mut shown, "")
@@ -835,9 +858,11 @@ fn item_row(
     copy: bool,
     deleting: bool,
 ) -> ItemRow {
+    // Between the name and the buttons as everywhere; between the buttons, close.
     let gap = ui.spacing().item_spacing.x;
     let delete_w = if deleting { 56.0 } else { ROW_H };
-    let buttons = (1 + usize::from(copy)) as f32 * (ROW_H + gap) + delete_w + gap;
+    let n = 1 + usize::from(copy);
+    let buttons = n as f32 * (ROW_H + BUTTON_GAP) + delete_w + gap;
     let w = (ui.available_width() - buttons).max(40.0);
     let sense = if enabled {
         egui::Sense::click()
@@ -861,6 +886,7 @@ fn item_row(
     let galley = ui.fonts_mut(|f| f.layout_job(job));
     let at = egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(at, galley, INK);
+    ui.spacing_mut().item_spacing.x = BUTTON_GAP;
     let rename = glyph_button(ui, Glyph::Rename, ROW_H);
     let copy = copy.then(|| glyph_button(ui, Glyph::Copy, ROW_H));
     let delete = match deleting {
