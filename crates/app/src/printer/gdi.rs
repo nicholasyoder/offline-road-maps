@@ -4,6 +4,9 @@
 //! (`DocumentPropertiesW`) sets quality, colour and duplex, and its `DEVMODE` is kept for the
 //! rest of the session.
 
+// The Win32 printing calls are unsafe; each block says what it relies on.
+#![allow(unsafe_code)]
+
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
 
@@ -336,7 +339,7 @@ impl Spool {
             let phys_h = GetDeviceCaps(self.dc, PHYSICALHEIGHT as i32);
             let off_x = GetDeviceCaps(self.dc, PHYSICALOFFSETX as i32);
             let off_y = GetDeviceCaps(self.dc, PHYSICALOFFSETY as i32);
-            SetStretchBltMode(self.dc, HALFTONE as i32);
+            SetStretchBltMode(self.dc, HALFTONE);
             let stride = (w as usize * 3).next_multiple_of(4);
             let band = 128usize;
             let mut bits = vec![0u8; stride * band];
@@ -346,8 +349,13 @@ impl Spool {
                 for r in 0..rows {
                     let src = &page.rgb[(y + r) * w as usize * 3..][..w as usize * 3];
                     let dst = &mut bits[r * stride..][..w as usize * 3];
-                    for (d, s) in dst.chunks_exact_mut(3).zip(src.chunks_exact(3)) {
-                        d.copy_from_slice(&[s[2], s[1], s[0]]);
+                    for (d, s) in dst
+                        .as_chunks_mut::<3>()
+                        .0
+                        .iter_mut()
+                        .zip(src.as_chunks::<3>().0)
+                    {
+                        *d = [s[2], s[1], s[0]];
                     }
                 }
                 let at = |row: usize| (row as i64 * i64::from(phys_h) / i64::from(h)) as i32;
