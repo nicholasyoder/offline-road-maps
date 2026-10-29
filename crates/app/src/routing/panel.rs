@@ -134,20 +134,6 @@ impl RouteUi {
         self.summary(ui, units, &mut edits);
         if self.route.is_some() {
             ui.horizontal_wrapped(|ui| {
-                if ui
-                    .button("Print map…")
-                    .on_hover_text("The map as a page, with the route  (Ctrl+P)")
-                    .clicked()
-                {
-                    self.print = Some(crate::printui::Kind::Map);
-                }
-                if ui
-                    .button("Print directions…")
-                    .on_hover_text("The directions as pages")
-                    .clicked()
-                {
-                    self.print = Some(crate::printui::Kind::Directions);
-                }
                 later(ui, "Export…", "As a GPX or KML file");
             });
         }

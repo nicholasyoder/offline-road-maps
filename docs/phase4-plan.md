@@ -497,4 +497,6 @@ Open: none.
 - **How the route page's buttons wrap in a narrow panel** (3.10): the page gains many controls here, so check it at 300 points.
 - **Phase 5's print style and UI size setting:** the print page should take a style and a text scale as parameters, so phase 5 only adds choices.
 
-> **Print page tweaks (2026-10-29):** the label is a row of the settings grid; text size is a 50–160 % slider (default 80 %, the old "Small"; old `small`/`normal`/`large` in config or `--text-size` read as 80/100/130 %); the scale cards, printed and on the map, are as wide as their contents.
+> **Print page tweaks (2026-10-29):** the label is a row of the settings grid; text size is a 20–140 % slider (default 80 %, the old "Small"; old `small`/`normal`/`large` in config or `--text-size` read as 80/100/130 %); the scale cards, printed and on the map, are as wide as their contents.
+
+> **Content selector (2026-10-29):** the route page's *Print map…* / *Print directions…* buttons are gone; the Print tab starts with **Content: Map / Directions** (disabled, as Map, while there is no route), then Label. The text size slider is 20–140 %, default 80 %.

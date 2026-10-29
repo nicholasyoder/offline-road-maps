@@ -151,8 +151,8 @@ impl<'de> Deserialize<'de> for TextSize {
 }
 
 impl TextSize {
-    pub const MIN: u32 = 50;
-    pub const MAX: u32 = 160;
+    pub const MIN: u32 = 20;
+    pub const MAX: u32 = 140;
 
     pub fn clamped(self) -> Self {
         TextSize(self.0.clamp(Self::MIN, Self::MAX))

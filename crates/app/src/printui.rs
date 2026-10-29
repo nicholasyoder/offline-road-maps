@@ -3,7 +3,7 @@
 //! ground, which can be moved and resized; and a preview of the page, drawn by a worker thread
 //! with [`crate::pages`] as the printer will get it, only less sharp.
 //!
-//! *Print map* and *Print directions* both open this page; the directions have no rectangle.
+//! The Content setting chooses the map or the directions; the directions have no rectangle.
 //! *Print* sends the pages to the chosen printer and *Save as PDF* writes them to a file (step
 //! 4.10), both from a second worker that draws them at the printer's resolution, one page at a time.
 
@@ -44,6 +44,15 @@ pub enum Kind {
     #[default]
     Map,
     Directions,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Map => "Map",
+            Kind::Directions => "Directions",
+        }
+    }
 }
 
 /// What the preview is made from, which the app gathers each frame the page is open.
@@ -242,6 +251,20 @@ impl PrintUi {
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
+                ui.label("Content");
+                if !around.has_route {
+                    self.kind = Kind::Map;
+                }
+                ui.add_enabled_ui(around.has_route, |ui| {
+                    egui::ComboBox::from_id_salt("print-content")
+                        .selected_text(self.kind.name())
+                        .show_ui(ui, |ui| {
+                            for k in [Kind::Map, Kind::Directions] {
+                                ui.selectable_value(&mut self.kind, k, k.name());
+                            }
+                        });
+                });
+                ui.end_row();
                 ui.label("Label");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.label)

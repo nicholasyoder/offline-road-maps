@@ -1781,14 +1781,9 @@ fn side_panel(
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
         side.open = !side.open;
     }
-    let print_kind = if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
-        Some(printui::Kind::Map)
-    } else {
-        p.routing.print.take()
-    };
-    if let Some(kind) = print_kind {
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
         side.open = true;
-        open_print(&ctx, &mut p, &cfg.print, kind);
+        open_print(&ctx, &mut p, &cfg.print, printui::Kind::Map);
     }
     o.out = p.search.poll(recent);
     if p.search.shortcut(&ctx) {

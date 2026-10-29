@@ -390,8 +390,6 @@ pub struct RouteUi {
     pub dropped: usize,
     /// A stop was set since the side panel last looked: it shows the route page.
     pub opened: bool,
-    /// A *Print* button was clicked since the side panel last looked (phase 4 step 4.9).
-    pub print: Option<crate::printui::Kind>,
     /// The step of the directions picked: drawn over the route.
     pub picked: Option<usize>,
     /// The request the route shown answered, whose alternatives are asked for.
@@ -480,7 +478,6 @@ impl RouteUi {
             last: None,
             dropped: 0,
             opened: false,
-            print: None,
             picked: None,
             shown: None,
             alts: Vec::new(),
