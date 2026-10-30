@@ -230,6 +230,15 @@ impl Pool {
         }
     }
 
+    /// The GPU has finished all that was drawn, as after an offscreen readback: ranges given
+    /// back are free at once. Offscreen drawing has no frames, so without this nothing it
+    /// gave back would ever be reused.
+    pub fn idle(&self) {
+        for _ in 0..HOLD {
+            self.end_frame();
+        }
+    }
+
     /// Bytes in slabs now, and at most so far.
     pub fn bytes(&self) -> (u64, u64) {
         let st = self.lock();

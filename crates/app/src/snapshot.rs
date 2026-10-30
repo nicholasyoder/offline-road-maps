@@ -770,7 +770,11 @@ pub fn draw_view(
         "page: labels placed, drawing, {:.0} ms",
         t0.elapsed().as_secs_f64() * 1e3
     );
-    let pixels = render::draw_offscreen(device, queue, &mut renderer, &frame, no_map)?;
+    let pixels = render::draw_offscreen(device, queue, &mut renderer, &frame, no_map);
+    // The readback waited for the GPU: the tiles' ranges can be reused by the next page.
+    drop((frame, known));
+    pool.idle();
+    let pixels = pixels?;
     log::info!("page: drawn, {:.0} ms", t0.elapsed().as_secs_f64() * 1e3);
     let failed = failed.into_inner();
     Ok(Drawn {
@@ -806,4 +810,38 @@ pub fn write_png(path: &Path, [w, h]: [u32; 2], rgba: &[u8]) -> std::io::Result<
     let mut wr = enc.write_header().map_err(std::io::Error::other)?;
     wr.write_image_data(&rgb).map_err(std::io::Error::other)?;
     wr.finish().map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `OMP_TEST_PACK=<first chunk> cargo test -p omp-app --release -- --ignored pages_reuse`.
+    #[test]
+    #[ignore = "needs OMP_TEST_PACK and a GPU"]
+    fn pages_reuse_the_pool() {
+        let first = std::path::PathBuf::from(std::env::var_os("OMP_TEST_PACK").expect("pack"));
+        let opened = packs::open(&first).unwrap();
+        let (style, _) = Style::compile(&StyleFile::builtin(), &opened.schema);
+        let gpu = Gpu::headless().unwrap();
+        let mut cam = Camera::new(opened.bounds);
+        cam.size = [800.0, 600.0];
+        cam.zoom += 2.0;
+        let hidden = Hidden::default();
+        let view = View {
+            cam: &cam,
+            pixels_per_point: 1.0,
+            msaa: 1,
+            hidden: &hidden,
+            lines: &[],
+            pins: &[],
+        };
+        let mut bytes = Vec::new();
+        for _ in 0..12 {
+            draw_view(&gpu, &opened, &style, &view).unwrap();
+            bytes.push(gpu.pool.bytes().0);
+        }
+        assert!(bytes[0] > 0);
+        assert_eq!(bytes[11], bytes[0], "slab bytes after each page: {bytes:?}");
+    }
 }
