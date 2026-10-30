@@ -82,15 +82,30 @@ pub fn read<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
 /// Writes `value` as TOML through a temporary file, so a crash mid-write leaves the old file,
 /// making the folder if need be.
 pub fn write<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    let text = toml::to_string(value).map_err(io::Error::other)?;
+    write_bytes(path, text.as_bytes())
+}
+
+/// Writes `bytes` to `path` through a temporary file next to it, flushed to the disk before
+/// it replaces the old one: a crash, or a stick pulled out, leaves the old file or the new,
+/// never a part. Makes the folder if need be.
+pub fn write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let text = toml::to_string(value).map_err(io::Error::other)?;
-    let tmp = path.with_extension(format!("{EXT}.tmp"));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    written
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
 }
 
 /// Renames the file at `path` to `name` in the same folder; refuses to replace another.

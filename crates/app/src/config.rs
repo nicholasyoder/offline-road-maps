@@ -157,13 +157,7 @@ impl Location {
 
     /// Writes through a temporary file, so a crash mid-write leaves the old config.
     pub fn save(&self, cfg: &Config) -> io::Result<()> {
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let text = toml::to_string(cfg).map_err(io::Error::other)?;
-        let tmp = self.path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &self.path)
+        crate::files::write(&self.path, cfg)
     }
 }
 
