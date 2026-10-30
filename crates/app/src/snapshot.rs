@@ -693,6 +693,11 @@ pub fn draw_view(
         .map(|&(t, _)| (t, known.get(&t).cloned().flatten().map(|m| m.0)))
         .collect();
     let loaded_in = t0.elapsed();
+    log::info!(
+        "page: {} tiles read and meshed in {:.0} ms",
+        visible.len(),
+        loaded_in.as_secs_f64() * 1e3
+    );
     let mesh_bytes: usize = loaded
         .iter()
         .filter_map(|(_, m)| m.as_ref())
@@ -705,6 +710,10 @@ pub fn draw_view(
     let gl = adapter.get_info().backend == eframe::wgpu::Backend::Gl;
     let samples = if gl { 1 } else { view.msaa };
     let mut renderer = Renderer::new(device, render::OFFSCREEN_FORMAT, samples);
+    log::info!(
+        "page: renderer made, {:.0} ms",
+        t0.elapsed().as_secs_f64() * 1e3
+    );
     let paints = render::paints(style, hidden, cam.zoom, ppp, renderer.srgb);
     let capped = plan.capped.iter().filter_map(|&(t, cap, s)| {
         let m = known.get(&s).cloned().flatten()?;
@@ -757,7 +766,12 @@ pub fn draw_view(
     frame.atlas = placer.atlas.take_uploads();
     let atlas_fill = placer.atlas.fill();
     let no_map = crate::app::NO_MAP.to_array();
+    log::info!(
+        "page: labels placed, drawing, {:.0} ms",
+        t0.elapsed().as_secs_f64() * 1e3
+    );
     let pixels = render::draw_offscreen(device, queue, &mut renderer, &frame, no_map)?;
+    log::info!("page: drawn, {:.0} ms", t0.elapsed().as_secs_f64() * 1e3);
     let failed = failed.into_inner();
     Ok(Drawn {
         pixels,

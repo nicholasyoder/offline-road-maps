@@ -1,0 +1,21 @@
+# Just the print page on the North America pack (phase 4 step 4.11): the coast-to-coast
+# route, then a Letter page at 300 dpi saved as a PDF. For finding where a slow GPU stops;
+# run it with OMP_LOG=info.
+# omp-app --bench crates/app/bench/na-print.toml --pack $OMP_WORK/packs/north-america
+name = "na-print"
+window = [1280, 800]
+
+[[step]]
+label = "route: coast to coast"
+lat = 38.0
+lon = -98.0
+zoom = 4.2
+# New York, Chicago, Denver, Phoenix, Los Angeles.
+route = "40.7128,-74.0060;41.8781,-87.6298;39.7392,-104.9903;33.4484,-112.0740;34.0522,-118.2437"
+hold = 1
+
+[[step]]
+label = "print: map at 300 dpi"
+print = "map"
+print_dpi = 300
+hold = 1

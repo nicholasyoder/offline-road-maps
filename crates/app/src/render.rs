@@ -1001,7 +1001,7 @@ pub fn headless_device() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), S
 }
 
 /// The longest a readback waits for the GPU before giving up.
-const READBACK_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+const READBACK_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The format `--render` draws in: not sRGB, like egui's usual target, so colours match.
 pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -1096,7 +1096,9 @@ pub fn read_texture(
             depth_or_array_layers: 1,
         },
     );
+    log::info!("readback: submitting");
     queue.submit(extra.into_iter().chain([enc.finish()]));
+    log::info!("readback: submitted");
     let slice = out.slice(..);
     let mapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = mapped.clone();
