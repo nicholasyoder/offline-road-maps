@@ -21,7 +21,7 @@ use windows_sys::Win32::Graphics::Printing::{
     PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_HANDLE, PRINTER_INFO_4W,
 };
 use windows_sys::Win32::Storage::Xps::{
-    DC_PAPERS, DOCINFOW, DeviceCapabilitiesW, EndDoc, EndPage, StartDocW, StartPage,
+    AbortDoc, DC_PAPERS, DOCINFOW, DeviceCapabilitiesW, EndDoc, EndPage, StartDocW, StartPage,
 };
 
 use super::{Capabilities, Printer};
@@ -280,8 +280,9 @@ pub struct Request {
 pub struct Spool {
     dc: HDC,
     printer: String,
-    open_page: bool,
     pages: usize,
+    /// The document was ended and handed to the spooler.
+    ended: bool,
 }
 
 // SAFETY: the context is made, used and closed on one worker thread; this only moves it there.
@@ -318,8 +319,8 @@ impl Spool {
             Ok(Self {
                 dc,
                 printer: r.printer.clone(),
-                open_page: false,
                 pages: 0,
+                ended: false,
             })
         }
     }
@@ -334,7 +335,6 @@ impl Spool {
             if StartPage(self.dc) <= 0 {
                 return Err(last_error("StartPage"));
             }
-            self.open_page = true;
             let phys_w = GetDeviceCaps(self.dc, PHYSICALWIDTH as i32);
             let phys_h = GetDeviceCaps(self.dc, PHYSICALHEIGHT as i32);
             let off_x = GetDeviceCaps(self.dc, PHYSICALOFFSETX as i32);
@@ -397,7 +397,6 @@ impl Spool {
                 }
                 y += rows;
             }
-            self.open_page = false;
             if EndPage(self.dc) <= 0 {
                 return Err(last_error("EndPage"));
             }
@@ -406,21 +405,23 @@ impl Spool {
         Ok(())
     }
 
-    pub fn finish(self) -> Result<String, String> {
+    pub fn finish(mut self) -> Result<String, String> {
         // SAFETY: `dc` is open with a document started; Drop deletes it.
         if unsafe { EndDoc(self.dc) } <= 0 {
             return Err(last_error("EndDoc"));
         }
+        self.ended = true;
         Ok(format!("Sent to {}.", self.printer))
     }
 }
 
 impl Drop for Spool {
     fn drop(&mut self) {
-        // SAFETY: closes what `open` made; a job that was not finished is abandoned.
+        // SAFETY: closes what `open` made. A job not finished (a page that could not be
+        // drawn) is cancelled, with the pages already sent, rather than printed in part.
         unsafe {
-            if self.open_page {
-                EndPage(self.dc);
+            if !self.ended {
+                AbortDoc(self.dc);
             }
             DeleteDC(self.dc);
         }

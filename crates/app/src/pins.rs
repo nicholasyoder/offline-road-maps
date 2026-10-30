@@ -578,6 +578,8 @@ impl PinsUi {
         }
         self.sets.remove(i);
         self.open = None;
+        // A set being renamed is known by its place, which has moved.
+        self.renaming = None;
         self.current = self.current.min(self.sets.len().saturating_sub(1));
         self.changed();
         Ok(())
@@ -650,9 +652,13 @@ impl PinsUi {
         Some(self.gpu.clone()?.draw(cam, ppp))
     }
 
-    /// How many pins are shown.
-    pub fn shown_count(&self) -> usize {
-        self.shown().count()
+    /// What a printed page shows of the pins, hashed: each shown pin's point, symbol and
+    /// name.
+    pub fn hash_shown(&self, h: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        for (_, p) in self.shown() {
+            (p.p, p.shape as u8, p.colour as u8, &p.name).hash(h);
+        }
     }
 
     /// The shown pins, for a printed page.

@@ -116,9 +116,21 @@ pub struct Request {
 
 /// A job being sent: a PDF written to `lp`'s stdin a page at a time.
 pub struct Spool {
-    pdf: Pdf<BufWriter<ChildStdin>>,
+    /// `None` once the document is closed.
+    pdf: Option<Pdf<BufWriter<ChildStdin>>>,
     child: Child,
     printer: String,
+}
+
+impl Drop for Spool {
+    /// A job not finished (a page that could not be drawn) is cancelled: `lp` is stopped
+    /// before its input closes, so it never queues the part it was sent.
+    fn drop(&mut self) {
+        if self.pdf.is_some() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
 }
 
 impl Spool {
@@ -145,38 +157,37 @@ impl Spool {
         let stdin = child.stdin.take().ok_or("lp has no input")?;
         let pdf = Pdf::new(BufWriter::new(stdin), &r.title).map_err(|e| e.to_string())?;
         Ok(Self {
-            pdf,
+            pdf: Some(pdf),
             child,
             printer: r.printer.clone(),
         })
     }
 
     pub fn page(&mut self, page: &Page) -> Result<(), String> {
-        match self.pdf.page(&page.rgb, page.size, page.size_pt) {
+        let pdf = self.pdf.as_mut().ok_or("the job is closed")?;
+        match pdf.page(&page.rgb, page.size, page.size_pt) {
             Ok(()) => Ok(()),
             Err(e) => Err(failure(&mut self.child, &e.to_string())),
         }
     }
 
     /// Closes the document and waits for CUPS to accept it.
-    pub fn finish(self) -> Result<String, String> {
-        let Self {
-            pdf,
-            mut child,
-            printer,
-        } = self;
+    pub fn finish(mut self) -> Result<String, String> {
+        use std::io::Read;
+        let pdf = self.pdf.take().ok_or("the job is closed")?;
         match pdf.finish() {
             Ok(w) => drop(w),
-            Err(e) => return Err(failure(&mut child, &e.to_string())),
+            Err(e) => return Err(failure(&mut self.child, &e.to_string())),
         }
-        let out = child.wait_with_output().map_err(|e| e.to_string())?;
-        if out.status.success() {
-            Ok(format!("Sent to {printer}."))
+        let mut said = String::new();
+        if let Some(mut err) = self.child.stderr.take() {
+            let _ = err.read_to_string(&mut said);
+        }
+        let status = self.child.wait().map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(format!("Sent to {}.", self.printer))
         } else {
-            Err(format!(
-                "lp: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))
+            Err(format!("lp: {}", said.trim()))
         }
     }
 }
@@ -239,6 +250,41 @@ mod tests {
         );
         let pdf = std::fs::read(dir.path().join("in.pdf")).unwrap();
         assert!(pdf.starts_with(b"%PDF-1.4") && pdf.ends_with(b"%%EOF\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_job_dropped_unfinished_is_not_queued() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let lp = dir.path().join("lp");
+        // As `lp`, which queues the job once its input ends.
+        std::fs::write(
+            &lp,
+            format!(
+                "#!/bin/sh\ncat > /dev/null\ntouch {}/queued\n",
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&lp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let r = Request {
+            printer: "Test".into(),
+            paper: Paper::Letter,
+            landscape: false,
+            copies: 1,
+            title: "Trip".into(),
+        };
+        let mut spool = Spool::open_with(lp.to_str().unwrap(), &r).unwrap();
+        let page = Page {
+            size: [2, 2],
+            size_pt: [612.0, 792.0],
+            rgb: vec![255; 12],
+        };
+        spool.page(&page).unwrap();
+        // The second page could not be drawn: the job is dropped.
+        drop(spool);
+        assert!(!dir.path().join("queued").exists());
     }
 
     #[test]

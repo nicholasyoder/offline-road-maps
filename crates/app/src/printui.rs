@@ -1038,7 +1038,7 @@ impl PrintUi {
         for m in inputs.routing.stop_marks() {
             (m.p.map(f64::to_bits), &m.label).hash(&mut h);
         }
-        inputs.pins.shown_count().hash(&mut h);
+        inputs.pins.hash_shown(&mut h);
         if self.kind == Kind::Directions
             && let Some(d) = inputs.routing.directions_doc("", inputs.units)
         {
@@ -1246,25 +1246,38 @@ impl WorkerState {
             What::Map(p) => p.label.clone(),
             What::Directions(d, ..) => d.label.clone(),
         };
+        // A PDF that could not be finished is removed, not left half written.
+        let pdf = match &job.output {
+            Output::Pdf(path) => Some(path.clone()),
+            _ => None,
+        };
         let mut sink = Sink::new(job.output, &title)?;
-        match job.what {
+        let drawn = match job.what {
             What::Map(page) => {
                 log::info!("print worker: drawing the map page at {} dpi", page.dpi);
-                let (p, stats) = pages::render_map(gpu, opened, &style, egui_pass, &page)?;
-                log::info!("print worker: map page drawn");
-                note = format!(
-                    "z{:.1}, {} tiles, map {:.0} ms, overlay {:.0} ms",
-                    stats.z, stats.tiles, stats.map_ms, stats.egui_ms
-                );
-                sink.add(p)?;
+                pages::render_map(gpu, opened, &style, egui_pass, &page).and_then(|(p, stats)| {
+                    log::info!("print worker: map page drawn");
+                    note = format!(
+                        "z{:.1}, {} tiles, map {:.0} ms, overlay {:.0} ms",
+                        stats.z, stats.tiles, stats.map_ms, stats.egui_ms
+                    );
+                    sink.add(p)
+                })
             }
             What::Directions(doc, paper, text, dpi) => {
                 pages::render_directions(gpu, egui_pass, &doc, paper, text, dpi, &mut |p| {
                     sink.add(p)
-                })?;
+                })
+                .map(drop)
             }
+        };
+        let finished = drawn.and_then(|()| sink.finish());
+        if finished.is_err()
+            && let Some(path) = pdf
+        {
+            let _ = std::fs::remove_file(path);
         }
-        let (pages, said) = sink.finish()?;
+        let (pages, said) = finished?;
         if !said.is_empty() {
             note = said;
         }
@@ -1462,6 +1475,22 @@ mod tests {
         let b = r.print.signature(&inputs(r.settings.clone()));
         let rect = r.screen();
         r.drag(rect.center(), rect.center() + Vec2::new(5.0, 5.0));
-        assert_ne!(b, r.print.signature(&inputs(r.settings.clone())));
+        let c = r.print.signature(&inputs(r.settings.clone()));
+        assert_ne!(b, c);
+        // A pushpin of another colour, as many as before: the page changes.
+        let with_pin = |colour| {
+            let mut pins = PinsUi::empty(PathBuf::from("pins"));
+            let mut set = crate::pins::bench_set(1, [0.2, 0.3, 0.4, 0.5]);
+            set.pins[0].colour = colour;
+            pins.replace(vec![set]);
+            let i = Inputs {
+                pins: &pins,
+                ..inputs(r.settings.clone())
+            };
+            r.print.signature(&i)
+        };
+        let red = with_pin(crate::pins::Colour::Red);
+        assert_ne!(red, c);
+        assert_ne!(red, with_pin(crate::pins::Colour::Blue));
     }
 }
