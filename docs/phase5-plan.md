@@ -42,7 +42,7 @@ What phase 4 left in place for this:
 
 | Step | Status | Notes |
 |---|---|---|
-| 5.1 Audit: bugs and design | Not started | |
+| 5.1 Audit: bugs and design | In progress | First pass 2026-10-30: 6 bugs fixed; findings below await the owner's triage; part of the code still to read |
 | 5.2 Audit: performance baseline and profiles | Not started | |
 | 5.3 Settings window | Not started | |
 | 5.4 Map styles in the Map tab | Not started | |
@@ -77,6 +77,8 @@ Read the whole project, crate by crate, with fresh eyes now that every part exis
 - **Splitting `app.rs`** is likely to be one finding. If so, it is done before 5.3, since the Settings window, style switching and the dark UI all touch it: the frame loop and map in `app.rs`, the panel, the dialogs (open, verify, about, notices) and pack opening each in a module of their own, as the refactor between phases 2 and 3 split search.
 
 **Done when:** every module of the three crates has been read, the findings are written up and triaged with the owner, and the small bug fixes are in.
+
+> **In progress 2026-10-30.** First pass, in the order above. Read in full: `app.rs`, `printui.rs`, `routing/{mod,panel,worker}.rs`, `pins.rs`, `trips.rs`, `files.rs`, `config.rs`, `main.rs`, `packs.rs`, `loader.rs`, `verify.rs`, `side.rs`, `printer/{gdi,cups}.rs`. Read in part: `labels.rs` (extraction and placement), `style.rs` (compile), `render.rs` (paints, frame, readback), `snapshot.rs` (tile loading), `routing/times.rs`, `search/worker.rs`. `omp-core`: searched for panics on damaged data (indexing with decoded values, `unwrap`/`expect`) in `pack`, `tiles`, `tile`, `route/*`, `admin`, `tz`; the readers check bounds, and every `expect` left holds by construction. `omp-builder`: the build's stages, staging and pack replacement (`build/mod.rs`). Six bugs fixed (B1–B6 below), with tests for B3, B4 and B6. **Left:** read the rest of the app (`here`, `search/{session,ui,draw}`, `routing/{line,saved}`, `camera`, `pages`, `pdf`, `print`, `text`, `shapes`, `mesh`, `tiles`, `cache`, `pool`, `bench`), the rest of core and the builder; the owner's triage of R1–R5 and D1–D14.
 
 ## 5.2 Audit: performance baseline and profiles
 
@@ -242,6 +244,32 @@ Last:   5.13 checks
 
 | # | Where | Finding | Kind | Proposed | Decision |
 |---|---|---|---|---|---|
+| B1 | `app.rs` `App::open` | Choosing a pack that cannot be opened (picker, typed folder) closed the pack already open first, leaving no map. | bug | Fix now. | **Fixed** 2026-10-30: the new pack is opened first. |
+| B2 | `files.rs`, `config.rs` | Config, trips and pushpin sets were written to a temporary file and renamed, but not flushed first: a stick pulled out right after a save could leave an empty file. `config.rs` repeated the code and left its `.tmp` behind on a failed rename. | bug | Fix now. | **Fixed**: one `files::write_bytes`, which syncs the file before the rename; the config uses it. |
+| B3 | `printui.rs`, `printer/cups.rs`, `printer/gdi.rs` | A printout that failed part way (a page that could not be drawn) still printed: closing `lp`'s input queued the partial PDF, and on Windows the document was deleted without `AbortDoc`. *Save as PDF* left the partial file. | bug | Fix now. | **Fixed**: `lp` is killed before its input closes, GDI calls `AbortDoc`, a failed PDF is removed. Test: `a_job_dropped_unfinished_is_not_queued`. |
+| B4 | `printui.rs` `signature` | The preview took only the count of shown pushpins: a pin moved, recoloured or renamed (as many as before) left the preview out of date. The style is not in the signature either (only matters once styles switch). | bug | Fix the pins now; the style in 5.4. | **Fixed** (pins): each shown pin's point, symbol and name; test added. Style → 5.4. |
+| B5 | `pins.rs` `delete_set` | A set being renamed is known by its index; deleting an earlier set made Rename apply to the wrong set. | bug | Fix now. | **Fixed**: deleting a set ends a rename. |
+| B6 | `loader.rs` `work` | A panic while preparing a tile (tessellating bad data) killed that loader thread and left the tile "in flight" for good: it was never asked for again, and the loader had one thread fewer. | bug | Fix now. | **Fixed**: caught and reported as the tile's error, like a read error. Test: `a_tile_that_panics_is_an_error_and_the_loader_goes_on`. |
+| R1 | `routing/worker.rs`, `search/worker.rs`, `routing/times.rs` (towns) | The workers do not catch panics (only the print worker does): a panic in routing or search on unexpected data leaves the UI saying "Routing…" or waiting for results for good. | risk | Catch per job, answer with an error ("Routing failed on this route; Verify pack may help"). Small. | |
+| R2 | `omp-core` readers | Damaged sections are only found by *Verify pack*; the readers check bounds, but there is no test that reading damaged data never panics. | risk | Add a test that flips bytes in each section of a small built pack and reads every tile, search and route, expecting errors, not panics. | |
+| R3 | `loader.rs` `Drop` | Switching packs (and a debug style reload) joins the loader threads on the UI thread; a tile read from a cold stick holds the window for its read. | risk | Detach the threads, as the routing worker does. | |
+| R4 | `printui.rs` | A printout cannot be cancelled once started (several seconds for long directions); closing the page does not stop it. | design | A Cancel button (→ 5.7). | |
+| R5 | `config.rs` `load` | One bad value makes the whole file fall back to defaults, and the file is overwritten 5 s later. | risk | Already in 5.3 (keep it as `config.toml.bad`, say so); also read field by field so one bad value loses only itself. | |
+| D1 | `app.rs` (2,130 lines) | Holds the frame loop and map input, the side panel and its page wiring, five dialogs (picker, About, Verify, errors, notices), pack opening and the bench's glue. | design | Split before 5.3: `app.rs` (frame loop, map), `panel.rs` (side panel), `dialogs.rs`, pack opening into `packs.rs`, bench glue beside `bench.rs`. | |
+| D2 | `app.rs` `start_loader`, `snapshot.rs` | A tile is turned into mesh + labels + upload in two places that must agree. | design | One `prepare_tile` used by both (with D1). | |
+| D3 | `packs.rs`, workers | The pack is opened five times: tiles, search, routing, the towns thread and the print worker each `Pack::open` it, with their own handles and caches. | design | Measure in 5.2; a shared `Arc<Pack>` if it pays (→ 5.10, 5.8). | |
+| D4 | `app.rs` `KEY_PAN`, wheel steps (0.25 per notch, `/400` per point), `camera.rs` `FRICTION`, `ZOOM_RATE`; `render::samples` | Constants that 5.3 makes settings. MSAA can only be 1 or 4 (2 maps to 4), while 5.3 offers 1, 2 or 4. | design | → 5.3. | |
+| D5 | 10 files | About 70 colour literals: the error red three times, the map controls' white fills, overlay colours in `render.rs`, the label halo in `labels.rs`, pins, stop markers, notes. | design | → 5.4 (overlays from the style) and 5.5 (`Palette`). | |
+| D6 | `main.rs`, `app.rs` | Style warnings and other diagnostics go only to stderr, which Windows users never see; and the Windows build has no `windows_subsystem`, so a console window opens beside the app. | design | Owner: hide the console in release builds (the bench and `--render` attach to the parent's console), and show style warnings in a notice. → 5.7. | |
+| D7 | several | Errors shown as raw `io::Error` text: routing and search "could not be opened: …", pack open errors, trip and set rename and delete, *Verify pack* naming sections by ID ("TIDX does not match"). | design | List for 5.7's plain messages. | |
+| D8 | UI text | The same thing called a pack and a map: "Open a pack…", "Could not open the map", "No map pack found", "Verify pack", "About this map". | cosmetic | Pick one word for users (→ 5.7). | |
+| D9 | `pins.rs`, `trips.rs` | Deleting a trip or a set takes two clicks; deleting a pushpin takes one. | cosmetic | Same behaviour (→ 5.7). | |
+| D10 | `side.rs` `later_in`, `routing/worker.rs` `Route::via`, `side::Page::ALL`, `app.rs` `open_print` | Placeholders and dead code: the disabled menu entries (5.3, 5.7), a field kept with `allow(dead_code)`, a page list used only by the bench, and `Units::Miles` passed where it is not used. | design | Remove with the steps that replace them. | |
+| D11 | `packs::date`, `printui::exe_dir`, `app.rs` `mib`/`seconds` | Hand-written helpers: a civil date though `jiff` is a dependency; a second executable folder, not canonicalized as `main.rs`'s is, so *Save as PDF*'s default folder can differ from where trips go. | design | Clean up with D1. | |
+| D12 | `routing/panel.rs` `note_row` | A night's day number is read back out of its text ("Day 2"). | design | Take it from the schedule's event. | |
+| D13 | `side.rs` `layers_ui` | The POI heading goes before entry 5 of `Layers::entries` by index; units are titled "Scale bar units" though they also set the route page and directions. | design | → 5.4 (Map tab) and 5.3 (units). | |
+| D14 | `printui.rs` `Worker` | The preview worker keeps its own open pack and GPU renderer after the print page closes. | design | Measure in 5.2 (→ 5.10). | |
+| C1 | `routing/panel.rs`, `routing/mod.rs`, `side.rs` | Doc comments above the wrong functions, and module docs still describing phase 4's disabled places. | cosmetic | Fix now. | **Fixed.** |
 
 | # | Where | Lead | Cost now | Estimated gain | Effort | Step | Decision |
 |---|---|---|---|---|---|---|---|
