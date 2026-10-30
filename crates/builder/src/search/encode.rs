@@ -30,8 +30,6 @@ pub struct Sizes {
     /// Raw bytes per kind, and the raw bytes of street names (also in `SSTR`).
     pub raw_by_kind: Vec<(Kind, u64)>,
     pub street_names_raw: u64,
-    /// `SENT` with street names left empty, to price keeping them only in `SSTR`.
-    pub sent_without_street_names: u64,
     pub stwn: u64,
     pub sfst: u64,
     pub spst: u64,
@@ -57,15 +55,10 @@ impl Sections {
 }
 
 /// Appends one entry, its point as a delta from `cur` in units of 2^[`SHIFT`].
-fn record(e: &Entry, cur: &mut [i32; 2], out: &mut Vec<u8>, street_name: bool) {
+fn record(e: &Entry, cur: &mut [i32; 2], out: &mut Vec<u8>) {
     put(out, u64::from(e.class) << 3 | e.kind as u64);
     out.push(e.importance);
-    let name = if e.kind == Kind::Street && !street_name {
-        ""
-    } else {
-        &e.name
-    };
-    put_str(out, name);
+    put_str(out, &e.name);
     let q = [(e.p[0] >> SHIFT) as i32, (e.p[1] >> SHIFT) as i32];
     put(out, zigzag(q[0] - cur[0]));
     put(out, zigzag(q[1] - cur[1]));
@@ -81,7 +74,7 @@ fn record(e: &Entry, cur: &mut [i32; 2], out: &mut Vec<u8>, street_name: bool) {
 
 /// The entries cut into blocks of about `block` raw bytes, each with a cursor from (0, 0);
 /// also the raw bytes per kind.
-fn blocks(entries: &[Entry], block: usize, street_name: bool) -> (Blocks, u64, Vec<u64>) {
+fn blocks(entries: &[Entry], block: usize) -> (Blocks, u64, Vec<u64>) {
     let mut out = Vec::new();
     let (mut cur, mut first, mut raw) = (Vec::new(), 0u32, 0u64);
     let mut by_kind = vec![0u64; Kind::ALL.len()];
@@ -94,7 +87,7 @@ fn blocks(entries: &[Entry], block: usize, street_name: bool) -> (Blocks, u64, V
             cursor = [0, 0];
         }
         let before = cur.len();
-        record(e, &mut cursor, &mut cur, street_name);
+        record(e, &mut cursor, &mut cur);
         by_kind[e.kind as usize] += (cur.len() - before) as u64;
     }
     if !cur.is_empty() {
@@ -121,10 +114,8 @@ fn postings_list(ids: &[u32], total: u64, out: &mut Vec<u8>) {
 /// The four sections, with `SENT` blocks of about `block` raw bytes.
 pub fn sections(index: &Index, block: usize) -> Result<(Sections, Sizes)> {
     let n = index.entries.len();
-    let (b, sent_raw, by_kind) = blocks(&index.entries, block, true);
+    let (b, sent_raw, by_kind) = blocks(&index.entries, block);
     let (sent, sent_blocks) = blocked(n, b)?;
-    let (b, _, _) = blocks(&index.entries, block, false);
-    let (without, _) = blocked(n, b)?;
 
     let mut towns_raw = Vec::new();
     put(&mut towns_raw, index.towns.len() as u64);
@@ -156,7 +147,6 @@ pub fn sections(index: &Index, block: usize) -> Result<(Sections, Sizes)> {
         sent_blocks,
         raw_by_kind,
         street_names_raw,
-        sent_without_street_names: without.len() as u64,
         stwn: stwn.len() as u64,
         sfst: sfst.len() as u64,
         spst: spst.len() as u64,

@@ -238,7 +238,7 @@ pub fn print_search_sizes(s: &search_encode::Sizes) {
         .collect();
     eprintln!(
         "  search: {} KiB blocks: SENT {:.2} MiB ({:.2} raw: {}; street names {:.2}; {} \
-         blocks), {:.2} MiB without street names; STWN {:.2} MiB, SFST {:.2} MiB, SPST {:.2} \
+         blocks); STWN {:.2} MiB, SFST {:.2} MiB, SPST {:.2} \
          MiB; {:.1} bytes per entry in all",
         s.block_kib,
         mib(s.sent),
@@ -246,7 +246,6 @@ pub fn print_search_sizes(s: &search_encode::Sizes) {
         kinds.join(", "),
         mib(s.street_names_raw),
         s.sent_blocks,
-        mib(s.sent_without_street_names),
         mib(s.stwn),
         mib(s.sfst),
         mib(s.spst),
