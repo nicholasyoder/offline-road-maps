@@ -1,7 +1,7 @@
 # Phase 4's features on the North America pack (step 4.11): the schedule on every route
 # (`depart`, a Saturday in summer), alternatives for a short and a coast-to-coast trip,
 # the print page's preview and *Save as PDF* in the running app after the coast-to-coast
-# route (Letter pages at 300, 360 and 600 dpi and the directions), with the process's RSS
+# route (Letter pages at 300 and 360 dpi and the directions; 600 dpi crashes the E6430's GL), with the process's RSS
 # before, during and after, then *Optimize stop order* on 25 stops in a poor order. Frame
 # times with none of this in use are north-america.toml's; the pins (10,000, criterion 5) are
 # ohio-pins.toml against ohio.toml.
@@ -43,12 +43,6 @@ hold = 1
 label = "print: directions at 360 dpi"
 print = "directions"
 print_dpi = 360
-hold = 1
-
-[[step]]
-label = "print: map at 600 dpi"
-print = "map"
-print_dpi = 600
 hold = 1
 
 [[step]]
