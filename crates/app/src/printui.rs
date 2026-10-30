@@ -1205,36 +1205,8 @@ impl Drop for WorkerState {
     }
 }
 
-/// Held by a print worker while it draws on the window's GPU, and waited for by the window
-/// before each frame, when the backend is GL. wgpu's GL backend runs a submit and a wait
-/// with its one context locked, and a thread that cannot take that lock within a second
-/// panics ("Could not lock adapter context"); a page takes the E6430 longer than that.
-/// The window therefore stands still while a page is drawn.
-static GL_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Waits until no print worker is drawing, if the window's GPU is GL.
-pub fn wait_for_gl_gate(gl: bool) {
-    if gl && std::env::var_os("OMP_NO_GL_GATE").is_none() {
-        drop(GL_GATE.lock().unwrap_or_else(|e| e.into_inner()));
-    }
-}
-
 impl WorkerState {
     fn run(&mut self, job: Job) -> Result<Done, String> {
-        let gl = job.gpu.as_ref().is_some_and(|(a, _, _)| {
-            a.get_info().backend == eframe::wgpu::Backend::Gl
-                && std::env::var_os("OMP_PRINT_OWN_DEVICE").is_none()
-        });
-        let gl = gl && std::env::var_os("OMP_NO_GL_GATE").is_none();
-        let _gate = gl.then(|| GL_GATE.lock().unwrap_or_else(|e| e.into_inner()));
-        if gl {
-            // A frame that began before the gate was taken is painted by now.
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        self.draw(job)
-    }
-
-    fn draw(&mut self, job: Job) -> Result<Done, String> {
         let t0 = Instant::now();
         if self.gpu.is_none() {
             let gpu = match job.gpu.clone() {
