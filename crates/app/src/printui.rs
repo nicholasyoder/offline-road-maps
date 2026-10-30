@@ -1214,7 +1214,7 @@ static GL_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Waits until no print worker is drawing, if the window's GPU is GL.
 pub fn wait_for_gl_gate(gl: bool) {
-    if gl {
+    if gl && std::env::var_os("OMP_NO_GL_GATE").is_none() {
         drop(GL_GATE.lock().unwrap_or_else(|e| e.into_inner()));
     }
 }
@@ -1225,6 +1225,7 @@ impl WorkerState {
             a.get_info().backend == eframe::wgpu::Backend::Gl
                 && std::env::var_os("OMP_PRINT_OWN_DEVICE").is_none()
         });
+        let gl = gl && std::env::var_os("OMP_NO_GL_GATE").is_none();
         let _gate = gl.then(|| GL_GATE.lock().unwrap_or_else(|e| e.into_inner()));
         if gl {
             // A frame that began before the gate was taken is painted by now.
