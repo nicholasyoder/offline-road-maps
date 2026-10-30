@@ -80,7 +80,7 @@ Read the whole project, crate by crate, with fresh eyes now that every part exis
 
 > **In progress 2026-10-30.** Three passes done, covering the app, `omp-core` and the builder's stages (what each pass read, and what it skipped, is in [audit-findings.md](audit-findings.md#passes-so-far)). Bugs B1–B9 are fixed, with tests where one fits; the other findings (R, D, C and the performance leads P) are in the same file. Not read line by line: the builder's tools (`measure`, `report`, `fetch/{manifest,regions,sources}` and others), which D16 removes or the next pass covers.
 >
-> **Left:** the owner's triage is complete (every finding decided 2026-10-30, R9–R12, D17–D19, P4–P5 and C2 as proposed); then the fixes for R1 with R8 (unwinding first), R2, R7, D6, D15–D19 and R10–R11, and the split of D1 before 5.3 (R6 is done in 5.3; R9 and R12 change the pack, so they wait for the next rebuild, decision 9; P4 and P5 go to 5.12).
+> **Left:** the owner's triage is complete (every finding decided 2026-10-30, R9–R12, D17–D19, P4–P5 and C2 as proposed); then the fixes, in the sessions of the [order of work](audit-findings.md#order-of-work): A (R8, R1, R3), B (R2), C (the split of D1 before 5.3, with D2, D6, D10–D12), D (the builder cleanup D16–D17, D19, C2, R10, R11), E (D15, D18 helpers) and F (R7 and the scale bar) (R6 is done in 5.3; R9 and R12 change the pack, so they wait for the next rebuild, decision 9; P4 and P5 go to 5.12).
 
 ## 5.2 Audit: performance baseline and profiles
 
