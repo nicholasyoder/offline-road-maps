@@ -1066,12 +1066,29 @@ pub fn draw_offscreen(
 /// Reads back `texture` (`size` pixels, [`OFFSCREEN_FORMAT`]) after the commands in `enc`
 /// and `extra` have run: RGBA, row by row.
 pub fn read_texture(
+    gpu: (&wgpu::Device, &wgpu::Queue),
+    enc: wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    [w, h]: [u32; 2],
+    extra: Vec<wgpu::CommandBuffer>,
+) -> Result<Vec<u8>, String> {
+    let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+    read_texture_rows(gpu, enc, texture, [w, h], extra, &mut |_, row| {
+        pixels.extend_from_slice(row)
+    })?;
+    Ok(pixels)
+}
+
+/// As [`read_texture`], but hands each row (`y` and its RGBA bytes) to `rows` straight from
+/// the mapped buffer, so a page-sized copy of the image is never made (step 4.11).
+pub fn read_texture_rows(
     (device, queue): (&wgpu::Device, &wgpu::Queue),
     mut enc: wgpu::CommandEncoder,
     texture: &wgpu::Texture,
     [w, h]: [u32; 2],
     extra: Vec<wgpu::CommandBuffer>,
-) -> Result<Vec<u8>, String> {
+    rows: &mut dyn FnMut(usize, &[u8]),
+) -> Result<(), String> {
     let row =
         (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let out = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1119,10 +1136,9 @@ pub fn read_texture(
     let data = slice
         .get_mapped_range()
         .map_err(|e| format!("reading back the image: {e}"))?;
-    let mut pixels = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h as usize {
         let at = y * row as usize;
-        pixels.extend_from_slice(&data[at..at + w as usize * 4]);
+        rows(y, &data[at..at + w as usize * 4]);
     }
-    Ok(pixels)
+    Ok(())
 }

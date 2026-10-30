@@ -100,8 +100,24 @@ impl Egui {
         gpu: &Gpu,
         size: Vec2,
         ppp: f32,
-        mut build: impl FnMut(&mut egui::Ui),
+        build: impl FnMut(&mut egui::Ui),
     ) -> Result<Vec<u8>, String> {
+        let mut pixels = Vec::new();
+        self.frame_rows(gpu, size, ppp, build, &mut |_, row| {
+            pixels.extend_from_slice(row)
+        })?;
+        Ok(pixels)
+    }
+
+    /// As [`Self::frame`], handing each row of the layer (premultiplied RGBA) to `rows`.
+    pub fn frame_rows(
+        &mut self,
+        gpu: &Gpu,
+        size: Vec2,
+        ppp: f32,
+        mut build: impl FnMut(&mut egui::Ui),
+        rows: &mut dyn FnMut(usize, &[u8]),
+    ) -> Result<(), String> {
         let px = [(size.x * ppp).round() as u32, (size.y * ppp).round() as u32];
         self.ctx.set_pixels_per_point(ppp);
         let mut deltas = Vec::new();
@@ -170,8 +186,7 @@ impl Egui {
                 .forget_lifetime();
             self.renderer.render(&mut pass, &jobs, &screen);
         }
-        let pixels = render::read_texture(gpu_parts(gpu), enc, &texture, px, extra)?;
-        Ok(pixels)
+        render::read_texture_rows(gpu_parts(gpu), enc, &texture, px, extra, rows)
     }
 }
 
@@ -194,12 +209,15 @@ fn over(base: &mut [u8], top: &[u8]) {
     }
 }
 
-fn rgb_of(rgba: &[u8]) -> Vec<u8> {
-    rgba.as_chunks::<4>()
-        .0
-        .iter()
-        .flat_map(|p| [p[0], p[1], p[2]])
-        .collect()
+fn rgb_of(mut rgba: Vec<u8>) -> Vec<u8> {
+    // In place: each pixel's three bytes move down over the ones already read.
+    let n = rgba.len() / 4;
+    for i in 0..n {
+        rgba.copy_within(i * 4..i * 4 + 3, i * 3);
+    }
+    rgba.truncate(n * 3);
+    rgba.shrink_to_fit();
+    rgba
 }
 
 /// A white page of `size` pixels.
@@ -267,16 +285,26 @@ pub fn render_map(
     // egui's units: the paper's points over the text size.
     let screen = Vec2::new(layout.page[0] as f32, layout.page[1] as f32) / s as f32;
     let origin = Pos2::new((layout.map[0] / s) as f32, (layout.map[1] / s) as f32);
-    let top = egui_pass.frame(gpu, screen, ppp as f32, |ui| {
-        draw_map_overlay(ui, page, &cam, origin, s)
-    })?;
-    over(&mut rgba, &top);
+    // Laid over the page row by row as it is read back, so the layer is never held whole.
+    let width = size_px[0] as usize;
+    egui_pass.frame_rows(
+        gpu,
+        screen,
+        ppp as f32,
+        |ui| draw_map_overlay(ui, page, &cam, origin, s),
+        &mut |y, row| {
+            let at = y * width * 4;
+            if let Some(base) = rgba.get_mut(at..at + row.len()) {
+                over(base, row);
+            }
+        },
+    )?;
     let egui_ms = t1.elapsed().as_secs_f64() * 1e3;
     Ok((
         Page {
             size: size_px,
             size_pt: layout.page,
-            rgb: rgb_of(&rgba),
+            rgb: rgb_of(rgba),
         },
         MapStats {
             z: cam.zoom,
@@ -483,7 +511,7 @@ pub fn render_directions(
         each(Page {
             size: size_px,
             size_pt: layout.page,
-            rgb: rgb_of(&rgba),
+            rgb: rgb_of(rgba),
         })?;
     }
     Ok(total)
