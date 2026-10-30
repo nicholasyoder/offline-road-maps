@@ -173,6 +173,8 @@ pub struct App {
     device: Option<wgpu::Device>,
     /// The window's adapter, device and queue, shared with the print page's workers.
     gpu: Option<crate::snapshot::Shared>,
+    /// The window's GPU is GL (see `printui::wait_for_gl_gate`).
+    gl: bool,
     /// Tile geometry on the GPU.
     pool: Option<Arc<Pool>>,
     srgb: bool,
@@ -244,6 +246,7 @@ impl App {
             adapter,
             device: rs.map(|rs| rs.device.clone()),
             gpu: rs.map(|rs| (rs.adapter.clone(), rs.device.clone(), rs.queue.clone())),
+            gl: rs.is_some_and(|rs| rs.adapter.get_info().backend == wgpu::Backend::Gl),
             pool: rs.map(|rs| Pool::new(rs.device.clone(), rs.queue.clone())),
             srgb: rs.is_some_and(|rs| rs.target_format.is_srgb()),
             style: s.style,
@@ -763,6 +766,7 @@ impl MapState {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        printui::wait_for_gl_gate(self.gl);
         let t0 = Instant::now();
         let interval = self.last_frame.map_or(Duration::ZERO, |l| t0 - l);
         self.last_frame = Some(t0);
@@ -1103,6 +1107,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        printui::EXITING.store(true, std::sync::atomic::Ordering::Relaxed);
         self.pins.flush();
         self.save_config();
     }
