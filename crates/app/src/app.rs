@@ -263,10 +263,7 @@ impl App {
     }
 
     fn open(&mut self, ctx: &egui::Context, first_chunk: &Path) {
-        // Close the old pack first, so its loader threads and a check of it stop.
-        self.map = None;
-        self.verify = None;
-        self.tile_error = None;
+        // A pack that cannot be opened leaves the one open as it was.
         let opened = match packs::open(first_chunk) {
             Ok(o) => o,
             Err(e) => {
@@ -274,6 +271,11 @@ impl App {
                 return;
             }
         };
+        // Close the old pack before starting the new one's threads, so its loader threads
+        // and a check of it stop.
+        self.map = None;
+        self.verify = None;
+        self.tile_error = None;
         let dir = packs::pack_dir(first_chunk);
         let same_pack = self
             .cfg
