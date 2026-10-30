@@ -593,11 +593,12 @@ impl SearchUi {
         ui.horizontal(|ui| {
             let n = res.hits.len();
             let more = if n >= RESULTS { " or more" } else { "" };
-            ui.label(
-                egui::RichText::new(format!("{n}{more} results for “{}”", res.text))
-                    .strong()
-                    .color(INK),
-            );
+            let title = match (n, &self.session.error) {
+                (0, Some(e)) => format!("Search failed: {e}"),
+                (0, None) => format!("Nothing found for “{}”", res.text),
+                _ => format!("{n}{more} results for “{}”", res.text),
+            };
+            ui.add(egui::Label::new(egui::RichText::new(title).strong().color(INK)).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 close = glyph_button(ui, Glyph::Close, 18.0)
                     .on_hover_text("Close  (Esc)")

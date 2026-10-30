@@ -139,10 +139,11 @@ impl Session {
         };
         self.error = error;
         if a.query.submit {
-            self.results = (hits.len() > 1).then(|| Results {
+            // One result is only flown to; none opens the panel to say so.
+            self.results = (hits.len() != 1).then(|| Results {
                 text: a.query.text.clone(),
+                selected: (!hits.is_empty()).then_some(0),
                 hits,
-                selected: Some(0),
             });
             if let Some(h) = &taken.first {
                 self.marker = Some(h.clone());
@@ -269,6 +270,17 @@ mod tests {
             None,
         );
         assert!(s.results.is_none());
+        // None, or a failed search: the panel says so.
+        let q = s.ask("Nowhere", true, [0.3, 0.4], 8.0);
+        s.take(answer(&q, Vec::new()), None);
+        assert!(s.results.as_ref().is_some_and(|r| r.hits.is_empty()));
+        let q = s.ask("Nowhere", true, [0.3, 0.4], 8.0);
+        let failed = Answer {
+            hits: Err("damaged".into()),
+            ..answer(&q, Vec::new())
+        };
+        s.take(failed, None);
+        assert!(s.results.is_some() && s.error.as_deref() == Some("damaged"));
     }
 
     #[test]
