@@ -1,8 +1,9 @@
 # Phase 4's features on the North America pack (step 4.11): the schedule on every route
 # (`depart`, a Saturday in summer), alternatives for a short and a coast-to-coast trip,
-# *Optimize stop order* on 25 stops in a poor order, and the print page's preview and
-# *Save as PDF* in the running app, at 300 and 360 dpi (a Letter page), with the process's
-# times with none of this in use (north-america.toml); the pins (10,000, criterion 5) are
+# the print page's preview and *Save as PDF* in the running app after the coast-to-coast
+# route (Letter pages at 300, 360 and 600 dpi and the directions), with the process's RSS
+# before, during and after, then *Optimize stop order* on 25 stops in a poor order. Frame
+# times with none of this in use are north-america.toml's; the pins (10,000, criterion 5) are
 # ohio-pins.toml against ohio.toml.
 # omp-app --bench crates/app/bench/north-america-p4.toml --pack $OMP_WORK/packs/north-america
 name = "north-america-p4"
@@ -24,25 +25,6 @@ zoom = 4.2
 # New York, Chicago, Denver, Phoenix, Los Angeles.
 route = "40.7128,-74.0060;41.8781,-87.6298;39.7392,-104.9903;33.4484,-112.0740;34.0522,-118.2437"
 alternatives = true
-hold = 2
-
-[[step]]
-label = "route: short, Cincinnati-Cleveland"
-lat = 40.3
-lon = -82.9
-zoom = 7
-route = "39.1031,-84.5120;41.4993,-81.6944"
-alternatives = true
-hold = 1
-
-[[step]]
-label = "route: 25 stops, optimized"
-lat = 39.0
-lon = -98.0
-zoom = 3.8
-# New York, Seattle, Atlanta, Denver, Boston, Phoenix, Chicago, Los Angeles, Miami, Minneapolis, Dallas, Toronto, Salt Lake City, Nashville, San Francisco, Montreal, Houston, Kansas City, Portland, Washington, Las Vegas, Detroit, New Orleans, St. Louis, Philadelphia.
-route = "40.7128,-74.006;47.6062,-122.3321;33.749,-84.388;39.7392,-104.9903;42.3601,-71.0589;33.4484,-112.074;41.8781,-87.6298;34.0522,-118.2437;25.7617,-80.1918;44.9778,-93.265;32.7767,-96.797;43.6532,-79.3832;40.7608,-111.891;36.1627,-86.7816;37.7749,-122.4194;45.5019,-73.5674;29.7604,-95.3698;39.0997,-94.5786;45.5152,-122.6784;38.9072,-77.0369;36.1699,-115.1398;42.3314,-83.0458;29.9511,-90.0715;38.627,-90.1994;39.9526,-75.1652"
-optimize = true
 hold = 2
 
 [[step]]
@@ -68,3 +50,22 @@ label = "print: map at 600 dpi"
 print = "map"
 print_dpi = 600
 hold = 1
+
+[[step]]
+label = "route: short, Cincinnati-Cleveland"
+lat = 40.3
+lon = -82.9
+zoom = 7
+route = "39.1031,-84.5120;41.4993,-81.6944"
+alternatives = true
+hold = 1
+
+[[step]]
+label = "route: 25 stops, optimized"
+lat = 39.0
+lon = -98.0
+zoom = 3.8
+# New York, Seattle, Atlanta, Denver, Boston, Phoenix, Chicago, Los Angeles, Miami, Minneapolis, Dallas, Toronto, Salt Lake City, Nashville, San Francisco, Montreal, Houston, Kansas City, Portland, Washington, Las Vegas, Detroit, New Orleans, St. Louis, Philadelphia.
+route = "40.7128,-74.006;47.6062,-122.3321;33.749,-84.388;39.7392,-104.9903;42.3601,-71.0589;33.4484,-112.074;41.8781,-87.6298;34.0522,-118.2437;25.7617,-80.1918;44.9778,-93.265;32.7767,-96.797;43.6532,-79.3832;40.7608,-111.891;36.1627,-86.7816;37.7749,-122.4194;45.5019,-73.5674;29.7604,-95.3698;39.0997,-94.5786;45.5152,-122.6784;38.9072,-77.0369;36.1699,-115.1398;42.3314,-83.0458;29.9511,-90.0715;38.627,-90.1994;39.9526,-75.1652"
+optimize = true
+hold = 2

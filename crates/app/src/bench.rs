@@ -711,6 +711,7 @@ impl Bench {
         };
         let p = &mut self.logs[self.step].print;
         p.stage = PrintStage::Preview;
+        eprintln!("bench: print page opened");
         p.started = Some(Instant::now());
         p.rss_before = crate::memory::usage().map(|m| m.rss);
         Some(kind)
@@ -726,6 +727,10 @@ impl Bench {
         let p = &mut self.logs[self.step].print;
         p.preview_ms = p.started.map(|t| t.elapsed().as_secs_f64() * 1e3);
         p.rss_preview = crate::memory::usage().map(|m| m.rss);
+        eprintln!(
+            "bench: preview done in {:.0} ms: {r:?}",
+            p.preview_ms.unwrap_or(0.0)
+        );
         match r {
             Ok(()) => p.stage = PrintStage::Ready,
             Err(e) => p.error = Some(e),
@@ -742,6 +747,7 @@ impl Bench {
         let path = std::env::temp_dir().join(format!("omp-bench-print-{}.pdf", std::process::id()));
         let p = &mut self.logs[self.step].print;
         p.stage = PrintStage::Output;
+        eprintln!("bench: saving the PDF at {dpi} dpi");
         p.dpi = dpi;
         p.output_at = Some(Instant::now());
         p.path = Some(path.clone());
@@ -786,6 +792,10 @@ impl Bench {
                     .inspect(|_| drop(std::fs::remove_file(&f)))
             })
             .map(|m| m.len());
+        eprintln!(
+            "bench: PDF done in {:.0} ms: {r:?}",
+            p.output_ms.unwrap_or(0.0)
+        );
         p.stage = PrintStage::Settled;
         p.closed = Some(Instant::now());
         if let Err(e) = r {
