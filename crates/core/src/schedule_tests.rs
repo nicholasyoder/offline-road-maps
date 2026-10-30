@@ -377,6 +377,16 @@ fn breaks_every_two_hours() {
     let breaks: Vec<String> = s.events.iter().map(|e| show(&e.from)).collect();
     assert_eq!(breaks, ["2026-09-01 10:00 UTC", "2026-09-01 12:15 UTC"]);
     assert_eq!(show(s.arrival().unwrap()), "2026-09-01 13:30 UTC");
+    // A break every 0 hours (a hand-edited file) is none, rather than a trip that never
+    // moves on.
+    for every_s in [0.0, -1.0, f64::NAN] {
+        st.breaks = Some(Breaks {
+            every_s,
+            for_s: 900.0,
+        });
+        let s = schedule(&trip, &stops, &st, &local).unwrap();
+        assert!(s.events.is_empty(), "{every_s}");
+    }
 }
 
 #[test]

@@ -24,6 +24,9 @@ const MAX_DAYS: f64 = 366.0;
 const BLIP_S: f64 = 90.0;
 /// A trip given up on: more nights than this means a window too short to make progress.
 const MAX_NIGHTS: u32 = 2_000;
+/// Breaks more often than this are taken as none: every 0 s (a hand-edited file) would
+/// never let the trip move on.
+const MIN_BREAK_EVERY_S: f64 = 60.0;
 
 /// When the trip is timed from.
 #[derive(Clone, Debug, PartialEq)]
@@ -314,6 +317,7 @@ fn forward(
         waited: false,
         spans: Vec::new(),
     };
+    let breaks = st.breaks.filter(|b| b.every_s >= MIN_BREAK_EVERY_S);
     let mut t = depart;
     if let Some(day) = &st.day {
         let tz = local.tz(stops[0]);
@@ -331,7 +335,7 @@ fn forward(
         while leg.time_s - done > EPS {
             let mut chunk = leg.time_s - done;
             let mut kind = None;
-            if let Some(b) = &st.breaks {
+            if let Some(b) = &breaks {
                 let to = (b.every_s - since_break).max(0.0);
                 if to < chunk - EPS {
                     (chunk, kind) = (to, Some(Kind::Break));
@@ -384,7 +388,7 @@ fn forward(
             let point = point_at(leg, done);
             let tz = local.tz(point);
             let until = match kind {
-                Kind::Break => t + st.breaks.map_or(0.0, |b| b.for_s),
+                Kind::Break => t + breaks.map_or(0.0, |b| b.for_s),
                 Kind::Night => {
                     let day = st.day.unwrap_or_default();
                     nights += 1;
@@ -419,7 +423,7 @@ fn forward(
         let stay = st.stays.get(at).copied().unwrap_or_default();
         let arrived = t;
         t += stay.s.max(0.0);
-        if st.breaks.is_some_and(|b| stay.s >= b.for_s) {
+        if breaks.is_some_and(|b| stay.s >= b.for_s) {
             since_break = 0.0;
         }
         let day = st.day.unwrap_or_default();
