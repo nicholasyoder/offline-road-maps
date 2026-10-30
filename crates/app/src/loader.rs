@@ -162,7 +162,14 @@ fn work<T>(
             Err(e) => (Err(e), TileTiming::default()),
         };
         let t0 = Instant::now();
-        let result = result.map(|t| t.map(|t| prepare(id, t)));
+        // A tile that makes `prepare` panic is an error like one that cannot be read; the
+        // thread goes on, and the tile is not left in flight for good.
+        let result = result.and_then(|t| match t {
+            None => Ok(None),
+            Some(t) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prepare(id, t)))
+                .map(Some)
+                .map_err(|_| io::Error::other("the tile's data could not be drawn")),
+        });
         let done = Done {
             id,
             result,
@@ -177,5 +184,66 @@ fn work<T>(
             return;
         }
         wake();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omp_core::pack::{Info, Pack, Writer};
+    use omp_core::tile::{Dictionaries, encode_layer};
+    use omp_core::tiles::{FrameCompressor, TileWriter};
+
+    /// A pack with an empty tile at 0/0/0 and 1/0/0.
+    fn reader(dir: &std::path::Path) -> Arc<TileReader> {
+        let dicts = Dictionaries::default();
+        let mut w = Writer::create(dir, "t", 1 << 20).unwrap();
+        let mut fc = FrameCompressor::new(&dicts, 3).unwrap();
+        let mut tw = TileWriter::begin(&mut w, &dicts).unwrap();
+        for (z, x, y) in [(0, 0, 0), (1, 0, 0)] {
+            let frame = fc.compress(0, z, &encode_layer(&[])).unwrap();
+            tw.add(z, x, y, &[(0, &frame[..])]).unwrap();
+        }
+        tw.finish().unwrap();
+        let info = Info {
+            pack_id: [1; 16],
+            bbox: [0, 0, 1, 1],
+            build_time: 0,
+            name: "t".into(),
+            snapshot: String::new(),
+        };
+        let first = w.finish(&info).unwrap().remove(0);
+        Arc::new(TileReader::open(Pack::open(&first).unwrap()).unwrap())
+    }
+
+    fn wait<T: Send + 'static>(l: &mut Loader<T>) -> Done<T> {
+        let t = Instant::now();
+        loop {
+            if let Some(d) = l.poll().next() {
+                return d;
+            }
+            assert!(t.elapsed() < Duration::from_secs(10), "no answer");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_tile_that_panics_is_an_error_and_the_loader_goes_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut l = Loader::new(
+            reader(dir.path()),
+            1,
+            |id: TileId, _| {
+                assert!(id.z == 0, "bad data");
+                id.z
+            },
+            || {},
+        );
+        l.request(&[TileId { z: 1, x: 0, y: 0 }]);
+        let d = wait(&mut l);
+        assert!(d.result.is_err());
+        // The one thread is still there, and the tile is no longer in flight.
+        l.request(&[TileId { z: 0, x: 0, y: 0 }]);
+        assert_eq!(wait(&mut l).result.unwrap(), Some(0));
     }
 }
