@@ -1516,7 +1516,6 @@ impl RouteUi {
     }
 }
 
-/// Per leg, its routes once found.
 /// Finds zones in `zones`, else takes the computer's.
 fn local(zones: Option<&omp_core::tz::Zones>) -> omp_core::schedule::Local<'_> {
     omp_core::schedule::Local {
@@ -1525,6 +1524,7 @@ fn local(zones: Option<&omp_core::tz::Zones>) -> omp_core::schedule::Local<'_> {
     }
 }
 
+/// Per leg, its routes once found.
 fn found_in(alts: &[LegAlts]) -> Vec<Option<&Choices>> {
     alts.iter()
         .map(|a| match a {

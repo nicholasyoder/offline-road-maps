@@ -7,12 +7,12 @@
 //! saved and offers Undo. Under the totals, each leg has a row with its distance and time
 //! that opens to its routes (step 4.3): they are looked for then, listed with the one shown
 //! selected, and drawn grey on the map until the row is closed; clicking another shows it.
-//! *Depart at / Arrive by* (step 4.5) has its own section under *More options*: the date and time, the driving day and the breaks. With a time, each
-//! stop's row says when it arrives and leaves, with a field for the time spent there, and
-//! the directions get a column of clock times and rows for each night ("Day 2"), break and
-//! zone crossing; a night along a leg can be made a stop. Times in another zone than the
-//! departure's are drawn in an accent colour. The rest of phase 4's trip planning has its
-//! places here, disabled.
+//! *Depart at / Arrive by* (step 4.5) has its own section under *More options*: the date
+//! and time, the driving day and the breaks. With a time, each stop's row says when it
+//! arrives and leaves, with a field for the time spent there, and the directions get a
+//! column of clock times and rows for each night ("Day 2"), break and zone crossing; a
+//! night along a leg can be made a stop. Times in another zone than the departure's are
+//! drawn in an accent colour.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use omp_core::geo;
@@ -909,9 +909,6 @@ impl RouteUi {
     }
 }
 
-/// Which route turn costs rank best when it is not the quickest (decisions 3 and 23):
-/// "With turn costs, the route via US 33 ranks best: 1 min slower on paper, 2 fewer
-/// U-turns."
 /// *More options*' title, which says what is avoided, so that closed it still says why a
 /// route leaves out tolls.
 fn more_title(avoid: u8) -> String {
@@ -926,6 +923,9 @@ fn more_title(avoid: u8) -> String {
     }
 }
 
+/// Which route turn costs rank best when it is not the quickest (decisions 3 and 23):
+/// "With turn costs, the route via US 33 ranks best: 1 min slower on paper, 2 fewer
+/// U-turns."
 fn ranked_note(c: &Choices) -> Option<String> {
     if c.best == 0 {
         return None;
@@ -952,7 +952,6 @@ fn ranked_note(c: &Choices) -> Option<String> {
     ))
 }
 
-/// A small triangle at `c`: pointing right when closed, down when open.
 /// A row that opens and closes what is under it, with a triangle that says which: a leg's
 /// routes and *More options*. Without `hover` it is only a label, with no triangle.
 fn fold_row(
@@ -984,6 +983,7 @@ fn fold_row(
     resp
 }
 
+/// A small triangle at `c`: pointing right when closed, down when open.
 fn triangle(p: &egui::Painter, c: Pos2, open: bool, color: Color32) {
     let pts = match open {
         true => vec![
