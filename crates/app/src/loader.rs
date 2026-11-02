@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use omp_core::tiles::{Tile, TileReader, TileTiming};
@@ -43,7 +42,6 @@ struct Shared {
 pub struct Loader<T> {
     shared: Arc<Shared>,
     rx: Receiver<Done<T>>,
-    threads: Vec<JoinHandle<()>>,
     /// When each queued tile was first asked for, so latency counts the time spent queued.
     asked: HashMap<TileId, Instant>,
 }
@@ -69,8 +67,8 @@ impl<T: Send + 'static> Loader<T> {
         let (tx, rx) = channel();
         let wake = Arc::new(wake);
         let prepare = Arc::new(prepare);
-        let threads = (0..threads.max(1))
-            .map(|i| {
+        for i in 0..threads.max(1) {
+            {
                 let (shared, reader, tx, wake, prepare) = (
                     shared.clone(),
                     reader.clone(),
@@ -81,13 +79,12 @@ impl<T: Send + 'static> Loader<T> {
                 std::thread::Builder::new()
                     .name(format!("tile-loader-{i}"))
                     .spawn(move || work(&shared, &reader, &*prepare, &tx, &*wake))
-                    .expect("spawn tile loader")
-            })
-            .collect();
+                    .expect("spawn tile loader");
+            }
+        }
         Self {
             shared,
             rx,
-            threads,
             asked: HashMap::new(),
         }
     }
@@ -130,9 +127,8 @@ impl<T> Drop for Loader<T> {
     fn drop(&mut self) {
         self.shared.queue.lock().unwrap().quit = true;
         self.shared.ready.notify_all();
-        for t in self.threads.drain(..) {
-            let _ = t.join();
-        }
+        // Not joined: a thread in the middle of a tile (a read from a cold stick) would hold
+        // the UI thread for it. It finishes the tile, finds nobody to send it to, and ends.
     }
 }
 
@@ -225,6 +221,29 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(10), "no answer");
             std::thread::yield_now();
         }
+    }
+
+    #[test]
+    fn dropping_the_loader_does_not_wait_for_a_tile_being_prepared() {
+        let dir = tempfile::tempdir().unwrap();
+        let (started, running) = std::sync::mpsc::channel();
+        let release = Arc::new(Mutex::new(()));
+        let held = release.lock().unwrap();
+        let blocked = release.clone();
+        let mut l = Loader::new(
+            reader(dir.path()),
+            1,
+            move |_, _| {
+                started.send(()).unwrap();
+                drop(blocked.lock().unwrap());
+            },
+            || {},
+        );
+        l.request(&[TileId { z: 0, x: 0, y: 0 }]);
+        running.recv_timeout(Duration::from_secs(10)).unwrap();
+        // Joining here would never return: the tile waits for `held`.
+        drop(l);
+        drop(held);
     }
 
     #[test]
