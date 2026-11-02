@@ -43,7 +43,7 @@ What phase 4 left in place for this:
 | Step | Status | Notes |
 |---|---|---|
 | 5.1 Audit: bugs and design | **Done** 2026-11-02 | 10 bugs fixed (B1–B10); every finding triaged; fix sessions A–F done; the rest assigned to later steps |
-| 5.2 Audit: performance baseline and profiles | In progress | Baseline and the app's profiles done; the leads table written ([perf-findings.md](perf-findings.md)); left: the owner's triage and the North America build profile (P20) |
+| 5.2 Audit: performance baseline and profiles | In progress | Baseline and profiles done, leads triaged by the owner 2026-11-02 and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)); left: the North America build profile (P20, with the IDE closed) |
 | 5.3 Settings window | Not started | |
 | 5.4 Map styles in the Map tab | Not started | |
 | 5.5 Dark UI with the night style | Not started | |
@@ -109,7 +109,8 @@ Measure before changing anything, and look for slow and wasteful code that the p
 > - **The cold first route is geometry:** 2,346 random `RGEO` reads, 4.5 of 6.2 s (P9); asked as the pack opens it also waits for start-up and the routing top's warm-up, which holds up the tiles too (P8). Two cold searches read 162 of `SENT`'s 196 MiB (P16).
 > - **Warm:** decoding segment blocks is 80% of routing and directions (P10); label placement runs every frame, still or not (22% of the UI thread, P11); a still frame allocates 561 times (P13); the only idle wake-up is a focused field's cursor blink (P15). Heap at most about 150 MiB of the 328 (P17). Print: 600 dpi +243 MiB, the 749-step directions 14.1 s (P18, P19). P1 measured and left; D3 and D14 in the audit file measured.
 > - **Builder:** the Ohio merge profiled (P4: reading the sources dominates, not `intern_names`).
-> - **Left:** the North America build profile (P20), which needs the machine with the IDE closed (its 49 GiB peak does not fit beside it; an earlier heaptrack run over the full flight took the desktop down, so heavy runs now go in a memory-capped `systemd-run` scope); and the owner's triage of the leads.
+> - **Triage (owner, 2026-11-02):** P6 and P7 left: the chain walk is FAT32's alone (on exFAT a read 4 GB into a chunk is one device read, measured on the data disk), so the README recommends exFAT sticks (5.7) and FAT32 stays supported, slower on first reads; the FAT32 chunking costs nothing measurable and stays. Routing (P8–P10) and cold search (P16) only where easy and plain. Still frames must do nothing (P11–P15: fix, before 5.3). Memory (P17) measured without costing speed; printing's memory and banded drawing, identical to unbanded (P18, P19). The leads are grouped into sessions G–L in [perf-findings.md](perf-findings.md#order-of-work).
+> - **Left:** the North America build profile (P20, session L's first item), which needs the machine with the IDE closed (its 49 GiB peak does not fit beside it; an earlier heaptrack run over the full flight took the desktop down, so heavy runs now go in a memory-capped `systemd-run` scope).
 
 ## 5.3 Settings window
 
@@ -168,6 +169,7 @@ Printing uses the style on screen, with no style choice of its own (decision 8).
 - **Tooltips:** every icon-only button and every control whose label is not self-explanatory (found in 5.1's UI pass) gets one.
 - **Window size and position** saved in `config.toml` on exit and restored on start, clamped to a monitor that still exists (a laptop off its dock). Maximized state too.
 - **First run:** when no pack is found, the window says what a pack is, where the app looked (`maps/` next to the executable, the last pack), and offers *Choose a pack…*, instead of an empty map. Same when the last pack is gone (the stick at another drive letter is already handled).
+- **exFAT sticks:** the README says to format the stick exFAT: on FAT32 the first read deep into each pack chunk walks the file's cluster chain, seconds on a USB 2 stick (5.2 P6, P7). FAT32 keeps working, slower to start.
 - **Plain error messages:** every error a user can see is written as what happened and what to do, not an `io::Error` debug string (list from 5.1). Errors from a damaged pack say to run *Verify pack*.
 
 **Done when:** each item works on Linux and Windows, checked by hand, and the shortcut list matches the keys (a test that each table entry has a handler).
@@ -242,7 +244,7 @@ As 4.11, for this phase:
 ```
 First:  5.1 audit: bugs and design ─┐
         5.2 audit: perf baseline ───┴─► owner triages the findings and leads
-Then:   (split app.rs if 5.1 says so) ─► 5.3 settings ─► 5.4 styles ─► 5.5 dark UI ─► 5.6 high contrast + B&W ─► 5.7 polish
+Then:   (split app.rs if 5.1 says so) ─► perf session G (still frames) ─► 5.3 settings ─► 5.4 styles ─► 5.5 dark UI ─► 5.6 high contrast + B&W ─► 5.7 polish
 Beside: 5.8 cold reads · 5.9 routes and directions · 5.10 memory · 5.11 printing · 5.12 builder and pack
 Last:   5.13 checks
 ```
