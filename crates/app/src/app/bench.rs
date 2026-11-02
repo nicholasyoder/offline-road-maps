@@ -12,7 +12,6 @@ use crate::bench::{
 };
 use crate::printui::{self, PrintUi};
 use crate::routing::{Place, RouteUi, StopAction};
-use crate::scale::Units;
 use crate::search::Status;
 use crate::side::Page;
 
@@ -123,13 +122,9 @@ impl App {
             // As the Print tab opens it.
             self.print.back = m.page;
             m.page = Page::Print;
-            let around = printui::Around {
-                cam: &m.camera,
-                units: Units::Miles,
-                has_route: m.routing.route.is_some(),
-                route_bounds: m.routing.route_bounds(),
-            };
-            self.print.open(ctx, kind, &around, &self.cfg.print);
+            let route = m.routing.route_bounds();
+            self.print
+                .open(ctx, kind, &m.camera, route, &self.cfg.print);
         }
     }
 

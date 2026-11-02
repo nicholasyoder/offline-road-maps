@@ -26,7 +26,6 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Self; 4] = [Self::Search, Self::Route, Self::Trips, Self::Layers];
     /// The tabs, Print last.
     pub const TABS: [Self; 5] = [
         Self::Search,

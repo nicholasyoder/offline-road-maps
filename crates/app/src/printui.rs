@@ -172,9 +172,16 @@ impl PrintUi {
         }
     }
 
-    /// Opens the page for `kind`: the map fitted to the route if there is one, else to what
-    /// the map shows.
-    pub fn open(&mut self, ctx: &egui::Context, kind: Kind, around: &Around, settings: &Settings) {
+    /// Opens the page for `kind`: the map fitted to the route if there is one (its bounds in
+    /// `route`), else to what `cam` shows.
+    pub fn open(
+        &mut self,
+        ctx: &egui::Context,
+        kind: Kind,
+        cam: &Camera,
+        route: Option<[f64; 4]>,
+        settings: &Settings,
+    ) {
         self.kind = kind;
         self.big = None;
         self.drag = None;
@@ -207,19 +214,19 @@ impl PrintUi {
             self.listing = None;
             self.unavailable = Some("Printers could not be listed.".into());
         }
-        let [x0, y0, x1, y1] = around.cam.visible();
-        self.wide = match around.route_bounds {
+        let [x0, y0, x1, y1] = cam.visible();
+        self.wide = match route {
             Some(b) => b[2] - b[0] >= b[3] - b[1],
             None => x1 - x0 >= y1 - y0,
         };
         let layout = self.layout(settings);
-        self.area = Some(self.initial_area(around, &layout));
+        self.area = Some(self.initial_area(cam, route, &layout));
     }
 
-    fn initial_area(&self, around: &Around, layout: &Layout) -> Area {
-        match around.route_bounds {
+    fn initial_area(&self, cam: &Camera, route: Option<[f64; 4]>, layout: &Layout) -> Area {
+        match route {
             Some(b) => Area::fit(b, layout.aspect(), 0.06),
-            None => Area::of_view(around.cam, layout.aspect()),
+            None => Area::of_view(cam, layout.aspect()),
         }
         .clamped(layout)
     }
@@ -362,7 +369,7 @@ impl PrintUi {
                     .add_enabled(around.has_route, egui::Button::new("Fit to route"))
                     .clicked()
                 {
-                    self.area = Some(self.initial_area(around, &layout));
+                    self.area = Some(self.initial_area(around.cam, around.route_bounds, &layout));
                 }
                 if ui.button("Use the view").clicked() {
                     self.area = Some(Area::of_view(around.cam, layout.aspect()).clamped(&layout));
@@ -1309,17 +1316,7 @@ mod tests {
             cam.center = [0.3, 0.4];
             let settings = Settings::default();
             let mut print = PrintUi::new(Path::new("."));
-            print.open(
-                &egui::Context::default(),
-                Kind::Map,
-                &Around {
-                    cam: &cam,
-                    units: Units::Miles,
-                    has_route: false,
-                    route_bounds: None,
-                },
-                &settings,
-            );
+            print.open(&egui::Context::default(), Kind::Map, &cam, None, &settings);
             // Half the view's width, in the middle.
             let width = (cam.visible()[2] - cam.visible()[0]) / 2.0;
             print.area = Some(Area {

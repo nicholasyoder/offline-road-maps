@@ -69,6 +69,9 @@ const ROUTE_TIMEOUT: Duration = Duration::from_secs(120);
 const KEYSTROKE_MS: f64 = 150.0;
 /// With `OMP_BENCH_SHOTS`, the least time from the last keystroke to Enter.
 const SHOT_WAIT: Duration = Duration::from_secs(1);
+/// The side panel's pages screenshot after the flight: the tabs but Print, which the
+/// flight's own print steps show.
+const SHOT_PAGES: [Page; 4] = [Page::Search, Page::Route, Page::Trips, Page::Layers];
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1059,7 +1062,7 @@ impl Bench {
     /// saved once it has been shown for a moment, before the app is left idle.
     pub fn page_shot(&mut self) -> Option<Page> {
         let (i, since, asked) = self.page?;
-        let page = *Page::ALL.get(i)?;
+        let page = *SHOT_PAGES.get(i)?;
         if since.elapsed() >= SHOT_WAIT && !asked {
             self.shot(&format!("page-{}", page.name().to_lowercase()));
             self.page = Some((i, since, true));
@@ -1067,7 +1070,7 @@ impl Bench {
             // The screenshot is of the frame after the one that asks for it.
             self.page = Some((i + 1, Instant::now(), false));
             // The idle period starts after the last.
-            if i + 1 == Page::ALL.len()
+            if i + 1 == SHOT_PAGES.len()
                 && let Some((_, end)) = &mut self.idle
             {
                 *end = Instant::now();
@@ -1078,7 +1081,7 @@ impl Bench {
 
     /// Called once a frame.
     pub fn poll(&mut self) -> Poll {
-        if self.page.is_some_and(|(i, ..)| i < Page::ALL.len()) {
+        if self.page.is_some_and(|(i, ..)| i < SHOT_PAGES.len()) {
             return Poll::Flying;
         }
         let Some((_, end)) = &self.idle else {

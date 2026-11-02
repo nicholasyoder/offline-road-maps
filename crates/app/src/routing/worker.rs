@@ -155,7 +155,6 @@ pub struct Route {
     pub leg: Leg,
     pub turns: Turns,
     /// Where it passes its via node (for a saved trip, step 4.7); `None` for the quickest.
-    #[allow(dead_code)]
     pub via: Option<P>,
     /// The road most of it takes that the leg's other routes do not, by its main ref
     /// ("I-40") or its name, or empty.

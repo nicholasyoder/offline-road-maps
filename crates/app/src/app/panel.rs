@@ -400,13 +400,8 @@ fn open_print(
         p.print.back = *p.page;
     }
     *p.page = Page::Print;
-    let around = printui::Around {
-        cam: p.camera,
-        units: Units::Miles,
-        has_route: p.routing.route.is_some(),
-        route_bounds: p.routing.route_bounds(),
-    };
-    p.print.open(ctx, kind, &around, settings);
+    let route = p.routing.route_bounds();
+    p.print.open(ctx, kind, p.camera, route, settings);
 }
 
 /// The search page under the suggestions: "what's here" for a right-clicked point or the
