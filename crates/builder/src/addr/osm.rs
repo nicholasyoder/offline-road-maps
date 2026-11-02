@@ -380,7 +380,7 @@ fn read_with(pbf: &Pbf, addresses: bool) -> Result<OsmAddresses> {
         .chain(addr_ways.iter().flat_map(|(r, _)| r))
         .chain(interps.iter().flat_map(|i| &i.refs));
     for &id in all_refs {
-        needed.insert(id);
+        needed.insert(id)?;
     }
     let endpoint_ids: HashSet<i64> = interps.iter().flat_map(|i| i.refs.clone()).collect();
 

@@ -4,10 +4,13 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use anyhow::{Result, bail};
+
 use crate::geom::P;
 
-/// Room for node IDs below 2^34 (about 17 billion; the highest in 2026 is around 13.5 billion).
-const CAPACITY: u64 = 1 << 34;
+/// Room for node IDs below 2^36 (about 69 billion; the highest in 2026 is around 13.5 billion).
+/// A set holds one empty slot per 2^22 IDs, 16,384 slots.
+const CAPACITY: u64 = 1 << 36;
 
 fn pack(p: P) -> u64 {
     (u64::from(p[0]) << 32) | u64::from(p[1])
@@ -62,14 +65,17 @@ impl NodeSet {
         ))
     }
 
-    /// Adds `id`; returns whether it was already in the set.
-    pub fn insert(&self, id: i64) -> bool {
+    /// Adds `id`; returns whether it was already in the set. An ID the set has no room for is
+    /// an error, so its ways do not lose the node unnoticed.
+    pub fn insert(&self, id: i64) -> Result<bool> {
         let Some((page, word, mask)) = Self::locate(id) else {
-            return false;
+            bail!(
+                "node ID {id} is outside 0..2^36, the builder's node sets (raise nodes::CAPACITY)"
+            );
         };
         let words =
             self.pages[page].get_or_init(|| (0..PAGE_WORDS).map(|_| AtomicU64::new(0)).collect());
-        words[word].fetch_or(mask, Ordering::Relaxed) & mask != 0
+        Ok(words[word].fetch_or(mask, Ordering::Relaxed) & mask != 0)
     }
 
     pub fn contains(&self, id: i64) -> bool {
@@ -204,13 +210,16 @@ mod tests {
     #[test]
     fn node_set() {
         let s = NodeSet::new();
-        for id in [0, 63, 64, 13_000_000_000] {
-            assert!(!s.insert(id));
+        for id in [0, 63, 64, 13_000_000_000, (1 << 36) - 1] {
+            assert!(!s.insert(id).unwrap());
         }
-        assert!(s.insert(64));
+        assert!(s.insert(64).unwrap());
         assert!(s.contains(63) && s.contains(13_000_000_000) && !s.contains(65));
         assert!(!s.contains(-1) && !s.contains(1 << 40));
-        assert_eq!(s.heap_bytes(), 2 * PAGE_BITS / 8);
+        // Past the cap, or negative: an error, not a node quietly left out.
+        assert!(s.insert(1 << 36).is_err() && s.insert(-1).is_err());
+        assert!(!s.contains(1 << 36));
+        assert_eq!(s.heap_bytes(), 3 * PAGE_BITS / 8);
     }
 
     #[test]
@@ -219,7 +228,7 @@ mod tests {
         // Across words, blocks and pages.
         let ids = [5, 64, 600, 1_000, PAGE_BITS as i64 + 3, 13_000_000_000];
         for &id in &ids {
-            s.insert(id);
+            s.insert(id).unwrap();
         }
         let locs = RankedLocations::new(s);
         assert_eq!(locs.len(), ids.len());

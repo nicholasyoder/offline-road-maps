@@ -467,7 +467,7 @@ pub fn read(
                 way_pass(block, out)?;
                 for rec in out.way_recs.drain(..) {
                     for &id in &rec.refs {
-                        needed.insert(id);
+                        needed.insert(id)?;
                     }
                 }
                 Ok(())

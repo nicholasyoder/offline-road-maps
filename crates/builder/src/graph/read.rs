@@ -178,7 +178,7 @@ pub fn read(pbf: &Pbf) -> Result<Input> {
         stats.dropped_speed += b.stats.dropped_speed;
         for (id, way, (class, roundabout, label), r) in b.ways {
             for &n in &r {
-                needed.insert(n);
+                needed.insert(n)?;
             }
             let info = WayInfo {
                 class,

@@ -524,20 +524,22 @@ pub fn build(mut input: Input, uturn_s: u32) -> Graph {
     stats.ways = ways.len() as u64;
 
     // Graph nodes: nodes on two ways (or twice on one), way ends and blocking barriers.
+    // `read` put every ID in a node set already, so they fit.
     let (seen, at) = (NodeSet::new(), NodeSet::new());
+    let mark = |set: &NodeSet, id| set.insert(id).expect("node IDs fit a node set");
     for w in &ways {
         let r = refs(w);
         for &id in r {
-            if seen.insert(id) {
-                at.insert(id);
+            if mark(&seen, id) {
+                mark(&at, id);
             }
         }
-        at.insert(r[0]);
-        at.insert(r[r.len() - 1]);
+        mark(&at, r[0]);
+        mark(&at, r[r.len() - 1]);
     }
     for (&id, n) in &input.nodes {
         if n.block && seen.contains(id) {
-            at.insert(id);
+            mark(&at, id);
         }
     }
     // A stretch that leaves a node and comes back to it with no graph node between (a loop
@@ -548,7 +550,7 @@ pub fn build(mut input: Input, uturn_s: u32) -> Graph {
         for k in 1..r.len() {
             if at.contains(r[k]) {
                 if r[k] == r[i] && k > i + 1 {
-                    at.insert(r[(i + k) / 2]);
+                    mark(&at, r[(i + k) / 2]);
                 }
                 i = k;
             }

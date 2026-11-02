@@ -226,7 +226,7 @@ pub fn read(pbf: &Pbf) -> Result<AdminData> {
     let needed = NodeSet::new();
     for refs in way_refs.values() {
         for &id in refs {
-            needed.insert(id);
+            needed.insert(id)?;
         }
     }
     let locs = RankedLocations::new(needed);
