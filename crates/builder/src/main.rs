@@ -10,10 +10,8 @@ mod fetch;
 mod find;
 mod geom;
 mod graph;
-mod measure;
 mod pbf;
 mod poly;
-mod report;
 mod route;
 mod routing;
 mod search;
@@ -51,8 +49,6 @@ enum Command {
     Here(find::HereArgs),
     /// Route between points as the app does, or check routes against Dijkstra (`--check`).
     Route(route::RouteArgs),
-    /// Phase 0 spike: tile a PBF through the whitelist and report sizes per layer, zoom and encoding.
-    Measure(measure::MeasureArgs),
     /// Read a PBF's admin areas and places and report counts, chains and section sizes.
     Admin(admin::AdminArgs),
     /// Read a PBF's streets and report the street table's counts and section sizes.
@@ -61,8 +57,6 @@ enum Command {
     Graph(graph::GraphArgs),
     /// Contract a car graph into a contraction hierarchy and check it against Dijkstra.
     Ch(ch::check::ChArgs),
-    /// Print Markdown size tables from `measure` JSON files.
-    Report(report::ReportArgs),
 }
 
 /// Bytes in MiB, for reports.
@@ -105,12 +99,10 @@ fn main() -> anyhow::Result<()> {
         Command::Search(args) => find::search(args)?,
         Command::Here(args) => find::here(args)?,
         Command::Route(args) => route::run(args)?,
-        Command::Measure(args) => measure::run(args, &dir)?,
         Command::Admin(args) => admin::run(args)?,
         Command::Streets(args) => street::run(args)?,
         Command::Graph(args) => graph::run(args)?,
         Command::Ch(args) => ch::check::run(args)?,
-        Command::Report(args) => report::run(args)?,
     }
     Ok(())
 }

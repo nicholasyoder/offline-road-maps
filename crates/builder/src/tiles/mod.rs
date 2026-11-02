@@ -1,16 +1,16 @@
-//! Cuts features into a z0–z14 tile pyramid and measures the uncompressed encodings.
+//! Cuts features into a z0–z14 tile pyramid.
 //!
 //! Each feature is clipped down a quadtree: a child tile clips its parent's fragment, and
 //! fragments that fit entirely in a child are borrowed, not copied. Zooms below
 //! [`SPLIT_ZOOM`] are cut from only the features shown there; from it down, each split tile
 //! is cut on its own from the features its bbox touches, so memory stays at a few split
 //! tiles' features rather than the whole region's at every low zoom. V2 sections are written
-//! to a temp file for the compression variants in `compress`.
+//! to a temp file ([`Store`]), compressed when the pack is written.
 //!
-//! Also here: the layer encodings ([`encode`]), dictionary training and the compression
-//! variants ([`compress`]), and the ocean polygons ([`water`]).
+//! Also here: quantizing and simplifying a tile's features ([`encode`]), dictionary training
+//! ([`dict`]), and the ocean polygons ([`water`]).
 
-pub mod compress;
+pub mod dict;
 pub mod encode;
 pub mod water;
 
@@ -51,42 +51,8 @@ fn thinning(z: u8, layer: &Layer) -> (f64, f64, f64) {
     (layer.tolerance(z).unwrap_or(tol), min_len, min_area)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Variant {
-    V0,
-    V1,
-    V2,
-    V3,
-    V4,
-    V5,
-}
-
-#[derive(Default, Clone, Copy, Serialize, Deserialize)]
-pub struct Cell {
-    pub tiles: u64,
-    pub features: u64,
-    pub vertices: u64,
-    pub bytes: u64,
-}
-
-impl Cell {
-    pub fn add(&mut self, o: &Cell) {
-        self.tiles += o.tiles;
-        self.features += o.features;
-        self.vertices += o.vertices;
-        self.bytes += o.bytes;
-    }
-}
-
 #[derive(Default, Serialize, Deserialize)]
 pub struct Stats {
-    /// `(variant, layer, zoom)`.
-    pub cells: BTreeMap<(Variant, u8, u8), Cell>,
-    /// Per zoom: tiles, raw MVT bytes, gzipped MVT bytes.
-    pub mvt: BTreeMap<u8, (u64, u64, u64)>,
-    /// `(layer, class)` → V1 bytes and features at z14, each feature encoded on its own.
-    pub class_z14: BTreeMap<(u8, u16), (u64, u64)>,
     /// `(zoom, layer, class)` → tiles left out because all they held was one polygon of that
     /// class covering the tile and its buffer, and the V2 bytes they would have had.
     pub left_out: BTreeMap<(u8, u8, u16), (u64, u64)>,
@@ -94,20 +60,6 @@ pub struct Stats {
 
 impl Stats {
     pub fn merge(&mut self, o: Stats) {
-        for (k, c) in o.cells {
-            self.cells.entry(k).or_default().add(&c);
-        }
-        for (z, (a, b, c)) in o.mvt {
-            let e = self.mvt.entry(z).or_default();
-            e.0 += a;
-            e.1 += b;
-            e.2 += c;
-        }
-        for (k, (a, b)) in o.class_z14 {
-            let e = self.class_z14.entry(k).or_default();
-            e.0 += a;
-            e.1 += b;
-        }
         for (k, (a, b)) in o.left_out {
             let e = self.left_out.entry(k).or_default();
             e.0 += a;
@@ -168,16 +120,8 @@ struct Ctx<'a> {
     maxzoom: Vec<u8>,
     /// The water layer's external ocean class, whose pieces are dissolved in each tile.
     ocean: Option<(u8, u16)>,
-    /// Also measure V0, V1 and MVT; without it only V2 is encoded (for `build`).
-    measure: bool,
     stats: Vec<Mutex<Stats>>,
     store: Mutex<&'a mut Store>,
-}
-
-pub struct Pyramid {
-    pub stats: Stats,
-    pub entries: Vec<Entry>,
-    pub store_bytes: u64,
 }
 
 /// `[layer][class]` minimum zoom, `u8::MAX` for classes not in tiles.
@@ -213,7 +157,7 @@ fn split_tiles(b: BBox) -> impl Iterator<Item = (u32, u32)> {
         .filter(move |&(x, y)| geom::bbox_overlaps(&b, &tile_rect(SPLIT_ZOOM, x, y)))
 }
 
-/// The part of the pyramid one `measure --band k/n` run cuts: the split tiles in columns
+/// The part of the pyramid one band of `build --bands n` cuts: the split tiles in columns
 /// with `x % n == k`, and z0–z5 in band 0. Each tile is cut in exactly one band, so the
 /// bands' tile bytes add up. Every feature is "owned" by the band of the column its bbox
 /// starts in, for per-feature totals that should not count a feature twice.
@@ -224,14 +168,6 @@ pub struct Band {
 }
 
 impl Band {
-    pub const ALL: Band = Band { k: 0, n: 1 };
-
-    pub fn parse(s: &str) -> Option<Self> {
-        let (k, n) = s.split_once('/')?;
-        let (k, n) = (k.parse().ok()?, n.parse().ok()?);
-        (n > 0 && k < n).then_some(Band { k, n })
-    }
-
     fn has(self, x: u32) -> bool {
         x % self.n == self.k
     }
@@ -249,32 +185,8 @@ impl Band {
     }
 }
 
-/// Cuts the pyramid for `measure`, into a new temp file at `store_path`.
-pub fn build(
-    features: &[Feature],
-    wl: &Whitelist,
-    store_path: &Path,
-    band: Band,
-) -> Result<Pyramid> {
-    let mut store = Store::create(store_path)?;
-    let stats = cut_pyramid(features, wl, &mut store, band, true);
-    let (entries, store_bytes) = store.finish()?;
-    Ok(Pyramid {
-        stats,
-        entries,
-        store_bytes,
-    })
-}
-
-/// Cuts band `band` of the pyramid and appends its V2 payloads to `store`. With `measure`,
-/// also collects the V0, V1 and MVT statistics.
-pub fn cut_pyramid(
-    features: &[Feature],
-    wl: &Whitelist,
-    store: &mut Store,
-    band: Band,
-    measure: bool,
-) -> Stats {
+/// Cuts band `band` of the pyramid and appends its V2 payloads to `store`.
+pub fn cut_pyramid(features: &[Feature], wl: &Whitelist, store: &mut Store, band: Band) -> Stats {
     // A left-out tile is drawn from its nearest stored ancestor (format.md). That relies on
     // simplification moving an edge less than the half buffer a child's buffer is in its
     // parent's grid, so no simplified coastline reaches into a full-ocean child's square.
@@ -309,7 +221,6 @@ pub fn cut_pyramid(
             .iter()
             .map(|l| l.maxzoom.unwrap_or(MAX_ZOOM))
             .collect(),
-        measure,
     };
     let minzoom = |f: &Feature| feature_minzoom(&ctx.minzoom, f);
     let low: Vec<Frag> = features
@@ -419,7 +330,6 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
     }
     let mut local = Stats::default();
     let mut sections: Vec<(u8, Vec<u8>)> = Vec::new();
-    let mut mvt_layers = Vec::new();
     // z14 drops nothing: rings that collapse are simplified again, down to the default.
     let floor = (z >= MAX_ZOOM).then_some(Z14_TOLERANCE);
     // The layer, class and V2 bytes of a layer that is one feature covering the whole tile.
@@ -431,10 +341,6 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
         let layer = &ctx.wl.layers[li];
         let (tol, min_len, min_area) = thinning(z, layer);
         let li = li as u8;
-        let class_names: Vec<String> = match ctx.measure {
-            true => layer.classes.iter().map(|c| c.name.clone()).collect(),
-            false => Vec::new(),
-        };
         let v1: Vec<Enc> = frags
             .iter()
             .filter_map(|f| {
@@ -450,9 +356,6 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
                 _ => true,
             })
             .collect();
-        if ctx.measure {
-            measure_v0_v1(&mut local, z, li, layer, &class_names, frags, &v1);
-        }
         let v1 = match layer.merge_lines {
             Some(mode) => merge_lines(v1, mode, layer.props.iter().position(|p| p == "oneway")),
             None => v1,
@@ -475,24 +378,6 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
             continue;
         }
         let v2_bytes = encode_layer(&v2);
-        if ctx.measure {
-            local
-                .cells
-                .entry((Variant::V2, li, z))
-                .or_default()
-                .add(&Cell {
-                    tiles: 1,
-                    features: v2.len() as u64,
-                    vertices: v2.iter().map(|e| e.geom.vertices() as u64).sum(),
-                    bytes: v2_bytes.len() as u64,
-                });
-            mvt_layers.push(encode::mvt_layer(
-                &layer.name,
-                &v2,
-                &class_names,
-                &layer.props,
-            ));
-        }
         // The parent must show the feature too, so it has to start at a lower zoom: a park
         // whose class starts at z6 cannot be left to a z5 ancestor that does not have it.
         let shown_above = |class: u16| {
@@ -516,14 +401,6 @@ fn emit(ctx: &Ctx, z: u8, x: u32, y: u32, frags: &[Frag]) {
         local = Stats::default();
         local.left_out.insert((z, li, class), (1, bytes));
         sections.clear();
-        mvt_layers.clear();
-    }
-    if !mvt_layers.is_empty() {
-        let (raw, gz) = encode::mvt_tile_gzip(&mvt_layers);
-        let e = local.mvt.entry(z).or_default();
-        e.0 += 1;
-        e.1 += raw;
-        e.2 += gz;
     }
     if !sections.is_empty() {
         let mut store = ctx.store.lock().unwrap();
@@ -711,58 +588,6 @@ fn join_parts(parts: Vec<Vec<Point>>, reversible: bool) -> Vec<Vec<Point>> {
     out
 }
 
-/// `measure`'s V0 and V1 cells for one layer of a tile, and its per-class z14 bytes.
-fn measure_v0_v1(
-    local: &mut Stats,
-    z: u8,
-    li: u8,
-    layer: &Layer,
-    class_names: &[String],
-    frags: &[&Frag],
-    v1: &[Enc],
-) {
-    let mut v0 = Cell {
-        tiles: 1,
-        ..Cell::default()
-    };
-    for f in frags {
-        v0.features += 1;
-        v0.vertices += f.geom.vertices() as u64;
-        v0.bytes += encode::v0_size(
-            &f.geom,
-            &class_names[f.f.class as usize],
-            &f.f.props,
-            &layer.props,
-        );
-    }
-    let v1_bytes = encode_layer(v1);
-    if z == MAX_ZOOM {
-        for e in v1 {
-            // Encoded alone, so its strings are counted in full rather than shared.
-            let one = encode_layer(std::slice::from_ref(e));
-            let c = local.class_z14.entry((li, e.class)).or_default();
-            c.0 += one.len() as u64 - 1;
-            c.1 += 1;
-        }
-    }
-    let v1_cell = Cell {
-        tiles: 1,
-        features: v1.len() as u64,
-        vertices: v1.iter().map(|e| e.geom.vertices() as u64).sum(),
-        bytes: v1_bytes.len() as u64,
-    };
-    local
-        .cells
-        .entry((Variant::V0, li, z))
-        .or_default()
-        .add(&v0);
-    local
-        .cells
-        .entry((Variant::V1, li, z))
-        .or_default()
-        .add(&v1_cell);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,7 +701,5 @@ mod tests {
         assert_eq!(keepers, [10 % 3]);
         // Low-zoom features also go to band 0, for z0–z5.
         assert!(bands[0].keeps(small, 3));
-        assert_eq!(Band::parse("2/3"), Some(bands[2]));
-        assert_eq!(Band::parse("3/3"), None);
     }
 }

@@ -256,9 +256,9 @@ pub fn print_search_sizes(s: &search_encode::Sizes) {
 pub fn print_address_sizes(s: &store::Sizes) {
     eprintln!(
         "  addresses: {} KiB blocks: {} on {} streets, {} unattached, {} ranges ({} dropped), \
-         {} codes, {} exceptions; ASTR {:.2} MiB ({:.2} raw, {} blocks, {:.0} µs to decode \
-         one), ASUF {:.2}, AUNI {:.2}, ALSE {:.2} ({} blocks), ARNG {:.2}, APCD {:.2}; {:.2} \
-         MiB, {:.2} bytes per address",
+         {} codes, {} exceptions; ASTR {:.2} MiB ({:.2} raw, {} blocks), ASUF {:.2}, AUNI \
+         {:.2}, ALSE {:.2} ({} blocks), ARNG {:.2}, APCD {:.2}; {:.2} MiB, {:.2} bytes per \
+         address",
         s.block_kib,
         s.addresses,
         s.streets_with_addresses,
@@ -270,7 +270,6 @@ pub fn print_address_sizes(s: &store::Sizes) {
         mib(s.astr),
         mib(s.astr_raw),
         s.astr_blocks,
-        s.decode_us_per_block,
         mib(s.asuf),
         mib(s.auni),
         mib(s.alse),

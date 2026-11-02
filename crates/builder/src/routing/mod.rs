@@ -9,11 +9,7 @@
 //! curve of their position, so a local search and the unpacking of a route read nearby
 //! blocks. Segments are ordered by the Hilbert key of their first point's z14 cell, so each
 //! cell's own segments are one run of IDs (`RGRD`).
-//!
-//! [`layout`] compares this layout with fixed-width records and with the middle nodes kept
-//! apart, by the pages a route touches.
 
-pub mod layout;
 #[cfg(test)]
 mod tests;
 
@@ -217,7 +213,7 @@ fn order_with_top(g: &Graph, h: &Ch, seg_id: &[u32], p: &Params) -> Order {
                 let (mut out, mut seg) = (Vec::new(), 0u32);
                 let first = b * p.block_nodes;
                 for new in first..(first + p.block_nodes).min(n) {
-                    encode_node(g, h, &o, seg_id, new, Some(&mut seg), &mut out);
+                    encode_node(g, h, &o, seg_id, new, &mut seg, &mut out);
                 }
                 out.len() as u64
             })
@@ -239,15 +235,14 @@ fn ch_flags(f: u8) -> u8 {
 
 /// One node's `RCHE` record. Each edge carries its middle node (a shortcut's, as a delta
 /// from the node) or its segment direction (a base edge's, as a delta from the block's
-/// previous one, `seg`), so unpacking reads only the middle nodes. Without `seg`, it leaves
-/// them out, as a layout with a separate array of them would ([`layout`]).
+/// previous one, `seg`), so unpacking reads only the middle nodes.
 fn encode_node(
     g: &Graph,
     h: &Ch,
     o: &Order,
     seg_id: &[u32],
     new: u32,
-    mut seg: Option<&mut u32>,
+    seg: &mut u32,
     out: &mut Vec<u8>,
 ) {
     let v = o.order[new as usize];
@@ -266,9 +261,6 @@ fn encode_node(
             put(out, zigzag(t as i32 - prev as i32));
             put(out, u64::from(e.weight) << 3 | u64::from(ch_flags(e.flags)));
             prev = t;
-            let Some(seg) = seg.as_deref_mut() else {
-                continue;
-            };
             match e.flags & ch::SHORTCUT {
                 0 => {
                     let s = g.csr.edges[e.mid as usize].seg;
@@ -282,55 +274,32 @@ fn encode_node(
     }
 }
 
-/// Each node's record length, as written and with the middle nodes left out (for
-/// [`layout`]).
-pub struct Lens {
-    pub apart: Vec<u32>,
-    pub inline: Vec<u32>,
-}
-
-/// `RCHE`'s blocks, its edge count and each node's record length.
+/// `RCHE`'s blocks and its edge count.
 fn hierarchy(
     g: &Graph,
     h: &Ch,
     o: &Order,
     seg_id: &[u32],
     block_nodes: u32,
-) -> (Vec<Vec<u8>>, u64, Lens) {
+) -> (Vec<Vec<u8>>, u64) {
     let n = o.order.len() as u32;
     let starts: Vec<u32> = (0..n).step_by(block_nodes as usize).collect();
-    let blocks: Vec<(Vec<u8>, Vec<u32>, Vec<u32>)> = starts
+    let list = starts
         .par_iter()
         .map(|&first| {
-            let (mut out, mut inline, mut apart) = (Vec::new(), Vec::new(), Vec::new());
-            let (mut scratch, mut seg) = (Vec::new(), 0u32);
+            let (mut out, mut seg) = (Vec::new(), 0u32);
             for new in first..(first + block_nodes).min(n) {
-                let before = out.len();
-                encode_node(g, h, o, seg_id, new, Some(&mut seg), &mut out);
-                inline.push((out.len() - before) as u32);
-                scratch.clear();
-                encode_node(g, h, o, seg_id, new, None, &mut scratch);
-                apart.push(scratch.len() as u32);
+                encode_node(g, h, o, seg_id, new, &mut seg, &mut out);
             }
-            (out, inline, apart)
+            out
         })
         .collect();
-    let mut lens = Lens {
-        apart: Vec::with_capacity(n as usize),
-        inline: Vec::with_capacity(n as usize),
-    };
-    let mut list = Vec::with_capacity(blocks.len());
-    for (b, inline, apart) in blocks {
-        list.push(b);
-        lens.inline.extend(inline);
-        lens.apart.extend(apart);
-    }
     let edges = o
         .order
         .iter()
         .map(|&v| (h.up.at(v).len() + h.down.at(v).len()) as u64)
         .sum();
-    (list, edges, lens)
+    (list, edges)
 }
 
 /// Per segment, the indices in `g.csr.edges` of its forward and backward edges out of the
@@ -440,7 +409,7 @@ pub fn sections(
     h: &Ch,
     streets: &WayStreets,
     p: &Params,
-) -> Result<(Sections, Sizes, Order, Lens)> {
+) -> Result<(Sections, Sizes, Order)> {
     let start = Instant::now();
     let n = g.csr.nodes() as u32;
     ensure!(
@@ -450,7 +419,7 @@ pub fn sections(
     let (seg_order, seg_id, home) = segment_order(g);
     let o = order_with_top(g, h, &seg_id, p);
 
-    let (rche, edges, lens) = hierarchy(g, h, &o, &seg_id, p.block_nodes);
+    let (rche, edges) = hierarchy(g, h, &o, &seg_id, p.block_nodes);
     let top_blocks = (o.top.div_ceil(p.block_nodes) as usize).min(rche.len());
     let top_bytes = rche[..top_blocks].iter().map(|b| b.len() as u64).sum();
 
@@ -587,7 +556,7 @@ pub fn sections(
         nodes: n,
         blocked: vec![rgeo, rnam, rgrd, rcpy, rjct],
     };
-    Ok((s, sizes, o, lens))
+    Ok((s, sizes, o))
 }
 
 /// `RGRD`: per cell, its own segments (a run of IDs) and the others that pass through it.

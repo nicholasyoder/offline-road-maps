@@ -58,7 +58,7 @@ fn reader_with(g: &Graph, streets: WayStreets) -> (Routing, Order, Sizes, tempfi
         block_nodes: 4,
         top_mib: 0.0001,
     };
-    let (s, sizes, o, _) = sections(g, &h, &streets, &p).unwrap();
+    let (s, sizes, o) = sections(g, &h, &streets, &p).unwrap();
     assert!(o.top > 0 && o.top < g.csr.nodes() as u32, "top {}", o.top);
 
     // Small chunks and a section in front, so the routing records cross chunk boundaries.

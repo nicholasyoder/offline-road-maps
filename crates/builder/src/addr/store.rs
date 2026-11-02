@@ -11,7 +11,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io;
-use std::time::Instant;
 
 use anyhow::Result;
 use omp_core::varint::{Reader, invalid, put, put_str, zigzag};
@@ -141,8 +140,6 @@ pub struct Sizes {
     pub alse_blocks: u64,
     pub arng: u64,
     pub apcd: u64,
-    /// Time to decompress and parse one `ASTR` block (with its `ASUF` and `AUNI` blocks).
-    pub decode_us_per_block: f64,
 }
 
 impl Sizes {
@@ -562,10 +559,8 @@ pub fn sections(inp: &Input, block: usize) -> Result<(Sections, Sizes)> {
     let (arng, _) = blocked(inp.ranges.len(), range_blocks(&inp.ranges, block))?;
     let (apcd, _) = blocked(inp.codes.len(), code_blocks(&inp.codes, block))?;
 
-    // Decode every street block once, for the time per block.
-    let t = Instant::now();
+    // Every section is read back, as a check of the encoding.
     let decoded = decode_streets(&astr, &asuf, &auni)?;
-    let decode_us_per_block = t.elapsed().as_secs_f64() * 1e6 / astr_blocks.max(1) as f64;
     anyhow::ensure!(
         decoded.len() == inp.entries.len(),
         "ASTR decodes to {} addresses, not {}",
@@ -610,7 +605,6 @@ pub fn sections(inp: &Input, block: usize) -> Result<(Sections, Sizes)> {
         alse_blocks,
         arng: arng.len() as u64,
         apcd: apcd.len() as u64,
-        decode_us_per_block,
     };
     let s = Sections {
         astr,

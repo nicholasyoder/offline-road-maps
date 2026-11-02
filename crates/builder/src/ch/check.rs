@@ -1,6 +1,6 @@
 //! Checks of the hierarchy: queries ([`query`]) against Dijkstra on the graph for random
-//! pairs and every combination of avoided flags, and against `fast_paths` without them; and
-//! `omp-builder ch`, which contracts a saved graph and runs the checks.
+//! pairs and every combination of avoided flags; and `omp-builder ch`, which contracts a
+//! saved graph and runs the checks.
 //!
 //! The query here is the plain bidirectional search, enough for the checks and the search
 //! space counts; step 3.4 writes the app's in `omp-core`.
@@ -29,10 +29,6 @@ pub const COMBINATIONS: [u8; 4] = [0, omp_core::profile::TOLL, omp_core::profile
 pub struct Route {
     pub weight: u32,
     pub settled: usize,
-    /// The nodes settled, in order.
-    pub visited: Vec<u32>,
-    /// The hierarchy edges between the nodes of the route, before unpacking.
-    pub path: Vec<(u32, u32, ChEdge)>,
     pub edges: Vec<u32>,
 }
 
@@ -90,7 +86,6 @@ pub fn query(ch: &Ch, g: &Csr, s: u32, t: u32, avoid: u8) -> Option<Route> {
     f.start(s);
     b.start(t);
     let (mut best, mut meet, mut settled) = (u32::MAX, u32::MAX, 0);
-    let mut visited = Vec::new();
     while f.min().min(b.min()) < best {
         let (side, other, edges) = match f.min() <= b.min() {
             true => (&mut f, &b, &ch.up),
@@ -103,7 +98,6 @@ pub fn query(ch: &Ch, g: &Csr, s: u32, t: u32, avoid: u8) -> Option<Route> {
             continue;
         }
         settled += 1;
-        visited.push(u);
         if let (Some(a), Some(c)) = (side.dist(u), other.dist(u))
             && a + c < best
         {
@@ -135,8 +129,6 @@ pub fn query(ch: &Ch, g: &Csr, s: u32, t: u32, avoid: u8) -> Option<Route> {
     Some(Route {
         weight: best,
         settled,
-        visited,
-        path,
         edges,
     })
 }
@@ -247,11 +239,6 @@ pub struct CheckStats {
     pub settled_max: u64,
     pub ch_query_ms_mean: f64,
     pub dijkstra_ms_mean: f64,
-    /// Routes where `fast_paths` (without flags) gave another weight, of those compared.
-    pub fast_paths_compared: u64,
-    pub fast_paths_mismatches: u64,
-    pub fast_paths_prepare_s: f64,
-    pub fast_paths_edges: u64,
     pub check_s: f64,
 }
 
@@ -337,40 +324,7 @@ pub fn check(ch: &Ch, g: &Csr, pairs: &[(u32, u32)], flags: bool) -> CheckStats 
         ch_query_ms_mean: ch_ns.into_inner() as f64 / queries / 1e6,
         dijkstra_ms_mean: dij_ns.into_inner() as f64 / queries / 1e6,
         check_s: start.elapsed().as_secs_f64(),
-        ..CheckStats::default()
     }
-}
-
-/// Compares the hierarchy with `fast_paths` on the same graph, without flags.
-pub fn check_fast_paths(ch: &Ch, g: &Csr, pairs: &[(u32, u32)], st: &mut CheckStats) {
-    let mut input = fast_paths::InputGraph::new();
-    for v in 0..g.nodes() as u32 {
-        for e in g.out(v) {
-            if e.to != v {
-                input.add_edge(v as usize, e.to as usize, e.weight() as usize);
-            }
-        }
-    }
-    input.freeze();
-    let t = Instant::now();
-    let fast = fast_paths::prepare(&input);
-    st.fast_paths_prepare_s = t.elapsed().as_secs_f64();
-    st.fast_paths_edges = (fast.get_num_out_edges() + fast.get_num_in_edges()) as u64;
-    let mismatches = AtomicU64::new(0);
-    pairs.par_iter().for_each_init(
-        || fast_paths::create_calculator(&fast),
-        |calc, &(s, t)| {
-            let theirs = calc
-                .calc_path(&fast, s as usize, t as usize)
-                .map(|p| p.get_weight() as u32);
-            let ours = query(ch, g, s, t, 0).map(|r| r.weight);
-            if theirs != ours {
-                mismatches.fetch_add(1, Ordering::Relaxed);
-            }
-        },
-    );
-    st.fast_paths_compared = pairs.len() as u64;
-    st.fast_paths_mismatches = mismatches.into_inner();
 }
 
 pub fn print_check(c: &CheckStats) {
@@ -389,15 +343,6 @@ pub fn print_check(c: &CheckStats) {
         c.dijkstra_ms_mean,
         c.check_s
     );
-    if c.fast_paths_compared > 0 {
-        eprintln!(
-            "  ch check: fast_paths: {} CH edges, prepared in {:.1} s; {} of {} routes differ",
-            c.fast_paths_edges,
-            c.fast_paths_prepare_s,
-            c.fast_paths_mismatches,
-            c.fast_paths_compared
-        );
-    }
 }
 
 #[derive(Args)]
@@ -417,10 +362,6 @@ pub struct ChArgs {
     #[arg(long, default_value_t = 0)]
     check: usize,
 
-    /// Also check against `fast_paths` (without flags).
-    #[arg(long)]
-    fast_paths: bool,
-
     #[arg(long, default_value_t = 1)]
     seed: u64,
 
@@ -435,15 +376,6 @@ pub struct ChArgs {
     /// The share of the remaining nodes, lowest priority first, a round may contract.
     #[arg(long)]
     share: Option<f64>,
-
-    /// Encode the routing sections (without street names) and compare layouts on this many
-    /// long and short random pairs.
-    #[arg(long)]
-    layout: Option<usize>,
-
-    /// Nodes per `RCHE` block and MiB at the top, for `--layout`.
-    #[arg(long, value_delimiter = ',')]
-    layout_params: Option<Vec<f64>>,
 
     /// Write the counts as JSON.
     #[arg(long)]
@@ -507,32 +439,11 @@ pub fn run(args: ChArgs) -> Result<()> {
         0 => None,
         k => {
             let pairs = pairs(&g, k, args.seed);
-            let mut c = check(&ch, &g.csr, &pairs, params.flags);
-            if args.fast_paths {
-                check_fast_paths(&ch, &g.csr, &pairs, &mut c);
-            }
+            let c = check(&ch, &g.csr, &pairs, params.flags);
             print_check(&c);
             Some(c)
         }
     };
-    if let Some(k) = args.layout {
-        let mut p = crate::routing::Params::default();
-        if let Some(v) = &args.layout_params {
-            ensure!(v.len() == 2, "--layout-params takes two numbers");
-            (p.block_nodes, p.top_mib) = (v[0] as u32, v[1]);
-        }
-        let streets = crate::street::WayStreets::default();
-        let (_, sizes, order, lens) = crate::routing::sections(&g, &ch, &streets, &p)?;
-        crate::routing::print_sizes(&sizes);
-        use crate::routing::layout;
-        let sets = [
-            ("long", pairs(&g, k, args.seed)),
-            ("short", layout::short_pairs(&g, &order, k, args.seed + 1)),
-        ];
-        for (name, p) in &sets {
-            layout::print(&layout::compare(&g, &ch, &order, &lens, p, name));
-        }
-    }
     let report = Report {
         kind: "ch",
         input: args.input.display().to_string(),
@@ -555,8 +466,8 @@ pub fn run(args: ChArgs) -> Result<()> {
     );
     if let Some(c) = &report.check {
         ensure!(
-            c.mismatches == 0 && c.bad_paths == 0 && c.fast_paths_mismatches == 0,
-            "the hierarchy disagrees with Dijkstra or fast_paths"
+            c.mismatches == 0 && c.bad_paths == 0,
+            "the hierarchy disagrees with Dijkstra"
         );
     }
     Ok(())

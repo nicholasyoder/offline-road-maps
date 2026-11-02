@@ -23,8 +23,7 @@
 //! 5. The car routing graph ([`graph::make`], step 3.1), its own PBF passes after the
 //!    address and search stages have freed their memory, and its contraction hierarchy
 //!    ([`ch::contract`], step 3.2), encoded as the routing sections ([`routing::sections`],
-//!    step 3.3, with segments named by the street table's way map) and measured against
-//!    other layouts ([`routing::layout`]).
+//!    step 3.3, with segments named by the street table's way map).
 //! 6. [`write_pack`]: dictionaries trained once from the whole tile store, then tiles
 //!    compressed and written in zoom, then Hilbert order, then the other sections, the
 //!    routing ones last.
@@ -68,10 +67,10 @@ use crate::mib;
 use crate::pbf::{self, Pbf, features};
 use crate::peak_rss_mib;
 use crate::poly::Poly;
-use crate::routing::{self, layout};
+use crate::routing;
 use crate::search::{self, AddressStreet, encode as search_encode};
 use crate::street::{self, encode as street_encode, grid};
-use crate::tiles::{self, Band, Entry, Store, compress, water};
+use crate::tiles::{self, Band, Entry, Store, dict, water};
 use crate::{ch, graph, tz};
 use cache::{Cache, Key};
 use meta::Provenance;
@@ -79,8 +78,6 @@ use report::{ChainStats, Timer, ZoomTotals};
 
 /// Tiles compressed in parallel before they are written in order.
 const BATCH_TILES: usize = 16_384;
-/// Random pairs, long and short, the routing layouts are compared on.
-const LAYOUT_PAIRS: usize = 500;
 
 #[derive(Args)]
 pub struct BuildArgs {
@@ -107,7 +104,7 @@ pub struct BuildArgs {
     #[arg(long)]
     tz: Option<PathBuf>,
 
-    /// Keep only the ocean pieces that meet this boundary (`.poly`), as in `measure`.
+    /// Keep only the ocean pieces that meet this boundary (`.poly`).
     #[arg(long)]
     clip_poly: Option<PathBuf>,
 
@@ -430,29 +427,15 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     ch::print_stats(&hierarchy.stats);
     t.stage("routing CH");
     let way_streets = std::mem::take(&mut streets.way_streets);
-    let (route_sections, route_sizes, order, lens) = routing::sections(
+    let (route_sections, route_sizes, _) = routing::sections(
         &routing,
         &hierarchy,
         &way_streets,
         &routing::Params::default(),
     )?;
-    drop(way_streets);
+    drop((way_streets, routing, hierarchy));
     routing::print_sizes(&route_sizes);
     t.stage("routing sections");
-    let pairs = [
-        ("long", ch::check::pairs(&routing, LAYOUT_PAIRS, 1)),
-        (
-            "short",
-            layout::short_pairs(&routing, &order, LAYOUT_PAIRS, 2),
-        ),
-    ];
-    for (name, p) in &pairs {
-        layout::print(&layout::compare(
-            &routing, &hierarchy, &order, &lens, p, name,
-        ));
-    }
-    drop((routing, hierarchy, order, lens));
-    t.stage("routing layout");
     let build_time = match args.deterministic {
         true => 0,
         false => jiff::Timestamp::now().as_second(),
@@ -578,16 +561,14 @@ fn read_bands(args: &BuildArgs, setup: &Setup, admin: &Admin, t: &mut Timer) -> 
         let mut data = features::read(
             &setup.pbf,
             wl,
-            features::Strategy::Sparse(&mut marked),
-            false,
+            &mut marked,
             band,
             &setup.regions,
             Some(&keep_tags),
         )?;
-        data.roads = Vec::new();
         t.stage("read");
         if k == 0 {
-            report::print_routes(&data.stats.routes);
+            report::print_routes(&data.routes);
         }
         if let (Some(zip), Some(bbox)) = (&setup.water, data.bbox) {
             let layer = wl.layer_index("water").context("no water layer")?;
@@ -606,7 +587,7 @@ fn read_bands(args: &BuildArgs, setup: &Setup, admin: &Admin, t: &mut Timer) -> 
         }
         bands.chains.add(&data.features, wl, admin);
         bands.collected.add(&data.features, &data.kept_tags);
-        let cut = tiles::cut_pyramid(&data.features, wl, &mut store, band, false);
+        let cut = tiles::cut_pyramid(&data.features, wl, &mut store, band);
         bands.cut.merge(cut);
         drop(data);
         t.stage("tiles");
@@ -783,8 +764,7 @@ fn write_pack(
     let store_path = &setup.store_path;
     let store_file =
         File::open(store_path).with_context(|| format!("open {}", store_path.display()))?;
-    let layer_names: Vec<String> = setup.wl.layers.iter().map(|l| l.name.clone()).collect();
-    let (dicts, _) = compress::train(&store_file, &entries, &layer_names);
+    let dicts = dict::train(&store_file, &entries);
     t.stage("dictionaries");
 
     let mut w = Writer::create(&setup.staging, &setup.file_name, args.chunk_capacity)?;
@@ -823,7 +803,7 @@ fn write_pack(
                     entries[r.clone()]
                         .iter()
                         .map(|e: &Entry| {
-                            let raw = compress::read(&store_file, e);
+                            let raw = dict::read(&store_file, e);
                             Ok((e.layer, fc.compress(e.layer, e.z, &raw)?))
                         })
                         .collect()

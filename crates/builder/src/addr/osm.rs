@@ -348,7 +348,8 @@ pub fn read(pbf: &Pbf) -> Result<OsmAddresses> {
     read_with(pbf, true)
 }
 
-/// Only the street ways, with their coordinates (for `build`, until it merges addresses).
+/// Only the street ways, with their coordinates: for `build --addresses none`, which merges
+/// no addresses, and `omp-builder streets`.
 pub fn read_streets(pbf: &Pbf) -> Result<Vec<StreetWay>> {
     Ok(read_with(pbf, false)?.streets)
 }

@@ -14,8 +14,7 @@
 //! other (shorter with fewer flags), so a toll road and the free road beside it both stay.
 //! One hierarchy answers every combination of avoided flags exactly.
 //!
-//! [`check`] compares queries with Dijkstra on the graph and with `fast_paths`, and holds
-//! `omp-builder ch`.
+//! [`check`] compares queries with Dijkstra on the graph, and holds `omp-builder ch`.
 
 pub mod check;
 #[cfg(test)]

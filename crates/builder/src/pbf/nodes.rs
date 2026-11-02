@@ -1,18 +1,13 @@
-//! Node location stores for the two strategies compared in step 0.3, and the node sets and
-//! ranks they are built on.
+//! Node sets over OSM node IDs, their members' ranks, and the locations of the members,
+//! stored by rank.
 
-use std::fs::{File, OpenOptions};
-use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-
-use anyhow::{Context, Result, ensure};
-use memmap2::MmapMut;
 
 use crate::geom::P;
 
 /// Room for node IDs below 2^34 (about 17 billion; the highest in 2026 is around 13.5 billion).
-const DENSE_CAPACITY: u64 = 1 << 34;
+const CAPACITY: u64 = 1 << 34;
 
 fn pack(p: P) -> u64 {
     (u64::from(p[0]) << 32) | u64::from(p[1])
@@ -20,77 +15,6 @@ fn pack(p: P) -> u64 {
 
 fn unpack(v: u64) -> P {
     [(v >> 32) as u32, v as u32]
-}
-
-/// Strategy 1: one 8-byte slot per node ID in a file-backed mmap. The file is sparse, so it
-/// must live on a filesystem with holes (ext4, not exFAT). Slot value 0 means "no node"; the
-/// world corner it would decode to is never a real location.
-pub struct DenseIndex {
-    path: PathBuf,
-    file: File,
-    map: MmapMut,
-}
-
-impl DenseIndex {
-    pub fn create(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)
-            .with_context(|| format!("create {}", path.display()))?;
-        file.set_len(DENSE_CAPACITY * 8)?;
-        #[allow(unsafe_code)]
-        // SAFETY: the file was just created and truncated by us and nothing else maps it.
-        let map = unsafe { MmapMut::map_mut(&file)? };
-        Ok(Self {
-            path: path.to_owned(),
-            file,
-            map,
-        })
-    }
-
-    fn slots(&self) -> &[AtomicU64] {
-        #[allow(unsafe_code)]
-        // SAFETY: the map is page-aligned, a multiple of 8 bytes long and lives as long as
-        // `self`. All access goes through these atomics.
-        unsafe {
-            std::slice::from_raw_parts(self.map.as_ptr().cast::<AtomicU64>(), self.map.len() / 8)
-        }
-    }
-
-    pub fn set(&self, id: i64, p: P) -> Result<()> {
-        ensure!(
-            (0..DENSE_CAPACITY as i64).contains(&id),
-            "node id {id} outside the dense index"
-        );
-        self.slots()[id as usize].store(pack(p), Ordering::Relaxed);
-        Ok(())
-    }
-
-    pub fn get(&self, id: i64) -> Option<P> {
-        let v = self
-            .slots()
-            .get(usize::try_from(id).ok()?)?
-            .load(Ordering::Relaxed);
-        (v != 0).then(|| unpack(v))
-    }
-
-    /// Bytes actually allocated on disk (the full length where holes cannot be measured).
-    pub fn disk_bytes(&self) -> u64 {
-        #[cfg(unix)]
-        let bytes = std::os::unix::fs::MetadataExt::blocks;
-        #[cfg(not(unix))]
-        let bytes = |m: &std::fs::Metadata| m.len() / 512;
-        self.file.metadata().map(|m| bytes(&m) * 512).unwrap_or(0)
-    }
-}
-
-impl Drop for DenseIndex {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
 }
 
 /// A bitset over node IDs that only allocates the pages it touches. Inserts are atomic, so
@@ -123,15 +47,13 @@ impl Clone for NodeSet {
 impl NodeSet {
     pub fn new() -> Self {
         Self {
-            pages: (0..DENSE_CAPACITY / PAGE_BITS)
-                .map(|_| OnceLock::new())
-                .collect(),
+            pages: (0..CAPACITY / PAGE_BITS).map(|_| OnceLock::new()).collect(),
         }
     }
 
     /// The page's words and the word index and bit mask of `id`.
     fn locate(id: i64) -> Option<(usize, usize, u64)> {
-        let id = u64::try_from(id).ok().filter(|&id| id < DENSE_CAPACITY)?;
+        let id = u64::try_from(id).ok().filter(|&id| id < CAPACITY)?;
         let bit = id % PAGE_BITS;
         Some((
             (id / PAGE_BITS) as usize,
@@ -156,15 +78,6 @@ impl NodeSet {
                 .get()
                 .is_some_and(|w| w[word].load(Ordering::Relaxed) & mask != 0)
         })
-    }
-
-    pub fn len(&self) -> u64 {
-        self.pages
-            .iter()
-            .filter_map(OnceLock::get)
-            .flat_map(|w| w.iter())
-            .map(|w| u64::from(w.load(Ordering::Relaxed).count_ones()))
-            .sum()
     }
 
     pub fn heap_bytes(&self) -> u64 {
@@ -237,9 +150,10 @@ impl NodeRanks {
     }
 }
 
-/// Strategy 2: the locations of the nodes in a [`NodeSet`], one 8-byte slot per member,
-/// addressed by the member's rank in the set. Slot value 0 means "not found in the file",
-/// as in [`DenseIndex`]. Slots are atomic so the node pass can fill them in parallel.
+/// The locations of the nodes in a [`NodeSet`], one 8-byte slot per member, addressed by the
+/// member's rank in the set. Slot value 0 means "not found in the file"; the world corner it
+/// would decode to is never a real location. Slots are atomic so the node pass can fill them
+/// in parallel.
 pub struct RankedLocations {
     ranks: NodeRanks,
     slots: Vec<AtomicU64>,
@@ -296,7 +210,6 @@ mod tests {
         assert!(s.insert(64));
         assert!(s.contains(63) && s.contains(13_000_000_000) && !s.contains(65));
         assert!(!s.contains(-1) && !s.contains(1 << 40));
-        assert_eq!(s.len(), 4);
         assert_eq!(s.heap_bytes(), 2 * PAGE_BITS / 8);
     }
 

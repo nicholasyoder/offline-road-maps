@@ -43,13 +43,6 @@ impl Geometry {
             }
         }
     }
-
-    pub fn vertices(&self) -> usize {
-        match self {
-            Geometry::Point(_) => 1,
-            Geometry::Lines(parts) | Geometry::Polygon(parts) => parts.iter().map(Vec::len).sum(),
-        }
-    }
 }
 
 /// A clip rectangle in world units, `[min_x, min_y, max_x, max_y]`, may extend past the world.
@@ -524,15 +517,6 @@ fn seg_dist2(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     };
     let (ex, ey) = (a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
     ex * ex + ey * ey
-}
-
-/// Area of a polygon in square metres (approximate: uses the scale at its first point).
-pub fn area_m2(rings: &[Vec<P>]) -> f64 {
-    let Some(first) = rings.first().and_then(|r| r.first()) else {
-        return 0.0;
-    };
-    let m = metres_per_unit(*first);
-    rings.iter().map(|r| ring_area(r)).sum::<f64>() * m * m
 }
 
 /// Turns a closed way (first node repeated at the end) into a ring oriented as `outer`.
