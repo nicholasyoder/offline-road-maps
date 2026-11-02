@@ -6,7 +6,6 @@
 use eframe::egui::{self, Rangef, Rect, Vec2};
 
 use crate::layers::Layers;
-use crate::scale::Units;
 use crate::theme::{HEADER_H, INK};
 
 /// The panel's width range, in points, and the most of a narrow window it may take.
@@ -53,6 +52,7 @@ pub enum Action {
     Verify,
     About,
     Print,
+    Settings,
 }
 
 /// The widths the panel may take in a window `window` points wide.
@@ -79,8 +79,8 @@ pub fn tabs(ui: &mut egui::Ui, page: &mut Page) -> [Rect; 5] {
     rects
 }
 
-/// The ☰ menu: the pack, About this map and the debug overlay; phase 5's settings and keys
-/// are placeholders.
+/// The ☰ menu: the pack, About this map, the debug overlay and Settings; phase 5's keys are
+/// a placeholder.
 pub fn menu(ui: &mut egui::Ui, debug_overlay: &mut bool) -> Option<Action> {
     let mut action = None;
     let button = egui::Button::new("").min_size(Vec2::splat(HEADER_H));
@@ -100,12 +100,9 @@ pub fn menu(ui: &mut egui::Ui, debug_overlay: &mut bool) -> Option<Action> {
         ui.separator();
         ui.checkbox(debug_overlay, "Debug overlay  (F3)");
         ui.separator();
-        later_in(
-            ui,
-            5,
-            "Settings…",
-            "units, map styles and the other settings",
-        );
+        if ui.button("Settings…").clicked() {
+            action = Some(Action::Settings);
+        }
         later_in(ui, 5, "Keyboard shortcuts", "a list of the keys");
     });
     let r = r.on_hover_text("Menu");
@@ -127,14 +124,8 @@ pub fn menu(ui: &mut egui::Ui, debug_overlay: &mut bool) -> Option<Action> {
     action
 }
 
-/// The layers page: the layer toggles and the scale bar's units. `pack_units` are the units
-/// the pack suggests, used while the config sets none.
-pub fn layers_ui(
-    ui: &mut egui::Ui,
-    layers: &mut Layers,
-    units: &mut Option<Units>,
-    pack_units: Units,
-) {
+/// The layers page: the layer toggles.
+pub fn layers_ui(ui: &mut egui::Ui, layers: &mut Layers) {
     ui.label(egui::RichText::new("Map").strong().color(INK));
     for (i, (name, on)) in layers.entries().into_iter().enumerate() {
         if i == 5 {
@@ -146,13 +137,6 @@ pub fn layers_ui(
             );
         }
         ui.checkbox(on, name);
-    }
-    ui.add_space(6.0);
-    ui.label(egui::RichText::new("Scale bar units").strong().color(INK));
-    let auto = format!("As the map ({})", pack_units.name());
-    ui.radio_value(units, None, auto);
-    for u in Units::ALL {
-        ui.radio_value(units, Some(u), u.name());
     }
 }
 

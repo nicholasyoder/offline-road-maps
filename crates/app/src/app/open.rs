@@ -47,7 +47,7 @@ impl App {
             .is_some_and(|p| config::resolve_path(p, &self.exe_dir) == dir);
         let mut camera = Camera::new(opened.bounds);
         let mut fit = true;
-        if let (true, Some(v)) = (same_pack, self.cfg.view) {
+        if let (true, true, Some(v)) = (same_pack, self.cfg.start.reopen_view, self.cfg.view) {
             camera.set_lonlat(v.lon, v.lat, v.zoom);
             fit = !camera.contains_center();
         }

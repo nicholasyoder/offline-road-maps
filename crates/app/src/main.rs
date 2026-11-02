@@ -189,7 +189,7 @@ fn main() -> ExitCode {
         };
     }
     let config = config::Location::find(&exe_dir);
-    let (cfg, _) = config.load();
+    let (cfg, cfg_note) = config.load();
 
     // --pack, else maps/ next to the executable, else the pack used last.
     let mut notices = Vec::new();
@@ -208,12 +208,18 @@ fn main() -> ExitCode {
         None => {
             let f = packs::find(&exe_dir.join("maps"));
             match (&cfg.pack, f.is_empty()) {
-                (Some(last), true) => packs::find(&config::resolve_path(last, &exe_dir)),
+                (Some(last), true) if cfg.start.reopen_pack => {
+                    packs::find(&config::resolve_path(last, &exe_dir))
+                }
                 _ => f,
             }
         }
     };
-    let last = cfg.pack.as_ref().map(|p| config::resolve_path(p, &exe_dir));
+    let last = cfg
+        .pack
+        .as_ref()
+        .filter(|_| cfg.start.reopen_pack)
+        .map(|p| config::resolve_path(p, &exe_dir));
     let chosen = match found.as_slice() {
         [one] => Some(one.clone()),
         many => many
@@ -302,6 +308,8 @@ fn main() -> ExitCode {
     let startup = app::Startup {
         exe_dir,
         config,
+        cfg,
+        cfg_note,
         found,
         chosen,
         notices,

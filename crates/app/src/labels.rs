@@ -367,6 +367,16 @@ enum Ink {
     },
 }
 
+/// A factor on label sizes, 1 unless set.
+#[derive(Clone, Copy)]
+pub struct LabelScale(pub f32);
+
+impl Default for LabelScale {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
 /// Places labels frame after frame, remembering what it showed.
 #[derive(Default)]
 pub struct Placer {
@@ -374,6 +384,8 @@ pub struct Placer {
     /// The labels shown in the last frame, by key.
     shown: ByKey<Shown>,
     last: Option<Instant>,
+    /// The factor on the style's label sizes (Settings); a change places everything again.
+    pub label_scale: LabelScale,
     grid: Grid,
     // Buffers kept between frames.
     /// The labels this frame shows, by key, which become `shown`.
@@ -472,7 +484,7 @@ impl Placer {
                 if !(zooms.0..zooms.1).contains(&zoom) {
                     continue;
                 }
-                let size = size * ppp;
+                let size = size * ppp * self.label_scale.0;
                 let mut push = |at: [f32; 2], world: [f64; 2], line| {
                     self.candidates.push(Candidate {
                         source: si as u32,

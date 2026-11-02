@@ -42,9 +42,13 @@ use crate::tiles::TileId;
 /// `config.toml` or `--msaa` turn it off.
 pub const MSAA: u32 = 4;
 
-/// The sample count to use for a requested one: 1 or [`MSAA`].
+/// The sample count to use for a requested one: 1, 2 or [`MSAA`]. (2 needs the GPU to
+/// support it; the Settings window says so.)
 pub fn samples(requested: Option<u32>) -> u32 {
-    if requested == Some(1) { 1 } else { MSAA }
+    match requested {
+        Some(n @ (1 | 2)) => n,
+        _ => MSAA,
+    }
 }
 const EXTENT: f64 = (1u32 << omp_core::tile::EXTENT_BITS) as f64;
 

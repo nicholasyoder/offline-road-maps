@@ -137,6 +137,7 @@ impl App {
             Some(Action::Pick) => self.picker = true,
             Some(Action::Verify) => self.start_verify(ctx),
             Some(Action::About) => self.about = true,
+            Some(Action::Settings) => self.settings = Some(Default::default()),
             Some(Action::Print) => {
                 if let Some(m) = &mut self.map {
                     self.cfg.side_panel.open = true;
@@ -306,7 +307,7 @@ fn side_panel(
     ui.data_mut(|d| d.remove::<egui::containers::panel::PanelState>(id));
     let asked = side.width.clamp(range.min, range.max);
     let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(8);
-    let (debug, layers, units_cfg) = (&mut cfg.debug_overlay, &mut cfg.layers, &mut cfg.units);
+    let (debug, layers) = (&mut cfg.debug_overlay, &mut cfg.layers);
     let schedule = &mut cfg.schedule;
     let print_cfg = &mut cfg.print;
     let r = egui::Panel::left("side-panel")
@@ -370,7 +371,7 @@ fn side_panel(
                     };
                     o.trips = p.trips.page_ui(ui, p.pins, current, can_open, p.exe_dir);
                 }
-                Page::Layers => side::layers_ui(ui, layers, units_cfg, p.pack_units),
+                Page::Layers => side::layers_ui(ui, layers),
                 Page::Print => {
                     let around = printui::Around {
                         cam: p.camera,

@@ -18,7 +18,7 @@ cargo run --release -p omp-app -- --pack $OMP_WORK/packs/ohio
 
 Controls: drag to pan, scroll or double-click to zoom, arrow keys to pan, `+`/`-` to zoom, F3 for the debug overlay.
 
-The side panel on the left holds the search box, the ☰ menu (open or verify a pack, About this map, the debug overlay) and four pages: Search, Route, Trips (saved trips and pushpin sets) and Layers (the layer toggles and the scale bar's units). Ctrl+B or the « and » buttons hide and show it; drag its edge to resize it. Right-clicking the map offers "What's here?", the route items and *Add pushpin*.
+The side panel on the left holds the search box, the ☰ menu (open or verify a pack, About this map, Settings, the debug overlay) and four pages: Search, Route, Trips (saved trips and pushpin sets) and Layers (the layer toggles). ☰ → Settings has the UI and label sizes, anti-aliasing, how the map moves, units and what the app opens to. Ctrl+B or the « and » buttons hide and show it; drag its edge to resize it. Right-clicking the map offers "What's here?", the route items and *Add pushpin*.
 
 Trips and pushpins are plain TOML files next to the executable, so they travel with the app on a stick: `trips/<name>.toml` (from *Save trip* on the Route page) and `pins/<set>.toml`. A trip keeps its stops by name and coordinates, never by the pack's IDs, so it opens on a newer build of the pack. Where that folder cannot be written, saving offers a file browser.
 

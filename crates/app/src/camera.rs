@@ -7,6 +7,8 @@
 
 use omp_core::geo;
 
+use crate::config::Movement;
+
 /// Points per tile at an integer zoom; the tiles' `area` prop assumes 512 (format.md).
 pub const TILE_PX: f64 = 512.0;
 pub const MIN_ZOOM: f64 = 0.0;
@@ -197,8 +199,6 @@ impl Fly {
     }
 }
 
-/// Inertia slows by this factor per second.
-const FRICTION: f64 = 0.004;
 /// The animated zoom covers this share of what is left per second (exponential approach).
 const ZOOM_RATE: f64 = 14.0;
 
@@ -228,7 +228,7 @@ impl Motion {
     }
 
     /// Advances by `dt` seconds.
-    pub fn step(&mut self, cam: &mut Camera, dt: f64) {
+    pub fn step(&mut self, cam: &mut Camera, dt: f64, movement: &Movement) {
         if let Some(f) = &mut self.fly {
             f.t += dt;
             let x = (f.t / f.seconds).min(1.0);
@@ -258,7 +258,7 @@ impl Motion {
         if self.velocity != [0.0, 0.0] {
             let before = cam.center;
             cam.pan([self.velocity[0] * dt, self.velocity[1] * dt]);
-            let k = FRICTION.powf(dt);
+            let k = movement.friction().powf(dt);
             self.velocity = [self.velocity[0] * k, self.velocity[1] * k];
             if self.velocity[0].hypot(self.velocity[1]) < 5.0 || cam.center == before {
                 self.velocity = [0.0, 0.0];
@@ -320,7 +320,7 @@ mod tests {
         m.fly_to(&c, [0.25, 0.35], 15.0);
         let mut lowest = c.zoom;
         for _ in 0..600 {
-            m.step(&mut c, 1.0 / 60.0);
+            m.step(&mut c, 1.0 / 60.0, &Movement::default());
             lowest = lowest.min(c.zoom);
         }
         assert!(!m.moving());
@@ -329,7 +329,7 @@ mod tests {
         assert!(lowest < 5.0, "{lowest}");
         // A drag ends it.
         m.fly_to(&c, [0.2, 0.3], 12.0);
-        m.step(&mut c, 0.1);
+        m.step(&mut c, 0.1, &Movement::default());
         m.stop_flying();
         assert!(!m.moving());
     }
@@ -344,7 +344,7 @@ mod tests {
         };
         m.zoom(1.0, [400.0, 300.0]);
         for _ in 0..600 {
-            m.step(&mut c, 1.0 / 60.0);
+            m.step(&mut c, 1.0 / 60.0, &Movement::default());
         }
         assert!(!m.moving());
         assert!(close(c.zoom, 6.0));

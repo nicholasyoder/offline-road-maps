@@ -12,6 +12,7 @@ mod controls;
 mod dialogs;
 mod open;
 mod panel;
+mod settings;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -24,6 +25,7 @@ use eframe::egui_wgpu::{self, wgpu};
 use crate::bench::Bench;
 use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
+use crate::config::Movement;
 use crate::config::{Config, Location, View};
 use crate::here::HereUi;
 use crate::labels::{self, Placer, TileLabels};
@@ -52,8 +54,6 @@ use open::{compile_style, start_loader};
 const CACHE_BUDGET: usize = 96 << 20;
 /// Shown where no tile is drawn: outside the pack, and tiles not loaded yet.
 pub const NO_MAP: Color32 = Color32::from_rgb(222, 222, 216);
-/// Keyboard pan speed, points per second.
-const KEY_PAN: f64 = 700.0;
 /// How often a changed view is written to `config.toml`.
 const SAVE_EVERY: Duration = Duration::from_secs(5);
 /// Tile timings kept for the overlay's averages.
@@ -63,6 +63,10 @@ const RECENT_TILES: usize = 256;
 pub struct Startup {
     pub exe_dir: PathBuf,
     pub config: Location,
+    /// What it holds, loaded once (a damaged file is renamed as it is read), and what to
+    /// tell the user about it.
+    pub cfg: Config,
+    pub cfg_note: Option<String>,
     /// First-chunk files found, and the one to open.
     pub found: Vec<PathBuf>,
     pub chosen: Option<PathBuf>,
@@ -138,6 +142,8 @@ struct FrameKey {
     pixels_per_point: f32,
     srgb: bool,
     layers: Layers,
+    /// The factor on the labels' sizes (Settings).
+    label_size: f64,
     /// [`Cache::version`]: what the frame can draw of the tiles.
     tiles: u64,
     /// The buffers of the route's lines and of the pins; the last frame holds them, so a
@@ -158,6 +164,7 @@ impl FrameKey {
             && self.pixels_per_point == o.pixels_per_point
             && self.srgb == o.srgb
             && self.layers == o.layers
+            && self.label_size == o.label_size
             && self.tiles == o.tiles
             && self.route.iter().zip(&o.route).all(|(a, b)| same(a, b))
             && same(&self.pins, &o.pins)
@@ -221,6 +228,12 @@ pub struct App {
     tile_error: Option<String>,
     verify: Option<Verify>,
     about: bool,
+    /// The Settings window, when open.
+    settings: Option<settings::Window>,
+    /// egui's zoom factor as last seen, to tell a change of its own from ours.
+    zoom_seen: f32,
+    /// MSAA samples the window was created with.
+    msaa_now: u32,
     /// The picker's folder field.
     path_input: String,
     /// Saved trips and pushpins (phase 4 step 4.7).
@@ -232,11 +245,13 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, s: Startup) -> Self {
-        let (cfg, err) = s.config.load();
+        let cfg = s.cfg;
+        let cfg_zoom = cfg.display.ui_size as f32;
         let mut notices = s.notices;
         notices.extend(s.config.fallback.clone());
-        notices.extend(err);
+        notices.extend(s.cfg_note);
         crate::theme::apply(&cc.egui_ctx);
+        cc.egui_ctx.set_zoom_factor(cfg.display.ui_size as f32);
         let rs = cc.wgpu_render_state.as_ref();
         let adapter = rs.map_or_else(String::new, |rs| {
             let i = rs.adapter.get_info();
@@ -288,6 +303,9 @@ impl App {
             tile_error: None,
             verify: None,
             about: false,
+            settings: None,
+            zoom_seen: cfg_zoom,
+            msaa_now: s.msaa,
             path_input: String::new(),
         };
         if let Some(p) = s.chosen {
@@ -418,7 +436,15 @@ impl MapState {
         }
     }
 
-    fn input(&mut self, ui: &egui::Ui, resp: &egui::Response, origin: Pos2, dt: f64, pan: bool) {
+    fn input(
+        &mut self,
+        ui: &egui::Ui,
+        resp: &egui::Response,
+        origin: Pos2,
+        dt: f64,
+        pan: bool,
+        mv: &Movement,
+    ) {
         let cam = &mut self.camera;
         if resp.dragged() && pan {
             let d = resp.drag_delta();
@@ -428,7 +454,9 @@ impl MapState {
         }
         if resp.drag_stopped() && pan {
             let v = ui.input(|i| i.pointer.velocity());
-            self.motion.velocity = [f64::from(v.x), f64::from(v.y)];
+            if mv.inertia {
+                self.motion.velocity = [f64::from(v.x), f64::from(v.y)];
+            }
         }
         let center = [cam.size[0] / 2.0, cam.size[1] / 2.0];
         let anchor = resp.hover_pos().map_or(center, |p| {
@@ -443,8 +471,11 @@ impl MapState {
                     match e {
                         egui::Event::MouseWheel { unit, delta, .. } => {
                             let dz = match unit {
-                                egui::MouseWheelUnit::Line => f64::from(delta.y) * 0.25,
-                                egui::MouseWheelUnit::Point => f64::from(delta.y) / 400.0,
+                                egui::MouseWheelUnit::Line => f64::from(delta.y) * mv.wheel_zoom,
+                                // A notch is a quarter zoom (the default) in 100 points.
+                                egui::MouseWheelUnit::Point => {
+                                    f64::from(delta.y) / 400.0 * mv.wheel_zoom / 0.25
+                                }
                                 egui::MouseWheelUnit::Page => f64::from(delta.y),
                             };
                             self.motion.zoom(dz, anchor);
@@ -466,15 +497,15 @@ impl MapState {
                 let dx = key(egui::Key::ArrowLeft) - key(egui::Key::ArrowRight);
                 let dy = key(egui::Key::ArrowUp) - key(egui::Key::ArrowDown);
                 if dx != 0.0 || dy != 0.0 {
-                    cam.pan([dx * KEY_PAN * dt, dy * KEY_PAN * dt]);
+                    cam.pan([dx * mv.key_pan * dt, dy * mv.key_pan * dt]);
                     self.motion.stop_flying();
                     self.motion.velocity = [0.0, 0.0];
                 }
                 if i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals) {
-                    self.motion.zoom(1.0, center);
+                    self.motion.zoom(mv.key_zoom, center);
                 }
                 if i.key_pressed(egui::Key::Minus) {
-                    self.motion.zoom(-1.0, center);
+                    self.motion.zoom(-mv.key_zoom, center);
                 }
             }
         });
@@ -504,6 +535,7 @@ impl MapState {
         ppp: f32,
         srgb: bool,
         layers: &Layers,
+        label_size: f64,
         outlines: bool,
         pool: &Arc<Pool>,
         pins: &mut PinsUi,
@@ -517,6 +549,7 @@ impl MapState {
             pixels_per_point: ppp,
             srgb,
             layers: *layers,
+            label_size,
             tiles: self.cache.version,
             route: self.routing.bands(pool, &self.camera),
             pins: pins.gpu(pool),
@@ -632,6 +665,7 @@ impl MapState {
                 _ => None,
             })
             .collect();
+        self.placer.label_scale = labels::LabelScale(key.label_size as f32);
         let placed = self.placer.place(
             cam,
             ppp,
@@ -725,6 +759,7 @@ impl eframe::App for App {
         let dt = interval.as_secs_f64().min(0.1);
         let ctx = ui.ctx().clone();
         self.reload_style(&ctx);
+        self.sync_zoom(&ctx);
 
         if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
             self.cfg.debug_overlay = !self.cfg.debug_overlay;
@@ -798,7 +833,7 @@ impl eframe::App for App {
                             .print
                             .pointer(&ctx, &resp, rect.min, &m.camera, &self.cfg.print);
                     take_focus(ui, &resp);
-                    m.input(ui, &resp, rect.min, dt, !held);
+                    m.input(ui, &resp, rect.min, dt, !held, &self.cfg.movement);
                     // A click on a pushpin opens it; on an alternative's grey line or tag, picks
                     // it.
                     if resp.clicked()
@@ -826,7 +861,7 @@ impl eframe::App for App {
                             m.here.ask_stop(&m.search, at);
                         }
                     }
-                    m.motion.step(&mut m.camera, dt);
+                    m.motion.step(&mut m.camera, dt, &self.cfg.movement);
                     animate = m.motion.moving() || MapState::keys_held(ui) || m.view.fading;
                     self.cursor = resp.hover_pos().map(|p| {
                         let w = m.camera.screen_to_world([
@@ -849,6 +884,7 @@ impl eframe::App for App {
                         ctx.pixels_per_point(),
                         self.srgb,
                         &layers,
+                        self.cfg.display.label_size,
                         outlines,
                         pool,
                         &mut self.pins,
@@ -900,6 +936,7 @@ impl eframe::App for App {
         self.map_controls(&ctx, map_rect);
         self.picker_window(&ctx);
         self.about_window(&ctx);
+        self.settings_window(&ctx);
         self.verify_window(&ctx);
         self.error_windows(&ctx);
         self.notices_window(&ctx);
