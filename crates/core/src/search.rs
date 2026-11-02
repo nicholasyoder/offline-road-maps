@@ -171,6 +171,11 @@ impl Index {
         )?;
         let towns = strings(&mut Reader::new(&raw))?;
         let fst = fst::Map::new(pack.read_section(&sfst)?).map_err(|_| invalid("bad SFST"))?;
+        // `fst` trusts the bytes past its header and panics on damaged ones; its checksum
+        // (5 MiB for North America) finds them first.
+        fst.as_fst()
+            .verify()
+            .map_err(|_| invalid("SFST is damaged"))?;
         let first_keys = (0..sent.blocks())
             .map(|_| AtomicU64::new(UNKNOWN))
             .collect();
@@ -331,7 +336,7 @@ impl Index {
                         out.push((eid, e.clone()));
                     }
                 }
-                id = first + entries.len().max(1) as u32;
+                id = first.saturating_add(entries.len().max(1) as u32);
             }
         }
         Ok(out)
@@ -382,7 +387,7 @@ impl Index {
         let mut r = Reader::new(&head);
         let (n, total, bytes) = (r.varint()?, r.varint()?, r.varint()?);
         let at = offset + r.i as u64;
-        if at + bytes > len || n > bytes {
+        if at.checked_add(bytes).is_none_or(|end| end > len) || n > bytes {
             return Err(invalid("postings list past the end of SPST"));
         }
         let take = n.min(limit as u64);

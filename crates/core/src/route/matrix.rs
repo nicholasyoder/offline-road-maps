@@ -81,7 +81,7 @@ impl Routing {
                 let at = buckets.partition_point(|b| b.0 < v);
                 for &(_, j, dj) in buckets[at..].iter().take_while(|b| b.0 == v) {
                     let w = &mut row[j as usize];
-                    *w = (*w).min(d + dj);
+                    *w = (*w).min(d.saturating_add(dj));
                 }
             })?;
             for (j, &w) in row.iter().enumerate().filter(|&(j, _)| j != i) {

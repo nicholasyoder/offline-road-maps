@@ -108,7 +108,7 @@ impl Range {
             n = if n > self.from.min(self.to) {
                 n - 1
             } else {
-                n + 1
+                n.saturating_add(1)
             };
         }
         n
@@ -179,20 +179,20 @@ fn decode_runs(first: u32, astr: &[u8], asuf: &[u8], auni: &[u8]) -> io::Result<
             .ok_or_else(|| invalid("ordinal past the block"))
     };
     let mut r = Reader::new(asuf);
-    let mut o = 0;
+    let mut o = 0u64;
     for _ in 0..r.count()? {
-        o += r.varint()?;
+        o = o.saturating_add(r.varint()?);
         addresses[at(o)?].suffix = string(&mut r)?;
     }
-    let mut o = 0;
+    let mut o = 0u64;
     for _ in 0..r.count()? {
-        o += r.varint()?;
+        o = o.saturating_add(r.varint()?);
         addresses[at(o)?].postcode = code(r.varint()?);
     }
     let mut r = Reader::new(auni);
-    let mut o = 0;
+    let mut o = 0u64;
     while !r.at_end() {
-        o += r.varint()?;
+        o = o.saturating_add(r.varint()?);
         addresses[at(o)?].units = strings(&mut r)?;
     }
     Ok(RunBlock { runs, addresses })

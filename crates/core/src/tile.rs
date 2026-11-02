@@ -539,7 +539,9 @@ impl Block {
             blk.len_starts.push(blk.lens.len() as u32);
             for _ in 0..mask.count_ones() {
                 let len = u32::try_from(r.varint()?).map_err(|_| invalid("frame too long"))?;
-                offset += u64::from(len);
+                offset = offset
+                    .checked_add(u64::from(len))
+                    .ok_or_else(|| invalid("TIDX offset overflow"))?;
                 blk.lens.push(len);
             }
         }

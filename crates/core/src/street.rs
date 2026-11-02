@@ -375,7 +375,7 @@ impl Streets {
                 return Err(invalid("SSTR and SGEO blocks differ"));
             }
             for (i, (s, g)) in recs.into_iter().zip(&geoms).enumerate() {
-                f(first + i as u32, s, g);
+                f(first.wrapping_add(i as u32), s, g);
             }
         }
         Ok(())

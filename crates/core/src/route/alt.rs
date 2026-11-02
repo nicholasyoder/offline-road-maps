@@ -125,8 +125,7 @@ impl Packed {
         self.edges
             .iter()
             .filter(|(a, b, _)| taken.contains(&(*a, *b)))
-            .map(|(_, _, e)| e.weight)
-            .sum()
+            .fold(0u32, |s, (_, _, e)| s.saturating_add(e.weight))
     }
 
     fn signature(&self) -> u64 {
@@ -210,7 +209,7 @@ impl Routing {
             let (Some(df), Some(db)) = (x.f.dist(v), back.get(&v).and_then(|_| x.b.dist(v))) else {
                 continue;
             };
-            let d = df + db;
+            let d = df.saturating_add(db);
             if d > bound {
                 continue;
             }
@@ -258,7 +257,9 @@ impl Routing {
                 .chain(base.iter().map(|e| e.weight))
                 .chain(std::iter::once(targets[target].1))
                 .collect();
-            debug_assert_eq!(weights.iter().sum::<u32>(), d);
+            debug_assert!(
+                d == u32::MAX || weights.iter().map(|&w| u64::from(w)).sum::<u64>() == u64::from(d)
+            );
             // A segment driven twice is a loop.
             let mut once = HashSet::new();
             if !spans.iter().all(|s| once.insert(s.0 >> 1)) {
@@ -268,8 +269,7 @@ impl Routing {
                 .iter()
                 .zip(&weights)
                 .filter(|(s, _)| segments_taken.contains(&(s.0 >> 1)))
-                .map(|(_, w)| w)
-                .sum();
+                .fold(0u32, |sum, (_, &w)| sum.saturating_add(w));
             if f64::from(shared) > params.sharing * f64::from(d) {
                 continue;
             }

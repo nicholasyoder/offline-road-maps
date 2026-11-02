@@ -344,12 +344,15 @@ impl Routing {
             let Some(d) = d else { continue };
             let w = part(d.time_ds, f);
             let dir = snap.segment << 1 | u32::from(rev);
-            out.push((v, w + if d.flags & UTURN != 0 { uturn } else { 0 }));
+            out.push((
+                v,
+                w.saturating_add(if d.flags & UTURN != 0 { uturn } else { 0 }),
+            ));
             reversed.push(rev);
             for c in self.copies(v)? {
                 if c.leaves.binary_search(&dir).is_ok() {
                     let back = c.uturns.binary_search(&dir).is_ok();
-                    out.push((c.node, w + if back { uturn } else { 0 }));
+                    out.push((c.node, w.saturating_add(if back { uturn } else { 0 })));
                     reversed.push(rev);
                 }
             }

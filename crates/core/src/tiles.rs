@@ -332,7 +332,7 @@ impl TileReader {
         };
         let len = loc.len();
         let end = self.tdat.offset + self.tdat.len;
-        if loc.offset < self.tdat.offset || loc.offset + len > end {
+        if loc.offset < self.tdat.offset || loc.offset.checked_add(len).is_none_or(|e| e > end) {
             return Err(invalid(format!("tile {z}/{x}/{y} is outside TDAT")));
         }
         let bytes = self.pack.read(loc.offset, len as usize)?;

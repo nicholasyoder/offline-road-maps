@@ -30,4 +30,6 @@ pub mod whitelist;
 mod zframe;
 
 #[cfg(test)]
+mod damage_tests;
+#[cfg(test)]
 mod search_tests;

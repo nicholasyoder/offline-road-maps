@@ -23,6 +23,10 @@ use crate::varint::invalid;
 /// pieces.
 pub(super) const STOP_EVERY: usize = 64;
 
+/// How deep shortcuts may nest when unpacked. North America's hierarchy is 245 levels deep
+/// (phase 5 audit, R2).
+const MAX_UNPACK_DEPTH: u32 = 1000;
+
 /// The error a search stopped by its caller returns, so `?` carries it out.
 pub(super) fn stopped() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "route stopped")
@@ -186,9 +190,9 @@ impl Routing {
                 return Err(stopped());
             }
             if let Some(o) = other.dist(u)
-                && d + o < best
+                && d.saturating_add(o) < best
             {
-                (best, meet) = (d + o, u);
+                (best, meet) = (d.saturating_add(o), u);
             }
             let node = self.node(u)?;
             let (out, into) = match forward {
@@ -196,7 +200,10 @@ impl Routing {
                 false => (node.down(), node.up()),
             };
             let stalled = into.iter().any(|e| {
-                e.flags & avoid == 0 && side.dist(e.other).is_some_and(|w| w + e.weight < d)
+                e.flags & avoid == 0
+                    && side
+                        .dist(e.other)
+                        .is_some_and(|w| w.saturating_add(e.weight) < d)
             });
             if stalled {
                 continue;
@@ -205,7 +212,7 @@ impl Routing {
                 if e.flags & avoid != 0 {
                     continue;
                 }
-                let nd = d + e.weight;
+                let nd = d.saturating_add(e.weight);
                 let better = side.dist.get(&e.other).is_none_or(|l| nd < l.d);
                 if better {
                     side.dist.insert(
@@ -267,14 +274,17 @@ impl Routing {
                 false => (node.down(), node.up()),
             };
             let stalled = into.iter().any(|e| {
-                e.flags & avoid == 0 && side.dist(e.other).is_some_and(|w| w + e.weight < d)
+                e.flags & avoid == 0
+                    && side
+                        .dist(e.other)
+                        .is_some_and(|w| w.saturating_add(e.weight) < d)
             });
             if stalled {
                 continue;
             }
             visit(u, d);
             for e in out.iter().filter(|e| e.flags & avoid == 0) {
-                let nd = d + e.weight;
+                let nd = d.saturating_add(e.weight);
                 if side.dist.get(&e.other).is_none_or(|l| nd < l.d) {
                     side.dist.insert(
                         e.other,
@@ -333,9 +343,9 @@ impl Routing {
             }
             list.push(u);
             if let Some(o) = other.dist(u)
-                && d + o < x.best
+                && d.saturating_add(o) < x.best
             {
-                (x.best, x.meet) = (d + o, u);
+                (x.best, x.meet) = (d.saturating_add(o), u);
             }
             let node = self.node(u)?;
             let (out, into) = match forward {
@@ -344,13 +354,16 @@ impl Routing {
             };
             let stalled = stall
                 && into.iter().any(|e| {
-                    e.flags & avoid == 0 && side.dist(e.other).is_some_and(|w| w + e.weight < d)
+                    e.flags & avoid == 0
+                        && side
+                            .dist(e.other)
+                            .is_some_and(|w| w.saturating_add(e.weight) < d)
                 });
             if stalled {
                 continue;
             }
             for e in out.iter().filter(|e| e.flags & avoid == 0) {
-                let nd = d + e.weight;
+                let nd = d.saturating_add(e.weight);
                 if side.dist.get(&e.other).is_none_or(|l| nd < l.d) {
                     side.dist.insert(
                         e.other,
@@ -381,25 +394,118 @@ impl Routing {
         e: &ChEdge,
         f: &mut dyn FnMut(u32, u32, &ChEdge),
     ) -> io::Result<()> {
+        self.unpack_at(a, b, e, f, 0)
+    }
+
+    /// [`Self::unpack_each`] for a shortcut `depth` levels down.
+    fn unpack_at(
+        &self,
+        a: u32,
+        b: u32,
+        e: &ChEdge,
+        f: &mut dyn FnMut(u32, u32, &ChEdge),
+        depth: u32,
+    ) -> io::Result<()> {
         let m = e.mid;
         if e.flags & SHORTCUT == 0 {
             f(a, b, e);
             return Ok(());
+        }
+        // A damaged `RCHE` can make a shortcut its own half; running out of stack would end
+        // the app, unwinding or not.
+        if depth >= MAX_UNPACK_DEPTH {
+            return Err(invalid(format!(
+                "shortcut {a} -> {b} is nested more than {MAX_UNPACK_DEPTH} deep"
+            )));
         }
         // The middle node is below both ends: `a` to it is one of its down edges, it to `b`
         // one of its up edges, with this weight and flags between them.
         let node = self.node(m)?;
         for d in node.down().iter().filter(|d| d.other == a) {
             for u in node.up().iter().filter(|u| u.other == b) {
-                if d.weight + u.weight == e.weight && (d.flags | u.flags) & AVOID == e.flags & AVOID
+                if d.weight.checked_add(u.weight) == Some(e.weight)
+                    && (d.flags | u.flags) & AVOID == e.flags & AVOID
                 {
-                    self.unpack_each(a, m, d, f)?;
-                    return self.unpack_each(m, b, u, f);
+                    self.unpack_at(a, m, d, f, depth + 1)?;
+                    return self.unpack_at(m, b, u, f, depth + 1);
                 }
             }
         }
         Err(invalid(format!(
             "shortcut {a} -> {b} through {m} has no halves"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::pack::{Info, Pack, Writer};
+    use crate::route::{Header, RCHE, RCPY, RGEO, RGRD, RHDR, RJCT, RNAM};
+    use crate::varint::{put, zigzag};
+
+    /// Nodes 0 to 2 with the shortcut 0 → 2 through 1, whose half 0 → 1 is a shortcut
+    /// through 1 again (1 → 1 weighs nothing): a damaged `RCHE` that never bottoms out.
+    fn looping(dir: &std::path::Path) -> Routing {
+        let mut block = Vec::new();
+        put(&mut block, 0); // node 0: no edges
+        put(&mut block, 0);
+        put(&mut block, 2 << 1); // node 1: two up edges, one down
+        put(&mut block, 1);
+        for (delta, weight, flags, mid) in [(1, 5, 0, 0), (-1, 0, 0, 0), (-1, 5, SHORTCUT, 0)] {
+            put(&mut block, zigzag(delta));
+            put(&mut block, weight << 3 | u64::from(flags));
+            put(&mut block, zigzag(mid));
+        }
+        put(&mut block, 0); // node 2
+        put(&mut block, 0);
+        let mut rche = Vec::new();
+        for v in [3, 1, 16, 16 + block.len() as u32] {
+            rche.extend_from_slice(&v.to_le_bytes());
+        }
+        rche.extend_from_slice(&block);
+        let header = Header {
+            nodes: 3,
+            edges: 3,
+            block_nodes: 4,
+            ..Header::default()
+        };
+        let mut w = Writer::create(dir, "t", 1 << 20).unwrap();
+        w.section(RHDR, &header.encode().unwrap()).unwrap();
+        w.section(RCHE, &rche).unwrap();
+        for id in [RGEO, RNAM, RGRD, RCPY, RJCT] {
+            w.section(id, &[0; 8]).unwrap();
+        }
+        let info = Info {
+            pack_id: [1; 16],
+            bbox: [0, 0, 1, 1],
+            build_time: 0,
+            name: "T".into(),
+            snapshot: String::new(),
+        };
+        let first = w.finish(&info).unwrap().remove(0);
+        Routing::open(Arc::new(Pack::open(&first).unwrap()))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_shortcut_that_is_its_own_half_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = looping(dir.path());
+        let e = ChEdge {
+            other: 2,
+            weight: 10,
+            flags: SHORTCUT,
+            mid: 1,
+        };
+        // Before the depth limit, this ran out of stack.
+        let err = r.unpack(0, 2, &e, &mut Vec::new()).unwrap_err();
+        assert!(
+            err.to_string().contains("nested more than 1000 deep"),
+            "{err}"
+        );
     }
 }

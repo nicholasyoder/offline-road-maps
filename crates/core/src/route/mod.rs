@@ -184,11 +184,10 @@ pub struct Direction {
 impl Direction {
     /// What a route minimizes, as the hierarchy's weights.
     pub fn weight(&self) -> u32 {
-        self.time_ds
-            + match self.flags & ENTRY {
-                0 => 0,
-                _ => crate::profile::RESTRICTED_PENALTY_S * 10,
-            }
+        self.time_ds.saturating_add(match self.flags & ENTRY {
+            0 => 0,
+            _ => crate::profile::RESTRICTED_PENALTY_S * 10,
+        })
     }
 }
 
@@ -415,7 +414,8 @@ impl Routing {
                 .settings
                 .get(UTURN_SETTING)
                 .and_then(|v| v.as_u64())
-                .map_or(0, |s| s as u32),
+                // In seconds and used in tenths: at most an hour, as no build sets more.
+                .map_or(0, |s| s.min(3600) as u32),
             header,
             rche,
             nodes: Cache::new(NODE_CACHE),
@@ -524,7 +524,7 @@ impl Routing {
         for b in 0..self.rgeo.blocks() {
             let (raw, _) = self.rgeo.read(&self.pack, b)?;
             for (i, s) in decode_segments(&raw, self.header.nodes)?.iter().enumerate() {
-                f(self.rgeo.first(b) + i as u32, s);
+                f(self.rgeo.first(b).wrapping_add(i as u32), s);
             }
         }
         Ok(())
