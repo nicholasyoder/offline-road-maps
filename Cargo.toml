@@ -26,6 +26,12 @@ strip = true
 # Unwinding, so a worker's panic is caught and shown as an error, not an abort (5.1 R8).
 panic = "unwind"
 
+# For perf and heaptrack (phase 5 step 5.2): the release build with symbols and line tables.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = "limited"
+
 # The builder's profile (what CI builds); it unwinds too, so crashes print backtraces.
 [profile.release-builder]
 inherits = "release"

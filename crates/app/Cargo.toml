@@ -38,5 +38,9 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graph
 [dev-dependencies]
 tempfile = "3.27.0"
 
+[features]
+# Counts each thread's allocations, for the bench's allocations per frame (allocs.rs).
+count-allocs = []
+
 [lints]
 workspace = true

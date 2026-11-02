@@ -135,6 +135,7 @@ impl App {
         ctx: &egui::Context,
         interval: Duration,
         cpu: Duration,
+        allocs: Option<(u64, u64)>,
     ) -> bool {
         let mut animate = false;
         if let Some(path) = self.bench.as_mut().and_then(Bench::take_shot) {
@@ -153,6 +154,7 @@ impl App {
                 cache_bytes: m.cache.bytes(),
                 labels: m.view.label_time,
                 bytes_read: m.opened.reader.bytes_read(),
+                allocs,
             };
             let st = m.search.stats();
             let rc = ReportContext {
@@ -168,6 +170,13 @@ impl App {
             };
             if let Some(report) = b.end_frame(sample, &mut m.camera, &rc) {
                 b.start_idle(report);
+            }
+            if b.measuring() {
+                b.idle_wake(
+                    ctx.repaint_causes()
+                        .iter()
+                        .map(|c| format!("{}:{} {}", c.file, c.line, c.reason)),
+                );
             }
             match b.poll() {
                 Poll::Flying => animate = true,

@@ -13,6 +13,7 @@
 // 5.1 D6. Debug builds keep their console, for the warnings.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod allocs;
 mod app;
 mod bench;
 mod cache;

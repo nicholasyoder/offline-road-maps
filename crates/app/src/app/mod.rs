@@ -157,6 +157,8 @@ pub struct App {
     started: Instant,
     first_full: Option<Duration>,
     last_frame: Option<Instant>,
+    /// The UI thread's allocations when the last frame started (`count-allocs` builds).
+    allocs: Option<(u64, u64)>,
     /// Recent frames: (start, interval ms, cpu ms).
     frames: VecDeque<(Instant, f32, f32)>,
     /// The config as last saved.
@@ -232,6 +234,7 @@ impl App {
             started: s.started,
             first_full: None,
             last_frame: None,
+            allocs: None,
             frames: VecDeque::new(),
             last_save: Instant::now(),
             cursor: None,
@@ -642,6 +645,9 @@ impl eframe::App for App {
         let t0 = Instant::now();
         let interval = self.last_frame.map_or(Duration::ZERO, |l| t0 - l);
         self.last_frame = Some(t0);
+        let allocs = crate::allocs::this_thread();
+        let frame_allocs = allocs.zip(self.allocs).map(|(a, b)| (a.0 - b.0, a.1 - b.1));
+        self.allocs = allocs;
         let dt = interval.as_secs_f64().min(0.1);
         let ctx = ui.ctx().clone();
         self.reload_style(&ctx);
@@ -835,7 +841,7 @@ impl eframe::App for App {
             self.frames.pop_front();
         }
 
-        if self.bench_frame(&ctx, interval, cpu) {
+        if self.bench_frame(&ctx, interval, cpu, frame_allocs) {
             animate = true;
         }
         if animate {

@@ -43,7 +43,7 @@ What phase 4 left in place for this:
 | Step | Status | Notes |
 |---|---|---|
 | 5.1 Audit: bugs and design | **Done** 2026-11-02 | 10 bugs fixed (B1–B10); every finding triaged; fix sessions A–F done; the rest assigned to later steps |
-| 5.2 Audit: performance baseline and profiles | Not started | |
+| 5.2 Audit: performance baseline and profiles | In progress | Baseline and the app's profiles done; the leads table written ([perf-findings.md](perf-findings.md)); left: the owner's triage and the North America build profile (P20) |
 | 5.3 Settings window | Not started | |
 | 5.4 Map styles in the Map tab | Not started | |
 | 5.5 Dark UI with the night style | Not started | |
@@ -98,9 +98,18 @@ Measure before changing anything, and look for slow and wasteful code that the p
   - *printing:* RSS over time for one page at 300, 360 and 600 dpi.
   - *memory:* what makes up the 329 MiB peak (heap by owner with a counting allocator or `heaptrack`; mapped pack pages; GPU buffers).
 - **Builder profile:** `perf` over a North America `build --reuse-stages` and the address merge on Ohio (refactor R4.5, left open: it is 13.6 of the 36.7 minutes).
-- **Output:** a table of leads in [Audit findings](audit-findings.md) (where, what it costs now, the estimated gain, the effort), sorted by gain over effort, each assigned to one of 5.8–5.12 or left with a reason. Leads already known go in the table too, so everything is ranked together.
+- **Output:** a table of leads in [Performance findings](perf-findings.md) (where, what it costs now, the estimated gain, the effort), sorted by gain over effort, each assigned to one of 5.8–5.12 or left with a reason. Leads already known go in the table too, so everything is ranked together.
 
 **Done when:** the baseline is recorded, each profile above has been run once, and the leads table is written and triaged with the owner.
+
+> **In progress 2026-11-02.** Everything is in [perf-findings.md](perf-findings.md), with the logs in `$OMP_WORK/measure/p5/5.2/`. The bench gained two hooks for it: a `count-allocs` feature (a counting allocator per thread, `allocs.rs`), so reports give the UI thread's allocations per frame, and the idle period's repaint causes (`idle_wakes`); and a `profiling` build profile (release with symbols).
+>
+> - **Baseline** (dev machine, current `master`): warm as in 4.11 (frame p95 1.33 ms, RSS 328 MiB, idle 0.6%, coast to coast 342 ms); cold from the stick start-up 3.47 s, the first route 10.2 s (6.2 s once start-up has settled), the first search's answer 1.04 s.
+> - **Start-up and the first reads are FAT chain walks:** on a freshly mounted FAT32 stick, the first read at an offset deep in a chunk walks the file's cluster chain one 512-byte FAT sector at a time (about 1 s per 1.3 GiB of offset). Two such reads, the section table at the end of the last chunk and the tile index 2 GB into `.001`, are 3.3 of start-up's 3.5 s (P6, P7). 3.9's pack had the same layout, so this does not by itself explain the regression from 2.6 s.
+> - **The cold first route is geometry:** 2,346 random `RGEO` reads, 4.5 of 6.2 s (P9); asked as the pack opens it also waits for start-up and the routing top's warm-up, which holds up the tiles too (P8). Two cold searches read 162 of `SENT`'s 196 MiB (P16).
+> - **Warm:** decoding segment blocks is 80% of routing and directions (P10); label placement runs every frame, still or not (22% of the UI thread, P11); a still frame allocates 561 times (P13); the only idle wake-up is a focused field's cursor blink (P15). Heap at most about 150 MiB of the 328 (P17). Print: 600 dpi +243 MiB, the 749-step directions 14.1 s (P18, P19). P1 measured and left; D3 and D14 in the audit file measured.
+> - **Builder:** the Ohio merge profiled (P4: reading the sources dominates, not `intern_names`).
+> - **Left:** the North America build profile (P20), which needs the machine with the IDE closed (its 49 GiB peak does not fit beside it; an earlier heaptrack run over the full flight took the desktop down, so heavy runs now go in a memory-capped `systemd-run` scope); and the owner's triage of the leads.
 
 ## 5.3 Settings window
 
@@ -240,12 +249,12 @@ Last:   5.13 checks
 
 - The audits come first because they decide what the later steps fix and in what order, and because the baseline must be taken before anything changes.
 - 5.3 before 5.4: the style choice is a setting, and the label size setting changes how styles are applied. 5.5 needs 5.4's style list; 5.6 needs 5.4's high-contrast style.
-- The performance items are independent of the UI steps and of each other, and can be taken in the order the leads table ranks them.
+- The performance items are independent of the UI steps and of each other, and can be taken in the order the [leads table](perf-findings.md#leads) ranks them.
 - The laptops are needed only for 5.10's and 5.11's machine-specific items and for 5.13; the owner's runs can be batched.
 
 ## Audit findings
 
-The findings table and the performance leads table are in [audit-findings.md](audit-findings.md); 5.1 and 5.2 fill it in, and the fixes are worked through from there.
+The bugs and design findings are in [audit-findings.md](audit-findings.md) (5.1), and the performance baseline, profiles and leads in [perf-findings.md](perf-findings.md) (5.2); the fixes are worked through from there.
 
 ## Decisions
 

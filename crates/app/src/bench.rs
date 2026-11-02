@@ -37,6 +37,7 @@
 //! page while typing and for "what's here". With `OMP_BENCH_SHOTS`, each page is saved once
 //! the flight is over.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -256,12 +257,16 @@ pub struct FrameSample {
     /// Label placement, part of `cpu`.
     pub labels: Duration,
     pub bytes_read: u64,
+    /// The UI thread's allocations (count, bytes) over the previous frame, from its start to
+    /// this one's, so with egui's painting; `count-allocs` builds only.
+    pub allocs: Option<(u64, u64)>,
 }
 
 #[derive(Default)]
 struct StepLog {
     intervals: Vec<f64>,
     cpu: Vec<f64>,
+    allocs: Vec<f64>,
     incomplete_frames: usize,
     detail_ms: Option<f64>,
     timed_out: bool,
@@ -397,6 +402,9 @@ pub struct Bench {
     intervals: Vec<f64>,
     cpu: Vec<f64>,
     labels: Vec<f64>,
+    /// The UI thread's allocations per frame, count and bytes (`count-allocs` builds).
+    allocs: Vec<f64>,
+    alloc_bytes: Vec<f64>,
     /// Every keystroke's latency, and the first one's.
     keystrokes: Vec<f64>,
     /// Every "what's here" latency.
@@ -412,6 +420,8 @@ pub struct Bench {
     idle: Option<(Report, Instant)>,
     /// When idle CPU began to be measured, with the CPU time then, and the frames since.
     measure: Option<(Instant, Option<Duration>, usize)>,
+    /// What asked for each frame while idle: egui's repaint causes, counted.
+    wakes: BTreeMap<String, usize>,
     done: bool,
     /// `OMP_BENCH_SHOTS`, and a screenshot to take there.
     shots: Option<PathBuf>,
@@ -451,6 +461,8 @@ impl Bench {
             intervals: Vec::new(),
             cpu: Vec::new(),
             labels: Vec::new(),
+            allocs: Vec::new(),
+            alloc_bytes: Vec::new(),
             keystrokes: Vec::new(),
             heres: Vec::new(),
             route: None,
@@ -461,6 +473,7 @@ impl Bench {
             finished: false,
             idle: None,
             measure: None,
+            wakes: BTreeMap::new(),
             done: false,
             shots: std::env::var_os("OMP_BENCH_SHOTS").map(PathBuf::from),
             shot: None,
@@ -899,6 +912,11 @@ impl Bench {
         self.intervals.push(ms(f.interval));
         self.cpu.push(ms(f.cpu));
         self.labels.push(ms(f.labels));
+        if let Some((n, bytes)) = f.allocs {
+            self.allocs.push(n as f64);
+            self.alloc_bytes.push(bytes as f64);
+            self.logs[self.step].allocs.push(n as f64);
+        }
         self.cache_peak = self.cache_peak.max(f.cache_bytes);
         if f.detailed && self.startup_ms.is_none() {
             self.startup_ms = Some(ms(self.started.elapsed()));
@@ -1079,6 +1097,18 @@ impl Bench {
         Some(page)
     }
 
+    /// Whether idle CPU is being measured, so the frame's repaint causes are wanted.
+    pub fn measuring(&self) -> bool {
+        self.measure.is_some()
+    }
+
+    /// Counts what asked for this idle frame (egui's repaint causes).
+    pub fn idle_wake(&mut self, causes: impl IntoIterator<Item = String>) {
+        for c in causes {
+            *self.wakes.entry(c).or_default() += 1;
+        }
+    }
+
     /// Called once a frame.
     pub fn poll(&mut self) -> Poll {
         if self.page.is_some_and(|(i, ..)| i < SHOT_PAGES.len()) {
@@ -1113,6 +1143,7 @@ impl Bench {
         });
         // Not counting this last frame, which only ends the measurement.
         report.idle_frames = frames - 1;
+        report.idle_wakes = std::mem::take(&mut self.wakes);
         self.done = true;
         Poll::Done(Box::new(report))
     }
@@ -1137,6 +1168,7 @@ impl Bench {
                 incomplete_frames: l.incomplete_frames,
                 interval_ms: Summary::of(&mut l.intervals),
                 cpu_ms: Summary::of(&mut l.cpu),
+                allocs_per_frame: some_of(&mut l.allocs),
                 detail_ms: l.detail_ms,
                 timed_out: l.timed_out,
                 tiles: l.tiles,
@@ -1198,6 +1230,8 @@ impl Bench {
             interval_ms: Summary::of(&mut self.intervals),
             cpu_ms: Summary::of(&mut self.cpu),
             labels_ms: Summary::of(&mut self.labels),
+            allocs_per_frame: some_of(&mut self.allocs),
+            alloc_bytes_per_frame: some_of(&mut self.alloc_bytes),
             tiles: TilesReport {
                 loaded: self.tiles.loaded,
                 absent: self.tiles.absent,
@@ -1212,6 +1246,7 @@ impl Bench {
             rss_peak: mem.map(|m| m.peak),
             idle_cpu_percent: None,
             idle_frames: 0,
+            idle_wakes: BTreeMap::new(),
             gpu_allocated: None,
             gpu_reserved: None,
             tile_slabs_peak: None,
@@ -1261,6 +1296,11 @@ pub struct Summary {
     pub max: f64,
 }
 
+/// The summary of `v`, or `None` when nothing was measured.
+fn some_of(v: &mut [f64]) -> Option<Summary> {
+    (!v.is_empty()).then(|| Summary::of(v))
+}
+
 impl Summary {
     pub fn of(v: &mut [f64]) -> Self {
         if v.is_empty() {
@@ -1299,6 +1339,11 @@ pub struct Report {
     pub cpu_ms: Summary,
     /// Label placement, part of `cpu_ms`.
     pub labels_ms: Summary,
+    /// The UI thread's allocations per frame, count and bytes (`count-allocs` builds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocs_per_frame: Option<Summary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alloc_bytes_per_frame: Option<Summary>,
     pub tiles: TilesReport,
     pub bytes_read: u64,
     pub rss_end: Option<u64>,
@@ -1307,6 +1352,10 @@ pub struct Report {
     pub idle_cpu_percent: Option<f64>,
     /// Frames drawn while idle CPU was measured; nothing asks for one, so 0 is expected.
     pub idle_frames: usize,
+    /// What asked for those frames: egui's repaint causes (file:line and reason), counted.
+    /// The bench's own wake-up at the end of the period is among them.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub idle_wakes: BTreeMap<String, usize>,
     /// From wgpu's allocator at the end, where the backend has one (DX12, Vulkan): bytes in
     /// live allocations, and in the memory blocks they are cut from.
     pub gpu_allocated: Option<u64>,
@@ -1466,6 +1515,9 @@ pub struct StepReport {
     pub incomplete_frames: usize,
     pub interval_ms: Summary,
     pub cpu_ms: Summary,
+    /// The UI thread's allocations per frame (`count-allocs` builds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocs_per_frame: Option<Summary>,
     /// After the move, until the view was fully detailed (steps that wait).
     pub detail_ms: Option<f64>,
     pub timed_out: bool,
@@ -1540,6 +1592,20 @@ impl Report {
                 .map_or("-".into(), |v| format!("{v:.2}")),
             self.idle_frames,
         );
+        for (cause, n) in &self.idle_wakes {
+            s += &format!("idle wake: {n} × {cause}\n");
+        }
+        if let (Some(n), Some(b)) = (&self.allocs_per_frame, &self.alloc_bytes_per_frame) {
+            s += &format!(
+                "UI thread allocations per frame: p50 {:.0} / p95 {:.0} / max {:.0} ({:.1} / {:.1} / {:.1} KiB)\n",
+                n.p50,
+                n.p95,
+                n.max,
+                b.p50 / 1024.0,
+                b.p95 / 1024.0,
+                b.max / 1024.0
+            );
+        }
         if let Some(sr) = &self.search {
             s += &format!(
                 "search: opened in {} ms, first keystroke {} ms; {} keystrokes, latency p50 {:.1} / p95 {:.1} / max {:.1} ms; readers hold {:.1} MiB, {:.1} MiB read\n",
@@ -1572,8 +1638,11 @@ impl Report {
             let rss = st
                 .rss_end
                 .map_or(String::new(), |v| format!(", RSS {:.0} MiB", mib(v)));
+            let allocs = st.allocs_per_frame.as_ref().map_or(String::new(), |a| {
+                format!(", allocs p50 {:.0} / max {:.0}", a.p50, a.max)
+            });
             s += &format!(
-                "  {:<28} {:>5} frames, p95 {:>6.2} ms, {:>4} tiles{detail}{rss}\n",
+                "  {:<28} {:>5} frames, p95 {:>6.2} ms, {:>4} tiles{detail}{rss}{allocs}\n",
                 st.label, st.frames, st.interval_ms.p95, st.tiles
             );
             if let Some(q) = &st.search {
@@ -1702,6 +1771,7 @@ mod tests {
             cache_bytes: 10,
             labels: Duration::ZERO,
             bytes_read: 100,
+            allocs: None,
         }
     }
 
