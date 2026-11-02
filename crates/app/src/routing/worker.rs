@@ -444,18 +444,68 @@ fn serve(
         };
         let stop = || shared.generation.load(Ordering::Relaxed) != generation;
         let streets = table.map(|t| &t.0);
-        let sent = match job {
-            Job::Route(request) => route(reader, table, request, &stop, &mut kept, tx),
-            Job::Alternatives { id, legs } => match kept.as_ref().filter(|k| k.id == id) {
-                Some(k) => alternatives(reader, streets, k, &legs, &stop, tx, wake),
+        let sent = guarded(&job, tx, &mut kept, |kept| match &job {
+            Job::Route(request) => route(reader, table, request.clone(), &stop, kept, tx),
+            Job::Alternatives { id, legs } => match kept.as_ref().filter(|k| k.id == *id) {
+                Some(k) => alternatives(reader, streets, k, legs, &stop, tx, wake),
                 // Not the last route: the UI has a newer one coming.
                 None => Ok(()),
             },
-        };
+        });
         if sent.is_err() {
             return;
         }
         wake();
+    }
+}
+
+/// What the UI is told when a job panics.
+const CRASHED: &str = "the route could not be worked out (a crash); Verify pack may help";
+
+/// Runs `f` on a job; if it panics, answers the job with an error instead and forgets the
+/// kept route, so the worker goes on (a panic would otherwise leave the UI waiting for
+/// good). `Err` once the UI is gone.
+fn guarded(
+    job: &Job,
+    tx: &Sender<Reply>,
+    kept: &mut Option<Kept>,
+    f: impl FnOnce(&mut Option<Kept>) -> Result<(), ()>,
+) -> Result<(), ()> {
+    if let Ok(sent) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(kept))) {
+        return sent;
+    }
+    *kept = None;
+    match job {
+        Job::Route(request) => {
+            let e = CRASHED.to_string();
+            tx.send(
+                Answer {
+                    street_names: Vec::new(),
+                    request: request.clone(),
+                    routed: Err(e.clone()),
+                    order: request.optimize.map(|_| Err(e)),
+                    optimize: Duration::ZERO,
+                    trip: Duration::ZERO,
+                    directions: Duration::ZERO,
+                    line: Duration::ZERO,
+                }
+                .into(),
+            )
+            .map_err(drop)
+        }
+        Job::Alternatives { id, legs } => {
+            for &leg in legs {
+                let alts = Alternatives {
+                    id: *id,
+                    leg,
+                    choices: Err(CRASHED.to_string()),
+                    search: Duration::ZERO,
+                    directions: Duration::ZERO,
+                };
+                tx.send(Reply::Alternatives(alts)).map_err(drop)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -769,4 +819,62 @@ pub fn tag_point(leg: &Leg, others: &[&Leg]) -> Option<P> {
         m += p.metres;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(id: u64, optimize: Option<Ends>) -> Request {
+        Request {
+            id,
+            stops: Vec::new(),
+            avoid: 0,
+            asked: Instant::now(),
+            optimize,
+            names: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_route_that_panics_is_answered_with_an_error_and_the_kept_route_is_dropped() {
+        let (tx, rx) = channel();
+        let ends = Ends {
+            keep_first: true,
+            keep_last: false,
+            round_trip: false,
+        };
+        let job = Job::Route(request(7, Some(ends)));
+        let mut kept = None::<Kept>;
+        let sent = guarded(&job, &tx, &mut kept, |_| panic!("bad data"));
+        assert!(sent.is_ok());
+        let Ok(Reply::Route(a)) = rx.try_recv() else {
+            panic!("no route answer");
+        };
+        assert_eq!(a.request.id, 7);
+        assert!(a.routed.is_err());
+        assert!(matches!(a.order, Some(Err(_))));
+        // A job that goes well is not touched.
+        assert!(guarded(&job, &tx, &mut kept, |_| Ok(())).is_ok());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn alternatives_that_panic_are_answered_with_an_error_per_leg() {
+        let (tx, rx) = channel();
+        let job = Job::Alternatives {
+            id: 3,
+            legs: vec![0, 2],
+        };
+        let mut kept = None;
+        assert!(guarded(&job, &tx, &mut kept, |_| panic!("bad data")).is_ok());
+        let legs: Vec<_> = rx
+            .try_iter()
+            .map(|r| match r {
+                Reply::Alternatives(a) => (a.id, a.leg, a.choices.is_err()),
+                Reply::Route(_) => panic!("a route"),
+            })
+            .collect();
+        assert_eq!(legs, [(3, 0, true), (3, 2, true)]);
+    }
 }

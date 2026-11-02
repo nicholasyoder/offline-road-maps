@@ -16,6 +16,8 @@ const LEVELS: usize = find::Session::LEVELS;
 struct Fake {
     slow: Option<(&'static str, usize)>,
     slowed: AtomicBool,
+    /// Panics: starting this text, running level 0 of "boom", and "what's here" at x = 0.
+    crash_start: Option<&'static str>,
     /// The levels run, as "text d".
     log: Arc<Mutex<Vec<String>>>,
 }
@@ -30,6 +32,7 @@ struct FakeLevels<'a> {
 impl Engine for Fake {
     type Levels<'a> = FakeLevels<'a>;
     fn start(&self, req: &Request) -> FakeLevels<'_> {
+        assert!(self.crash_start != Some(req.text), "bad data");
         FakeLevels {
             fake: self,
             text: req.text.to_string(),
@@ -38,6 +41,7 @@ impl Engine for Fake {
         }
     }
     fn whats_here(&self, p: P, _: f64, _: f64) -> io::Result<Shown> {
+        assert!(p[0] != 0, "bad data");
         Ok(Shown {
             p,
             address: None,
@@ -65,6 +69,7 @@ impl Levels for FakeLevels<'_> {
         Ok(self.hits.clone())
     }
     fn level(&mut self, d: usize) -> io::Result<Option<Vec<Hit>>> {
+        assert!(self.text != "boom", "bad data");
         let name = format!("{} {d}", self.text);
         self.fake.log.lock().unwrap().push(name.clone());
         if self.fake.slow == Some((self.text.as_str(), d))
@@ -217,4 +222,33 @@ fn whats_here_is_served_between_levels() {
     let mut run: Vec<String> = (0..LEVELS).map(|d| format!("Col {d}")).collect();
     run.insert(1, "Col 1".into());
     assert_eq!(*log.lock().unwrap(), run);
+}
+
+#[test]
+fn a_panic_in_the_engine_is_an_error_and_the_worker_goes_on() {
+    let (w, _) = serving(Fake {
+        crash_start: Some("start"),
+        ..Fake::default()
+    });
+    let mut s = Session::default();
+    for text in ["boom", "start"] {
+        w.ask(s.ask(text, false, NEAR, 8.0));
+        let a = next(&w);
+        assert!(a.hits.unwrap_err().contains("crashed"), "{text}");
+    }
+    let here = |id, x| HereQuery {
+        id,
+        p: [x, 1 << 30],
+        entries_m: 500.0,
+        asked: Instant::now(),
+        stop: false,
+    };
+    w.ask_here(here(1, 0));
+    let h = w.here_rx.recv_timeout(WAIT).expect("a here answer");
+    assert!(h.shown.unwrap_err().contains("crashed"));
+    // The thread is still there.
+    w.ask_here(here(2, 1 << 30));
+    assert!(w.here_rx.recv_timeout(WAIT).unwrap().shown.is_ok());
+    w.ask(s.ask("Col", false, NEAR, 8.0));
+    assert_eq!(names(&next(&w)), ["Col 0"]);
 }

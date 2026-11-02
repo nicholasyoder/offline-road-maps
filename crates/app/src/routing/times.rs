@@ -429,23 +429,51 @@ fn towns(
         Ok((Index::open(pack)?, places))
     });
     for batch in jobs {
-        let found = batch
-            .into_iter()
-            .map(|p| {
-                let name = match &opened {
-                    Ok((Some(index), places)) => index
-                        .town_near(p, places)
-                        .ok()
-                        .flatten()
-                        .map(|(e, _)| e.name),
-                    _ => None,
-                };
-                (p, name)
-            })
-            .collect();
+        let found = found(batch, |p| match &opened {
+            Ok((Some(index), places)) => index
+                .town_near(p, places)
+                .ok()
+                .flatten()
+                .map(|(e, _)| e.name),
+            _ => None,
+        });
         if answers.send(found).is_err() {
             return;
         }
         wake();
+    }
+}
+
+/// Each point of `batch` with its town from `town`. A point whose search panics has no town,
+/// so the thread goes on and the point is answered (it would be asked for again for good).
+fn found(batch: Vec<P>, town: impl Fn(P) -> Option<String>) -> Found {
+    batch
+        .into_iter()
+        .map(|p| {
+            let name = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| town(p)));
+            (p, name.unwrap_or(None))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod found_tests {
+    use super::*;
+
+    #[test]
+    fn a_point_whose_search_panics_has_no_town() {
+        let town = |p: P| {
+            assert!(p[0] != 0, "bad data");
+            Some(format!("town {}", p[0]))
+        };
+        let got = found(vec![[1, 1], [0, 1], [2, 1]], town);
+        assert_eq!(
+            got,
+            [
+                ([1, 1], Some("town 1".into())),
+                ([0, 1], None),
+                ([2, 1], Some("town 2".into())),
+            ]
+        );
     }
 }

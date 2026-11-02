@@ -288,6 +288,15 @@ enum Next {
     Search(Option<Query>, u64),
 }
 
+/// What the UI shows when the engine panics on a query.
+const CRASHED: &str = "the search crashed; Verify pack may help";
+
+/// Runs `f`; a panic in it is an error, so the worker goes on and the UI is answered (it
+/// would otherwise wait for good).
+fn guard<T>(f: impl FnOnce() -> T) -> io::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| io::Error::other(CRASHED))
+}
+
 /// A session's stop check: a newer query was asked, or a "what's here" is waiting.
 fn stopper(shared: &Arc<Shared>, generation: u64) -> impl Fn() -> bool + 'static {
     let s = shared.clone();
@@ -389,9 +398,10 @@ fn serve<E: Engine>(
         let (new, generation) = match next {
             Next::Here(h) => {
                 let t = Instant::now();
-                let shown = search
-                    .whats_here(h.p, omp_core::here::ADDRESS_RADIUS_M, h.entries_m)
-                    .map_err(|e| e.to_string());
+                let shown =
+                    guard(|| search.whats_here(h.p, omp_core::here::ADDRESS_RADIUS_M, h.entries_m))
+                        .and_then(|shown| shown)
+                        .map_err(|e| e.to_string());
                 let answer = HereAnswer {
                     query: h,
                     shown,
@@ -429,7 +439,24 @@ fn serve<E: Engine>(
                 // suggestions showed.
                 prefix: true,
             };
-            let mut session = search.start(&req);
+            let mut session = match guard(|| search.start(&req)) {
+                Ok(session) => session,
+                Err(e) => {
+                    let answer = Answer {
+                        query: q,
+                        hits: Err(e.to_string()),
+                        find: Duration::ZERO,
+                        level: 0,
+                        more: false,
+                    };
+                    current = None;
+                    if tx.send(answer).is_err() {
+                        return;
+                    }
+                    wake();
+                    continue;
+                }
+            };
             session.stop_when(stopper(shared, generation));
             current = Some((q, session, 0, Instant::now()));
         }
@@ -443,16 +470,20 @@ fn serve<E: Engine>(
             *next
         };
         let t = Instant::now();
-        let mut hits = Ok(None);
-        if *next > last {
-            hits = session.hits().map(Some);
-        }
-        for d in *next..=last {
-            hits = session.level(d);
-            if !matches!(hits, Ok(Some(_))) {
-                break;
+        let hits = guard(|| {
+            let mut hits = Ok(None);
+            if *next > last {
+                hits = session.hits().map(Some);
             }
-        }
+            for d in *next..=last {
+                hits = session.level(d);
+                if !matches!(hits, Ok(Some(_))) {
+                    break;
+                }
+            }
+            hits
+        })
+        .and_then(|hits| hits);
         let find = t.elapsed();
         let hits = match hits {
             // Stopped by a newer query or a "what's here", which is waiting; a level stopped
