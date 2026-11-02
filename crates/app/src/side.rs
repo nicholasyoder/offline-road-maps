@@ -1,7 +1,7 @@
 //! The side panel's own parts (phase 3 step 3.8): its pages and their tabs, the ☰ menu, the
-//! layers page, and the disabled places kept for what phase 5 adds. The panel itself,
-//! with the search box and the search and route pages, is drawn by [`crate::app`]; the
-//! Trips page by [`crate::trips`].
+//! layers page, and the disabled places kept for what phase 5 adds. The panel itself, with
+//! the search box and the search and route pages, is drawn by [`crate::app`]'s `panel`;
+//! the Trips page by [`crate::trips`].
 
 use eframe::egui::{self, Rangef, Rect, Vec2};
 

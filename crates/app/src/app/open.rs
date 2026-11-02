@@ -1,0 +1,148 @@
+//! Opening a pack: its style compiled, its loader threads, search and routing started, and
+//! the view restored from the config or fitted to the pack.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use eframe::egui::{self, Rect};
+
+use super::bench::set_stops;
+use super::{App, CACHE_BUDGET, FrameView, MapState, Prepared, TileInfo, TileStats};
+use crate::cache::Cache;
+use crate::camera::{Camera, Motion};
+use crate::config;
+use crate::here::HereUi;
+use crate::labels::{self, Placer};
+use crate::layers::Hidden;
+use crate::loader::{self, Loader};
+use crate::mesh;
+use crate::packs::{self, Opened};
+use crate::pins;
+use crate::pool::Pool;
+use crate::render::GpuMesh;
+use crate::routing::RouteUi;
+use crate::search::SearchUi;
+use crate::side::Page;
+use crate::style::{Style, StyleFile};
+
+impl App {
+    pub(super) fn open(&mut self, ctx: &egui::Context, first_chunk: &Path) {
+        // A pack that cannot be opened leaves the one open as it was.
+        let opened = match packs::open(first_chunk) {
+            Ok(o) => o,
+            Err(e) => {
+                self.pack_error = Some(e);
+                return;
+            }
+        };
+        // Close the old pack before starting the new one's threads, so its loader threads
+        // and a check of it stop.
+        self.map = None;
+        self.verify = None;
+        self.tile_error = None;
+        let dir = packs::pack_dir(first_chunk);
+        let same_pack = self
+            .cfg
+            .pack
+            .as_ref()
+            .is_some_and(|p| config::resolve_path(p, &self.exe_dir) == dir);
+        let mut camera = Camera::new(opened.bounds);
+        let mut fit = true;
+        if let (true, Some(v)) = (same_pack, self.cfg.view) {
+            camera.set_lonlat(v.lon, v.lat, v.zoom);
+            fit = !camera.contains_center();
+        }
+        let Some(pool) = self.pool.clone() else {
+            self.notices
+                .push("No GPU device: the map cannot be drawn.".into());
+            return;
+        };
+        let style = compile_style(&self.style, &opened);
+        let loader = start_loader(&opened, &style, pool, ctx);
+        self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
+        let units = packs::default_units(opened.meta.as_ref().ok());
+        let search = SearchUi::start(opened.first_chunk.clone(), &opened.schema, ctx);
+        let mut routing = RouteUi::start(opened.first_chunk.clone(), ctx);
+        routing.plan.s = self.cfg.schedule.clone();
+        routing.plan.time = self.cfg.schedule.depart.clone();
+        self.map = Some(MapState {
+            opened,
+            style,
+            loader,
+            cache: Cache::new(CACHE_BUDGET),
+            camera,
+            motion: Motion::default(),
+            stats: TileStats::default(),
+            fit_on_first_frame: fit,
+            view: FrameView::default(),
+            placer: Placer::default(),
+            hidden: Hidden::default(),
+            hidden_for: None,
+            units,
+            error_suggested: false,
+            search,
+            here: HereUi::default(),
+            routing,
+            page: Page::default(),
+            last_rect: Rect::NOTHING,
+            no_map: std::env::var_os("OMP_BENCH_NO_MAP").is_some(),
+        });
+        self.first_full = None;
+        if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {
+            // The panel as it first opens, whatever the config says.
+            self.cfg.side_panel = config::SidePanel::default();
+            let w = b.flight.window;
+            m.camera.size = [f64::from(w[0]), f64::from(w[1])];
+            m.fit_on_first_frame = false;
+            b.start(&mut m.camera, m.opened.reader.bytes_read());
+            // Checked when the flight was loaded.
+            set_stops(&mut m.routing, &b.flight.route_stops().unwrap_or_default());
+            if let Some(n) = b.flight.pins {
+                self.pins.replace(vec![pins::bench_set(n, m.opened.bounds)]);
+            }
+            if let Some((date, time)) = b.flight.depart.as_deref().and_then(|d| d.split_once('T')) {
+                m.routing.plan.s = config::Schedule::default();
+                m.routing.plan.date = date.into();
+                m.routing.plan.time = time.into();
+                m.routing.plan.mode = crate::routing::Mode::Depart;
+                m.routing.times_open = true;
+                m.routing.retime();
+            }
+        }
+    }
+}
+
+pub(super) fn compile_style(file: &StyleFile, opened: &Opened) -> Arc<Style> {
+    let (style, warnings) = Style::compile(file, &opened.schema);
+    for w in warnings {
+        eprintln!("{w}");
+    }
+    Arc::new(style)
+}
+
+/// Loader threads that read, tessellate with `style` and upload the pack's tiles.
+pub(super) fn start_loader(
+    opened: &Opened,
+    style: &Arc<Style>,
+    pool: Arc<Pool>,
+    ctx: &egui::Context,
+) -> Loader<Prepared> {
+    let ctx = ctx.clone();
+    let style = style.clone();
+    Loader::new(
+        opened.reader.clone(),
+        loader::default_threads(),
+        move |id, tile| {
+            let m = mesh::build(&tile, &style);
+            let labels = labels::extract(id, &tile, &style);
+            let info = TileInfo {
+                features: tile.layers.iter().map(|(_, l)| l.features.len()).sum(),
+                vertices: tile.layers.iter().map(|(_, l)| l.vertices()).sum(),
+                bytes: tile.bytes,
+                failed: m.failed,
+            };
+            (Arc::new(GpuMesh::upload(&pool, &m)), Arc::new(labels), info)
+        },
+        move || ctx.request_repaint(),
+    )
+}

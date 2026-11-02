@@ -8,7 +8,9 @@ use omp_core::find::{Hit, HitKind};
 use omp_core::geo;
 
 use super::*;
+use crate::app::keep_still;
 use crate::config::SidePanel;
+use eframe::egui::Pos2;
 
 struct Window {
     ctx: egui::Context,
