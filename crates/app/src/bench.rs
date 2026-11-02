@@ -47,6 +47,7 @@ use serde::{Deserialize, Serialize};
 use crate::camera::{Camera, Vec2};
 use crate::here::HereTaken;
 use crate::loader::Done;
+use crate::memory::mib;
 use crate::search::{BenchKey, Taken};
 use crate::side::Page;
 
@@ -1501,7 +1502,6 @@ pub struct PrintReport {
 impl Report {
     /// A few lines for the terminal.
     pub fn summary(&self) -> String {
-        let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
         let mut s = format!(
             "{}: {} frames, interval p50 {:.2} / p95 {:.2} / max {:.1} ms, cpu p95 {:.2} ms, labels p95 {:.2} ms\n\
              start-up {} ms; tiles {} loaded + {} absent, {} errors; latency p50 {:.2} / p95 {:.2} ms, read p95 {:.2} ms, decode p95 {:.2} ms, prepare p95 {:.2} ms\n\

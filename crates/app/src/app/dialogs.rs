@@ -7,6 +7,7 @@ use eframe::egui::{self, Align2, Color32, Vec2};
 
 use super::App;
 use crate::config;
+use crate::memory::mib;
 use crate::packs;
 use crate::verify::{Outcome, Verify};
 
@@ -309,8 +310,4 @@ fn seconds(s: f64) -> String {
     } else {
         format!("{s:.0} s")
     }
-}
-
-pub(super) fn mib(b: u64) -> f64 {
-    b as f64 / (1024.0 * 1024.0)
 }

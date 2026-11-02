@@ -14,6 +14,7 @@ use super::session::{RESULTS, Session, Taken, remember};
 use super::worker::{Answer, Stats, Status, Worker};
 use crate::camera::Camera;
 use crate::here::{HereAnswer, HereQuery};
+use crate::memory::mib;
 use crate::routing::{self, MenuState, StopAction};
 use crate::scale::Units;
 use crate::theme::{Glyph, HEADER_H, INK, WEAK, glyph_button};
@@ -172,15 +173,14 @@ impl SearchUi {
 
     /// The overlay's lines: how long opening took, what the readers hold, the last query.
     pub fn overlay_lines(&self) -> Vec<String> {
-        let mib = |b: f64| b / (1024.0 * 1024.0);
         let s = self.stats();
         let mut lines = vec![match self.status() {
             Status::Opening => "search: opening…".to_string(),
             Status::Ready => format!(
                 "search: opened in {:.0} ms, readers hold {:.1} MiB, {:.1} MiB read, {} stale answers dropped",
                 s.open.map_or(0.0, |d| d.as_secs_f64() * 1e3),
-                mib(s.heap_bytes as f64),
-                mib(s.bytes_read as f64),
+                mib(s.heap_bytes as u64),
+                mib(s.bytes_read),
                 self.session.dropped
             ),
             Status::Missing(_) => "search: none in this pack".into(),
@@ -195,8 +195,8 @@ impl SearchUi {
                 t.hits,
                 t.find.as_secs_f64() * 1e3,
                 t.latency.as_secs_f64() * 1e3,
-                mib(s.session_bytes as f64),
-                mib(s.session_peak as f64)
+                mib(s.session_bytes as u64),
+                mib(s.session_peak as u64)
             ));
         }
         lines

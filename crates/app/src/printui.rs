@@ -125,9 +125,10 @@ pub struct PrintUi {
     asking: Option<(String, Receiver<Capabilities>)>,
     /// Why printing is not possible on this system.
     unavailable: Option<String>,
-    /// Save as PDF's file browser, and the folder it last saved in.
+    /// Save as PDF's file browser, and the folder it last saved in (at first, the
+    /// executable's).
     browser: Option<Browser>,
-    pdf_dir: Option<PathBuf>,
+    pdf_dir: PathBuf,
     /// *Print* was clicked and waits for the next tick, which has the page's inputs.
     want_print: bool,
     /// The worker making a printout, and what it was asked.
@@ -144,7 +145,7 @@ enum Output {
 }
 
 impl PrintUi {
-    pub fn new() -> Self {
+    pub fn new(exe_dir: &Path) -> Self {
         Self {
             kind: Kind::Map,
             label: String::new(),
@@ -164,7 +165,7 @@ impl PrintUi {
             asking: None,
             unavailable: None,
             browser: None,
-            pdf_dir: None,
+            pdf_dir: exe_dir.to_path_buf(),
             want_print: false,
             output: None,
             status: None,
@@ -420,7 +421,7 @@ impl PrintUi {
                 .add_enabled(!working, egui::Button::new("Save as PDF…"))
                 .clicked()
             {
-                let dir = self.pdf_dir.clone().unwrap_or_else(exe_dir);
+                let dir = self.pdf_dir.clone();
                 let name = match (self.label.trim(), self.kind) {
                     ("", Kind::Map) => "Map".to_owned(),
                     ("", Kind::Directions) => "Directions".to_owned(),
@@ -948,7 +949,9 @@ impl PrintUi {
             match b.ui(ctx) {
                 Some(Outcome::Chosen(path)) => {
                     self.browser = None;
-                    self.pdf_dir = path.parent().map(Path::to_path_buf);
+                    if let Some(dir) = path.parent() {
+                        self.pdf_dir = dir.to_path_buf();
+                    }
                     let dpi = printer::dpi_for(None);
                     self.start_output(ctx, inputs, Output::Pdf(path), dpi);
                 }
@@ -1116,13 +1119,6 @@ impl Sink {
             Self::Spool(spool) => Ok((Vec::new(), spool.finish()?)),
         }
     }
-}
-
-fn exe_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 struct Job {
@@ -1312,7 +1308,7 @@ mod tests {
             cam.zoom = 10.0;
             cam.center = [0.3, 0.4];
             let settings = Settings::default();
-            let mut print = PrintUi::new();
+            let mut print = PrintUi::new(Path::new("."));
             print.open(
                 &egui::Context::default(),
                 Kind::Map,

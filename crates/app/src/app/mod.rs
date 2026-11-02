@@ -29,6 +29,7 @@ use crate::here::HereUi;
 use crate::labels::{self, Placer, TileLabels};
 use crate::layers::{Hidden, Layers};
 use crate::loader::{Done, Loader};
+use crate::memory::mib;
 use crate::mesh::{Prepared, TileInfo};
 use crate::packs::Opened;
 use crate::pins::{self, PinsUi};
@@ -45,7 +46,6 @@ use crate::trips::TripsUi;
 use crate::verify::Verify;
 
 use bench::set_stops;
-use dialogs::mib;
 use open::{compile_style, start_loader};
 
 /// Tile cache budget: the tiles' vertex data, which lives on the GPU (phase1-plan.md 1.4).
@@ -218,7 +218,7 @@ impl App {
         let mut app = Self {
             trips: TripsUi::new(&s.exe_dir),
             pins,
-            print: PrintUi::new(),
+            print: PrintUi::new(&s.exe_dir),
             exe_dir: s.exe_dir,
             cfg_loc: s.config,
             saved: cfg.clone(),

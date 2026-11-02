@@ -169,19 +169,10 @@ pub fn source_rows(sources: &[meta::Source]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// `YYYY-MM-DD` of Unix seconds, UTC.
+/// `YYYY-MM-DD` of Unix seconds, UTC; "unknown" past the years 9999 either way.
 pub fn date(unix: i64) -> String {
-    // Howard Hinnant's civil_from_days.
-    let z = unix.div_euclid(86_400) + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}")
+    jiff::Timestamp::from_second(unix)
+        .map_or_else(|_| "unknown".into(), |t| t.strftime("%Y-%m-%d").to_string())
 }
 
 #[cfg(test)]
@@ -283,5 +274,6 @@ mod tests {
         // inspect: "built 2026-10-25T04:06:55Z".
         assert_eq!(date(1_792_901_215), "2026-10-25");
         assert_eq!(date(951_782_400), "2000-02-29");
+        assert_eq!(date(i64::MAX), "unknown");
     }
 }

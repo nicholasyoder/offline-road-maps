@@ -171,7 +171,7 @@ impl Snapshot {
             "{}: z{:.2} (tiles z{z}), {tiles} tiles, {:.1} MiB mesh, loaded in {:.0} ms, {n_labels} labels ({n_shields} shields) in {label_ms:.1} ms, atlas {:.0}% full, {:.0} ms in all ({} {:?}, MSAA {samples})",
             self.out.display(),
             cam.zoom,
-            mesh_bytes as f64 / (1024.0 * 1024.0),
+            crate::memory::mib(mesh_bytes as u64),
             loaded_in.as_secs_f64() * 1e3,
             atlas_fill * 100.0,
             t0.elapsed().as_secs_f64() * 1e3,
@@ -475,7 +475,7 @@ impl Snapshot {
         msg += &format!(
             "; {} written, {:.1} MiB, {:.1} s in all",
             job.out.display(),
-            bytes as f64 / (1024.0 * 1024.0),
+            crate::memory::mib(bytes),
             t0.elapsed().as_secs_f64()
         );
         Ok(msg)

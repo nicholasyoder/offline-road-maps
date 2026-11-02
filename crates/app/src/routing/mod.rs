@@ -49,6 +49,7 @@ use omp_core::route::{Ends, FAR_SNAP_M, FERRY, Stop, TOLL};
 use omp_core::schedule::Stay;
 
 use crate::camera::{self, Camera, TILE_PX};
+use crate::memory::mib;
 use crate::pool::Pool;
 use crate::scale::Units;
 use crate::search::{self, distance_text};
@@ -1432,7 +1433,6 @@ impl RouteUi {
 
     /// The overlay's lines: the readers, and the last route.
     pub fn overlay_lines(&self) -> Vec<String> {
-        let mib = |b: f64| b / (1024.0 * 1024.0);
         let mut lines = vec![match self.status() {
             Status::Opening => "routing: opening…".into(),
             Status::Ready {
@@ -1445,7 +1445,7 @@ impl RouteUi {
                 let top = match self.worker.top() {
                     Some((bytes, t)) => format!(
                         ", top {:.1} MiB read in {:.0} ms",
-                        mib(bytes as f64),
+                        mib(bytes),
                         t.as_secs_f64() * 1e3
                     ),
                     None => ", reading the top…".into(),
@@ -1454,7 +1454,7 @@ impl RouteUi {
                     Some(z) => format!(
                         "; {} time zones, {:.1} MiB",
                         z.zones().len(),
-                        mib(z.heap_bytes() as f64)
+                        mib(z.heap_bytes() as u64)
                     ),
                     None => "; no time zones".into(),
                 };
@@ -1463,8 +1463,8 @@ impl RouteUi {
                     open.as_secs_f64() * 1e3,
                     h.nodes,
                     h.segments,
-                    mib(reader.heap_bytes() as f64),
-                    mib((r.nodes + r.segments + r.other) as f64),
+                    mib(reader.heap_bytes() as u64),
+                    mib(r.nodes + r.segments + r.other),
                     self.dropped
                 )
             }

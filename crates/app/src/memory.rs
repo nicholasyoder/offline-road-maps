@@ -1,5 +1,10 @@
 //! The process's resident memory and CPU time, as the OS reports them.
 
+/// `bytes` in MiB, to show.
+pub fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Usage {
     /// Resident set (Linux) or working set (Windows), bytes.

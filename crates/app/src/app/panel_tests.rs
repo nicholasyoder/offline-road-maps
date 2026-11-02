@@ -47,7 +47,7 @@ impl Window {
         Self {
             pins: PinsUi::load(dir.path()),
             trips: TripsUi::new(dir.path()),
-            print: crate::printui::PrintUi::new(),
+            print: crate::printui::PrintUi::new(dir.path()),
             trips_out: Vec::new(),
             dir,
             ctx,
