@@ -39,6 +39,8 @@ cargo run --release -p omp-app -- --bench crates/app/bench/ohio.toml --pack $OMP
 
 `cargo run -p omp-app -- --help` lists every option.
 
+On Windows the release build opens no console window. Started from a terminal it writes to that terminal, but the terminal does not wait for it: run the bench and `--render` with `start /wait omp-app.exe …` (cmd) or `Start-Process -Wait -NoNewWindow .\omp-app.exe -ArgumentList '…'` (PowerShell). Debug builds keep their console.
+
 ## Building a pack
 
 ```sh

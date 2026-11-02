@@ -6,6 +6,12 @@
 //! omp-app --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
 //!         [--step <n>] [--alternatives] [--size <w>x<h>] [--scale <s>] [--msaa <n>] [--style <file>] <out.png>
 //! ```
+//!
+//! Windows release builds open no console window beside the app: started from a terminal,
+//! they write to the terminal's ([`attach_console`]).
+
+// 5.1 D6. Debug builds keep their console, for the warnings.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
 mod bench;
@@ -146,6 +152,7 @@ fn parse_args() -> Result<Args, String> {
 
 fn main() -> ExitCode {
     let started = Instant::now();
+    attach_console();
     logger::init();
     let args = match parse_args() {
         Ok(a) => a,
@@ -316,6 +323,21 @@ fn main() -> ExitCode {
         }
     }
 }
+
+/// Windows release builds have no console of their own: started from a terminal, they write
+/// to its console, so the bench's and `--render`'s output, the usage and the warnings show
+/// there. Started from Explorer there is none, and this does nothing. The terminal does not
+/// wait for the app to exit: `start /wait` (cmd) or `Start-Process -Wait` (PowerShell) do.
+#[cfg(all(windows, not(debug_assertions)))]
+#[allow(unsafe_code)]
+fn attach_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: takes no pointers; a failure (no parent console) changes nothing.
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
+#[cfg(not(all(windows, not(debug_assertions))))]
+fn attach_console() {}
 
 fn render(args: &Args, style: style::StyleFile) -> ExitCode {
     let Some(pack) = &args.pack else {
