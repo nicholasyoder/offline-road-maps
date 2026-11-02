@@ -177,16 +177,7 @@ impl RouteUi {
 /// How near the line through `points` passes `v`, in metres.
 fn passes(points: &[P], v: P) -> f64 {
     let q = geo::to_unit(v);
-    let near = |a: P, b: P| {
-        let (a, b) = (geo::to_unit(a), geo::to_unit(b));
-        let d = [b[0] - a[0], b[1] - a[1]];
-        let len2 = d[0] * d[0] + d[1] * d[1];
-        let t = match len2 > 0.0 {
-            true => (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0),
-            false => 0.0,
-        };
-        [a[0] + d[0] * t, a[1] + d[1] * t]
-    };
+    let near = |a: P, b: P| geo::seg_nearest(q, geo::to_unit(a), geo::to_unit(b)).1;
     let best = match points {
         [] => return f64::INFINITY,
         [a] => geo::to_unit(*a),

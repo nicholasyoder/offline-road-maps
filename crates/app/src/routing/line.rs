@@ -129,7 +129,7 @@ impl Line {
         let mut best = f64::INFINITY;
         for pts in &self.parts {
             for w in pts.windows(2) {
-                best = best.min(segment_distance(at, w[0], w[1]));
+                best = best.min(geo::seg_dist(at, w[0], w[1]));
             }
         }
         let d = best * s;
@@ -194,18 +194,6 @@ impl Line {
     }
 }
 
-/// The distance from `p` to the segment from `a` to `b`.
-fn segment_distance(p: camera::Vec2, a: camera::Vec2, b: camera::Vec2) -> f64 {
-    let d = [b[0] - a[0], b[1] - a[1]];
-    let v = [p[0] - a[0], p[1] - a[1]];
-    let len2 = d[0] * d[0] + d[1] * d[1];
-    let t = match len2 > 0.0 {
-        true => ((v[0] * d[0] + v[1] * d[1]) / len2).clamp(0.0, 1.0),
-        false => 0.0,
-    };
-    (v[0] - t * d[0]).hypot(v[1] - t * d[1])
-}
-
 /// Douglas–Peucker over the whole line, keeping for each point the distance at which it
 /// splits its span, but never more than its parent's: then the points above a tolerance
 /// are exactly those Douglas–Peucker keeps at it.
@@ -219,19 +207,9 @@ fn importance(pts: &[camera::Vec2]) -> Vec<f64> {
         if b <= a + 1 {
             continue;
         }
-        let (pa, pb) = (pts[a], pts[b]);
-        let d = [pb[0] - pa[0], pb[1] - pa[1]];
-        let len2 = d[0] * d[0] + d[1] * d[1];
         let (mut far, mut at) = (-1.0, a + 1);
-        for (k, p) in pts.iter().enumerate().take(b).skip(a + 1) {
-            let v = [p[0] - pa[0], p[1] - pa[1]];
-            let dist = match len2 > 0.0 {
-                true => {
-                    let t = ((v[0] * d[0] + v[1] * d[1]) / len2).clamp(0.0, 1.0);
-                    (v[0] - t * d[0]).hypot(v[1] - t * d[1])
-                }
-                false => v[0].hypot(v[1]),
-            };
+        for (k, &p) in pts.iter().enumerate().take(b).skip(a + 1) {
+            let dist = geo::seg_dist(p, pts[a], pts[b]);
             if dist > far {
                 (far, at) = (dist, k);
             }
