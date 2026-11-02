@@ -62,7 +62,7 @@ data/                   # .gitignored; default work dir if $OMP_WORK is unset
 ```
 
 - Edition 2024. Workspace-level `[lints]` with `clippy::all` as warnings and `unsafe_code = "deny"` except in `core` (mmap needs it).
-- Release profile: `lto = "fat"`, `codegen-units = 1`, `strip = true`, `panic = "abort"` for the app. A separate `release-builder` profile without `panic = "abort"`, so builder crashes keep backtraces.
+- Release profile: `lto = "fat"`, `codegen-units = 1`, `strip = true`. Phase 5 decision 12 (2026-10-30) replaced `panic = "abort"` with `panic = "unwind"` for the app, so workers can catch a panic; `release-builder` is the builder's profile and also unwinds, so crashes keep backtraces.
 - Builder CLI uses `clap` (derive). Spikes are builder subcommands, not separate crates, so code that survives stays in place.
 - License: `MIT OR Apache-2.0` (decided). Add `LICENSE-MIT` and `LICENSE-APACHE`, set `license = "MIT OR Apache-2.0"` in `[workspace.package]`, and update roadmap §8.
 
