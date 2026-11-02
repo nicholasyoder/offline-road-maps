@@ -1310,13 +1310,12 @@ fn note_row(
     p.rect_filled(rect.shrink2(Vec2::new(0.0, 1.0)), 3.0, NOTE_FILL);
     let c = rect.min + Vec2::new(2.0 + ICON / 2.0, 4.0 + ICON / 2.0);
     match n.kind {
-        NoteKind::Night(_) => {
+        NoteKind::Night { day, .. } => {
             p.circle_filled(c, 8.5, super::NIGHT);
-            let day = n.text.split(' ').nth(1).unwrap_or_default().to_string();
             p.text(
                 c,
                 Align2::CENTER_CENTER,
-                day,
+                day.to_string(),
                 FontId::proportional(10.5),
                 Color32::WHITE,
             );
@@ -1350,7 +1349,7 @@ fn note_row(
     if let Some(t) = time {
         time_cell(ui, rect, ("note-time", k), &t);
     }
-    let NoteKind::Night(event) = n.kind else {
+    let NoteKind::Night { event, .. } = n.kind else {
         return None;
     };
     if !n.movable {

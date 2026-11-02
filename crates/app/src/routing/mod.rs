@@ -794,13 +794,6 @@ impl RouteUi {
         }
     }
 
-    /// The day that starts after night `k` of the schedule.
-    fn night_day(&self, k: usize) -> u32 {
-        self.timed()
-            .and_then(|t| t.sched.events.get(k))
-            .map_or(0, |e| e.day)
-    }
-
     /// Turns night `k` of the schedule into a stop that stays the night, named after the
     /// town it is near.
     pub fn make_overnight(&mut self, k: usize) {
@@ -1406,7 +1399,7 @@ impl RouteUi {
                 continue;
             }
             let day = match n.kind {
-                times::NoteKind::Night(k) => self.night_day(k),
+                times::NoteKind::Night { day, .. } => day,
                 _ => continue,
             };
             painter.circle(c, 7.5, NIGHT, egui::Stroke::new(1.5, Color32::WHITE));

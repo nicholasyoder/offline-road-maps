@@ -527,6 +527,11 @@ fn schedule() {
         .position(|e| e.stop.is_none())
         .unwrap();
     assert_eq!(t.sched.events[night].leg, 0);
+    // Its row and the map's disc take the day from the event, not from the row's text.
+    let day = t.sched.events[night].day;
+    let note = u.r.notes.iter().find(|n| n.movable).expect("the night's row");
+    assert_eq!(note.kind, NoteKind::Night { event: night, day });
+    assert!(note.text.starts_with(&format!("Day {day} ")));
     u.click(Target::MakeOvernight(night));
     let stops = u.r.stops();
     assert_eq!(stops.len(), 4);

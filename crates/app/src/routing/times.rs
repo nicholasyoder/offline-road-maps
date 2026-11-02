@@ -237,8 +237,12 @@ impl Timed {
 /// What a note in the directions is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoteKind {
-    /// A day's end: the event's index; along a leg, it can be made a stop.
-    Night(usize),
+    /// A day's end: the event's index, and the day that starts after it (2 for the first
+    /// night). Along a leg, it can be made a stop.
+    Night {
+        event: usize,
+        day: u32,
+    },
     Break,
     Zone,
 }
@@ -307,7 +311,10 @@ pub fn notes(steps: &[Step], t: &Timed, towns: &Towns) -> Vec<Note> {
                 };
                 let ends = format!("Day {} ends {at} at {}", e.day - 1, clock(&e.from, false));
                 (
-                    NoteKind::Night(k),
+                    NoteKind::Night {
+                        event: k,
+                        day: e.day,
+                    },
                     format!("Day {} · {}", e.day, e.until.strftime("%A %b %-d")),
                     Some(format!("{ends}; on at {}", clock(&e.until, false))),
                 )
