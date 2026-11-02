@@ -7,19 +7,18 @@ use std::sync::Arc;
 use eframe::egui::{self, Rect};
 
 use super::bench::set_stops;
-use super::{App, CACHE_BUDGET, FrameView, MapState, Prepared, TileInfo, TileStats};
+use super::{App, CACHE_BUDGET, FrameView, MapState, TileStats};
 use crate::cache::Cache;
 use crate::camera::{Camera, Motion};
 use crate::config;
 use crate::here::HereUi;
-use crate::labels::{self, Placer};
+use crate::labels::Placer;
 use crate::layers::Hidden;
 use crate::loader::{self, Loader};
-use crate::mesh;
+use crate::mesh::{self, Prepared};
 use crate::packs::{self, Opened};
 use crate::pins;
 use crate::pool::Pool;
-use crate::render::GpuMesh;
 use crate::routing::RouteUi;
 use crate::search::SearchUi;
 use crate::side::Page;
@@ -132,17 +131,7 @@ pub(super) fn start_loader(
     Loader::new(
         opened.reader.clone(),
         loader::default_threads(),
-        move |id, tile| {
-            let m = mesh::build(&tile, &style);
-            let labels = labels::extract(id, &tile, &style);
-            let info = TileInfo {
-                features: tile.layers.iter().map(|(_, l)| l.features.len()).sum(),
-                vertices: tile.layers.iter().map(|(_, l)| l.vertices()).sum(),
-                bytes: tile.bytes,
-                failed: m.failed,
-            };
-            (Arc::new(GpuMesh::upload(&pool, &m)), Arc::new(labels), info)
-        },
+        move |id, tile| mesh::prepare_tile(id, &tile, &style, &pool),
         move || ctx.request_repaint(),
     )
 }

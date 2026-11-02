@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::camera::Camera;
-use crate::labels::{self, Placer, TileLabels};
+use crate::labels::{self, Placer};
 use crate::layers::{Hidden, Layers};
 use crate::pages::{self, Egui};
 use crate::pdf::Pdf;
@@ -28,7 +28,7 @@ use crate::tiles::{self, Known, TileId};
 use crate::{loader, mesh, packs};
 
 /// A loaded tile: its mesh and labels.
-type Loaded = Option<(Arc<GpuMesh>, Arc<TileLabels>)>;
+type Loaded = Option<mesh::Prepared>;
 
 pub struct Snapshot {
     pub pack: PathBuf,
@@ -660,10 +660,9 @@ pub fn draw_view(
                         while let Some(&id) = wanted.get(next.fetch_add(1, Ordering::Relaxed)) {
                             let r = opened.reader.tile(id.z, id.x, id.y).map(|t| {
                                 t.map(|t| {
-                                    let m = mesh::build(&t, style);
-                                    failed.fetch_add(m.failed, Ordering::Relaxed);
-                                    let l = labels::extract(id, &t, style);
-                                    (Arc::new(GpuMesh::upload(pool, &m)), Arc::new(l))
+                                    let p = mesh::prepare_tile(id, &t, style, pool);
+                                    failed.fetch_add(p.2.failed, Ordering::Relaxed);
+                                    p
                                 })
                             });
                             out.push((id, r));
@@ -749,7 +748,7 @@ pub fn draw_view(
         .labels
         .iter()
         .filter_map(|&(tile, square, cap)| {
-            let (_, l) = known.get(&tile)?.as_ref()?;
+            let (_, l, _) = known.get(&tile)?.as_ref()?;
             Some(labels::Source {
                 labels: l,
                 tile,

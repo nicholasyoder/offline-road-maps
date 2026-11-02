@@ -8,6 +8,7 @@
 //! contiguous range per tile.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use lyon_tessellation::geom::point;
@@ -16,7 +17,11 @@ use lyon_tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex
 use omp_core::tile::GeomType;
 use omp_core::tiles::Tile;
 
+use crate::labels::{self, TileLabels};
+use crate::pool::Pool;
+use crate::render::GpuMesh;
 use crate::style::{FILL_PASSES, LINE_PASSES, Pass, Style};
+use crate::tiles::TileId;
 
 /// A polygon vertex: tile-local position and style ID.
 #[repr(C)]
@@ -156,6 +161,34 @@ pub fn build(tile: &Tile, style: &Style) -> Mesh {
         m.lines[pass.slot()] = start..m.segments.len() as u32;
     }
     m
+}
+
+/// About a prepared tile, for the debug overlay.
+#[derive(Clone, Copy)]
+pub struct TileInfo {
+    pub features: usize,
+    pub vertices: usize,
+    /// Compressed bytes read.
+    pub bytes: u64,
+    /// Polygons that could not be tessellated.
+    pub failed: usize,
+}
+
+/// A tile ready to draw: its mesh on the GPU, its labels, and about it.
+pub type Prepared = (Arc<GpuMesh>, Arc<TileLabels>, TileInfo);
+
+/// Tessellates `tile` with `style`, extracts its labels and uploads the mesh to `pool`: what
+/// the window's loader threads and an offscreen view both do with a tile once it is read.
+pub fn prepare_tile(id: TileId, tile: &Tile, style: &Style, pool: &Arc<Pool>) -> Prepared {
+    let m = build(tile, style);
+    let labels = labels::extract(id, tile, style);
+    let info = TileInfo {
+        features: tile.layers.iter().map(|(_, l)| l.features.len()).sum(),
+        vertices: tile.layers.iter().map(|(_, l)| l.vertices()).sum(),
+        bytes: tile.bytes,
+        failed: m.failed,
+    };
+    (Arc::new(GpuMesh::upload(pool, &m)), Arc::new(labels), info)
 }
 
 #[cfg(test)]

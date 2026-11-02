@@ -29,6 +29,7 @@ use crate::here::HereUi;
 use crate::labels::{self, Placer, TileLabels};
 use crate::layers::{Hidden, Layers};
 use crate::loader::{Done, Loader};
+use crate::mesh::{Prepared, TileInfo};
 use crate::packs::Opened;
 use crate::pins::{self, PinsUi};
 use crate::pool::Pool;
@@ -83,17 +84,6 @@ enum TileData {
     Error,
 }
 
-/// About a loaded tile, for the overlay.
-#[derive(Clone, Copy)]
-struct TileInfo {
-    features: usize,
-    vertices: usize,
-    /// Compressed bytes read.
-    bytes: u64,
-    /// Polygons that could not be tessellated.
-    failed: usize,
-}
-
 #[derive(Default)]
 struct TileStats {
     loaded: usize,
@@ -105,9 +95,6 @@ struct TileStats {
     /// Recent (latency, read, decode, prepare) in ms.
     recent: VecDeque<[f32; 4]>,
 }
-
-/// A tile as the loader threads prepare it.
-type Prepared = (Arc<GpuMesh>, Arc<TileLabels>, TileInfo);
 
 struct MapState {
     opened: Opened,
