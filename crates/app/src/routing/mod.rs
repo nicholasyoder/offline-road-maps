@@ -45,7 +45,7 @@ use eframe::egui::{self, Color32, Pos2};
 use omp_core::find::Hit;
 use omp_core::geo::{self, P};
 use omp_core::here::HereAddress;
-use omp_core::route::{Ends, FAR_SNAP_M, FERRY, Stop, TOLL};
+use omp_core::route::{Ends, FAR_SNAP_M, FERRY, Stop, TOLL, Trip};
 use omp_core::schedule::Stay;
 
 use crate::camera::{self, Camera, TILE_PX};
@@ -872,73 +872,12 @@ impl RouteUi {
     }
 
     /// What the panel says about the route: stops far from a road or with none, legs with
-    /// no route, avoid options broken, and stretches on restricted roads.
+    /// no route, saved routes lost, avoid options broken, and stretches on restricted roads.
     pub fn notices(&self, units: Units) -> Vec<String> {
-        let Some(r) = &self.route else {
-            return Vec::new();
-        };
-        let trip = &r.trip;
-        let n = trip.snaps.len();
-        let who = |i: usize| match i {
-            0 => "the start".to_string(),
-            i if i + 1 == n => "the destination".into(),
-            i => format!("stop {}", i + 1),
-        };
-        let mut out = Vec::new();
-        for (i, s) in trip.snaps.iter().enumerate() {
-            match s {
-                None => out.push(capital(&format!(
-                    "{} has no road within {}.",
-                    who(i),
-                    distance_text(SNAP_MAX_KM * 1000.0, units)
-                ))),
-                Some(s) if s.dist_m > FAR_SNAP_M => out.push(capital(&format!(
-                    "{} is {} from the nearest road.",
-                    who(i),
-                    distance_text(s.dist_m, units)
-                ))),
-                _ => {}
-            }
+        match &self.route {
+            Some(r) => notices(r, &self.lost, units),
+            None => Vec::new(),
         }
-        for (i, l) in trip.legs.iter().enumerate() {
-            let snapped = trip.snaps[i].is_some() && trip.snaps[i + 1].is_some();
-            if l.is_none() && snapped {
-                out.push(format!("No road goes from {} to {}.", who(i), who(i + 1)));
-            }
-        }
-        for &leg in &self.lost {
-            out.push(format!(
-                "The route saved from {} to {} was not found on this map: the quickest is shown.",
-                who(leg),
-                who(leg + 1)
-            ));
-        }
-        let broken = trip.broken();
-        if broken & TOLL != 0 {
-            out.push("This route uses a toll road: no route avoids them.".into());
-        }
-        if broken & FERRY != 0 {
-            out.push("This route uses a ferry: no route avoids them.".into());
-        }
-        let last = trip.legs.len().saturating_sub(1);
-        for (li, (leg, runs)) in trip.legs.iter().zip(&r.restricted).enumerate() {
-            let Some(leg) = leg else { continue };
-            for run in runs {
-                let m: f64 = leg.pieces[run.clone()].iter().map(|p| p.metres).sum();
-                let d = distance_text(m, units);
-                let first = leg.pieces[..run.start].iter().all(|p| p.metres <= 0.0);
-                let end = leg.pieces[run.end..].iter().all(|p| p.metres <= 0.0);
-                let what = "on a road with restricted access (private or destination only).";
-                out.push(match (first, end) {
-                    (true, _) if li == 0 => format!("The first {d} is {what}"),
-                    (_, true) if li == last => format!("The last {d} is {what}"),
-                    (true, _) => format!("{d} after {} is {what}", who(li)),
-                    (_, true) => format!("{d} before {} is {what}", who(li + 1)),
-                    _ => format!("{d} of the route is {what}"),
-                });
-            }
-        }
-        out
     }
 
     /// Asks for the route through the stops, or drops it when there is no start or no
@@ -1523,6 +1462,97 @@ fn found_in(alts: &[LegAlts]) -> Vec<Option<&Choices>> {
         .map(|a| match a {
             LegAlts::Found(c) => Some(c),
             _ => None,
+        })
+        .collect()
+}
+
+/// What is said about route `r`: stops far from a road or with none, legs with no route,
+/// the saved routes of legs in `lost` not found, avoid options broken, and stretches on
+/// restricted roads. The route page shows them, and the printed directions under the totals.
+pub fn notices(r: &Routed, lost: &[usize], units: Units) -> Vec<String> {
+    let trip = &r.trip;
+    let who = |i| stop_name(i, trip.snaps.len());
+    let mut out = Vec::new();
+    for (i, s) in trip.snaps.iter().enumerate() {
+        match s {
+            None => out.push(capital(&format!(
+                "{} has no road within {}.",
+                who(i),
+                distance_text(SNAP_MAX_KM * 1000.0, units)
+            ))),
+            Some(s) if s.dist_m > FAR_SNAP_M => out.push(capital(&format!(
+                "{} is {} from the nearest road.",
+                who(i),
+                distance_text(s.dist_m, units)
+            ))),
+            _ => {}
+        }
+    }
+    for (i, l) in trip.legs.iter().enumerate() {
+        let snapped = trip.snaps[i].is_some() && trip.snaps[i + 1].is_some();
+        if l.is_none() && snapped {
+            out.push(format!("No road goes from {} to {}.", who(i), who(i + 1)));
+        }
+    }
+    for &leg in lost {
+        out.push(format!(
+            "The route saved from {} to {} was not found on this map: the quickest is shown.",
+            who(leg),
+            who(leg + 1)
+        ));
+    }
+    let broken = trip.broken();
+    if broken & TOLL != 0 {
+        out.push("This route uses a toll road: no route avoids them.".into());
+    }
+    if broken & FERRY != 0 {
+        out.push("This route uses a ferry: no route avoids them.".into());
+    }
+    let last = trip.legs.len().saturating_sub(1);
+    for (li, (leg, runs)) in trip.legs.iter().zip(&r.restricted).enumerate() {
+        let Some(leg) = leg else { continue };
+        for run in runs {
+            let m: f64 = leg.pieces[run.clone()].iter().map(|p| p.metres).sum();
+            let d = distance_text(m, units);
+            let first = leg.pieces[..run.start].iter().all(|p| p.metres <= 0.0);
+            let end = leg.pieces[run.end..].iter().all(|p| p.metres <= 0.0);
+            let what = "on a road with restricted access (private or destination only).";
+            out.push(match (first, end) {
+                (true, _) if li == 0 => format!("The first {d} is {what}"),
+                (_, true) if li == last => format!("The last {d} is {what}"),
+                (true, _) => format!("{d} after {} is {what}", who(li)),
+                (_, true) => format!("{d} before {} is {what}", who(li + 1)),
+                _ => format!("{d} of the route is {what}"),
+            });
+        }
+    }
+    out
+}
+
+/// Stop `i` of `n` as the notices name it: "the start", "stop 2", "the destination".
+fn stop_name(i: usize, n: usize) -> String {
+    match i {
+        0 => "the start".to_string(),
+        i if i + 1 == n => "the destination".into(),
+        i => format!("stop {}", i + 1),
+    }
+}
+
+/// The legs of `trip` with no route, each with the text of its row in the directions:
+/// "No route from stop 2 to stop 3".
+pub fn gaps(trip: &Trip) -> Vec<(usize, String)> {
+    let n = trip.snaps.len();
+    trip.legs
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.is_none())
+        .map(|(i, _)| {
+            let text = format!(
+                "No route from {} to {}",
+                stop_name(i, n),
+                stop_name(i + 1, n)
+            );
+            (i, capital(&text))
         })
         .collect()
 }

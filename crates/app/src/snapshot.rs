@@ -130,7 +130,7 @@ impl Snapshot {
             lines: route,
             msg: mut route_msg,
             ..
-        } = self.route(&first)?;
+        } = self.route(&first, Units::Miles)?;
         let routed = route
             .iter()
             .any(|(look, l)| *look == Look::Route && !l.is_empty());
@@ -197,14 +197,16 @@ struct Routing {
     stops: Vec<omp_core::geo::P>,
     steps: Vec<omp_core::route::Step>,
     roads: Vec<String>,
+    notices: Vec<String>,
+    gaps: Vec<(usize, String)>,
     metres: f64,
     time_s: f64,
 }
 
 impl Snapshot {
     /// The lines of the route through `--route`'s stops, in the order drawn, and a line
-    /// about it.
-    fn route(&self, first: &Path) -> Result<Routing, String> {
+    /// about it; its notices are in `units`.
+    fn route(&self, first: &Path, units: Units) -> Result<Routing, String> {
         if self.route.is_empty() {
             return Ok(Routing::default());
         }
@@ -298,6 +300,8 @@ impl Snapshot {
         if let Some(s) = self.step.and_then(|i| routed.steps.get(i)) {
             msg += &format!("\n  step {}: {}", self.step.unwrap() + 1, s.text());
         }
+        let notices = routing::notices(&routed, &[], units);
+        let gaps = routing::gaps(&routed.trip);
         let mut lines = routing::overlay_lines(&routed, &points, self.step);
         lines.push((Look::Route, routed.line));
         lines.extend(grey.map(|g| (Look::Alternative, g)));
@@ -308,6 +312,8 @@ impl Snapshot {
             stops: points,
             steps: routed.steps,
             roads: routed.roads,
+            notices,
+            gaps,
             metres: routed.trip.metres(),
             time_s: routed.trip.time_s(),
         })
@@ -345,7 +351,7 @@ impl Snapshot {
         let units = job
             .units
             .unwrap_or_else(|| packs::default_units(opened.meta.as_ref().ok()));
-        let routing = self.route(&first)?;
+        let routing = self.route(&first, units)?;
         let gpu = Gpu::headless()?;
         let mut egui_pass = Egui::new(&gpu);
         let mut sink = PageSink::new(&job.out, &job.label)?;
@@ -384,7 +390,9 @@ impl Snapshot {
                     crate::search::distance_text(routing.metres, units),
                     routing::duration_text(routing.time_s)
                 ),
+                notices: routing.notices.clone(),
                 steps: routing.steps.clone(),
+                gaps: routing.gaps.clone(),
                 notes: Vec::new(),
                 step_times: vec![None; routing.steps.len()],
                 note_times: Vec::new(),

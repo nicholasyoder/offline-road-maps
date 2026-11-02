@@ -855,7 +855,8 @@ impl RouteUi {
             .is_none_or(|c| c.width != width || c.units != units)
         {
             let timed = self.timed().is_some();
-            let rows = Rows::new(ui, &r.steps, &self.notes, timed, width, units);
+            let gaps = super::gaps(&r.trip);
+            let rows = Rows::new(ui, &r.steps, &self.notes, &gaps, timed, width, units);
             self.rows = Some(rows);
         }
         let timed = self.timed();
@@ -902,6 +903,7 @@ impl RouteUi {
                                 }
                             }
                         }
+                        Row::Gap(k) => gap_row(ui, rect, &rows.gaps[k]),
                     }
                 }
             });
@@ -1045,7 +1047,9 @@ impl RouteUi {
                 distance_text(r.trip.metres(), units),
                 duration_text(r.trip.time_s())
             ),
+            notices: self.notices(units),
             steps: r.steps.clone(),
+            gaps: super::gaps(&r.trip),
             notes: self.notes.clone(),
             step_times,
             note_times,
@@ -1062,7 +1066,11 @@ pub struct DirectionsDoc {
     /// Each stop's pin colour and name.
     pub stops: Vec<(Color32, String)>,
     pub totals: String,
+    /// What the route page says about the route ([`super::notices`]), under the totals.
+    pub notices: Vec<String>,
     pub steps: Vec<Step>,
+    /// The legs with no route, and their rows' text ([`super::gaps`]).
+    pub gaps: Vec<(usize, String)>,
     pub notes: Vec<Note>,
     /// The clock of each step and each note, when a time is set.
     pub step_times: Vec<Option<super::times::Shown>>,
@@ -1079,7 +1087,9 @@ impl PrintRows {
     pub fn new(ui: &egui::Ui, doc: &DirectionsDoc, width: f32) -> Self {
         let timed = doc.step_times.iter().any(Option::is_some);
         Self {
-            rows: Rows::new(ui, &doc.steps, &doc.notes, timed, width, doc.units),
+            rows: Rows::new(
+                ui, &doc.steps, &doc.notes, &doc.gaps, timed, width, doc.units,
+            ),
         }
     }
 
@@ -1101,16 +1111,19 @@ impl PrintRows {
                 let time = doc.note_times.get(k).cloned().flatten();
                 note_row(ui, rect, k, &note, time);
             }
+            Row::Gap(k) => gap_row(ui, rect, &self.rows.gaps[k]),
         }
     }
 }
 
 /// A row of the directions: a step, or a row the schedule adds (a night, a break, a zone
 /// crossing).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Row {
     Step(usize),
     Note(usize),
+    /// A leg with no route, where its steps would be.
+    Gap(usize),
 }
 
 /// The directions' rows as laid out for a width: their order and heights, and the distance
@@ -1121,6 +1134,8 @@ pub(super) struct Rows {
     rows: Vec<Row>,
     heights: Vec<f32>,
     subs: Vec<Option<String>>,
+    /// The text of each gap's row.
+    gaps: Vec<String>,
 }
 
 impl Rows {
@@ -1128,6 +1143,7 @@ impl Rows {
         ui: &egui::Ui,
         steps: &[Step],
         notes: &[Note],
+        gaps: &[(usize, String)],
         timed: bool,
         width: f32,
         units: Units,
@@ -1145,9 +1161,14 @@ impl Rows {
             })
             .collect();
         let text_w = text_width(width, timed);
-        let mut rows = Vec::with_capacity(steps.len() + notes.len());
-        let mut next = 0;
-        for i in 0..steps.len() {
+        let mut rows = Vec::with_capacity(steps.len() + notes.len() + gaps.len());
+        let (mut next, mut gap) = (0, 0);
+        for (i, step) in steps.iter().enumerate() {
+            // A leg with no route goes before the first step of a later leg.
+            while gaps.get(gap).is_some_and(|(leg, _)| *leg < step.leg) {
+                rows.push(Row::Gap(gap));
+                gap += 1;
+            }
             rows.push(Row::Step(i));
             while notes.get(next).is_some_and(|n| n.after <= i) {
                 rows.push(Row::Note(next));
@@ -1155,6 +1176,7 @@ impl Rows {
             }
         }
         rows.extend((next..notes.len()).map(Row::Note));
+        rows.extend((gap..gaps.len()).map(Row::Gap));
         let p = ui.painter();
         let heights = rows
             .iter()
@@ -1173,6 +1195,9 @@ impl Rows {
                         let button = if n.movable { BUTTON_H + 4.0 } else { 0.0 };
                         g.size().y + sub + button + 8.0
                     }
+                    Row::Gap(k) => {
+                        p.layout(gaps[k].1.clone(), STEP_FONT, INK, text_w).size().y + 8.0
+                    }
                 };
                 h.max(ICON + 8.0)
             })
@@ -1183,6 +1208,7 @@ impl Rows {
             rows,
             heights,
             subs,
+            gaps: gaps.iter().map(|(_, text)| text.clone()).collect(),
         }
     }
 }
@@ -1295,6 +1321,31 @@ fn time_cell(
         ui.interact(r, ui.scope_id().with(id), Sense::hover())
             .on_hover_text(tip);
     }
+}
+
+/// A leg with no route: a warning sign and `text`, on a note's fill.
+fn gap_row(ui: &egui::Ui, rect: Rect, text: &str) {
+    let p = ui.painter();
+    p.rect_filled(rect.shrink2(Vec2::new(0.0, 1.0)), 3.0, NOTE_FILL);
+    let c = rect.min + Vec2::new(2.0 + ICON / 2.0, 4.0 + ICON / 2.0);
+    p.text(
+        c,
+        Align2::CENTER_CENTER,
+        "⚠",
+        FontId::proportional(14.0),
+        APPROX,
+    );
+    let g = p.layout(
+        text.to_owned(),
+        STEP_FONT,
+        INK,
+        text_width(rect.width(), false),
+    );
+    p.galley(
+        Pos2::new(rect.left() + TEXT_X - 4.0, rect.top() + 4.0),
+        g,
+        INK,
+    );
 }
 
 /// A row the schedule adds to the directions: its icon, text and clock, and under a night

@@ -542,3 +542,48 @@ fn schedule() {
     assert!(stops[1].1.stay.overnight);
     assert_eq!(u.answer(), 4);
 }
+
+#[test]
+fn a_leg_with_no_route_has_a_row_where_its_steps_would_be() {
+    use omp_core::route::Kind;
+    let step = crate::routing::tests::step;
+    // Legs 0 and 2 routed, 1 and 3 not.
+    let steps = [
+        step(Kind::Depart, 0, 0..1, 100.0),
+        step(Kind::Stop, 0, 1..2, 0.0),
+        step(Kind::Depart, 2, 2..3, 100.0),
+        step(Kind::Stop, 2, 3..4, 0.0),
+    ];
+    let gaps = [
+        (1, "No route from stop 2 to stop 3".to_string()),
+        (3, "No route from stop 4 to the destination".into()),
+    ];
+    let ctx = egui::Context::default();
+    let mut rows = None;
+    let mut out = ctx.run_ui(Default::default(), |ui| {
+        rows = Some(Rows::new(
+            ui,
+            &steps,
+            &[],
+            &gaps,
+            false,
+            300.0,
+            Units::Miles,
+        ));
+    });
+    out.textures_delta.clear();
+    let rows = rows.unwrap();
+    assert_eq!(
+        rows.rows,
+        [
+            Row::Step(0),
+            Row::Step(1),
+            Row::Gap(0),
+            Row::Step(2),
+            Row::Step(3),
+            Row::Gap(1)
+        ]
+    );
+    assert_eq!(rows.heights.len(), rows.rows.len());
+    assert_eq!(rows.gaps[0], "No route from stop 2 to stop 3");
+}

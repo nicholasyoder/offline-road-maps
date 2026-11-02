@@ -23,7 +23,7 @@ use crate::scale::{self, Units};
 use crate::search;
 use crate::snapshot::{self, Gpu, View};
 use crate::style::Style;
-use crate::theme::{self, INK, WEAK};
+use crate::theme::{self, APPROX, INK, WEAK};
 
 /// The biggest side of a page image, the adapter's texture limit (render.rs).
 const MAX_SIDE: f64 = 8192.0;
@@ -371,11 +371,12 @@ fn draw_map_overlay(
     p.rect_stroke(map, 0.0, Stroke::new(0.75, INK), egui::StrokeKind::Outside);
 }
 
-/// How the directions' header is built: the label, the totals and the stops, on the
-/// first page.
+/// How the directions' header is built: the label, the totals, what is said about the
+/// route and the stops, on the first page.
 struct Head {
     label: Option<Rect>,
     totals: f32,
+    notices: Vec<f32>,
     stops: Vec<f32>,
 }
 
@@ -386,6 +387,7 @@ const GAP: f32 = 8.0;
 enum Piece {
     Label,
     Totals,
+    Notice(usize),
     Stop(usize),
     /// The rule under the head.
     Rule,
@@ -409,6 +411,12 @@ impl Plan {
             .map(|r| (Piece::Label, r.height() + 4.0))
             .into_iter()
             .chain([(Piece::Totals, head.totals + GAP)])
+            .chain(
+                head.notices
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &h)| (Piece::Notice(i), h)),
+            )
             .chain(
                 head.stops
                     .iter()
@@ -547,11 +555,31 @@ fn measure_head(ui: &egui::Ui, doc: &DirectionsDoc, width: f32) -> Head {
                 + 2.0
         })
         .collect();
+    // The last notice keeps a gap from the stops, as the totals do.
+    let mut notices: Vec<f32> = doc
+        .notices
+        .iter()
+        .map(|n| notice_galley(p, n, width).size().y + 2.0)
+        .collect();
+    if let Some(last) = notices.last_mut() {
+        *last += GAP;
+    }
     Head {
         label,
         totals,
+        notices,
         stops,
     }
+}
+
+/// A notice as printed: "⚠" and its text, in the warning colour.
+fn notice_galley(p: &egui::Painter, text: &str, width: f32) -> std::sync::Arc<egui::Galley> {
+    p.layout(
+        format!("⚠ {text}"),
+        FontId::proportional(13.0),
+        APPROX,
+        width,
+    )
 }
 
 /// One piece of the head in `rect`, its place on the page.
@@ -575,6 +603,16 @@ fn draw_head_piece(ui: &egui::Ui, doc: &DirectionsDoc, head: &Head, piece: Piece
                 &doc.totals,
                 FontId::proportional(14.0),
                 INK,
+            );
+        }
+        Piece::Notice(i) => {
+            let Some(text) = doc.notices.get(i) else {
+                return;
+            };
+            p.galley(
+                Pos2::new(left, y),
+                notice_galley(p, text, rect.width()),
+                APPROX,
             );
         }
         Piece::Stop(i) => {
@@ -655,8 +693,9 @@ mod tests {
         use omp_core::route::Kind;
         let layout = Layout::new(print::Paper::Letter, false, false, TextSize(140));
         let (screen, body, _) = directions_frame(&layout);
+        // Leg 1 has no route: a notice in the head, and a row among the steps.
         let steps: Vec<_> = (0..40)
-            .map(|i| crate::routing::tests::step(Kind::Turn, 0, i..i + 1, 500.0))
+            .map(|i| crate::routing::tests::step(Kind::Turn, i / 20 * 2, i..i + 1, 500.0))
             .collect();
         let doc = DirectionsDoc {
             label: "Twenty-five stops".into(),
@@ -664,6 +703,8 @@ mod tests {
                 .map(|i| (Color32::RED, format!("Stop {i}, a road with a long name")))
                 .collect(),
             totals: "1,234 mi · 20 h 5 min".into(),
+            notices: vec!["No road goes from stop 2 to stop 3.".into()],
+            gaps: vec![(1, "No route from stop 2 to stop 3".into())],
             step_times: vec![None; steps.len()],
             steps,
             notes: Vec::new(),
@@ -698,15 +739,17 @@ mod tests {
                 body.height()
             );
         }
-        // Every piece once, in order: the label, the totals, the stops, the rule, the rows.
+        // Every piece once, in order: the label, the totals, the notice, the stops, the rule,
+        // the rows.
         let all: Vec<Piece> = plan.pages.iter().flatten().map(|p| p.0).collect();
-        let want: Vec<Piece> = [Piece::Label, Piece::Totals]
+        let want: Vec<Piece> = [Piece::Label, Piece::Totals, Piece::Notice(0)]
             .into_iter()
             .chain((0..25).map(Piece::Stop))
             .chain([Piece::Rule])
             .chain((0..plan.rows.heights().len()).map(Piece::Row))
             .collect();
         assert_eq!(all, want);
+        assert_eq!(plan.rows.heights().len(), 41, "40 steps and the gap");
         assert!(!plan.pages[0].iter().any(|p| matches!(p.0, Piece::Row(_))));
     }
 

@@ -470,6 +470,23 @@ fn stops_are_moved_removed_and_reversed() {
 }
 
 #[test]
+fn legs_with_no_route_are_named() {
+    let trip = Trip {
+        snaps: vec![None; 4],
+        legs: vec![None, None, None],
+        avoid: 0,
+    };
+    assert_eq!(
+        gaps(&trip),
+        [
+            (0, "No route from the start to stop 2".to_string()),
+            (1, "No route from stop 2 to stop 3".into()),
+            (2, "No route from stop 3 to the destination".into()),
+        ]
+    );
+}
+
+#[test]
 fn notices_and_steps() {
     let (worker, tx) = Worker::stub();
     let mut r = RouteUi::with_worker(worker);
