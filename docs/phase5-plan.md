@@ -43,7 +43,7 @@ What phase 4 left in place for this:
 | Step | Status | Notes |
 |---|---|---|
 | 5.1 Audit: bugs and design | **Done** 2026-11-02 | 10 bugs fixed (B1–B10); every finding triaged; fix sessions A–F done; the rest assigned to later steps |
-| 5.2 Audit: performance baseline and profiles | In progress | Baseline and profiles done, leads triaged by the owner 2026-11-02 and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)); left: the North America build profile (P20, with the IDE closed) |
+| 5.2 Audit: performance baseline and profiles | In progress | Baseline and all profiles done (the North America build, P20, 2026-11-02), leads triaged by the owner 2026-11-02 and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)); left: the owner's decision on P20's new leads P21–P23 |
 | 5.3 Settings window | Not started | |
 | 5.4 Map styles in the Map tab | Not started | |
 | 5.5 Dark UI with the night style | Not started | |
@@ -110,7 +110,8 @@ Measure before changing anything, and look for slow and wasteful code that the p
 > - **Warm:** decoding segment blocks is 80% of routing and directions (P10); label placement runs every frame, still or not (22% of the UI thread, P11); a still frame allocates 561 times (P13); the only idle wake-up is a focused field's cursor blink (P15). Heap at most about 150 MiB of the 328 (P17). Print: 600 dpi +243 MiB, the 749-step directions 14.1 s (P18, P19). P1 measured and left; D3 and D14 in the audit file measured.
 > - **Builder:** the Ohio merge profiled (P4: reading the sources dominates, not `intern_names`).
 > - **Triage (owner, 2026-11-02):** P6 and P7 left: the chain walk is FAT32's alone (on exFAT a read 4 GB into a chunk is one device read, measured on the data disk), so the README recommends exFAT sticks (5.7) and FAT32 stays supported, slower on first reads; the FAT32 chunking costs nothing measurable and stays. Routing (P8–P10) and cold search (P16) only where easy and plain. Still frames must do nothing (P11–P15: fix, before 5.3). Memory (P17) measured without costing speed; printing's memory and banded drawing, identical to unbanded (P18, P19). The leads are grouped into sessions G–L in [perf-findings.md](perf-findings.md#order-of-work).
-> - **Left:** the North America build profile (P20, session L's first item), which needs the machine with the IDE closed (its 49 GiB peak does not fit beside it; an earlier heaptrack run over the full flight took the desktop down, so heavy runs now go in a memory-capped `systemd-run` scope).
+> - **North America build profiled (P20, 2026-11-02),** with the IDE closed, in a 56 GB scope: 2,919 s, peak 49.4 GiB, pack `27dbaceb…` (the baseline for 5.12). The merge's 810 s keep only 3.7 of 16 threads busy: the main thread is on the CPU 65% of it, in `Streets::build` (40% of its merge samples; P4's `intern_names` 11 points of that, about 55 s) and `normalize`'s per-record interning (27%), not in reading or attaching. Other single-threaded stretches: the routing graph about 105 s, the streets stage about 55 s. New leads P21 (a parallel merge, covering P4), P22 and P23 for 5.12; P5 is seconds, as estimated ([the North America build](perf-findings.md#the-north-america-build-p20)).
+> - **Left:** the owner's decision on P21–P23 (session L).
 
 ## 5.3 Settings window
 
