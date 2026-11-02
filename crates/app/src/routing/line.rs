@@ -18,6 +18,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use omp_core::geo::{self, P};
 
+use super::DRAW_MARGIN;
 use crate::camera::{self, Camera, TILE_PX};
 use crate::pool::{Alloc, Kind, Pool};
 use crate::style::ROUTE_PAINTS;
@@ -312,7 +313,28 @@ pub struct RouteDraw {
     pub lines: Vec<LineDraw>,
 }
 
+/// The bands a frame draws the lines from, by look (`Look as usize`).
+pub type Bands = [Option<Arc<GpuBand>>; Look::ALL.len()];
+
 impl RouteDraw {
+    /// The lines of `bands` on `cam`'s view, in the order drawn; `None` without any.
+    pub fn layout(bands: &Bands, cam: &Camera, pixels_per_point: f32) -> Option<Self> {
+        let lines: Vec<LineDraw> = Look::ALL
+            .into_iter()
+            .filter_map(|look| {
+                let b = bands[look as usize].clone()?;
+                Some(LineDraw::layout(
+                    look,
+                    b,
+                    cam,
+                    pixels_per_point,
+                    DRAW_MARGIN,
+                ))
+            })
+            .collect();
+        (!lines.is_empty()).then_some(Self { lines })
+    }
+
     /// The pieces on screen of every line.
     pub fn pieces(&self) -> usize {
         self.lines.iter().map(|l| l.pieces.len()).sum()

@@ -43,7 +43,7 @@ What phase 4 left in place for this:
 | Step | Status | Notes |
 |---|---|---|
 | 5.1 Audit: bugs and design | **Done** 2026-11-02 | 10 bugs fixed (B1–B10); every finding triaged; fix sessions A–F done; the rest assigned to later steps |
-| 5.2 Audit: performance baseline and profiles | Done 2026-11-02 | Baseline and all profiles done (the North America build, P20), every lead triaged by the owner and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)) |
+| 5.2 Audit: performance baseline and profiles | Done 2026-11-02 | Baseline and all profiles done (the North America build, P20), every lead triaged by the owner and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)); session G (still frames) done 2026-11-02 |
 | 5.3 Settings window | Not started | |
 | 5.4 Map styles in the Map tab | Not started | |
 | 5.5 Dark UI with the night style | Not started | |

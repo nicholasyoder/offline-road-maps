@@ -642,14 +642,15 @@ impl PinsUi {
         by_name
     }
 
-    /// The pins for the map renderer, the buffer made again if they changed.
-    pub fn layout(&mut self, pool: &Arc<Pool>, cam: &Camera, ppp: f32) -> Option<PinDraw> {
+    /// The shown pins' buffer for the map renderer, made again if they changed; `None`
+    /// without any.
+    pub fn gpu(&mut self, pool: &Arc<Pool>) -> Option<Arc<GpuPins>> {
         if self.stale {
             self.stale = false;
             let pins: Vec<&Pin> = self.shown().map(|(_, p)| p).collect();
             self.gpu = GpuPins::upload(pool, &pins).map(Arc::new);
         }
-        Some(self.gpu.clone()?.draw(cam, ppp))
+        self.gpu.clone()
     }
 
     /// What a printed page shows of the pins, hashed: each shown pin's point, symbol and

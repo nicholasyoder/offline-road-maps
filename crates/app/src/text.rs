@@ -453,7 +453,8 @@ pub struct Upload {
 pub struct Atlas {
     /// Width and height in pixels.
     size: u32,
-    slots: HashMap<Sprite, Option<Slot>>,
+    /// With foldhash: std's SipHash was 3.4% of the UI thread (step 5.2, P14).
+    slots: foldhash::HashMap<Sprite, Option<Slot>>,
     /// Shelves: top, height, and the x where the next glyph goes.
     shelves: Vec<[u32; 3]>,
     full: bool,
@@ -473,7 +474,7 @@ impl Atlas {
     pub fn new(size: u32) -> Self {
         Self {
             size,
-            slots: HashMap::new(),
+            slots: foldhash::HashMap::default(),
             shelves: Vec::new(),
             full: false,
             uploads: Vec::new(),
@@ -491,6 +492,12 @@ impl Atlas {
 
     pub fn len(&self) -> usize {
         self.slots.len()
+    }
+
+    /// It filled up in the last frame, so some labels were left out; the next frame starts
+    /// over.
+    pub fn full(&self) -> bool {
+        self.full
     }
 
     /// The share of the atlas's height its shelves take.

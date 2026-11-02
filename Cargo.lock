@@ -2329,6 +2329,7 @@ dependencies = [
  "bytemuck",
  "eframe",
  "egui",
+ "foldhash 0.2.0",
  "harfrust",
  "jiff",
  "log",

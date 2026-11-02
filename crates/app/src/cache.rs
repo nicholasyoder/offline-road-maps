@@ -18,6 +18,8 @@ pub struct Cache<V> {
     frame: u64,
     /// Highest `bytes` seen, for the bench.
     pub peak: usize,
+    /// Counts the changes to what the cache holds: tiles taken in or dropped.
+    pub version: u64,
 }
 
 impl<V> Cache<V> {
@@ -28,6 +30,7 @@ impl<V> Cache<V> {
             budget,
             frame: 0,
             peak: 0,
+            version: 0,
         }
     }
 
@@ -69,6 +72,8 @@ impl<V> Cache<V> {
         }
         self.bytes += bytes;
         self.peak = self.peak.max(self.bytes);
+        // Dropping tiles happens only here.
+        self.version += 1;
         self.evict();
     }
 

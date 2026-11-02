@@ -85,6 +85,7 @@ impl App {
             page: Page::default(),
             last_rect: Rect::NOTHING,
             no_map: std::env::var_os("OMP_BENCH_NO_MAP").is_some(),
+            last_frame: None,
         });
         self.first_full = None;
         if let (Some(b), Some(m)) = (&mut self.bench, &mut self.map) {

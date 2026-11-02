@@ -54,7 +54,7 @@ use crate::pool::Pool;
 use crate::scale::Units;
 use crate::search::{self, distance_text};
 
-pub use line::{GpuBand, Line, LineDraw, Look, RouteDraw, RouteSegment, band_for};
+pub use line::{Bands, GpuBand, Line, LineDraw, Look, RouteDraw, RouteSegment, band_for};
 pub use panel::{DirectionsDoc, PrintRows};
 pub use times::Note;
 pub use times::{Mode, parse_time};
@@ -1292,16 +1292,14 @@ impl RouteUi {
             .collect()
     }
 
-    /// The lines to draw on `cam`'s view, each made again for a new band.
-    pub fn layout(
-        &mut self,
-        pool: &Arc<Pool>,
-        cam: &Camera,
-        pixels_per_point: f32,
-    ) -> Option<RouteDraw> {
-        let routed = self.route.as_ref()?;
+    /// The bands the route's lines are drawn from at `cam`'s zoom, by look, each uploaded
+    /// again for a new line or band; `None` for a look not drawn.
+    pub fn bands(&mut self, pool: &Arc<Pool>, cam: &Camera) -> Bands {
+        let mut out = Bands::default();
+        let Some(routed) = self.route.as_ref() else {
+            return out;
+        };
         let band = band_for(cam.zoom);
-        let mut draw = RouteDraw::default();
         for look in Look::ALL {
             let line = match look {
                 Look::Route => Some(&routed.line),
@@ -1314,17 +1312,9 @@ impl RouteUi {
             if slot.as_ref().is_none_or(|b| b.band != band) {
                 *slot = GpuBand::upload(pool, line.band(band)).map(Arc::new);
             }
-            if let Some(b) = slot.clone() {
-                draw.lines.push(LineDraw::layout(
-                    look,
-                    b,
-                    cam,
-                    pixels_per_point,
-                    DRAW_MARGIN,
-                ));
-            }
+            out[look as usize] = slot.clone();
         }
-        Some(draw)
+        out
     }
 
     /// The alternatives' tags, then the stops' markers: numbered pins, green at the start and red at the destination.

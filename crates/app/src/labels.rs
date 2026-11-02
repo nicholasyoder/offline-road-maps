@@ -320,7 +320,7 @@ pub struct Placed {
     pub fading: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Shown {
     /// Its anchor, in world coordinates.
     at: [f64; 2],
@@ -371,10 +371,15 @@ enum Ink {
 #[derive(Default)]
 pub struct Placer {
     pub atlas: Atlas,
-    shown: HashMap<u64, Vec<Shown>>,
+    /// The labels shown in the last frame, by key.
+    shown: ByKey<Shown>,
     last: Option<Instant>,
     grid: Grid,
     // Buffers kept between frames.
+    /// The labels this frame shows, by key, which become `shown`.
+    showing: ByKey<Shown>,
+    /// Where line labels and shields were placed this frame, by key, for [`REPEAT`].
+    lines: ByKey<[f32; 2]>,
     points: Vec<[f32; 2]>,
     dists: Vec<f32>,
     anchors: Vec<f32>,
@@ -544,13 +549,13 @@ impl Placer {
         let same = SAME * ppp64 / world_px;
         for c in &mut self.candidates {
             let l = &sources[c.source as usize].labels.labels[c.label as usize];
-            c.shown = self.shown.get(&l.key).and_then(|v| {
-                v.iter()
-                    .find(|s| {
-                        (s.at[0] - c.world[0]).abs() < same && (s.at[1] - c.world[1]).abs() < same
-                    })
-                    .map(|s| s.opacity)
-            });
+            c.shown = self
+                .shown
+                .get(l.key)
+                .find(|s| {
+                    (s.at[0] - c.world[0]).abs() < same && (s.at[1] - c.world[1]).abs() < same
+                })
+                .map(|s| s.opacity);
             let keep = if c.shown.is_some() { KEEP } else { 0.0 };
             c.order = (c.priority as f32 + keep) * 16.0 + l.rank;
         }
@@ -568,20 +573,15 @@ impl Placer {
             candidates: self.candidates.len(),
             ..Default::default()
         };
-        let mut shown: HashMap<u64, Vec<Shown>> = HashMap::with_capacity(self.shown.len());
-        // Where line labels and shields with each key were placed, for REPEAT.
-        let mut lines: HashMap<u64, Vec<[f32; 2]>> = HashMap::new();
+        self.showing.clear();
+        self.lines.clear();
         let pad = PAD * ppp;
         for c in &self.candidates {
             let l = &sources[c.source as usize].labels.labels[c.label as usize];
             let sym = style.symbols(l.layer, l.class).expect("checked above");
             self.pens.clear();
             self.boxes.clear();
-            let near = |repeat: f32| {
-                lines
-                    .get(&l.key)
-                    .is_some_and(|v| v.iter().any(|&p| dist(p, c.at) < repeat * ppp))
-            };
+            let near = |repeat: f32| self.lines.get(l.key).any(|&p| dist(p, c.at) < repeat * ppp);
             let placed = match (&l.content, c.line) {
                 (Content::Text(text), Some((start, end, d))) => {
                     !near(REPEAT)
@@ -639,20 +639,57 @@ impl Placer {
                 self.grid.insert(*b);
             }
             if c.line.is_some() {
-                lines.entry(l.key).or_default().push(c.at);
+                self.lines.push(l.key, c.at);
             }
             if matches!(l.content, Content::Shields(_)) {
                 out.shields += 1;
             }
-            shown.entry(l.key).or_default().push(Shown {
-                at: c.world,
-                opacity,
-            });
+            self.showing.push(
+                l.key,
+                Shown {
+                    at: c.world,
+                    opacity,
+                },
+            );
             out.labels += 1;
             out.fading |= opacity < 1.0;
         }
-        self.shown = shown;
+        std::mem::swap(&mut self.shown, &mut self.showing);
         out
+    }
+}
+
+/// Values by key, several to a key, newest first. Kept between frames, so that once it is
+/// big enough clearing and filling it allocates nothing: a map from each key to its newest
+/// value, and each value linked to the one before it with its key.
+#[derive(Default)]
+struct ByKey<T> {
+    newest: foldhash::HashMap<u64, u32>,
+    values: Vec<(T, u32)>,
+}
+
+/// No value before it with its key.
+const NONE: u32 = u32::MAX;
+
+impl<T> ByKey<T> {
+    fn clear(&mut self) {
+        self.newest.clear();
+        self.values.clear();
+    }
+
+    fn push(&mut self, key: u64, value: T) {
+        let i = self.values.len() as u32;
+        let before = self.newest.insert(key, i).unwrap_or(NONE);
+        self.values.push((value, before));
+    }
+
+    fn get(&self, key: u64) -> impl Iterator<Item = &T> {
+        let mut i = self.newest.get(&key).copied().unwrap_or(NONE);
+        std::iter::from_fn(move || {
+            let (v, before) = self.values.get(i as usize)?;
+            i = *before;
+            Some(v)
+        })
     }
 }
 
@@ -1060,8 +1097,13 @@ mod tests {
     fn shown(p: &Placer) -> Vec<(u64, [i64; 2])> {
         let mut v: Vec<_> = p
             .shown
-            .iter()
-            .flat_map(|(k, s)| s.iter().map(|s| (*k, s.at.map(|c| (c * 1e9) as i64))))
+            .newest
+            .keys()
+            .flat_map(|&k| {
+                p.shown
+                    .get(k)
+                    .map(move |s| (k, s.at.map(|c| (c * 1e9) as i64)))
+            })
             .collect();
         v.sort();
         v

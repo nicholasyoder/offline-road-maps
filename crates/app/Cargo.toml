@@ -11,6 +11,8 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 # Only for its feature: the monochrome emoji fonts, for the search results' kind icons (search/draw.rs).
 egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
+# Already in the tree through hashbrown; a faster hash for the label atlas and placement.
+foldhash = "0.2.0"
 # Shaping and glyph outlines for labels: the versions egui already uses (text.rs).
 harfrust = { version = "0.12.0", default-features = false, features = ["std"] }
 # omp-core's, for the schedule's times (its features, the bundled tz database, come from there).

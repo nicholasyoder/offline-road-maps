@@ -5,7 +5,8 @@
 //! A flight is a list of steps. Each step moves to a view, either at once (a jump,
 //! `seconds = 0`) or linearly in Mercator and zoom over `seconds`; then, if `wait` is set
 //! (the default for jumps), waits until the view is fully detailed; then holds for `hold`
-//! seconds. Steps run on wall time, so a slow machine draws fewer frames of the same path.
+//! seconds. With `OMP_BENCH_SHOTS=<dir>`, a hold of 2 s or more is saved there as a PNG a
+//! second before it ends: a still map, whose frame is drawn again (step 5.2's P11). Steps run on wall time, so a slow machine draws fewer frames of the same path.
 //! After the last step the app is left alone without redrawing: [`SETTLE`] for the last
 //! tiles and frames, then [`IDLE`] to measure its idle CPU use.
 //!
@@ -426,6 +427,8 @@ pub struct Bench {
     /// `OMP_BENCH_SHOTS`, and a screenshot to take there.
     shots: Option<PathBuf>,
     shot: Option<String>,
+    /// The step's hold has been saved.
+    held: bool,
     /// With `shots`, after the flight: the side panel page shown for its screenshot, since
     /// when, and whether the screenshot was asked for.
     page: Option<(usize, Instant, bool)>,
@@ -476,6 +479,7 @@ impl Bench {
             wakes: BTreeMap::new(),
             done: false,
             shots: std::env::var_os("OMP_BENCH_SHOTS").map(PathBuf::from),
+            held: false,
             shot: None,
             page: None,
         }
@@ -500,6 +504,7 @@ impl Bench {
 
     fn begin_step(&mut self, i: usize, cam: &mut Camera, now: Instant, bytes_read: u64) {
         self.step = i;
+        self.held = false;
         self.phase = Phase::Move;
         self.phase_start = now;
         self.from = (cam.center, cam.zoom);
@@ -1057,6 +1062,11 @@ impl Bench {
             return None;
         }
         if t < step.hold {
+            let wait = SHOT_WAIT.as_secs_f64();
+            if !self.held && t >= wait && t >= step.hold - wait {
+                self.held = true;
+                self.shot("held");
+            }
             return None;
         }
         log.rss_end = crate::memory::usage().map(|m| m.rss);

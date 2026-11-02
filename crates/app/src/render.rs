@@ -22,7 +22,7 @@
 //! its distance in the shader, from a buffer made when they change (pins.rs).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use bytemuck::{Pod, Zeroable};
 use eframe::egui_wgpu::{self, wgpu};
@@ -353,6 +353,13 @@ pub struct Renderer {
     glyphs: wgpu::Buffer,
     pub srgb: bool,
     pub samples: u32,
+    // What was last written, so what has not changed is not written again (step 5.2, P12).
+    /// The window's last frame: drawn again, it is on the GPU already.
+    prepared: Weak<Frame>,
+    size: [f32; 2],
+    written_paints: Vec<GpuPaint>,
+    /// The tile transforms, made in here each frame.
+    transform_data: Vec<u8>,
 }
 
 impl Renderer {
@@ -512,6 +519,10 @@ impl Renderer {
             square,
             srgb: format.is_srgb(),
             samples,
+            prepared: Weak::new(),
+            size: [0.0; 2],
+            written_paints: Vec::new(),
+            transform_data: Vec::new(),
         }
     }
 
@@ -687,30 +698,32 @@ impl Renderer {
 
     /// Uploads the frame's uniforms.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
-        let route: Vec<([f32; 2], f32, f32)> = frame
-            .route
-            .iter()
-            .flat_map(|r| &r.lines)
-            .flat_map(|l| {
-                let paint = l.look.paint() as f32;
-                l.pieces.iter().map(move |p| (p.1, p.2, paint))
-            })
-            .collect();
+        let route = frame.route.as_ref().map_or(0, RouteDraw::pieces);
         let pins = frame.pins.as_ref().map(|p| (p.origin, p.scale, p.half));
         let n_transforms =
-            frame.tiles.len() + frame.sources.len() + route.len() + usize::from(pins.is_some());
+            frame.tiles.len() + frame.sources.len() + route + usize::from(pins.is_some());
         if n_transforms > self.capacity {
             self.capacity = n_transforms.next_power_of_two();
             (self.transforms, self.transforms_bg) =
                 Self::transforms(device, &self.tile_layout, self.stride, self.capacity);
         }
-        let globals = Globals {
-            size: frame.size,
-            _pad: [0.0; 2],
-        };
-        queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
-        let n = frame.paints.len().min(MAX_PAINTS);
-        queue.write_buffer(&self.paints, 0, bytemuck::cast_slice(&frame.paints[..n]));
+        if frame.size != self.size {
+            self.size = frame.size;
+            let globals = Globals {
+                size: frame.size,
+                _pad: [0.0; 2],
+            };
+            queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
+        }
+        // The paints change with the zoom, not while the map pans.
+        let paints = &frame.paints[..frame.paints.len().min(MAX_PAINTS)];
+        if bytemuck::cast_slice::<_, u8>(paints)
+            != bytemuck::cast_slice::<_, u8>(&self.written_paints)
+        {
+            queue.write_buffer(&self.paints, 0, bytemuck::cast_slice(paints));
+            self.written_paints.clear();
+            self.written_paints.extend_from_slice(paints);
+        }
         for u in &frame.atlas {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -748,9 +761,15 @@ impl Renderer {
         }
         // The tiles' transforms, then the sources', then the route pieces', then the pins'
         // (their half size in `paint`).
-        let mut data = vec![0u8; self.stride as usize * n_transforms];
+        let data = &mut self.transform_data;
+        data.clear();
+        data.resize(self.stride as usize * n_transforms, 0);
         let placed = frame.tiles.iter().map(|t| (t.origin, t.scale, 0.0));
         let placed = placed.chain(frame.sources.iter().map(|s| (s.origin, s.scale, 0.0)));
+        let route = frame.route.iter().flat_map(|r| &r.lines).flat_map(|l| {
+            let paint = l.look.paint() as f32;
+            l.pieces.iter().map(move |p| (p.1, p.2, paint))
+        });
         let placed = placed.chain(route).chain(pins);
         for (i, (origin, scale, paint)) in placed.enumerate() {
             let tr = TileTransform {
@@ -761,7 +780,7 @@ impl Renderer {
             let at = i * self.stride as usize;
             data[at..at + 16].copy_from_slice(bytemuck::bytes_of(&tr));
         }
-        queue.write_buffer(&self.transforms, 0, &data);
+        queue.write_buffer(&self.transforms, 0, data);
     }
 
     /// Draws the frame. `offset` is where the viewport's top-left is in the render target, and
@@ -929,7 +948,8 @@ impl Renderer {
 }
 
 /// The map as an egui paint callback. The [`Renderer`] lives in egui's callback resources.
-pub struct MapCallback(pub Frame);
+/// A frame of a still map is drawn again as it was (app/mod.rs).
+pub struct MapCallback(pub Arc<Frame>);
 
 impl egui_wgpu::CallbackTrait for MapCallback {
     fn prepare(
@@ -940,8 +960,12 @@ impl egui_wgpu::CallbackTrait for MapCallback {
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        if let Some(r) = resources.get_mut::<Renderer>() {
+        if let Some(r) = resources.get_mut::<Renderer>()
+            && !std::ptr::eq(r.prepared.as_ptr(), Arc::as_ptr(&self.0))
+        {
             r.prepare(device, queue, &self.0);
+            // Held weakly, so its address is not reused while it is remembered.
+            r.prepared = Arc::downgrade(&self.0);
         }
         Vec::new()
     }

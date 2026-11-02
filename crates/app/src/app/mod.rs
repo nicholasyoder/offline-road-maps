@@ -32,11 +32,11 @@ use crate::loader::{Done, Loader};
 use crate::memory::mib;
 use crate::mesh::{Prepared, TileInfo};
 use crate::packs::Opened;
-use crate::pins::{self, PinsUi};
+use crate::pins::{self, GpuPins, PinsUi};
 use crate::pool::Pool;
 use crate::printui::{self, PrintUi};
-use crate::render::{self, GpuMesh, MapCallback, Renderer};
-use crate::routing::{Place, RouteUi, StopAction};
+use crate::render::{self, Frame, GpuMesh, MapCallback, Renderer};
+use crate::routing::{Bands, Place, RouteDraw, RouteUi, StopAction};
 use crate::scale::Units;
 use crate::search::{self, SearchUi};
 use crate::side::Page;
@@ -125,6 +125,43 @@ struct MapState {
     last_rect: Rect,
     /// `OMP_BENCH_NO_MAP`: everything but drawing the map, to see what the rest costs.
     no_map: bool,
+    /// The last frame of the map and what it was made from. It is drawn again while none of
+    /// that changes, so a still map places no labels and writes nothing to the GPU (step
+    /// 5.2, P11–P13).
+    last_frame: Option<(FrameKey, Arc<Frame>)>,
+}
+
+/// What a frame of the map is made from, besides the time, which only labels fading in
+/// need, and the style, whose reload starts over.
+struct FrameKey {
+    camera: Camera,
+    pixels_per_point: f32,
+    srgb: bool,
+    layers: Layers,
+    /// [`Cache::version`]: what the frame can draw of the tiles.
+    tiles: u64,
+    /// The buffers of the route's lines and of the pins; the last frame holds them, so a
+    /// new one is never at the address of an old one.
+    route: Bands,
+    pins: Option<Arc<GpuPins>>,
+}
+
+impl FrameKey {
+    fn same(&self, o: &Self) -> bool {
+        fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (a, b) => a.is_none() && b.is_none(),
+            }
+        }
+        self.camera == o.camera
+            && self.pixels_per_point == o.pixels_per_point
+            && self.srgb == o.srgb
+            && self.layers == o.layers
+            && self.tiles == o.tiles
+            && self.route.iter().zip(&o.route).all(|(a, b)| same(a, b))
+            && same(&self.pins, &o.pins)
+    }
 }
 
 /// What the last frame showed, for the overlay.
@@ -291,6 +328,7 @@ impl App {
             m.cache = Cache::new(CACHE_BUDGET);
             m.placer = Placer::default();
             m.hidden_for = None;
+            m.last_frame = None;
         }
     }
 
@@ -455,8 +493,9 @@ impl MapState {
         })
     }
 
-    /// Picks, requests and draws the tiles and the route for the current camera, with what
-    /// `layers` shows; with `outlines`, also the tile outlines and their numbers.
+    /// Draws the map for the current camera, with what `layers` shows: the last frame again
+    /// if nothing it was made from has changed, else a new one ([`Self::frame`]). With
+    /// `outlines`, also the tile outlines and their numbers.
     #[allow(clippy::too_many_arguments)]
     fn draw(
         &mut self,
@@ -473,6 +512,46 @@ impl MapState {
             self.hidden = Hidden::new(layers, &self.style, &self.opened.schema);
             self.hidden_for = Some(*layers);
         }
+        let key = FrameKey {
+            camera: self.camera.clone(),
+            pixels_per_point: ppp,
+            srgb,
+            layers: *layers,
+            tiles: self.cache.version,
+            route: self.routing.bands(pool, &self.camera),
+            pins: pins.gpu(pool),
+        };
+        // Not while labels fade in or the atlas left some out, nor with the outlines, which
+        // need the tile plan.
+        let again = self.last_frame.as_ref().filter(|(k, _)| {
+            k.same(&key) && !self.view.fading && !self.placer.atlas.full() && !outlines
+        });
+        let frame = match again {
+            Some((_, f)) => {
+                self.view.label_time = Duration::ZERO;
+                f.clone()
+            }
+            None => Arc::new(self.frame(painter, rect.min, &key, outlines)),
+        };
+        if !self.no_map {
+            painter.add(egui_wgpu::Callback::new_paint_callback(
+                rect,
+                MapCallback(frame.clone()),
+            ));
+        }
+        self.last_frame = Some((key, frame));
+    }
+
+    /// Picks and requests the tiles for `key`'s camera, and lays out a frame of them, the
+    /// route, the labels and the pins; with `outlines`, draws the tile outlines.
+    fn frame(
+        &mut self,
+        painter: &egui::Painter,
+        origin: Pos2,
+        key: &FrameKey,
+        outlines: bool,
+    ) -> Frame {
+        let (ppp, srgb) = (key.pixels_per_point, key.srgb);
         let cam = &self.camera;
         self.cache.next_frame();
         let z = tiles::tile_zoom(cam.zoom);
@@ -537,8 +616,8 @@ impl MapState {
         }
         let paints = render::paints(&self.style, &self.hidden, cam.zoom, ppp, srgb);
         let mut frame = render::layout(cam, ppp, paints, draws, capped, &self.style.pass_cap);
-        frame.route = self.routing.layout(pool, cam, ppp);
-        frame.pins = pins.layout(pool, cam, ppp);
+        frame.route = RouteDraw::layout(&key.route, cam, ppp);
+        frame.pins = key.pins.clone().map(|p| p.draw(cam, ppp));
         let t0 = Instant::now();
         let sources: Vec<labels::Source> = plan
             .labels
@@ -569,16 +648,11 @@ impl MapState {
         view.candidates = placed.candidates;
         view.fading = placed.fading;
         view.label_time = t0.elapsed();
-        if !self.no_map {
-            painter.add(egui_wgpu::Callback::new_paint_callback(
-                rect,
-                MapCallback(frame),
-            ));
-        }
         self.view = view;
         if outlines {
-            self.outlines(painter, rect.min, &plan.draws);
+            self.outlines(painter, origin, &plan.draws);
         }
+        frame
     }
 
     fn outlines(&mut self, painter: &egui::Painter, origin: Pos2, plan: &[(TileId, Cover)]) {
@@ -723,6 +797,7 @@ impl eframe::App for App {
                         && self
                             .print
                             .pointer(&ctx, &resp, rect.min, &m.camera, &self.cfg.print);
+                    take_focus(ui, &resp);
                     m.input(ui, &resp, rect.min, dt, !held);
                     // A click on a pushpin opens it; on an alternative's grey line or tag, picks
                     // it.
@@ -991,6 +1066,25 @@ fn marker_at<'a>(
     on.then_some(h)
 }
 
+/// Using the map (a click, a drag, the wheel or a pinch) takes the focus from a text field,
+/// whose cursor would otherwise blink on, waking the app twice a second (step 5.2, P15).
+fn take_focus(ui: &egui::Ui, resp: &egui::Response) {
+    let wheel = || {
+        ui.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::MouseWheel { .. } | egui::Event::Zoom(_)))
+        })
+    };
+    if resp.clicked() || resp.drag_started() || (resp.hovered() && wheel()) {
+        ui.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+    }
+}
+
 /// Moves the camera with the map's left edge, which the side panel moves when it opens,
 /// closes or is resized, so what is on the map stays where it was on screen. `last` is the
 /// map's rectangle the frame before.
@@ -998,5 +1092,47 @@ fn keep_still(cam: &mut Camera, last: Rect, rect: Rect) {
     if last.is_positive() && last.left() != rect.left() {
         let dx = rect.center().x - last.center().x;
         cam.center[0] += f64::from(dx) / cam.scale();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A focused field lets go when the wheel turns over the map, and not before.
+    #[test]
+    fn the_map_takes_the_focus() {
+        let ctx = egui::Context::default();
+        let field = egui::Id::unique("field");
+        let mut text = String::from("Columbus");
+        let mut frame = |events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                events,
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                focused: true,
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(raw, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut text).id(field));
+                let map = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(800.0, 500.0));
+                let resp = ui.allocate_rect(map, Sense::click_and_drag());
+                take_focus(ui, &resp);
+            });
+            full.textures_delta.clear();
+            ctx.memory(|m| m.has_focus(field))
+        };
+        ctx.memory_mut(|m| m.request_focus(field));
+        assert!(frame(vec![egui::Event::PointerMoved(Pos2::new(
+            400.0, 300.0
+        ))]));
+        assert!(frame(Vec::new()));
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, 1.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+            source: egui::MouseWheelSource::Wheel,
+        };
+        assert!(!frame(vec![wheel]));
     }
 }
