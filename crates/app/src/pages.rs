@@ -361,57 +361,14 @@ fn draw_map_overlay(
     }
     // The scale bar, in the map's bottom-left corner on a white card.
     let per_u = page.area.metres_per_page_point(layout) * s;
-    scale_bar(
-        &on_map,
-        map.left_bottom() + Vec2::new(8.0, -8.0),
-        per_u,
-        page.units,
-    );
-    p.rect_stroke(map, 0.0, Stroke::new(0.75, INK), egui::StrokeKind::Outside);
-}
-
-/// The scale bar with its corner at `corner` (its bottom-left), as the screen's but on a
-/// white card so it reads over the map.
-fn scale_bar(p: &egui::Painter, corner: Pos2, metres_per_point: f64, units: Units) {
-    const MAX: f64 = 120.0;
-    const ROW: f32 = 15.0;
-    let bars: &[bool] = match units {
-        Units::Miles => &[true],
-        Units::Kilometres => &[false],
-        Units::Both => &[true, false],
+    let look = scale::Look {
+        ink: INK,
+        card: Some(Color32::from_white_alpha(225)),
     };
-    let font = FontId::proportional(11.0);
-    let bar_of = |imperial| scale::bar(metres_per_point, MAX, imperial);
-    let width = bars
-        .iter()
-        .map(|&imperial| {
-            let (len, text) = bar_of(imperial);
-            let label = p.layout_no_wrap(text.to_string(), font.clone(), INK);
-            len as f32 + 5.0 + label.size().x
-        })
-        .fold(0.0, f32::max);
-    let card = Rect::from_min_size(
-        corner - Vec2::new(0.0, ROW * bars.len() as f32 + 6.0),
-        Vec2::new(width + 10.0, ROW * bars.len() as f32 + 6.0),
-    );
-    p.rect_filled(card, 3.0, Color32::from_white_alpha(225));
-    let stroke = Stroke::new(1.5, INK);
-    for (i, &imperial) in bars.iter().enumerate() {
-        let (len, text) = bar_of(imperial);
-        let top = card.top() + 3.0 + ROW * i as f32;
-        let (x0, x1) = (card.left() + 5.0, card.left() + 5.0 + len as f32);
-        let (y, tip) = (top + ROW - 2.0, top + 3.0);
-        p.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], stroke);
-        p.line_segment([Pos2::new(x0, y), Pos2::new(x0, tip)], stroke);
-        p.line_segment([Pos2::new(x1, y), Pos2::new(x1, tip)], stroke);
-        p.text(
-            Pos2::new(x1 + 5.0, top + ROW / 2.0),
-            Align2::LEFT_CENTER,
-            text,
-            font.clone(),
-            INK,
-        );
-    }
+    let size = scale::size(&on_map, per_u, page.units, look);
+    let at = map.left_bottom() + Vec2::new(8.0, -8.0 - size.y);
+    scale::paint(&on_map, at, per_u, page.units, look);
+    p.rect_stroke(map, 0.0, Stroke::new(0.75, INK), egui::StrokeKind::Outside);
 }
 
 /// How the directions' header is built: the label, the totals and the stops, on the

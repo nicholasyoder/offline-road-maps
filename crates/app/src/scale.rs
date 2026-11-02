@@ -1,5 +1,7 @@
-//! The scale bar (phase1-plan.md 1.9): its units, and a round length that fits.
+//! The scale bar (phase1-plan.md 1.9): its units, a round length that fits, and the bar as
+//! drawn over the window's map and on a printed page.
 
+use eframe::egui::{Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 use omp_core::geo;
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +58,86 @@ pub fn bar(metres_per_point: f64, max: f64, imperial: bool) -> (f64, String) {
         format!("{n} {name}")
     };
     (n * unit / metres_per_point, text)
+}
+
+/// How the bar is drawn: its ink, and the card under it on a printed page (the window's sits
+/// in a panel of its own).
+#[derive(Clone, Copy, Debug)]
+pub struct Look {
+    pub ink: Color32,
+    pub card: Option<Color32>,
+}
+
+/// The longest a bar is, in points.
+const MAX: f64 = 120.0;
+/// A bar's row, in points.
+const ROW: f32 = 13.0;
+/// The card's margin around the bars.
+const CARD_MARGIN: Vec2 = Vec2::new(5.0, 3.0);
+
+/// The bars for `units`, as (imperial, ticks up): miles with its ticks up, kilometres below
+/// it with its ticks down.
+fn bars(units: Units) -> &'static [(bool, bool)] {
+    match units {
+        Units::Miles => &[(true, true)],
+        Units::Kilometres => &[(false, true)],
+        Units::Both => &[(true, true), (false, false)],
+    }
+}
+
+fn font() -> FontId {
+    FontId::proportional(11.0)
+}
+
+/// The size [`paint`] takes, card included.
+pub fn size(p: &Painter, metres_per_point: f64, units: Units, look: Look) -> Vec2 {
+    let width = bars(units)
+        .iter()
+        .map(|&(imperial, _)| {
+            let (len, text) = bar(metres_per_point, MAX, imperial);
+            let label = p.layout_no_wrap(text, font(), look.ink);
+            1.0 + len as f32 + 5.0 + label.size().x
+        })
+        .fold(0.0, f32::max);
+    let bars = Vec2::new(width, ROW * bars(units).len() as f32);
+    match look.card {
+        Some(_) => bars + 2.0 * CARD_MARGIN,
+        None => bars,
+    }
+}
+
+/// Draws one bar per unit, each at most 120 points long, with the top-left corner at `at`;
+/// returns the rect drawn, [`size`] big.
+pub fn paint(p: &Painter, at: Pos2, metres_per_point: f64, units: Units, look: Look) -> Rect {
+    let rect = Rect::from_min_size(at, size(p, metres_per_point, units, look));
+    let mut top = rect.top();
+    let mut left = rect.left();
+    if let Some(card) = look.card {
+        p.rect_filled(rect, CornerRadius::same(3), card);
+        top += CARD_MARGIN.y;
+        left += CARD_MARGIN.x;
+    }
+    let stroke = Stroke::new(1.5, look.ink);
+    for &(imperial, up) in bars(units) {
+        let (len, text) = bar(metres_per_point, MAX, imperial);
+        let (x0, x1) = (left + 1.0, left + 1.0 + len as f32);
+        let (y, tip) = match up {
+            true => (top + ROW - 0.75, top + 3.0),
+            false => (top + 0.75, top + ROW - 3.0),
+        };
+        p.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], stroke);
+        p.line_segment([Pos2::new(x0, y), Pos2::new(x0, tip)], stroke);
+        p.line_segment([Pos2::new(x1, y), Pos2::new(x1, tip)], stroke);
+        p.text(
+            Pos2::new(x1 + 5.0, top + ROW / 2.0),
+            Align2::LEFT_CENTER,
+            text,
+            font(),
+            look.ink,
+        );
+        top += ROW;
+    }
+    rect
 }
 
 /// The largest 1, 2 or 5 times a power of ten that is at most `v`.
