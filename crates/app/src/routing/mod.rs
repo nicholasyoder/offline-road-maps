@@ -1569,4 +1569,4 @@ pub fn view_for(bounds: [f64; 4], size: camera::Vec2) -> (camera::Vec2, f64) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

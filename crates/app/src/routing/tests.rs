@@ -12,7 +12,7 @@ fn place(lat: f64, lon: f64) -> Place {
     Place::at(geo::lonlat_to_unit(lon, lat))
 }
 
-fn step(kind: Kind, leg: usize, points: std::ops::Range<usize>, metres: f64) -> Step {
+pub(crate) fn step(kind: Kind, leg: usize, points: std::ops::Range<usize>, metres: f64) -> Step {
     Step {
         kind,
         modifier: Modifier::Straight,

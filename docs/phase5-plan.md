@@ -42,7 +42,7 @@ What phase 4 left in place for this:
 
 | Step | Status | Notes |
 |---|---|---|
-| 5.1 Audit: bugs and design | In progress | 2026-10-30: 9 bugs fixed (B1–B9); every module read; the owner's triage is complete; the decided fixes remain |
+| 5.1 Audit: bugs and design | In progress | 2026-11-02: 9 bugs fixed (B1–B9); the owner's triage is complete; the fix sessions A–F are done; the builder's tools are not yet read line by line |
 | 5.2 Audit: performance baseline and profiles | Not started | |
 | 5.3 Settings window | Not started | |
 | 5.4 Map styles in the Map tab | Not started | |
@@ -80,7 +80,7 @@ Read the whole project, crate by crate, with fresh eyes now that every part exis
 
 > **In progress 2026-10-30.** Three passes done, covering the app, `omp-core` and the builder's stages (what each pass read, and what it skipped, is in [audit-findings.md](audit-findings.md#passes-so-far)). Bugs B1–B9 are fixed, with tests where one fits; the other findings (R, D, C and the performance leads P) are in the same file. Not read line by line: the builder's tools (`fetch/{manifest,regions,sources}` and others), which the next pass covers; `measure` and `report` were removed with D16.
 >
-> **Left:** the owner's triage is complete (every finding decided 2026-10-30, R9–R12, D17–D19, P4–P5 and C2 as proposed); then the fixes, in the sessions of the [order of work](audit-findings.md#order-of-work): A (R8, R1, R3; done 2026-11-02), B (R2; done 2026-11-02), C (the split of D1 before 5.3, with D2, D6, D10–D12; done 2026-11-02), D (the builder cleanup D16–D17, D19, C2, R10, R11; done 2026-11-02), E (the D15 and D18 helpers; done 2026-11-02) and F (R7 and the scale bar) (R6 is done in 5.3; R9 and R12 change the pack, so they wait for the next rebuild, decision 9; P4 and P5 go to 5.12).
+> **Left:** the owner's triage is complete (every finding decided 2026-10-30, R9–R12, D17–D19, P4–P5 and C2 as proposed); then the fixes, in the sessions of the [order of work](audit-findings.md#order-of-work): A (R8, R1, R3; done 2026-11-02), B (R2; done 2026-11-02), C (the split of D1 before 5.3, with D2, D6, D10–D12; done 2026-11-02), D (the builder cleanup D16–D17, D19, C2, R10, R11; done 2026-11-02), E (the D15 and D18 helpers; done 2026-11-02) and F (R7 and the scale bar; done 2026-11-02). Every session is done; what the audit still owes is the line-by-line read of the builder's tools named above (R6 is done in 5.3; R9 and R12 change the pack, so they wait for the next rebuild, decision 9; P4 and P5 go to 5.12).
 
 ## 5.2 Audit: performance baseline and profiles
 

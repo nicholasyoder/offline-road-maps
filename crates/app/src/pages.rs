@@ -381,6 +381,72 @@ struct Head {
 
 const GAP: f32 = 8.0;
 
+/// A piece of the directions, placed on a page whole: the head's lines and rows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Piece {
+    Label,
+    Totals,
+    Stop(usize),
+    /// The rule under the head.
+    Rule,
+    Row(usize),
+}
+
+/// The directions measured and split into pages.
+struct Plan {
+    head: Head,
+    rows: PrintRows,
+    /// Each page's pieces, with their heights.
+    pages: Vec<Vec<(Piece, f32)>>,
+}
+
+impl Plan {
+    fn new(ui: &egui::Ui, doc: &DirectionsDoc, body: Rect) -> Self {
+        let rows = PrintRows::new(ui, doc, body.width());
+        let head = measure_head(ui, doc, body.width());
+        let pieces = head
+            .label
+            .map(|r| (Piece::Label, r.height() + 4.0))
+            .into_iter()
+            .chain([(Piece::Totals, head.totals + GAP)])
+            .chain(
+                head.stops
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &h)| (Piece::Stop(i), h)),
+            )
+            .chain([(Piece::Rule, GAP)])
+            .chain(
+                rows.heights()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &h)| (Piece::Row(i), h)),
+            );
+        Self {
+            pages: paginate(pieces, body.height()),
+            head,
+            rows,
+        }
+    }
+}
+
+/// Splits `pieces` into pages `room` high: a piece that does not fit what is left of a page
+/// starts the next. Only a piece taller than a page, alone on its own, is cut off.
+fn paginate(pieces: impl Iterator<Item = (Piece, f32)>, room: f32) -> Vec<Vec<(Piece, f32)>> {
+    let mut pages = vec![Vec::new()];
+    let mut used = 0.0;
+    for (piece, h) in pieces {
+        let page = pages.last_mut().expect("there is a page");
+        if used + h > room && !page.is_empty() {
+            pages.push(Vec::new());
+            used = 0.0;
+        }
+        pages.last_mut().expect("there is a page").push((piece, h));
+        used += h;
+    }
+    pages
+}
+
 /// Draws the directions pages one at a time, giving each to `each` before the next is made.
 /// Returns how many there were.
 pub fn render_directions(
@@ -397,57 +463,29 @@ pub fn render_directions(
     let s = layout.text.factor();
     let ppp = (dpi / 72.0 * s) as f32;
     let size_px = layout.pixels(dpi);
-    let screen = Vec2::new(layout.page[0] as f32, layout.page[1] as f32) / s as f32;
-    let body = Rect::from_min_max(
-        Pos2::new((layout.map[0] / s) as f32, (layout.map[1] / s) as f32),
-        Pos2::new((layout.map[2] / s) as f32, (layout.map[3] / s) as f32),
-    );
-    let footer = Rect::from_min_max(
-        Pos2::new((layout.footer[0] / s) as f32, (layout.footer[1] / s) as f32),
-        Pos2::new((layout.footer[2] / s) as f32, (layout.footer[3] / s) as f32),
-    );
-    // A first pass measures the rows and the head, and splits the rows into pages.
-    let mut rows = None;
-    let mut head = Head {
-        label: None,
-        totals: 0.0,
-        stops: Vec::new(),
-    };
-    egui_pass.frame(gpu, screen, ppp, |ui| {
-        let r = PrintRows::new(ui, doc, body.width());
-        head = measure_head(ui, doc, body.width());
-        rows = Some(r);
-    })?;
-    let rows = rows.ok_or("the directions were not laid out")?;
-    let head_h = head.label.map_or(0.0, |r| r.height() + 4.0)
-        + head.totals
-        + head.stops.iter().sum::<f32>()
-        + 2.0 * GAP;
-    let mut pages: Vec<std::ops::Range<usize>> = Vec::new();
-    let (mut start, mut used) = (0, head_h);
-    for (i, h) in rows.heights().iter().enumerate() {
-        if used + h > body.height() && i > start {
-            pages.push(start..i);
-            (start, used) = (i, 0.0);
-        }
-        used += h;
-    }
-    pages.push(start..rows.heights().len());
-    let total = pages.len();
-    for (n, range) in pages.into_iter().enumerate() {
+    let (screen, body, footer) = directions_frame(&layout);
+    // A first pass measures the head and the rows, and splits them into pages.
+    let mut plan = None;
+    egui_pass.frame(gpu, screen, ppp, |ui| plan = Some(Plan::new(ui, doc, body)))?;
+    let plan = plan.ok_or("the directions were not laid out")?;
+    let total = plan.pages.len();
+    for (n, pieces) in plan.pages.iter().enumerate() {
         let top = egui_pass.frame(gpu, screen, ppp, |ui| {
+            let p = ui.painter().clone();
+            // Nothing is drawn past the body, into the footer.
+            ui.set_clip_rect(body);
             let mut y = body.top();
-            if n == 0 {
-                y = draw_head(ui, doc, &head, body, y);
-            }
-            for i in range.clone() {
-                let h = rows.heights()[i];
+            for (i, &(piece, h)) in pieces.iter().enumerate() {
                 let rect =
                     Rect::from_min_size(Pos2::new(body.left(), y), Vec2::new(body.width(), h));
-                rows.paint(ui, rect, doc, i);
+                match piece {
+                    Piece::Row(r) => plan.rows.paint(ui, rect, doc, r),
+                    // A rule that would start a page has nothing above it to set apart.
+                    Piece::Rule if i == 0 => {}
+                    _ => draw_head_piece(ui, doc, &plan.head, piece, rect),
+                }
                 y += h;
             }
-            let p = ui.painter();
             p.text(
                 footer.left_center(),
                 Align2::LEFT_CENTER,
@@ -472,6 +510,19 @@ pub fn render_directions(
         })?;
     }
     Ok(total)
+}
+
+/// A directions page's screen, body and footer, in egui's units.
+fn directions_frame(layout: &Layout) -> (Vec2, Rect, Rect) {
+    let s = layout.text.factor();
+    let to_u = |r: [f64; 4]| {
+        Rect::from_min_max(
+            Pos2::new((r[0] / s) as f32, (r[1] / s) as f32),
+            Pos2::new((r[2] / s) as f32, (r[3] / s) as f32),
+        )
+    };
+    let screen = Vec2::new(layout.page[0] as f32, layout.page[1] as f32) / s as f32;
+    (screen, to_u(layout.map), to_u(layout.footer))
 }
 
 fn measure_head(ui: &egui::Ui, doc: &DirectionsDoc, width: f32) -> Head {
@@ -503,49 +554,55 @@ fn measure_head(ui: &egui::Ui, doc: &DirectionsDoc, width: f32) -> Head {
     }
 }
 
-/// The first page's head; returns where the rows start.
-fn draw_head(ui: &mut egui::Ui, doc: &DirectionsDoc, head: &Head, body: Rect, mut y: f32) -> f32 {
-    let p = ui.painter().clone();
-    if let Some(l) = head.label {
-        let g = p.layout(
-            doc.label.clone(),
-            FontId::proportional(17.0),
-            INK,
-            body.width(),
-        );
-        p.galley(Pos2::new(body.left(), y), g, INK);
-        y += l.height() + 4.0;
+/// One piece of the head in `rect`, its place on the page.
+fn draw_head_piece(ui: &egui::Ui, doc: &DirectionsDoc, head: &Head, piece: Piece, rect: Rect) {
+    let p = ui.painter();
+    let (left, y) = (rect.left(), rect.top());
+    match piece {
+        Piece::Label if head.label.is_some() => {
+            let g = p.layout(
+                doc.label.clone(),
+                FontId::proportional(17.0),
+                INK,
+                rect.width(),
+            );
+            p.galley(Pos2::new(left, y), g, INK);
+        }
+        Piece::Totals => {
+            p.text(
+                Pos2::new(left, y),
+                Align2::LEFT_TOP,
+                &doc.totals,
+                FontId::proportional(14.0),
+                INK,
+            );
+        }
+        Piece::Stop(i) => {
+            let Some((fill, name)) = doc.stops.get(i) else {
+                return;
+            };
+            let c = Pos2::new(left + 9.0, y + 9.0);
+            p.circle_filled(c, 8.5, *fill);
+            p.text(
+                c,
+                Align2::CENTER_CENTER,
+                (i + 1).to_string(),
+                FontId::proportional(10.5),
+                Color32::WHITE,
+            );
+            let g = p.layout(
+                name.clone(),
+                FontId::proportional(13.0),
+                INK,
+                rect.width() - 26.0,
+            );
+            p.galley(Pos2::new(left + 24.0, y + 1.0), g, INK);
+        }
+        Piece::Rule => {
+            p.hline(rect.x_range(), rect.center().y, Stroke::new(0.75, WEAK));
+        }
+        Piece::Label | Piece::Row(_) => {}
     }
-    p.text(
-        Pos2::new(body.left(), y),
-        Align2::LEFT_TOP,
-        &doc.totals,
-        FontId::proportional(14.0),
-        INK,
-    );
-    y += head.totals + GAP;
-    for (i, ((fill, name), h)) in doc.stops.iter().zip(&head.stops).enumerate() {
-        let c = Pos2::new(body.left() + 9.0, y + 9.0);
-        p.circle_filled(c, 8.5, *fill);
-        p.text(
-            c,
-            Align2::CENTER_CENTER,
-            (i + 1).to_string(),
-            FontId::proportional(10.5),
-            Color32::WHITE,
-        );
-        let g = p.layout(
-            name.clone(),
-            FontId::proportional(13.0),
-            INK,
-            body.width() - 26.0,
-        );
-        p.galley(Pos2::new(body.left() + 24.0, y + 1.0), g, INK);
-        y += h;
-    }
-    y += GAP;
-    p.hline(body.x_range(), y - GAP / 2.0, Stroke::new(0.75, WEAK));
-    y
 }
 
 #[cfg(test)]
@@ -572,6 +629,85 @@ mod tests {
         assert_eq!(px(2, 3), 9);
         assert_eq!(px(0, 2), 0);
         assert_eq!(px(3, 3), 0);
+    }
+
+    #[test]
+    fn a_piece_that_does_not_fit_starts_the_next_page() {
+        let pieces = [
+            (Piece::Totals, 60.0),
+            (Piece::Rule, 30.0),
+            (Piece::Row(0), 20.0),
+        ];
+        let pages = paginate(pieces.into_iter(), 100.0);
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[1], [(Piece::Row(0), 20.0)]);
+        // Taller than a page: alone on its own.
+        let pages = paginate(
+            [(Piece::Row(0), 150.0), (Piece::Row(1), 10.0)].into_iter(),
+            100.0,
+        );
+        assert_eq!(pages.len(), 2);
+    }
+
+    #[test]
+    fn a_head_taller_than_a_page_goes_on_to_the_next() {
+        // R7: 25 stops at 140% text on Letter fill more than the first page.
+        use omp_core::route::Kind;
+        let layout = Layout::new(print::Paper::Letter, false, false, TextSize(140));
+        let (screen, body, _) = directions_frame(&layout);
+        let steps: Vec<_> = (0..40)
+            .map(|i| crate::routing::tests::step(Kind::Turn, 0, i..i + 1, 500.0))
+            .collect();
+        let doc = DirectionsDoc {
+            label: "Twenty-five stops".into(),
+            stops: (0..25)
+                .map(|i| (Color32::RED, format!("Stop {i}, a road with a long name")))
+                .collect(),
+            totals: "1,234 mi · 20 h 5 min".into(),
+            step_times: vec![None; steps.len()],
+            steps,
+            notes: Vec::new(),
+            note_times: Vec::new(),
+            units: Units::Miles,
+        };
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut plan = None;
+        for _ in 0..2 {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| plan = Some(Plan::new(ui, &doc, body)));
+            out.textures_delta.clear();
+        }
+        let plan = plan.expect("laid out");
+        let head: f32 = plan
+            .pages
+            .iter()
+            .flatten()
+            .filter(|(p, _)| !matches!(p, Piece::Row(_)))
+            .map(|p| p.1)
+            .sum();
+        assert!(head > body.height(), "{head} {}", body.height());
+        for (n, page) in plan.pages.iter().enumerate() {
+            let used: f32 = page.iter().map(|p| p.1).sum();
+            assert!(
+                used <= body.height(),
+                "page {n}: {used} > {}",
+                body.height()
+            );
+        }
+        // Every piece once, in order: the label, the totals, the stops, the rule, the rows.
+        let all: Vec<Piece> = plan.pages.iter().flatten().map(|p| p.0).collect();
+        let want: Vec<Piece> = [Piece::Label, Piece::Totals]
+            .into_iter()
+            .chain((0..25).map(Piece::Stop))
+            .chain([Piece::Rule])
+            .chain((0..plan.rows.heights().len()).map(Piece::Row))
+            .collect();
+        assert_eq!(all, want);
+        assert!(!plan.pages[0].iter().any(|p| matches!(p.0, Piece::Row(_))));
     }
 
     #[test]
