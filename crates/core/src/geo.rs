@@ -73,6 +73,51 @@ pub fn dist(a: P, b: P) -> f64 {
     (f64::from(b[0]) - f64::from(a[0])).hypot(f64::from(b[1]) - f64::from(a[1]))
 }
 
+/// Distance in metres, at the scale of `a`'s latitude: for distances of a few kilometres.
+pub fn dist_m(a: P, b: P) -> f64 {
+    dist(a, b) * metres_per_unit(a)
+}
+
+/// A point's coordinates as `f64`, in world units (unlike [`to_unit`], not scaled).
+pub fn xy(p: P) -> [f64; 2] {
+    [f64::from(p[0]), f64::from(p[1])]
+}
+
+/// Where segment `a`–`b` comes nearest `p`: the fraction along it, in `0..=1` (0 for a
+/// segment of no length), and the point there.
+pub fn seg_nearest(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, [f64; 2]) {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let t = match len2 > 0.0 {
+        true => (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0),
+        false => 0.0,
+    };
+    (t, [a[0] + t * d[0], a[1] + t * d[1]])
+}
+
+/// The squared distance from `p` to segment `a`–`b`.
+pub fn seg_dist2(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let f = seg_nearest(p, a, b).1;
+    let e = [f[0] - p[0], f[1] - p[1]];
+    e[0] * e[0] + e[1] * e[1]
+}
+
+/// The distance from `p` to segment `a`–`b`.
+pub fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    seg_dist2(p, a, b).sqrt()
+}
+
+/// Whether `p` is on the left of the line from `a` toward `b`.
+pub fn left_of(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> bool {
+    // y grows downward, so a negative cross product is the left side.
+    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) < 0.0
+}
+
+/// Whether edge `a`–`b` crosses the ray from `p` toward +x: the step of an even-odd test.
+pub fn crosses(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[1] > p[1]) != (b[1] > p[1]) && a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) > p[0]
+}
+
 /// The Morton code of a point: x bits even, y bits odd.
 pub fn morton(p: P) -> u64 {
     let spread = |v: u32| {
@@ -129,19 +174,12 @@ pub fn bbox_around(p: P, radius_m: f64) -> [u32; 4] {
 
 /// Whether `p` is inside an odd number of `rings` (each implicitly closed).
 pub fn rings_contain(rings: &[Vec<P>], p: P) -> bool {
-    let (px, py) = (f64::from(p[0]), f64::from(p[1]));
+    let p = xy(p);
     let mut inside = false;
     for ring in rings {
-        let n = ring.len();
-        for i in 0..n {
-            let (a, b) = (ring[i], ring[(i + 1) % n]);
-            let (ay, by) = (f64::from(a[1]), f64::from(b[1]));
-            if (ay > py) != (by > py) {
-                let (ax, bx) = (f64::from(a[0]), f64::from(b[0]));
-                if ax + (py - ay) / (by - ay) * (bx - ax) > px {
-                    inside = !inside;
-                }
-            }
+        for (i, &a) in ring.iter().enumerate() {
+            let b = ring[(i + 1) % ring.len()];
+            inside ^= crosses(p, xy(a), xy(b));
         }
     }
     inside
@@ -194,6 +232,18 @@ mod tests {
             }
         }
         assert_eq!(morton_ranges([0, 0, u32::MAX, 9]), [(0, u64::MAX)]);
+    }
+
+    #[test]
+    fn segment_distance() {
+        let (a, b) = ([0.0, 0.0], [10.0, 0.0]);
+        assert_eq!(seg_nearest([4.0, 3.0], a, b), (0.4, [4.0, 0.0]));
+        assert_eq!(seg_dist([4.0, 3.0], a, b), 3.0);
+        assert_eq!(seg_dist2([13.0, 4.0], a, b), 25.0, "past the end");
+        assert_eq!(seg_nearest([-1.0, 0.0], a, a), (0.0, a), "no length");
+        assert_eq!(dist_m([0, 0], [0, 0]), 0.0);
+        assert!(left_of([4.0, -3.0], a, b), "north of an eastward line");
+        assert!(!left_of([4.0, 3.0], a, b));
     }
 
     #[test]

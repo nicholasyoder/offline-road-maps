@@ -418,7 +418,7 @@ fn route_heading(r: &str, a: P, b: P) -> Option<&'static str> {
     let n: u32 = digits.parse().ok()?;
     let dx = f64::from(b[0]) - f64::from(a[0]);
     let dy = f64::from(b[1]) - f64::from(a[1]);
-    if dx.hypot(dy) * geo::metres_per_unit(a) < 500.0 {
+    if geo::dist_m(a, b) < 500.0 {
         return None;
     }
     Some(match (n % 2 == 1, dy < 0.0, dx > 0.0) {
@@ -455,22 +455,39 @@ pub struct Turns {
 }
 
 impl Leg {
-    pub fn turns(&self) -> Turns {
-        let (n, pts) = (self.pieces.len(), &self.points);
-        // A stop at a node: its piece of next to nothing makes no turn, as in directions.
+    /// The pieces that count, `first..end`: a stop at a node leaves the leg's first or last
+    /// piece next to nothing, and that piece makes no turn.
+    fn counted(&self) -> (usize, usize) {
+        let n = self.pieces.len();
         let tiny = |k: usize| n > 1 && self.pieces[k].metres < END_M;
         let first = usize::from(n > 0 && tiny(0));
         let end = n.saturating_sub(usize::from(n > 1 && tiny(n - 1) && n - 1 > first));
+        (first, end)
+    }
+
+    /// The junction before piece `k`: its index in the points and the bearings in and out,
+    /// each along its own piece so that a junction close by does not bend it.
+    fn joint(&self, k: usize) -> (usize, f64, f64) {
+        let pts = &self.points;
+        let at = self.pieces[k].points.start;
+        let (from, to) = (self.pieces[k - 1].points.start, self.pieces[k].points.end);
+        let back = leaving(pts[from..=at].iter().rev().copied());
+        let out = leaving(pts[at..to].iter().copied());
+        (at, (back + 180.0).rem_euclid(360.0), out)
+    }
+
+    pub fn turns(&self) -> Turns {
+        let (first, end) = self.counted();
         // Each junction's angle and where it is along the leg.
         let mut joints = Vec::new();
-        let mut at_m: f64 = self.pieces[..first.min(n)].iter().map(|p| p.metres).sum();
+        let mut at_m: f64 = self.pieces[..first.min(self.pieces.len())]
+            .iter()
+            .map(|p| p.metres)
+            .sum();
         for k in first + 1..end {
             at_m += self.pieces[k - 1].metres;
-            let at = self.pieces[k].points.start;
-            let (from, to) = (self.pieces[k - 1].points.start, self.pieces[k].points.end);
-            let back = leaving(pts[from..=at].iter().rev().copied());
-            let out = leaving(pts[at..to].iter().copied());
-            joints.push((turn_angle((back + 180.0).rem_euclid(360.0), out), at_m));
+            let (_, in_b, out_b) = self.joint(k);
+            joints.push((turn_angle(in_b, out_b), at_m));
         }
         let mut t = Turns::default();
         let mut i = 0;
@@ -666,25 +683,11 @@ impl Guide<'_> {
     /// The steps of one leg, before their stretches are measured.
     fn raw(&self, leg: &Leg, info: &[Info]) -> io::Result<Vec<Raw>> {
         let n = info.len();
-        let pts = &leg.points;
-        // The junction before piece `k`: its node and point, and the bearings in and out,
-        // each along its own piece so that a junction close by does not bend it.
         let joint = |k: usize| {
-            let at = leg.pieces[k].points.start;
-            let (from, to) = (leg.pieces[k - 1].points.start, leg.pieces[k].points.end);
-            let back = leaving(pts[from..=at].iter().rev().copied());
-            let out = leaving(pts[at..to].iter().copied());
-            (
-                info[k - 1].end,
-                pts[at],
-                (back + 180.0).rem_euclid(360.0),
-                out,
-            )
+            let (at, in_b, out_b) = leg.joint(k);
+            (info[k - 1].end, leg.points[at], in_b, out_b)
         };
-        // A stop at a node: the leg's first or last piece is next to nothing.
-        let tiny = |k: usize| n > 1 && leg.pieces[k].metres < END_M;
-        let first = usize::from(tiny(0));
-        let end = n - usize::from(tiny(n - 1) && n - 1 > first);
+        let (first, end) = leg.counted();
         let mut depart = Raw::new(Kind::Depart, 0.0, 0);
         depart.road_at = first;
         let mut steps = vec![depart];
@@ -933,7 +936,7 @@ fn collapse(steps: Vec<Raw>, leg: &Leg, info: &[Info]) -> Vec<Raw> {
 
 /// The side of the line arriving at `at` (travelling along `bearing`) that `p` is on.
 fn side(at: P, bearing: f64, p: P) -> Option<Side> {
-    if geo::dist(at, p) * geo::metres_per_unit(at) < SIDE_M {
+    if geo::dist_m(at, p) < SIDE_M {
         return None;
     }
     match turn_angle(bearing, self::bearing(at, p)) > 0.0 {

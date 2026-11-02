@@ -483,8 +483,7 @@ fn rank_of(c: &Case, hits: &[Hit]) -> Option<usize> {
             && c.name
                 .as_ref()
                 .is_none_or(|n| h.name.to_lowercase().contains(&n.to_lowercase()))
-            && c.at
-                .is_none_or(|(p, m)| geo::dist(p, h.p) * geo::metres_per_unit(p) <= m)
+            && c.at.is_none_or(|(p, m)| geo::dist_m(p, h.p) <= m)
     })
 }
 
@@ -549,7 +548,7 @@ fn check(
                 slowest.push((*times.last().unwrap(), r[0].to_owned()));
                 n += 1;
                 let ok = hits.first().is_some_and(|h| {
-                    let d = geo::dist(want, h.p) * geo::metres_per_unit(want);
+                    let d = geo::dist_m(want, h.p);
                     h.kind == HitKind::Address && (d <= 10.0 || h.approx && d <= 100.0)
                 });
                 // The same address at another of its points: the store keeps two points
@@ -557,7 +556,7 @@ fn check(
                 let label = |t: &str| loose_key(&street_key(t.split(',').next().unwrap_or("")));
                 let dup = !ok
                     && hits.first().is_some_and(|h| {
-                        let d = geo::dist(want, h.p) * geo::metres_per_unit(want);
+                        let d = geo::dist_m(want, h.p);
                         h.kind == HitKind::Address && label(&h.name) == label(r[0]) && d <= 3_000.0
                     });
                 same += usize::from(ok || dup);
@@ -579,7 +578,7 @@ fn check(
                     pass += 1;
                 } else {
                     let got = hits.first().map_or("nothing".into(), |h| {
-                        let d = geo::dist(want, h.p) * geo::metres_per_unit(want);
+                        let d = geo::dist_m(want, h.p);
                         format!("{} ({d:.0} m)", hit_line(h))
                     });
                     let tag = if dup { "DUP " } else { "FAIL" };
@@ -783,7 +782,7 @@ fn check_levels(
                 ..Request::new(&query)
             };
             let at = |h: &Hit| {
-                let d = geo::dist(want, h.p) * geo::metres_per_unit(want);
+                let d = geo::dist_m(want, h.p);
                 h.kind == HitKind::Address && (d <= 10.0 || h.approx && d <= 100.0)
             };
             n += 1;

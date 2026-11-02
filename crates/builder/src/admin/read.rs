@@ -319,7 +319,7 @@ pub fn read(pbf: &Pbf) -> Result<AdminData> {
                 return (r.level, None, missing, broken);
             }
             let node = |id: Option<i64>| id.and_then(|id| labels.get(&id));
-            let inside = |p: P| crate::admin::index::ring_contains(&rings, p);
+            let inside = |p: P| omp_core::geo::rings_contain(&rings, p);
             let label = node(r.label)
                 .map(|l| l.0)
                 .or_else(|| node(r.centre).map(|l| l.0).filter(|&p| inside(p)));

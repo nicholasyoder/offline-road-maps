@@ -157,7 +157,7 @@ fn grow(b: [u32; 4], m: f64) -> [u32; 4] {
 }
 
 pub(super) fn half_diagonal_m(b: [u32; 4]) -> f64 {
-    geo::dist([b[0], b[1]], [b[2], b[3]]) / 2.0 * geo::metres_per_unit([b[0], b[1]])
+    geo::dist_m([b[0], b[1]], [b[2], b[3]]) / 2.0
 }
 
 /// The admin area an entry stands for: an area's own, or the one a place node names.

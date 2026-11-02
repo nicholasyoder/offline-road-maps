@@ -180,7 +180,7 @@ impl Geometry {
 
     /// The nearest point of the street to `p`.
     pub fn project(&self, p: P) -> Spot {
-        let (px, py) = (f64::from(p[0]), f64::from(p[1]));
+        let q = geo::xy(p);
         // (squared distance, offset, left, foot)
         let mut best = (f64::INFINITY, 0.0, false, p);
         for (part, cum) in self.parts.iter().zip(&self.cum) {
@@ -192,22 +192,13 @@ impl Geometry {
                 continue;
             }
             for i in 0..part.len() - 1 {
-                let (a, b) = (part[i], part[i + 1]);
-                let (ax, ay) = (f64::from(a[0]), f64::from(a[1]));
-                let (dx, dy) = (f64::from(b[0]) - ax, f64::from(b[1]) - ay);
-                let len2 = dx * dx + dy * dy;
-                let t = if len2 > 0.0 {
-                    (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                let (fx, fy) = (ax + t * dx, ay + t * dy);
-                let d2 = (px - fx).powi(2) + (py - fy).powi(2);
+                let (a, b) = (geo::xy(part[i]), geo::xy(part[i + 1]));
+                let (t, f) = geo::seg_nearest(q, a, b);
+                let d2 = (q[0] - f[0]).powi(2) + (q[1] - f[1]).powi(2);
                 if d2 < best.0 {
-                    // y grows downward, so a negative cross product is the left side.
-                    let left = dx * (py - ay) - dy * (px - ax) < 0.0;
                     let off = cum[i] + t * (cum[i + 1] - cum[i]);
-                    best = (d2, off, left, [fx.round() as u32, fy.round() as u32]);
+                    let foot = [f[0].round() as u32, f[1].round() as u32];
+                    best = (d2, off, geo::left_of(q, a, b), foot);
                 }
             }
         }

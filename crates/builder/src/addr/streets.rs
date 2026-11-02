@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use omp_core::geo;
 use omp_core::normalize::{is_direction, loose_key, street_key};
 use rayon::prelude::*;
 
@@ -240,19 +241,11 @@ impl Streets {
         let way = &self.ways[w as usize];
         let coords = &self.raw[w as usize].coords;
         let mpu = geom::metres_per_unit(p);
-        let (px, py) = (f64::from(p[0]), f64::from(p[1]));
+        let q = geo::xy(p);
         let mut best = (f64::INFINITY, 0.0);
         for (i, s) in coords.windows(2).enumerate() {
-            let (ax, ay) = (f64::from(s[0][0]), f64::from(s[0][1]));
-            let (dx, dy) = (f64::from(s[1][0]) - ax, f64::from(s[1][1]) - ay);
-            let len2 = dx * dx + dy * dy;
-            let t = if len2 > 0.0 {
-                (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let (qx, qy) = (ax + t * dx, ay + t * dy);
-            let d2 = (px - qx).powi(2) + (py - qy).powi(2);
+            let (t, f) = geo::seg_nearest(q, geo::xy(s[0]), geo::xy(s[1]));
+            let d2 = (q[0] - f[0]).powi(2) + (q[1] - f[1]).powi(2);
             if d2 < best.0 {
                 let along = way.cum[i] + t * (way.cum[i + 1] - way.cum[i]);
                 best = (d2, along);

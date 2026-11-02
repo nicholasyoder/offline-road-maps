@@ -21,12 +21,6 @@ pub struct Postcode {
     pub radius_m: f64,
 }
 
-/// Median of `v` (sorted in place).
-fn median(v: &mut [u32]) -> u32 {
-    v.sort_unstable();
-    v[v.len() / 2]
-}
-
 /// The postcode entries of the merged addresses `reps`, whose postcodes are `rep_codes`,
 /// sorted by code.
 pub(super) fn points(
@@ -46,23 +40,12 @@ pub(super) fn points(
     let mut out: Vec<Postcode> = groups
         .par_iter()
         .map(|g| {
-            let mut xs: Vec<u32> = g.iter().map(|x| x.1[0]).collect();
-            let mut ys: Vec<u32> = g.iter().map(|x| x.1[1]).collect();
-            let p = [median(&mut xs), median(&mut ys)];
-            let mpu = geom::metres_per_unit(p);
-            let mut d: Vec<f64> = g
-                .iter()
-                .map(|x| {
-                    (f64::from(x.1[0]) - f64::from(p[0])).hypot(f64::from(x.1[1]) - f64::from(p[1]))
-                        * mpu
-                })
-                .collect();
-            d.sort_by(f64::total_cmp);
+            let (p, radius_m) = geom::spread(g.iter().map(|x| x.1));
             Postcode {
                 code: codes[g[0].0 as usize].clone(),
                 addresses: g.len() as u64,
                 p,
-                radius_m: d[((d.len() - 1) as f64 * 0.9) as usize],
+                radius_m,
             }
         })
         .collect();
@@ -91,9 +74,7 @@ fn merge(mut rows: Vec<Postcode>) -> Postcode {
     rows.sort_by(|a, b| b.addresses.cmp(&a.addresses).then(a.p.cmp(&b.p)));
     let main = rows[0].p;
     let mpu = geom::metres_per_unit(main);
-    let dist = |a: P, b: P| {
-        (f64::from(a[0]) - f64::from(b[0])).hypot(f64::from(a[1]) - f64::from(b[1])) * mpu
-    };
+    let dist = |a: P, b: P| omp_core::geo::dist(a, b) * mpu;
     rows.retain(|r| dist(r.p, main) <= MERGE_MAX_M);
     if rows.len() == 1 {
         return rows.pop().unwrap();

@@ -301,7 +301,7 @@ fn street_cells(parts: &[Vec<P>]) -> Vec<(u32, u32)> {
     for part in parts {
         out.push(grid::cell_xy(part[0]));
         for w in part.windows(2) {
-            let n = (geo::dist(w[0], w[1]) * geo::metres_per_unit(w[0])).ceil() as u32 + 1;
+            let n = (geo::dist_m(w[0], w[1])).ceil() as u32 + 1;
             for k in 0..=n {
                 let t = f64::from(k) / f64::from(n);
                 let lerp =

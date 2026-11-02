@@ -156,7 +156,7 @@ impl Run<'_> {
             return 0.0;
         };
         let scale = self.view_scale_m();
-        let d = geo::dist(c, p) * geo::metres_per_unit(c);
+        let d = geo::dist_m(c, p);
         1.0 / (1.0 + d / scale)
     }
 
@@ -218,7 +218,7 @@ impl Run<'_> {
                     .max(by_town);
                 let inside = localities.iter().any(|l| match l.area {
                     Some(a) => chain.contains(&a) || bbox_inside(&l.bbox, e.p) && named > 0.0,
-                    None => geo::dist(l.p, e.p) * geo::metres_per_unit(l.p) <= l.radius_m,
+                    None => geo::dist_m(l.p, e.p) <= l.radius_m,
                 });
                 if named >= 0.89 {
                     loc_q = named;
@@ -244,13 +244,13 @@ impl Run<'_> {
             let to_town = localities
                 .iter()
                 .map(|l| {
-                    let d = geo::dist(l.p, e.p) * geo::metres_per_unit(l.p);
+                    let d = geo::dist_m(l.p, e.p);
                     1.0 / (1.0 + d / l.radius_m.max(1_500.0))
                 })
                 .fold(0.0, f64::max);
             score += 10.0 * to_town;
             if let Some(pc) = postcode
-                && geo::dist(pc.p, e.p) * geo::metres_per_unit(pc.p) > pc.radius_m
+                && geo::dist_m(pc.p, e.p) > pc.radius_m
             {
                 score -= 10.0;
             }

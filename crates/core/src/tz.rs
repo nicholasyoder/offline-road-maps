@@ -94,39 +94,22 @@ impl Zone {
         if !self.bbox_contains(p, 0) {
             return false;
         }
-        let (px, py) = (f64::from(p[0]), f64::from(p[1]));
-        let mut inside = false;
-        for [a, b] in self.band(i64::from(p[1] >> BAND_SHIFT)) {
-            let (ay, by) = (f64::from(a[1]), f64::from(b[1]));
-            if (ay > py) != (by > py) {
-                let (ax, bx) = (f64::from(a[0]), f64::from(b[0]));
-                if ax + (py - ay) / (by - ay) * (bx - ax) > px {
-                    inside = !inside;
-                }
-            }
-        }
-        inside
+        let q = geo::xy(p);
+        self.band(i64::from(p[1] >> BAND_SHIFT))
+            .iter()
+            .filter(|&&[a, b]| geo::crosses(q, geo::xy(a), geo::xy(b)))
+            .count()
+            % 2
+            == 1
     }
 
     /// World units from `p` to the nearest edge in its band and the bands beside it.
     fn distance(&self, p: P) -> f64 {
         let band = i64::from(p[1] >> BAND_SHIFT);
-        let q = [f64::from(p[0]), f64::from(p[1])];
+        let q = geo::xy(p);
         (band - 1..=band + 1)
             .flat_map(|b| self.band(b))
-            .map(|[a, b]| {
-                let (a, b) = (
-                    [f64::from(a[0]), f64::from(a[1])],
-                    [f64::from(b[0]), f64::from(b[1])],
-                );
-                let d = [b[0] - a[0], b[1] - a[1]];
-                let len2 = d[0] * d[0] + d[1] * d[1];
-                let t = match len2 > 0.0 {
-                    true => (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0),
-                    false => 0.0,
-                };
-                (q[0] - a[0] - t * d[0]).hypot(q[1] - a[1] - t * d[1])
-            })
+            .map(|&[a, b]| geo::seg_dist(q, geo::xy(a), geo::xy(b)))
             .fold(f64::INFINITY, f64::min)
     }
 }

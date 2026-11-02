@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use omp_core::geo::dist;
+use omp_core::geo::{self, dist};
 use omp_core::normalize::street_key;
 use rayon::prelude::*;
 use serde::Serialize;
@@ -155,26 +155,21 @@ pub struct Spot {
 
 /// Projects `p` onto points `lo..=hi` of `part`, whose cumulative metres are `cum`.
 fn project(part: &[P], cum: &[f64], mpu: f64, lo: usize, hi: usize, p: P) -> (f64, f64, bool) {
-    let (px, py) = (f64::from(p[0]), f64::from(p[1]));
     if lo == hi {
         return (cum[lo], dist(part[lo], p) * mpu, false);
     }
+    let q = geo::xy(p);
     let mut best = (f64::INFINITY, 0.0, false);
     for i in lo..hi {
-        let (a, b) = (part[i], part[i + 1]);
-        let (ax, ay) = (f64::from(a[0]), f64::from(a[1]));
-        let (dx, dy) = (f64::from(b[0]) - ax, f64::from(b[1]) - ay);
-        let len2 = dx * dx + dy * dy;
-        let t = if len2 > 0.0 {
-            (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let d2 = (px - ax - t * dx).powi(2) + (py - ay - t * dy).powi(2);
+        let (a, b) = (geo::xy(part[i]), geo::xy(part[i + 1]));
+        let (t, f) = geo::seg_nearest(q, a, b);
+        let d2 = (q[0] - f[0]).powi(2) + (q[1] - f[1]).powi(2);
         if d2 < best.0 {
-            // y grows downward, so a negative cross product is the left side.
-            let left = dx * (py - ay) - dy * (px - ax) < 0.0;
-            best = (d2, cum[i] + t * (cum[i + 1] - cum[i]), left);
+            best = (
+                d2,
+                cum[i] + t * (cum[i + 1] - cum[i]),
+                geo::left_of(q, a, b),
+            );
         }
     }
     (best.1, best.0.sqrt() * mpu, best.2)
@@ -624,7 +619,7 @@ impl Table {
                         let c = &cuts[i as usize];
                         coords[c.from as usize..=c.to as usize]
                             .windows(2)
-                            .map(|s| seg_dist(s[0], s[1], p))
+                            .map(|s| geo::seg_dist(geo::xy(p), geo::xy(s[0]), geo::xy(s[1])))
                             .fold(f64::INFINITY, f64::min)
                     };
                     d(x).total_cmp(&d(y))
@@ -922,20 +917,6 @@ impl Table {
 fn postal_of(label: &[u64], area: u64, seed: u32) -> Option<usize> {
     let l = label[seed as usize];
     (l & area == 0).then_some(l as usize)
-}
-
-/// Distance in world units from `p` to segment `a`–`b`.
-fn seg_dist(a: P, b: P, p: P) -> f64 {
-    let (px, py) = (f64::from(p[0]), f64::from(p[1]));
-    let (ax, ay) = (f64::from(a[0]), f64::from(a[1]));
-    let (dx, dy) = (f64::from(b[0]) - ax, f64::from(b[1]) - ay);
-    let len2 = dx * dx + dy * dy;
-    let t = if len2 > 0.0 {
-        (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    (px - ax - t * dx).hypot(py - ay - t * dy)
 }
 
 #[derive(Args)]

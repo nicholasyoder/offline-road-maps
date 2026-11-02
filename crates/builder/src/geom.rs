@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use omp_core::geo;
 pub use omp_core::geo::{P, metres_per_unit, project, project_e7, unproject};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +314,49 @@ pub fn simplify(pts: &[[i32; 2]], tolerance: f64) -> Vec<[i32; 2]> {
         .collect()
 }
 
+/// Douglas–Peucker on ring `r` (not closed) at `tolerance` world units, in `i32`
+/// coordinates from `b.min` shifted down until `b` fits; `None` if under 3 points are left.
+pub fn simplify_ring(r: &[P], b: BBox, tolerance: f64) -> Option<Vec<P>> {
+    let span = (b.max[0] - b.min[0]).max(b.max[1] - b.min[1]);
+    let k = (64 - u64::from(span).leading_zeros()).saturating_sub(30);
+    let mut local: Vec<[i32; 2]> = r
+        .iter()
+        .map(|p| {
+            [
+                ((p[0] - b.min[0]) >> k) as i32,
+                ((p[1] - b.min[1]) >> k) as i32,
+            ]
+        })
+        .collect();
+    local.push(local[0]);
+    let mut s = simplify(&local, tolerance / f64::from(1u32 << k));
+    s.pop();
+    (s.len() >= 3).then(|| {
+        s.iter()
+            .map(|q| {
+                [
+                    ((q[0] as u32) << k) + b.min[0],
+                    ((q[1] as u32) << k) + b.min[1],
+                ]
+            })
+            .collect()
+    })
+}
+
+/// The median point of `pts` (per axis) and the distance in metres from there that 90% of
+/// them lie within.
+pub fn spread(pts: impl Iterator<Item = P> + Clone) -> (P, f64) {
+    let mut xs: Vec<u32> = pts.clone().map(|p| p[0]).collect();
+    let mut ys: Vec<u32> = pts.clone().map(|p| p[1]).collect();
+    xs.sort_unstable();
+    ys.sort_unstable();
+    let p = [xs[xs.len() / 2], ys[ys.len() / 2]];
+    let mpu = metres_per_unit(p);
+    let mut d: Vec<f64> = pts.map(|q| geo::dist(p, q) * mpu).collect();
+    d.sort_by(f64::total_cmp);
+    (p, d[((d.len() - 1) as f64 * 0.9) as usize])
+}
+
 /// The indices a Douglas–Peucker simplification of `pts` keeps, ascending, with the endpoints.
 pub fn simplify_kept<T: Copy + Into<f64>>(pts: &[[T; 2]], tolerance: f64) -> Vec<usize> {
     if pts.len() <= 2 {
@@ -328,7 +372,7 @@ pub fn simplify_kept<T: Copy + Into<f64>>(pts: &[[T; 2]], tolerance: f64) -> Vec
         let (pa, pb) = (f(pts[a]), f(pts[b]));
         let (mut best, mut best_d) = (0, 0.0);
         for (i, &p) in pts.iter().enumerate().take(b).skip(a + 1) {
-            let d = seg_dist2(f(p), pa, pb);
+            let d = geo::seg_dist2(f(p), pa, pb);
             if d > best_d {
                 (best, best_d) = (i, d);
             }
@@ -494,29 +538,13 @@ fn signed_distance(p: [f64; 2], rings: &[Vec<[f64; 2]>]) -> f64 {
         let mut j = r.len() - 1;
         for i in 0..r.len() {
             let (a, b) = (r[i], r[j]);
-            if (a[1] > p[1]) != (b[1] > p[1])
-                && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
-            {
-                inside = !inside;
-            }
-            best = best.min(seg_dist2(p, a, b));
+            inside ^= geo::crosses(p, a, b);
+            best = best.min(geo::seg_dist2(p, a, b));
             j = i;
         }
     }
     let d = best.sqrt();
     if inside { d } else { -d }
-}
-
-fn seg_dist2(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-    let len2 = dx * dx + dy * dy;
-    let t = if len2 == 0.0 {
-        0.0
-    } else {
-        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
-    };
-    let (ex, ey) = (a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
-    ex * ex + ey * ey
 }
 
 /// Turns a closed way (first node repeated at the end) into a ring oriented as `outer`.

@@ -146,20 +146,13 @@ impl Trip {
 /// The nearest point of `pts` to `p`: its distance in world units, and the fraction of
 /// the line's length before it.
 fn nearest(pts: &[P], p: P) -> (f64, f64, P) {
-    let q = [f64::from(p[0]), f64::from(p[1])];
+    let q = geo::xy(p);
     let (mut best, mut at, mut foot) = (f64::INFINITY, 0.0, pts[0]);
     let mut run = 0.0;
     for w in pts.windows(2) {
-        let a = [f64::from(w[0][0]), f64::from(w[0][1])];
-        let d = [f64::from(w[1][0]) - a[0], f64::from(w[1][1]) - a[1]];
-        let len2 = d[0] * d[0] + d[1] * d[1];
-        let t = match len2 > 0.0 {
-            true => (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0),
-            false => 0.0,
-        };
-        let f = [a[0] + t * d[0], a[1] + t * d[1]];
+        let (t, f) = geo::seg_nearest(q, geo::xy(w[0]), geo::xy(w[1]));
         let dist = (q[0] - f[0]).hypot(q[1] - f[1]);
-        let len = len2.sqrt();
+        let len = geo::dist(w[0], w[1]);
         if dist < best {
             best = dist;
             at = run + t * len;

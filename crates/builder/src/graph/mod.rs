@@ -32,6 +32,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use clap::Args;
+use omp_core::geo;
 use omp_core::profile::{self, FERRY, TOLL};
 use omp_core::route::{FERRY_CLASS, Label};
 use omp_core::street::CLASSES;
@@ -452,12 +453,6 @@ fn travel_s(w: &WayIn, d: Dir, metres: f64, total: f64) -> f64 {
     }
 }
 
-fn metres(a: P, b: P) -> f64 {
-    let dx = f64::from(a[0]) - f64::from(b[0]);
-    let dy = f64::from(a[1]) - f64::from(b[1]);
-    (dx * dx + dy * dy).sqrt() * geom::metres_per_unit(a)
-}
-
 /// The graph of `input`, with a U-turn penalty of `uturn_s` seconds at junctions (0: none).
 pub fn build(mut input: Input, uturn_s: u32) -> Graph {
     assert!(
@@ -579,7 +574,7 @@ pub fn build(mut input: Input, uturn_s: u32) -> Graph {
     for (wi, w) in ways.iter().enumerate() {
         let r = refs(w);
         let pts = &input.coords[w.refs.clone()];
-        let total: f64 = pts.windows(2).map(|p| metres(p[0], p[1])).sum();
+        let total: f64 = pts.windows(2).map(|p| geo::dist_m(p[0], p[1])).sum();
         let node = |k: usize| input.nodes.get(&r[k]);
         let mut id_at = |k: usize, coords: &mut Vec<P>| -> u32 {
             let rank = ranks.rank(r[k]).expect("graph node") as u32;
@@ -594,7 +589,7 @@ pub fn build(mut input: Input, uturn_s: u32) -> Graph {
         let mut seq = Vec::new();
         let (mut i, mut a, mut len) = (0, id_at(0, &mut coords), 0.0);
         for k in 1..r.len() {
-            len += metres(pts[k - 1], pts[k]);
+            len += geo::dist_m(pts[k - 1], pts[k]);
             if ranks.rank(r[k]).is_none() {
                 continue;
             }
@@ -868,11 +863,7 @@ pub fn run(args: GraphArgs) -> Result<()> {
             .copied()
             .zip(input.coords.iter().copied())
             .collect();
-        let near = |id: &i64| {
-            at.get(id).is_some_and(|&q| {
-                omp_core::geo::dist(p, q) * omp_core::geo::metres_per_unit(p) <= 50.0
-            })
-        };
+        let near = |id: &i64| at.get(id).is_some_and(|&q| geo::dist_m(p, q) <= 50.0);
         for r in &input.restrictions {
             let hit = match &r.via {
                 Via::Node(n) => near(n),

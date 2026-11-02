@@ -386,20 +386,7 @@ pub fn address_streets(m: &Merged, admin: &Admin) -> Vec<AddressStreet> {
         .par_iter()
         .map(|g| {
             let us: Vec<&Unattached> = g.iter().map(|x| &m.unattached[x.2 as usize]).collect();
-            let mut xs: Vec<u32> = us.iter().map(|u| u.p[0]).collect();
-            let mut ys: Vec<u32> = us.iter().map(|u| u.p[1]).collect();
-            xs.sort_unstable();
-            ys.sort_unstable();
-            let p = [xs[xs.len() / 2], ys[ys.len() / 2]];
-            let mpu = geom::metres_per_unit(p);
-            let mut d: Vec<f64> = us
-                .iter()
-                .map(|u| {
-                    (f64::from(u.p[0]) - f64::from(p[0])).hypot(f64::from(u.p[1]) - f64::from(p[1]))
-                        * mpu
-                })
-                .collect();
-            d.sort_by(f64::total_cmp);
+            let (p, radius_m) = geom::spread(us.iter().map(|u| u.p));
             let commonest = |ids: &mut dyn Iterator<Item = u32>| {
                 let mut counts: HashMap<u32, u32> = HashMap::new();
                 for id in ids {
@@ -421,7 +408,7 @@ pub fn address_streets(m: &Merged, admin: &Admin) -> Vec<AddressStreet> {
                 name: m.names.list[name as usize].clone(),
                 p,
                 chain,
-                radius_m: d[((d.len() - 1) as f64 * 0.9) as usize],
+                radius_m,
                 postal,
                 addresses: us.len() as u64,
             }

@@ -77,33 +77,9 @@ pub fn label_point(rings: &[Vec<P>]) -> Option<(P, u8, u32)> {
     let precision = (span / 200.0).max(256.0);
     // Simplified to a quarter of the precision first: big lakes and rivers have hundreds of
     // thousands of vertices, and polylabel measures the distance to every edge per cell.
-    let k = (64 - (span as u64).leading_zeros()).saturating_sub(30);
     let simple: Vec<Vec<P>> = rings
         .iter()
-        .filter_map(|r| {
-            let mut local: Vec<[i32; 2]> = r
-                .iter()
-                .map(|p| {
-                    [
-                        ((p[0] - b.min[0]) >> k) as i32,
-                        ((p[1] - b.min[1]) >> k) as i32,
-                    ]
-                })
-                .collect();
-            local.push(local[0]);
-            let mut s = geom::simplify(&local, precision / 4.0 / f64::from(1u32 << k));
-            s.pop();
-            (s.len() >= 3).then(|| {
-                s.iter()
-                    .map(|q| {
-                        [
-                            ((q[0] as u32) << k) + b.min[0],
-                            ((q[1] as u32) << k) + b.min[1],
-                        ]
-                    })
-                    .collect()
-            })
-        })
+        .filter_map(|r| geom::simplify_ring(r, b, precision / 4.0))
         .collect();
     let p = match simple.is_empty() {
         true => geom::polylabel(rings, precision, 4096),

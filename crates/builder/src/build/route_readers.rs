@@ -46,9 +46,7 @@ fn dirs(s: &Segment) -> [Option<Dir>; 2] {
 }
 
 fn length_m(pts: &[geo::P]) -> f64 {
-    pts.windows(2)
-        .map(|w| geo::dist(w[0], w[1]) * geo::metres_per_unit(w[0]))
-        .sum()
+    pts.windows(2).map(|w| geo::dist_m(w[0], w[1])).sum()
 }
 
 /// Drops the pack's chunk files from the system's file cache, so the next reads are cold.

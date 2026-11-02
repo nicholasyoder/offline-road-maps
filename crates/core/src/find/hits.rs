@@ -51,8 +51,7 @@ pub(super) fn same(
         HitKind::Entry(Kind::Street) => (radius(a)? + radius(b)? + 1_000.0, a.number_missing),
         _ => (3_000.0, true),
     };
-    Ok((!context || a.context == b.context)
-        && geo::dist(a.p, b.p) * geo::metres_per_unit(a.p) <= near_m)
+    Ok((!context || a.context == b.context) && geo::dist_m(a.p, b.p) <= near_m)
 }
 
 impl Run<'_> {

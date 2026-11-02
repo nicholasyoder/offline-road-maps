@@ -26,27 +26,6 @@ fn centre(c: (u32, u32)) -> [f64; 2] {
     ]
 }
 
-/// Even-odd test against every ring.
-pub fn ring_contains(rings: &[Vec<P>], p: P) -> bool {
-    let (px, py) = (f64::from(p[0]), f64::from(p[1]));
-    let mut inside = false;
-    for ring in rings {
-        let n = ring.len();
-        for i in 0..n {
-            let (a, b) = (ring[i], ring[(i + 1) % n]);
-            let (ay, by) = (f64::from(a[1]), f64::from(b[1]));
-            if (ay > py) != (by > py) {
-                let (ax, bx) = (f64::from(a[0]), f64::from(b[0]));
-                let x = ax + (py - ay) / (by - ay) * (bx - ax);
-                if x > px {
-                    inside = !inside;
-                }
-            }
-        }
-    }
-    inside
-}
-
 /// Douglas–Peucker per ring at `tolerance_m`; rings that fall under 3 points are dropped.
 pub fn simplify_rings(rings: &[Vec<P>], tolerance_m: f64) -> Vec<Vec<P>> {
     let Some(&first) = rings.first().and_then(|r| r.first()) else {
@@ -55,34 +34,7 @@ pub fn simplify_rings(rings: &[Vec<P>], tolerance_m: f64) -> Vec<Vec<P>> {
     let tol = tolerance_m / geom::metres_per_unit(first);
     rings
         .iter()
-        .filter_map(|r| {
-            let b = BBox::of(r.iter().copied());
-            let span = (b.max[0] - b.min[0]).max(b.max[1] - b.min[1]);
-            // Shift so local coordinates fit in i32.
-            let k = (64 - u64::from(span).leading_zeros()).saturating_sub(30);
-            let mut local: Vec<[i32; 2]> = r
-                .iter()
-                .map(|p| {
-                    [
-                        ((p[0] - b.min[0]) >> k) as i32,
-                        ((p[1] - b.min[1]) >> k) as i32,
-                    ]
-                })
-                .collect();
-            local.push(local[0]);
-            let mut s = geom::simplify(&local, tol / f64::from(1u32 << k));
-            s.pop();
-            (s.len() >= 3).then(|| {
-                s.iter()
-                    .map(|q| {
-                        [
-                            ((q[0] as u32) << k) + b.min[0],
-                            ((q[1] as u32) << k) + b.min[1],
-                        ]
-                    })
-                    .collect()
-            })
-        })
+        .filter_map(|r| geom::simplify_ring(r, BBox::of(r.iter().copied()), tol))
         .collect()
 }
 
@@ -303,7 +255,7 @@ mod tests {
             let x = 9 * s + ((state >> 33) as u32 % (17 * s));
             let y = 9 * s + ((state >> 7) as u32 % (15 * s));
             let want: Vec<u32> = (0..areas.len() as u32)
-                .filter(|&i| ring_contains(&areas[i as usize], [x, y]))
+                .filter(|&i| omp_core::geo::rings_contain(&areas[i as usize], [x, y]))
                 .collect();
             assert_eq!(index.containing([x, y]), want, "at {x}, {y}");
         }
@@ -313,7 +265,7 @@ mod tests {
                 let p = [15 * s + dx * 25, 15 * s + dy * 20];
                 assert_eq!(
                     index.containing(p).contains(&2),
-                    ring_contains(&areas[2], p)
+                    omp_core::geo::rings_contain(&areas[2], p)
                 );
             }
         }

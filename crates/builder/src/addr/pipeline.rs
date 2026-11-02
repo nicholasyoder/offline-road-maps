@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::ValueEnum;
+use omp_core::geo;
 use omp_core::normalize::{HouseNumber, house_number, postcode};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -141,25 +142,12 @@ impl Interner {
     }
 }
 
-fn dist_m(a: P, b: P) -> f64 {
-    let d = (f64::from(a[0]) - f64::from(b[0])).hypot(f64::from(a[1]) - f64::from(b[1]));
-    d * geom::metres_per_unit(a)
-}
-
 fn dist_to_line_m(line: &[P], p: P) -> f64 {
-    let (px, py) = (f64::from(p[0]), f64::from(p[1]));
-    let mut best = f64::INFINITY;
-    for s in line.windows(2) {
-        let (ax, ay) = (f64::from(s[0][0]), f64::from(s[0][1]));
-        let (dx, dy) = (f64::from(s[1][0]) - ax, f64::from(s[1][1]) - ay);
-        let len2 = dx * dx + dy * dy;
-        let t = if len2 > 0.0 {
-            (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        best = best.min((px - ax - t * dx).hypot(py - ay - t * dy));
-    }
+    let q = geo::xy(p);
+    let best = line
+        .windows(2)
+        .map(|s| geo::seg_dist(q, geo::xy(s[0]), geo::xy(s[1])))
+        .fold(f64::INFINITY, f64::min);
     best * geom::metres_per_unit(p)
 }
 
@@ -563,7 +551,7 @@ fn cluster(recs: &[Rec], order: &[u32], bounds: &[(usize, usize)], d: f64) -> Me
             };
             let joined = local
                 .iter()
-                .find(|&&(_, rep)| dist_m(recs[rep as usize].p, r.p) <= limit);
+                .find(|&&(_, rep)| geo::dist_m(recs[rep as usize].p, r.p) <= limit);
             assign[i as usize] = match joined {
                 Some(&(cid, _)) => cid,
                 None => {
