@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::geom::{self, BBox, Geometry, P, Rect, ring_area};
 use crate::pbf::features::Feature;
@@ -32,7 +32,10 @@ pub fn read(
                 .map(|n| n.into_owned())
         })
         .context("no .shp in water polygons zip")?;
-    let mut shp = BufReader::with_capacity(1 << 20, zip.by_name(&name)?);
+    let entry = zip.by_name(&name)?;
+    // What is left of the `.shp` to read, which bounds a record's length.
+    let mut left = entry.size().saturating_sub(100);
+    let mut shp = BufReader::with_capacity(1 << 20, entry);
     let (nw_lat, nw_lon) = geom::unproject(bbox.min);
     let (se_lat, se_lon) = geom::unproject(bbox.max);
     let rect: Rect = [
@@ -42,8 +45,14 @@ pub fn read(
         i64::from(bbox.max[1]),
     ];
 
+    let damaged = || {
+        format!(
+            "{}: damaged ({name}); run `fetch` again",
+            zip_path.display()
+        )
+    };
     let mut header = [0u8; 100];
-    shp.read_exact(&mut header)?;
+    shp.read_exact(&mut header).with_context(damaged)?;
     if i32::from_be_bytes(header[0..4].try_into()?) != 9994 {
         bail!("{name} is not a shapefile");
     }
@@ -58,34 +67,24 @@ pub fn read(
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e.into()),
         }
-        let words = i32::from_be_bytes(rec[4..8].try_into()?) as usize;
-        buf.resize(words * 2, 0);
-        shp.read_exact(&mut buf)?;
         scanned += 1;
-        let i32_at = |o: usize| i32::from_le_bytes(buf[o..o + 4].try_into().unwrap());
-        let f64_at = |o: usize| f64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
-        if i32_at(0) != 5 {
+        let record = || format!("{}, record {scanned}", damaged());
+        let len =
+            u64::try_from(i32::from_be_bytes(rec[4..8].try_into()?)).with_context(record)? * 2;
+        left = left.saturating_sub(8);
+        ensure!(len <= left, "{}: longer than the file", record());
+        left -= len;
+        buf.resize(len as usize, 0);
+        shp.read_exact(&mut buf).with_context(record)?;
+        if Shp(&buf).i32_at(0).with_context(record)? != 5 {
             continue;
         }
-        let (xmin, ymin, xmax, ymax) = (f64_at(4), f64_at(12), f64_at(20), f64_at(28));
+        let b = |o| Shp(&buf).f64_at(o).with_context(record);
+        let (xmin, ymin, xmax, ymax) = (b(4)?, b(12)?, b(20)?, b(28)?);
         if xmax < nw_lon || xmin > se_lon || ymax < se_lat || ymin > nw_lat {
             continue;
         }
-        let parts = i32_at(36) as usize;
-        let points = i32_at(40) as usize;
-        let starts: Vec<usize> = (0..parts).map(|i| i32_at(44 + 4 * i) as usize).collect();
-        let pts_at = 44 + 4 * parts;
-        let mut rings: Vec<Vec<P>> = Vec::with_capacity(parts);
-        for (i, &s) in starts.iter().enumerate() {
-            let e = starts.get(i + 1).copied().unwrap_or(points);
-            let mut ring: Vec<P> = (s..e)
-                .map(|k| geom::project(f64_at(pts_at + 16 * k + 8), f64_at(pts_at + 16 * k)))
-                .collect();
-            ring.pop(); // shapefile rings repeat the first point
-            if ring.len() >= 3 {
-                rings.push(ring);
-            }
-        }
+        let mut rings = polygon(&buf).with_context(record)?;
         orient_rings(&mut rings);
         if clip.is_some_and(|c| !rings.iter().any(|r| c.meets(r))) {
             outside += 1;
@@ -103,6 +102,69 @@ pub fn read(
         }
     }
     Ok((features, scanned, outside))
+}
+
+/// A shapefile record's bytes, read with bounds checks.
+struct Shp<'a>(&'a [u8]);
+
+impl Shp<'_> {
+    fn i32_at(&self, o: usize) -> Result<i32> {
+        let b = self.0.get(o..o + 4).context("record too short")?;
+        Ok(i32::from_le_bytes(b.try_into()?))
+    }
+
+    fn f64_at(&self, o: usize) -> Result<f64> {
+        let b = self.0.get(o..o + 8).context("record too short")?;
+        Ok(f64::from_le_bytes(b.try_into()?))
+    }
+
+    /// A count or index at `o`, which must not be negative.
+    fn usize_at(&self, o: usize) -> Result<usize> {
+        usize::try_from(self.i32_at(o)?).context("negative count")
+    }
+}
+
+/// The rings of a polygon record (shape type 5), each without its repeated first point;
+/// rings under three points are left out.
+fn polygon(buf: &[u8]) -> Result<Vec<Vec<P>>> {
+    let r = Shp(buf);
+    let (parts, points) = (r.usize_at(36)?, r.usize_at(40)?);
+    let pts_at = parts
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(44))
+        .context("too many parts")?;
+    let end = points
+        .checked_mul(16)
+        .and_then(|n| n.checked_add(pts_at))
+        .context("too many points")?;
+    ensure!(
+        end <= buf.len(),
+        "{parts} parts and {points} points do not fit the record"
+    );
+    let starts = (0..parts)
+        .map(|i| r.usize_at(44 + 4 * i))
+        .collect::<Result<Vec<_>>>()?;
+    let mut rings: Vec<Vec<P>> = Vec::with_capacity(parts);
+    for (i, &s) in starts.iter().enumerate() {
+        let e = starts.get(i + 1).copied().unwrap_or(points);
+        ensure!(
+            s <= e && e <= points,
+            "part {i} runs from point {s} to {e} of {points}"
+        );
+        let mut ring = (s..e)
+            .map(|k| {
+                Ok(geom::project(
+                    r.f64_at(pts_at + 16 * k + 8)?,
+                    r.f64_at(pts_at + 16 * k)?,
+                ))
+            })
+            .collect::<Result<Vec<P>>>()?;
+        ring.pop(); // shapefile rings repeat the first point
+        if ring.len() >= 3 {
+            rings.push(ring);
+        }
+    }
+    Ok(rings)
 }
 
 /// Orients one ocean piece as ours are: the outer ring clockwise on screen (y down) and the
@@ -141,5 +203,38 @@ mod tests {
         let mut lone = vec![outer];
         orient_rings(&mut lone);
         assert!(ring_area(&lone[0]) > 0.0);
+    }
+
+    /// A polygon record: shape type 5, a bbox, then `parts` and `points` as given, the part
+    /// starts and the points.
+    fn record(parts: i32, points: i32, starts: &[i32], pts: &[[f64; 2]]) -> Vec<u8> {
+        let mut b = 5i32.to_le_bytes().to_vec();
+        b.extend([0u8; 32]);
+        b.extend(parts.to_le_bytes());
+        b.extend(points.to_le_bytes());
+        for s in starts {
+            b.extend(s.to_le_bytes());
+        }
+        for [x, y] in pts {
+            b.extend(x.to_le_bytes());
+            b.extend(y.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn damaged_polygons_are_errors() {
+        let square = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]];
+        let rings = polygon(&record(1, 5, &[0], &square)).unwrap();
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].len(), 4);
+        // More points than the record holds, a negative count, a part past the points, parts
+        // out of order, a record cut short: each an error, none a panic.
+        assert!(polygon(&record(1, 6, &[0], &square)).is_err());
+        assert!(polygon(&record(-1, 5, &[], &square)).is_err());
+        assert!(polygon(&record(1, 5, &[7], &square)).is_err());
+        assert!(polygon(&record(2, 5, &[3, 1], &square)).is_err());
+        assert!(polygon(&record(i32::MAX, i32::MAX, &[0], &square)).is_err());
+        assert!(polygon(&record(1, 5, &[0], &square)[..30]).is_err());
     }
 }
