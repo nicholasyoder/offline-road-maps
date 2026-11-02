@@ -42,7 +42,7 @@ What phase 4 left in place for this:
 
 | Step | Status | Notes |
 |---|---|---|
-| 5.1 Audit: bugs and design | In progress | 2026-11-02: 10 bugs fixed (B1–B10); the owner's triage is complete; the fix sessions A–F are done; the builder's tools are not yet read line by line |
+| 5.1 Audit: bugs and design | **Done** 2026-11-02 | 10 bugs fixed (B1–B10); every finding triaged; fix sessions A–F done; the rest assigned to later steps |
 | 5.2 Audit: performance baseline and profiles | Not started | |
 | 5.3 Settings window | Not started | |
 | 5.4 Map styles in the Map tab | Not started | |
@@ -78,7 +78,9 @@ Read the whole project, crate by crate, with fresh eyes now that every part exis
 
 **Done when:** every module of the three crates has been read, the findings are written up and triaged with the owner, and the small bug fixes are in.
 
-> **In progress 2026-10-30.** Three passes done, covering the app, `omp-core` and the builder's stages (what each pass read, and what it skipped, is in [audit-findings.md](audit-findings.md#passes-so-far)). Bugs B1–B9 are fixed, with tests where one fits (and B10, found 2026-11-02 while fixing R7); the other findings (R, D, C and the performance leads P) are in the same file. Not read line by line: the builder's tools (`fetch/{manifest,regions,sources}` and others), which the next pass covers; `measure` and `report` were removed with D16.
+> **Done 2026-11-02.** The fix sessions A–F of the [order of work](audit-findings.md#order-of-work) are in, and B10 (found while fixing R7). The builder's tools named below are not read line by line: the owner closed the step without that read (2026-11-02), as they are tools rather than build stages. What is left of the findings belongs to other steps: R9 and R12 with the next rebuild; R5, R6 and D4 in 5.3; D5, D13 and B4's style signature in 5.4 and 5.5; R4, D7–D9 and D6's warnings notice in 5.7; D3, D14 and P1 after 5.2's measurement; R10's SHA-256 check, P4 and P5 in 5.12. D6's hidden console is still to be run on Windows.
+>
+> **2026-10-30.** Three passes done, covering the app, `omp-core` and the builder's stages (what each pass read, and what it skipped, is in [audit-findings.md](audit-findings.md#passes-so-far)). Bugs B1–B9 are fixed, with tests where one fits (and B10, found 2026-11-02 while fixing R7); the other findings (R, D, C and the performance leads P) are in the same file. Not read line by line: the builder's tools (`fetch/{manifest,regions,sources}` and others), which the next pass covers; `measure` and `report` were removed with D16.
 >
 > **Left:** the owner's triage is complete (every finding decided 2026-10-30, R9–R12, D17–D19, P4–P5 and C2 as proposed); then the fixes, in the sessions of the [order of work](audit-findings.md#order-of-work): A (R8, R1, R3; done 2026-11-02), B (R2; done 2026-11-02), C (the split of D1 before 5.3, with D2, D6, D10–D12; done 2026-11-02), D (the builder cleanup D16–D17, D19, C2, R10, R11; done 2026-11-02), E (the D15 and D18 helpers; done 2026-11-02) and F (R7 and the scale bar; done 2026-11-02). Every session is done; what the audit still owes is the line-by-line read of the builder's tools named above (R6 is done in 5.3; R9 and R12 change the pack, so they wait for the next rebuild, decision 9; P4 and P5 go to 5.12).
 
@@ -210,6 +212,7 @@ After 4.11's fix the dev machine is within +100 MiB at 300 and 360 dpi (+82 and 
 - **Address merge** (refactor R4.5, left open): profile it on Ohio and North America and take what is clear; it is 13.6 of the 36.7 minutes.
 - **Pack size levers** (roadmap §4): the smallest ponds and streams (waterways are 1.1 GiB), V5 tile groups (8% smaller tiles, about 2.5× the bytes read per viewport), and land cover capped at z12 (about 0.5 GiB, but small patches drop). Measure each on Ohio with before and after screenshots and the pack's size, and write the numbers here. Whether to rebuild North America with one is left until a step next touches the packs, when the owner decides by the time available then (decision 9).
 - Whatever 5.2's builder profile shows.
+- **Inputs checked against `fetch`'s manifest** (R10, owner 2026-11-02): `build` compares each input's size and SHA-256 with `inputs/manifest.toml` and stops on a mismatch, naming the file ("run `fetch` again"). The size check is free; the hash re-reads the inputs (37 GB for North America), so measure it, overlapped with the build's own reads, before taking it into every build. In place before the next rebuild.
 
 **Done when:** the address merge has been profiled and any change taken is measured; the size levers are measured on Ohio and written up.
 
