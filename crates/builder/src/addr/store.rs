@@ -23,18 +23,12 @@ use crate::geom::P;
 use crate::street::encode::{Blocks, blocked, read_blocks, string};
 use crate::street::{STEP_M, Table};
 
-pub const ASTR: [u8; 4] = *b"ASTR";
-pub const ASUF: [u8; 4] = *b"ASUF";
-pub const AUNI: [u8; 4] = *b"AUNI";
-pub const ALSE: [u8; 4] = *b"ALSE";
-pub const ARNG: [u8; 4] = *b"ARNG";
-pub const APCD: [u8; 4] = *b"APCD";
+/// The section IDs; `ALSE` blocks hold whole cells of [`CELL_ZOOM`], and its positions are
+/// in units of 2^[`LSE_SHIFT`] world units.
+pub use omp_core::addr::{ALSE, APCD, ARNG, ASTR, ASUF, AUNI, CELL_ZOOM, LSE_SHIFT};
+
 /// Uncompressed bytes per block, about.
 pub const BLOCK: usize = 16 << 10;
-/// `ALSE` blocks hold whole cells of this zoom.
-pub const CELL_ZOOM: u32 = 14;
-/// `ALSE` positions are in units of 2^7 world units (about 1 m at the equator).
-const LSE_SHIFT: u32 = 7;
 
 /// An attached address on its street. `suffix` and `code` are ranks in the sorted suffix and
 /// postcode lists (0 for none); `addr` finds its units.

@@ -12,8 +12,7 @@ use crate::admin::towns::Source;
 #[cfg(test)]
 use crate::geom::P;
 
-pub const SSTR: [u8; 4] = *b"SSTR";
-pub const SGEO: [u8; 4] = *b"SGEO";
+pub use omp_core::street::{SGEO, SSTR};
 const LEVEL: i32 = 19;
 /// Uncompressed bytes per block, about.
 pub const BLOCK: usize = 32 << 10;

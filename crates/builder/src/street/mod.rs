@@ -37,11 +37,10 @@ pub const PIECE_MAX_M: f64 = 5_000.0;
 pub const STREET_MAX_M: f64 = 20_000.0;
 /// Douglas–Peucker tolerance of the stored geometry (addresses are quantized to 5 m).
 pub const SIMPLIFY_M: f64 = 2.0;
-/// Stored points are in units of 2^6 world units (about 0.6 m at the equator).
-pub const SHIFT: u32 = 6;
-/// Address offsets are stored in steps of this many metres (`ASTR`); each part starts on a
-/// fresh step, so a rounded offset belongs to one part only.
-pub const STEP_M: f64 = 5.0;
+/// Stored points are in units of 2^[`SHIFT`] world units; address offsets in steps of
+/// [`STEP_M`] (`ASTR`), each part starting on a fresh step, so a rounded offset belongs to one
+/// part only. Both are the format's, from `omp_core`.
+pub use omp_core::street::{SHIFT, STEP_M};
 
 pub struct Street {
     /// The commonest `name` of its ways, by length (or the first alternate or ref).

@@ -7,16 +7,11 @@ use serde::Serialize;
 use super::{Admin, PACK_TOLERANCE_M, abbreviation, index};
 use crate::geom::BBox;
 
-pub const SADM: [u8; 4] = *b"SADM";
-pub const SAPL: [u8; 4] = *b"SAPL";
+pub use omp_core::admin::{FLAG_BROKEN, FLAG_TOWN, SADM, SAPL, SAPL_SHIFT};
+
 const LEVEL: i32 = 19;
 /// Uncompressed bytes per `SAPL` block, about. `SAPL` has the street sections' layout.
 const BLOCK: usize = 64 << 10;
-/// `SAPL` coordinates are in units of 2^6 world units (about 0.6 m at the equator).
-pub const SAPL_SHIFT: u32 = 6;
-
-pub const FLAG_TOWN: u64 = 1;
-pub const FLAG_BROKEN: u64 = 2;
 
 #[derive(Serialize, Default)]
 pub struct Sizes {

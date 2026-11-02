@@ -9,13 +9,9 @@ use serde::Serialize;
 
 use super::{Entry, Index, Kind};
 use crate::geom::P;
-use crate::street::SHIFT;
 use crate::street::encode::{Blocks, blocked, read_blocks, string};
 
-pub const SENT: [u8; 4] = *b"SENT";
-pub const STWN: [u8; 4] = *b"STWN";
-pub const SFST: [u8; 4] = *b"SFST";
-pub const SPST: [u8; 4] = *b"SPST";
+pub use omp_core::search::{SENT, SFST, SHIFT, SPST, STWN};
 const LEVEL: i32 = 19;
 /// Uncompressed bytes per `SENT` block, about.
 pub const BLOCK: usize = 16 << 10;
