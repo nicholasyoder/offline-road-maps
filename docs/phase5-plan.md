@@ -43,7 +43,7 @@ What phase 4 left in place for this:
 | Step | Status | Notes |
 |---|---|---|
 | 5.1 Audit: bugs and design | **Done** 2026-11-02 | 10 bugs fixed (B1–B10); every finding triaged; fix sessions A–F done; the rest assigned to later steps |
-| 5.2 Audit: performance baseline and profiles | In progress | Baseline and all profiles done (the North America build, P20, 2026-11-02), leads triaged by the owner 2026-11-02 and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)); left: the owner's decision on P20's new leads P21–P23 |
+| 5.2 Audit: performance baseline and profiles | Done 2026-11-02 | Baseline and all profiles done (the North America build, P20), every lead triaged by the owner and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)) |
 | 5.3 Settings window | Not started | |
 | 5.4 Map styles in the Map tab | Not started | |
 | 5.5 Dark UI with the night style | Not started | |
@@ -102,7 +102,7 @@ Measure before changing anything, and look for slow and wasteful code that the p
 
 **Done when:** the baseline is recorded, each profile above has been run once, and the leads table is written and triaged with the owner.
 
-> **In progress 2026-11-02.** Everything is in [perf-findings.md](perf-findings.md), with the logs in `$OMP_WORK/measure/p5/5.2/`. The bench gained two hooks for it: a `count-allocs` feature (a counting allocator per thread, `allocs.rs`), so reports give the UI thread's allocations per frame, and the idle period's repaint causes (`idle_wakes`); and a `profiling` build profile (release with symbols).
+> **Done 2026-11-02** (commits `c97cd87`, `65cbbbe`, `5f040b2` and this one). Everything is in [perf-findings.md](perf-findings.md), with the logs in `$OMP_WORK/measure/p5/5.2/`. The bench gained two hooks for it: a `count-allocs` feature (a counting allocator per thread, `allocs.rs`), so reports give the UI thread's allocations per frame, and the idle period's repaint causes (`idle_wakes`); and a `profiling` build profile (release with symbols).
 >
 > - **Baseline** (dev machine, current `master`): warm as in 4.11 (frame p95 1.33 ms, RSS 328 MiB, idle 0.6%, coast to coast 342 ms); cold from the stick start-up 3.47 s, the first route 10.2 s (6.2 s once start-up has settled), the first search's answer 1.04 s.
 > - **Start-up and the first reads are FAT chain walks:** on a freshly mounted FAT32 stick, the first read at an offset deep in a chunk walks the file's cluster chain one 512-byte FAT sector at a time (about 1 s per 1.3 GiB of offset). Two such reads, the section table at the end of the last chunk and the tile index 2 GB into `.001`, are 3.3 of start-up's 3.5 s (P6, P7). 3.9's pack had the same layout, so this does not by itself explain the regression from 2.6 s.
@@ -111,7 +111,7 @@ Measure before changing anything, and look for slow and wasteful code that the p
 > - **Builder:** the Ohio merge profiled (P4: reading the sources dominates, not `intern_names`).
 > - **Triage (owner, 2026-11-02):** P6 and P7 left: the chain walk is FAT32's alone (on exFAT a read 4 GB into a chunk is one device read, measured on the data disk), so the README recommends exFAT sticks (5.7) and FAT32 stays supported, slower on first reads; the FAT32 chunking costs nothing measurable and stays. Routing (P8–P10) and cold search (P16) only where easy and plain. Still frames must do nothing (P11–P15: fix, before 5.3). Memory (P17) measured without costing speed; printing's memory and banded drawing, identical to unbanded (P18, P19). The leads are grouped into sessions G–L in [perf-findings.md](perf-findings.md#order-of-work).
 > - **North America build profiled (P20, 2026-11-02),** with the IDE closed, in a 56 GB scope: 2,919 s, peak 49.4 GiB, pack `27dbaceb…` (the baseline for 5.12). The merge's 810 s keep only 3.7 of 16 threads busy: the main thread is on the CPU 65% of it, in `Streets::build` (40% of its merge samples; P4's `intern_names` 11 points of that, about 55 s) and `normalize`'s per-record interning (27%), not in reading or attaching. Other single-threaded stretches: the routing graph about 105 s, the streets stage about 55 s. New leads P21 (a parallel merge, covering P4), P22 and P23 for 5.12; P5 is seconds, as estimated ([the North America build](perf-findings.md#the-north-america-build-p20)).
-> - **Left:** the owner's decision on P21–P23 (session L).
+> - **P21–P23 taken** by the owner (2026-11-02), in session L with P4 and P5.
 
 ## 5.3 Settings window
 
