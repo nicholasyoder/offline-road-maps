@@ -903,7 +903,11 @@ fn item_row<T>(
         ui.allocate_ui_with_layout(
             egui::vec2(w, ROW_H),
             egui::Layout::left_to_right(egui::Align::Center),
-            |ui| ui.add(egui::Label::new(text).truncate().selectable(false)),
+            |ui| {
+                // The icons start after the full width, not after the text.
+                ui.set_min_width(w);
+                ui.add(egui::Label::new(text).truncate().selectable(false))
+            },
         );
         let rename = icon_button(ui, Glyph::Rename, ROW_H);
         let copy = copy.then(|| icon_button(ui, Glyph::Copy, ROW_H));

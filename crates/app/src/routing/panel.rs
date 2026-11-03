@@ -236,9 +236,6 @@ impl RouteUi {
             });
             let row = row.response;
             self.targets.push((Target::Row(i), row.rect));
-            if n > 1 && row.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-            }
             row.dnd_set_drag_payload(i);
             if row.clicked() {
                 edits.push(Edit::Show(i));
