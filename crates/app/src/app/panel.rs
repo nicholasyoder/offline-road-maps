@@ -391,7 +391,6 @@ fn side_panel(
                 Page::Print => {
                     let around = printui::Around {
                         cam: p.camera,
-                        units,
                         has_route: p.routing.route.is_some(),
                         route_bounds: p.routing.route_bounds(),
                         styles: p.styles,

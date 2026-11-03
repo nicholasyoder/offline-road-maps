@@ -81,7 +81,6 @@ pub struct Inputs<'a> {
 /// What the side panel tells the page about the map.
 pub struct Around<'a> {
     pub cam: &'a Camera,
-    pub units: Units,
     pub has_route: bool,
     pub route_bounds: Option<[f64; 4]>,
     /// The styles to choose from, and the id of the one on screen.
@@ -352,6 +351,9 @@ impl PrintUi {
                         });
                     ui.end_row();
                 }
+                ui.label("Copies");
+                ui.add(egui::DragValue::new(&mut settings.copies).range(1..=99));
+                ui.end_row();
                 ui.label("Text size");
                 let mut percent = settings.text.0;
                 if ui
@@ -398,16 +400,9 @@ impl PrintUi {
                         .on_hover_text("Print the route without its numbered stop markers");
                     ui.end_row();
                 }
-                ui.label("Copies");
-                ui.add(egui::DragValue::new(&mut settings.copies).range(1..=99));
-                ui.end_row();
             });
         if self.kind == Kind::Map {
             let layout = self.layout(settings);
-            if let Some(area) = &self.area {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(area.scale_text(&layout, around.units)).color(ink()));
-            }
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 if ui

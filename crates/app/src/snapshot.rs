@@ -466,13 +466,12 @@ impl Snapshot {
             let sw = omp_core::geo::unit_to_lonlat([ground[0], ground[1]]);
             let ne = omp_core::geo::unit_to_lonlat([ground[2], ground[3]]);
             msg = format!(
-                "map page: z{:.2}, {} tiles, {} labels, map {:.0} ms, egui {:.0} ms; {}; covers {:.4},{:.4} to {:.4},{:.4}",
+                "map page: z{:.2}, {} tiles, {} labels, map {:.0} ms, egui {:.0} ms; covers {:.4},{:.4} to {:.4},{:.4}",
                 stats.z,
                 stats.tiles,
                 stats.labels,
                 stats.map_ms,
                 stats.egui_ms,
-                area.scale_text(&layout, units),
                 sw[1],
                 sw[0],
                 ne[1],

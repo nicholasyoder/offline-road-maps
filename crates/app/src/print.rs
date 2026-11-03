@@ -11,7 +11,7 @@ use omp_core::geo;
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{self, Camera};
-use crate::scale::{self, Units};
+use crate::scale;
 
 pub const MM_PT: f64 = 72.0 / 25.4;
 /// Margins on every side, 0.25 in: the command-line CUPS tools do not report the
@@ -339,67 +339,11 @@ impl Area {
         let per_world = layout.map_size()[0] / self.width;
         scale::metres_per_point(lat, per_world)
     }
-
-    /// "1:250,000, 1 in ≈ 4 mi" (or "1 cm ≈ 2.5 km", with kilometres).
-    pub fn scale_text(&self, layout: &Layout, units: Units) -> String {
-        let per_pt = self.metres_per_page_point(layout);
-        let ratio = per_pt * 72.0 / 0.0254;
-        let ratio = round_sig(ratio, 2);
-        let mut text = format!("1:{}", thousands(ratio));
-        let inch = per_pt * 72.0;
-        text += &match units {
-            Units::Kilometres => {
-                format!(", 1 cm ≈ {}", length(per_pt * 72.0 / 2.54, false))
-            }
-            _ => format!(", 1 in ≈ {}", length(inch, true)),
-        };
-        text
-    }
 }
 
 /// The map window's width in points: the map area's on paper over the text size.
 fn window_width(layout: &Layout) -> f64 {
     layout.map_size()[0] / layout.text.factor()
-}
-
-/// A length in metres as "4 mi" or "2.5 km", two significant digits.
-fn length(m: f64, imperial: bool) -> String {
-    let (v, unit) = if imperial {
-        let miles = m / 1609.344;
-        if miles >= 0.1 {
-            (miles, "mi")
-        } else {
-            (m / 0.3048, "ft")
-        }
-    } else if m >= 1000.0 {
-        (m / 1000.0, "km")
-    } else {
-        (m, "m")
-    };
-    let v = round_sig(v, 2);
-    let digits = if v >= 10.0 { 0 } else { 1 };
-    let text = format!("{v:.digits$}");
-    format!("{} {unit}", text.trim_end_matches(".0"))
-}
-
-fn round_sig(v: f64, digits: i32) -> f64 {
-    if v <= 0.0 || !v.is_finite() {
-        return 0.0;
-    }
-    let p = 10f64.powi(v.log10().floor() as i32 - digits + 1);
-    (v / p).round() * p
-}
-
-fn thousands(v: f64) -> String {
-    let s = format!("{v:.0}");
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -538,26 +482,6 @@ mod tests {
         let (len, text) = scale::bar(per_pt, 120.0, false);
         assert_eq!(text, "10 km");
         assert!((len * per_pt - 10_000.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn scale_text_reads_well() {
-        let l = layout();
-        let world = geo::EARTH_CIRCUMFERENCE_M;
-        // 1:250,000 on the page: 756 pt = 756/72*0.0254 m of paper = 0.2667 m -> 66.7 km.
-        let paper_m = l.map_size()[0] / 72.0 * 0.0254;
-        let area = Area {
-            center: [0.5, 0.5],
-            width: paper_m * 250_000.0 / world,
-        };
-        assert_eq!(
-            area.scale_text(&l, Units::Miles),
-            "1:250,000, 1 in ≈ 3.9 mi"
-        );
-        assert_eq!(
-            area.scale_text(&l, Units::Kilometres),
-            "1:250,000, 1 cm ≈ 2.5 km"
-        );
     }
 
     #[test]
