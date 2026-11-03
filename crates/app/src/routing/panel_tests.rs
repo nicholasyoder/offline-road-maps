@@ -252,11 +252,11 @@ fn optimize_stop_order() {
     u.answer();
     assert!(u.r.can_optimize());
 
-    // The window opens beside the panel, off the page's own rows.
+    // The window opens in a window of its own.
     assert!(!u.drawn(Target::Optimize));
     u.click(Target::OptimizeWindow);
     u.frame(Vec::new());
-    assert!(u.r.optimize_open && u.at(Target::Optimize).x > 360.0);
+    assert!(u.r.optimize_open && u.drawn(Target::Optimize));
 
     // Keeping both ends by default: b and c swap, and it says what that saved.
     u.click(Target::Optimize);
@@ -300,10 +300,14 @@ fn optimize_stop_order() {
     assert!(matches!(u.r.reordered, Some(Reordered::Already)));
     assert!(!u.drawn(Target::Undo));
     assert!(u.drawn(Target::Optimize));
+    // (Here the window is drawn inside the test's, over the panel's buttons.)
+    u.click(Target::CloseOptimize);
     u.click(Target::Reverse);
     assert!(u.r.reordered.is_none());
     u.answer();
     assert_eq!(u.names(), "dcba");
+    u.click(Target::OptimizeWindow);
+    u.frame(Vec::new());
 
     // A round trip: from the first, every other stop reordered, and back.
     u.click(Target::RoundTrip);
@@ -334,7 +338,7 @@ fn optimize_stop_order() {
     u.click(Target::OptimizeWindow);
     u.frame(Vec::new());
     assert!(u.drawn(Target::Optimize));
-    u.click(Target::OptimizeWindow);
+    u.click(Target::CloseOptimize);
     assert!(!u.r.optimize_open);
 }
 

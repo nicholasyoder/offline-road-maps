@@ -19,6 +19,7 @@ mod bench;
 mod cache;
 mod camera;
 mod config;
+mod dialog;
 mod files;
 mod here;
 mod labels;

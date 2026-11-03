@@ -17,6 +17,7 @@ use eframe::egui::{
 };
 
 use crate::camera::Camera;
+use crate::dialog::{self, Size};
 use crate::files::{self, Browser, Mode, Outcome};
 use crate::layers::Layers;
 use crate::packs;
@@ -575,15 +576,23 @@ impl PrintUi {
             return;
         }
         at = at.min(n - 1);
-        let mut open = true;
-        let screen = ctx.content_rect();
-        let height = (screen.height() - 120.0).max(200.0);
-        egui::Window::new("Page preview")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
+        // What fits on the screen: the monitor's, now that the preview is not kept within
+        // the map's window.
+        let screen = ctx
+            .input(|i| i.viewport().monitor_size)
+            .unwrap_or_else(|| ctx.content_rect().size());
+        let height = (screen.y - 120.0).max(200.0);
+        let tex = &self.preview.pages[at];
+        let fit = {
+            let size = tex.size_vec2();
+            size * (height / size.y).min((screen.x - 60.0) / size.x).min(1.5)
+        };
+        let closed = dialog::show(
+            ctx,
+            "page-preview",
+            "Page preview",
+            Size::Fit(fit.x + 24.0),
+            |ui| {
                 if n > 1 {
                     ui.horizontal(|ui| {
                         if ui
@@ -601,13 +610,7 @@ impl PrintUi {
                         }
                     });
                 }
-                let tex = &self.preview.pages[at];
-                let size = tex.size_vec2();
-                let scale = (height / size.y)
-                    .min((screen.width() - 60.0) / size.x)
-                    .min(1.5);
-                let shown = size * scale;
-                let (rect, _) = ui.allocate_exact_size(shown, Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(fit, Sense::hover());
                 ui.painter()
                     .rect_filled(rect.expand(1.0), 0.0, Color32::from_gray(150));
                 ui.painter().image(
@@ -616,8 +619,9 @@ impl PrintUi {
                     Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                     Color32::WHITE,
                 );
-            });
-        self.big = open.then_some(at);
+            },
+        );
+        self.big = (!closed).then_some(at);
     }
 
     /// Whether the rectangle is on the map: the print page shows a map page.

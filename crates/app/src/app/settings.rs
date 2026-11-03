@@ -7,6 +7,7 @@ use eframe::egui;
 
 use super::App;
 use crate::config::{Config, Display, Movement, Start};
+use crate::dialog::{self, Size};
 use crate::render;
 use crate::scale::Units;
 use crate::theme::INK;
@@ -43,24 +44,18 @@ impl App {
         };
         let pack_units = self.map.as_ref().map(|m| m.units);
         let running = self.msaa_now;
-        let builder = egui::ViewportBuilder::default()
-            .with_title("Settings – Offline Road Maps")
-            .with_inner_size([500.0, 640.0])
-            .with_min_inner_size([380.0, 300.0]);
-        let mut close = false;
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("settings"),
-            builder,
-            |ui, _class| {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        contents(ui, ctx, &mut state, &mut self.cfg, pack_units, running);
-                    });
+        // Fits its content, up to what the monitor has room for, and scrolls past that.
+        let room = ctx
+            .input(|i| i.viewport().monitor_size)
+            .map_or(700.0, |m| m.y - 120.0)
+            .max(300.0);
+        let close = dialog::show(ctx, "settings", "Settings", Size::Fit(500.0), |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(room)
+                .show(ui, |ui| {
+                    contents(ui, ctx, &mut state, &mut self.cfg, pack_units, running);
                 });
-                close = ui.input(|i| i.viewport().close_requested())
-                    || ui.input(|i| i.key_pressed(egui::Key::Escape));
-            },
-        );
+        });
         if !close {
             self.settings = Some(state);
         }

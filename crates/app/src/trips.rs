@@ -16,6 +16,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::config;
+use crate::dialog::{self, Size};
 use crate::files::{self, Browser, Mode, Outcome, Saved};
 use crate::pins::{self, PinRef, PinsUi};
 use crate::theme::{ACCENT, APPROX, Glyph, INK, WEAK, glyph_button};
@@ -332,51 +333,44 @@ impl TripsUi {
     pub fn save_window(&mut self, ctx: &egui::Context, exe_dir: &Path) -> Option<Named> {
         let w = self.save.as_mut()?;
         let mut targets = Vec::new();
-        let mut open = true;
         let (mut save, mut cancel, mut elsewhere) = (false, false, false);
-        egui::Window::new("Save trip")
-            .id(egui::Id::unique("save-trip"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(360.0);
-                ui.horizontal(|ui| {
-                    ui.label("Name");
-                    let r = ui.add(egui::TextEdit::singleline(&mut w.name).desired_width(240.0));
-                    if r.changed() {
-                        w.replace = false;
-                    }
-                    save |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                });
-                if w.replace {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "A trip named “{}” exists. Save again to replace it.",
-                            files::file_name(&w.name)
-                        ))
-                        .color(APPROX),
-                    );
+        let closed = dialog::show(ctx, "save-trip", "Save trip", Size::Fit(384.0), |ui| {
+            ui.set_max_width(360.0);
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                let r = ui.add(egui::TextEdit::singleline(&mut w.name).desired_width(240.0));
+                if r.changed() {
+                    w.replace = false;
                 }
-                if let Some(e) = &w.error {
-                    ui.add(egui::Label::new(egui::RichText::new(e).color(APPROX)).wrap());
-                }
-                ui.horizontal(|ui| {
-                    let label = if w.replace { "Replace" } else { "Save" };
-                    let r = ui.add_enabled(!w.name.trim().is_empty(), egui::Button::new(label));
-                    targets.push(("save-window".to_string(), r.rect));
-                    save |= r.clicked();
-                    cancel = ui.button("Cancel").clicked();
-                    elsewhere = ui
-                        .button("Save elsewhere…")
-                        .on_hover_text("Choose a folder and file in the file browser")
-                        .clicked();
-                });
+                save |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             });
+            if w.replace {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "A trip named “{}” exists. Save again to replace it.",
+                        files::file_name(&w.name)
+                    ))
+                    .color(APPROX),
+                );
+            }
+            if let Some(e) = &w.error {
+                ui.add(egui::Label::new(egui::RichText::new(e).color(APPROX)).wrap());
+            }
+            ui.horizontal(|ui| {
+                let label = if w.replace { "Replace" } else { "Save" };
+                let r = ui.add_enabled(!w.name.trim().is_empty(), egui::Button::new(label));
+                targets.push(("save-window".to_string(), r.rect));
+                save |= r.clicked();
+                cancel = ui.button("Cancel").clicked();
+                elsewhere = ui
+                    .button("Save elsewhere…")
+                    .on_hover_text("Choose a folder and file in the file browser")
+                    .clicked();
+            });
+        });
         self.targets.retain(|t| t.0 != "save-window");
         self.targets.extend(targets);
-        if !open || cancel {
+        if closed || cancel {
             self.save = None;
             return None;
         }

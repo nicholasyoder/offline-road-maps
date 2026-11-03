@@ -25,6 +25,7 @@ use super::{
     END, LegAlts, Place, Reordered, RouteUi, START, StopAction, VIA, delta_text, duration_text,
 };
 use crate::camera::{self, Camera};
+use crate::dialog::{self, Size};
 use crate::scale::Units;
 use crate::search::distance_text;
 use crate::theme::{ACCENT, APPROX, Glyph, INK, WEAK, glyph_button};
@@ -126,9 +127,7 @@ impl RouteUi {
             ui.add_space(4.0);
         }
         self.options(ui, &mut edits);
-        // Beside the panel, level with its buttons.
-        let at = Pos2::new(ui.max_rect().right() + 12.0, ui.min_rect().top());
-        self.optimize_window(&ui.ctx().clone(), at, units, &mut edits);
+        self.optimize_window(&ui.ctx().clone(), units, &mut edits);
         ui.separator();
         self.summary(ui, units, &mut edits);
         let left = ui.available_height();
@@ -578,25 +577,17 @@ impl RouteUi {
 
     /// The *Optimize stop order* window: the ends it keeps, Optimize (or Cancel while it
     /// runs), and what it did last, with Undo. Closing it lets a search running finish.
-    fn optimize_window(
-        &mut self,
-        ctx: &egui::Context,
-        at: Pos2,
-        units: Units,
-        edits: &mut Vec<Edit>,
-    ) {
+    fn optimize_window(&mut self, ctx: &egui::Context, units: Units, edits: &mut Vec<Edit>) {
         if !self.optimize_open {
             return;
         }
-        let mut open = true;
         let mut close = false;
-        egui::Window::new("Optimize stop order")
-            .open(&mut open)
-            .collapsible(false)
-            .auto_sized()
-            .pivot(Align2::LEFT_TOP)
-            .default_pos(at)
-            .show(ctx, |ui| {
+        let closed = dialog::show(
+            ctx,
+            "optimize",
+            "Optimize stop order",
+            Size::Fit(304.0),
+            |ui| {
                 ui.set_max_width(280.0);
                 let round = self.ends.round_trip;
                 let boxes = [
@@ -691,8 +682,9 @@ impl RouteUi {
                     self.targets.push((Target::CloseOptimize, r.rect));
                     close = r.clicked();
                 });
-            });
-        self.optimize_open = open && !close;
+            },
+        );
+        self.optimize_open = !closed && !close;
     }
 
     /// The totals, each leg's row, and the notices.

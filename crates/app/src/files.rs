@@ -11,6 +11,7 @@ use eframe::egui;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::dialog::{self, Size};
 use crate::theme::{APPROX, INK, WEAK};
 
 /// The extension of trips and pushpin sets.
@@ -251,15 +252,10 @@ impl Browser {
     /// Draws the window. Returns the file picked, or that the window was closed.
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<Outcome> {
         let mut out = None;
-        let mut open = true;
-        egui::Window::new(self.title.clone())
-            .id(egui::Id::unique("file-browser"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size([460.0, 360.0])
-            .show(ctx, |ui| out = self.body(ui));
-        if !open {
+        let title = self.title.clone();
+        let size = Size::Resizable(egui::Vec2::new(460.0, 360.0));
+        let closed = dialog::show(ctx, "file-browser", &title, size, |ui| out = self.body(ui));
+        if closed {
             out = Some(Outcome::Cancelled);
         }
         out
