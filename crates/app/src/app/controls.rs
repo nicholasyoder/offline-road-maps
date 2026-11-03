@@ -56,7 +56,10 @@ impl App {
                     scale::paint(ui.painter(), rect.min, mpp, units, look);
                     let text = cursor.map_or_else(String::new, |[lon, lat]| lonlat_text(lon, lat));
                     ui.add_space(3.0);
-                    ui.label(egui::RichText::new(text).size(11.0).color(ink()));
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(text).size(11.0).color(ink()))
+                            .extend(),
+                    );
                 });
             });
 
@@ -87,7 +90,7 @@ impl App {
             .fixed_pos(Pos2::new(map_rect.right() - 8.0, credit_rect.top() - 8.0))
             .pivot(Align2::RIGHT_BOTTOM)
             .show(ctx, |ui| {
-                panel.show(ui, |ui| {
+                panel.inner_margin(4).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     // The signs are drawn, not typed: a font's + and − sit off centre.
                     let button = |ui: &mut egui::Ui, plus: bool, tip: &str| {
