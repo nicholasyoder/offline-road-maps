@@ -359,10 +359,6 @@ fn side_panel(
                 *p.page = before;
                 open_print(&ctx, &mut p, print_cfg, printui::Kind::Map);
             }
-            // Leaving the print page stops a printout still being made.
-            if *p.page != Page::Print {
-                p.print.cancel();
-            }
             ui.add(egui::Separator::default().spacing(2.0));
             ui.add_space(3.0);
             match p.page {
