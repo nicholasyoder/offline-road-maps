@@ -532,13 +532,20 @@ fn trips_page_opens_renames_copies_and_deletes() {
             .iter()
             .any(|o| o.renamed == Some((lake.clone(), erie.clone())))
     );
-    // Copied, then the copy deleted: the first click asks, the second deletes.
+    // Copied, then the copy deleted: the first click asks in a window, which Cancel closes
+    // and Delete answers.
     w.click(at(&w, "copy:Erie"));
     let copy = crate::files::path_for(&w.trips.dir, "Erie copy");
     assert!(copy.is_file());
     w.click(at(&w, "delete:Erie copy"));
-    assert!(copy.is_file());
+    w.frame(Vec::new());
+    assert!(copy.is_file() && w.trips.deleting.is_some());
+    w.click(at(&w, "confirm-cancel"));
+    w.frame(Vec::new());
+    assert!(copy.is_file() && w.trips.deleting.is_none());
     w.click(at(&w, "delete:Erie copy"));
+    w.frame(Vec::new());
+    w.click(at(&w, "confirm-delete"));
     assert!(!copy.exists() && erie.is_file());
 
     // A pushpin from the map's menu goes to a new set, and opens on the Search page.
@@ -559,7 +566,9 @@ fn trips_page_opens_renames_copies_and_deletes() {
     w.click(at(&w, "show:Pushpins"));
     assert!(!w.pins.sets[0].shown);
     w.click(at(&w, "delete-set:Pushpins"));
-    w.click(at(&w, "delete-set:Pushpins"));
+    w.frame(Vec::new());
+    assert!(!w.pins.sets.is_empty(), "deleted before the answer");
+    w.click(at(&w, "confirm-delete"));
     assert!(w.pins.sets.is_empty() && !set_file.exists());
 
     // A pushpin's Delete asks first too, then deletes.
@@ -578,8 +587,24 @@ fn trips_page_opens_renames_copies_and_deletes() {
             .center()
     };
     w.click(delete(&w));
+    w.frame(Vec::new());
     assert!(w.pins.pin(open).is_some(), "deleted at once");
     assert_eq!(w.pins.delete_asked, Some(open));
+    let button = |w: &Window, name: &str| {
+        w.pins
+            .buttons
+            .iter()
+            .rev()
+            .find(|b| b.0 == name)
+            .unwrap()
+            .1
+            .center()
+    };
+    w.click(button(&w, "confirm-cancel"));
+    w.frame(Vec::new());
+    assert!(w.pins.pin(open).is_some() && w.pins.delete_asked.is_none());
     w.click(delete(&w));
+    w.frame(Vec::new());
+    w.click(button(&w, "confirm-delete"));
     assert!(w.pins.pin(open).is_none() && w.pins.delete_asked.is_none());
 }

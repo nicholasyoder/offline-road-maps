@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use eframe::egui::{self, Color32, CornerRadius, Pos2, Stroke, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Pos2, Sense, Stroke, Vec2};
 
 use crate::config::UiTheme;
 
@@ -197,9 +197,36 @@ pub enum Glyph {
 /// A square button `side` points wide with `glyph` on it.
 pub fn glyph_button(ui: &mut egui::Ui, glyph: Glyph, side: f32) -> egui::Response {
     let r = ui.add(egui::Button::new("").min_size(Vec2::splat(side)));
-    let stroke = Stroke::new(1.5, ui.style().interact(&r).fg_stroke.color);
-    let c = r.rect.center();
-    let p = ui.painter();
+    let color = ui.style().interact(&r).fg_stroke.color;
+    draw_glyph(ui.painter(), glyph, r.rect, color);
+    r
+}
+
+/// A square button `side` points wide with `glyph` on it, for the end of a [`row`]: just
+/// the symbol, muted, until the pointer is on the button, which then gets a background (a
+/// stronger one while pressed).
+pub fn icon_button(ui: &mut egui::Ui, glyph: Glyph, side: f32) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
+    let color = if r.hovered() || r.is_pointer_button_down_on() {
+        let w = &ui.visuals().widgets;
+        let fill = if r.is_pointer_button_down_on() {
+            w.active.weak_bg_fill
+        } else {
+            w.hovered.weak_bg_fill
+        };
+        ui.painter().rect_filled(rect, WIDGET_RADIUS, fill);
+        ink()
+    } else {
+        weak()
+    };
+    draw_glyph(ui.painter(), glyph, rect, color);
+    r
+}
+
+fn draw_glyph(p: &egui::Painter, glyph: Glyph, rect: egui::Rect, color: Color32) {
+    let side = rect.width();
+    let stroke = Stroke::new(1.5, color);
+    let c = rect.center();
     // The symbol's half size: about a fifth of the button, at least 3 points.
     let h = (side * 0.2).max(3.0);
     match glyph {
@@ -236,8 +263,17 @@ pub fn glyph_button(ui: &mut egui::Ui, glyph: Glyph, side: f32) -> egui::Respons
             let side = Vec2::splat(1.35 * h);
             let back = egui::Rect::from_min_size(c + Vec2::new(-0.55 * h, -1.1 * h), side);
             let front = egui::Rect::from_min_size(c + Vec2::new(-h, -0.45 * h), side);
-            p.rect_stroke(back, 1.0, s, egui::StrokeKind::Middle);
-            p.rect_filled(front, 1.0, ui.style().interact(&r).bg_fill);
+            // The back sheet's edges that show beyond the front one.
+            p.add(egui::Shape::line(
+                vec![
+                    Pos2::new(back.left(), front.top()),
+                    back.left_top(),
+                    back.right_top(),
+                    back.right_bottom(),
+                    Pos2::new(front.right(), back.bottom()),
+                ],
+                s,
+            ));
             p.rect_stroke(front, 1.0, s, egui::StrokeKind::Middle);
         }
         Glyph::Delete => {
@@ -273,7 +309,37 @@ pub fn glyph_button(ui: &mut egui::Ui, glyph: Glyph, side: f32) -> egui::Respons
             }
         }
     }
-    r
+}
+
+/// A list row: `add_contents` lays out its content, and the whole row, across the width and
+/// as high as the content, lights up under the pointer and answers `sense` (a click, or a
+/// click and a drag). Buttons added inside it, such as [`icon_button`]s, take the pointer
+/// first, so the row's click and drag start only where no button is.
+pub fn row<R>(
+    ui: &mut egui::Ui,
+    sense: Sense,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let fill = ui.painter().add(egui::Shape::Noop);
+    let out = ui.scope_builder(egui::UiBuilder::new().sense(sense), |ui| {
+        ui.set_width(ui.available_width());
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(4, 1))
+            .show(ui, add_contents)
+            .inner
+    });
+    let lit = ui.is_enabled()
+        && sense != Sense::hover()
+        && ui.rect_contains_pointer(out.response.rect)
+        && !egui::DragAndDrop::has_any_payload(ui.ctx());
+    if lit {
+        let fill_color = ui.visuals().widgets.hovered.weak_bg_fill;
+        ui.painter().set(
+            fill,
+            egui::Shape::rect_filled(out.response.rect, WIDGET_RADIUS, fill_color),
+        );
+    }
+    out
 }
 
 #[cfg(test)]

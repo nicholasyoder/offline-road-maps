@@ -88,6 +88,35 @@ pub fn show(
     })
 }
 
+/// A question in a window of its own, with a *Cancel* button and `yes` beside it. Returns
+/// `Some(true)` when `yes` was clicked (or Enter pressed) and `Some(false)` when it was
+/// cancelled (or closed, or Escape pressed); the caller then stops asking. `buttons` gets
+/// where *Cancel* and `yes` were drawn, for the tests.
+pub fn confirm(
+    ctx: &egui::Context,
+    title: &str,
+    text: &str,
+    yes: &str,
+    buttons: &mut [Rect; 2],
+) -> Option<bool> {
+    let mut answer = None;
+    let closed = show(ctx, "confirm", title, Size::Fit(340.0), |ui| {
+        ui.label(text);
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let cancel = ui.button("Cancel");
+            let ok = ui.button(yes);
+            *buttons = [cancel.rect, ok.rect];
+            if cancel.clicked() {
+                answer = Some(false);
+            } else if ok.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                answer = Some(true);
+            }
+        });
+    });
+    answer.or(closed.then_some(false))
+}
+
 /// The margins round the content, both sides, as a size.
 fn margins() -> Vec2 {
     Vec2::splat(2.0 * f32::from(MARGIN))

@@ -18,6 +18,7 @@ use omp_core::geo::{self, P, Unit};
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{self, Camera};
+use crate::dialog;
 use crate::files::{self, Saved};
 use crate::keys::{self, Command};
 use crate::pool::{Alloc, Kind, Pool};
@@ -341,10 +342,9 @@ pub struct PinsUi {
     pub errors: Vec<String>,
     /// The set being renamed, and the name typed.
     pub renaming: Option<(usize, String)>,
-    /// The set whose Delete was clicked once.
+    /// The set whose Delete was clicked, asked about in a window.
     pub deleting: Option<usize>,
-    /// The open pin whose Delete was clicked once; the button asks "Delete pushpin?" until
-    /// the second click, as the Trips page's buttons do.
+    /// The open pin whose Delete was clicked, asked about in a window.
     pub(crate) delete_asked: Option<PinRef>,
     /// Where the open pin's buttons were drawn, for the tests.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -695,12 +695,13 @@ impl PinsUi {
         ui: &mut egui::Ui,
         route: &MenuState,
     ) -> Option<(StopAction, Place)> {
-        let r = self.open?;
+        let Some(r) = self.open else {
+            self.delete_asked = None;
+            return None;
+        };
         let mut buttons = Vec::new();
         let mut close = false;
-        let mut delete = false;
         let mut ask = false;
-        let confirming = self.delete_asked == Some(r);
         let mut changed = false;
         let (mut typed, mut left) = (false, false);
         let mut move_to = None;
@@ -801,18 +802,30 @@ impl PinsUi {
                 place.name = Some(pin.name.clone()).filter(|n| !n.is_empty());
                 (a, place)
             });
-            let d = if confirming {
-                ui.small_button(egui::RichText::new("Delete pushpin?").color(approx()))
-            } else {
-                ui.small_button("Delete pushpin")
-            };
-            delete = d.clicked() && confirming;
-            ask = d.clicked() && !confirming;
+            let d = ui.small_button("Delete pushpin");
+            ask = d.clicked();
             buttons.push(("delete", d.rect));
         });
         self.buttons = buttons;
-        let other = changed || typed || close || chosen.is_some() || move_to.is_some();
-        self.delete_asked = (ask || (confirming && !other && !delete)).then_some(r);
+        if ask {
+            self.delete_asked = Some(r);
+        }
+        let mut delete = false;
+        if self.delete_asked == Some(r) {
+            let name = self.pin(r).map(|p| p.name.clone()).unwrap_or_default();
+            let what = match name.is_empty() {
+                true => "This pushpin will be deleted.".to_string(),
+                false => format!("The pushpin “{name}” will be deleted."),
+            };
+            let mut b = [Rect::NOTHING; 2];
+            let answer = dialog::confirm(ui.ctx(), "Delete pushpin?", &what, "Delete", &mut b);
+            self.buttons.push(("confirm-cancel", b[0]));
+            self.buttons.push(("confirm-delete", b[1]));
+            if let Some(yes) = answer {
+                self.delete_asked = None;
+                delete = yes;
+            }
+        }
         if typed {
             self.pending = Some(r.0);
             self.version += 1;
@@ -820,7 +833,7 @@ impl PinsUi {
         if changed {
             self.touched(r.0);
         }
-        if left || close || delete || move_to.is_some() {
+        if left || close || move_to.is_some() {
             self.flush();
         }
         if let Some(to) = move_to {

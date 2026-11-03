@@ -134,7 +134,7 @@ fn stop_list() {
     );
 
     // Drag the destination's handle onto the first row: it starts the route.
-    let from = u.at(Target::Handle(2));
+    let from = u.at(Target::Row(2));
     let to = u.at(Target::Row(0));
     u.frame(vec![Event::PointerMoved(from)]);
     u.frame(vec![button(from, true)]);
@@ -146,8 +146,16 @@ fn stop_list() {
     assert_eq!(u.names(), "cab");
     assert_eq!(u.answer(), 3);
 
-    // Remove the stop between; reverse; avoid ferries.
+    // A click on a row (no drag) flies to its stop, which stays in its place.
+    u.click(Target::Row(0));
+    let (c, zoom) = u.fly.expect("fly to the stop");
+    assert!((geo::unit_to_lonlat(c)[1] - 40.4).abs() < 1e-6);
+    assert!(zoom >= 14.0);
+    assert_eq!(u.names(), "cab");
+
+    // Remove the stop between; reverse; avoid ferries. Its button only removes.
     u.click(Target::Remove(1));
+    assert!(u.fly.is_none(), "the click went through to the row");
     assert_eq!(u.names(), "cb");
     u.answer();
     // Two stops and both ends kept: nothing to reorder, and the window says so.

@@ -19,7 +19,7 @@ use crate::config;
 use crate::dialog::{self, Size};
 use crate::files::{self, Browser, Mode, Outcome, Saved};
 use crate::pins::{self, PinRef, PinsUi};
-use crate::theme::{Glyph, accent, approx, glyph_button, ink, weak};
+use crate::theme::{Glyph, accent, approx, icon_button, ink, row, weak};
 
 /// The folder next to the executable.
 pub const DIR: &str = "trips";
@@ -211,8 +211,8 @@ pub struct TripsUi {
     pub browser: Option<(Browser, Browsing, Option<TripFile>)>,
     /// The trip being renamed, and the name typed.
     pub renaming: Option<(PathBuf, String)>,
-    /// The trip whose Delete was clicked once: a second click deletes it.
-    pub deleting: Option<PathBuf>,
+    /// The trip (file and name) whose Delete was clicked, asked about in a window.
+    pub deleting: Option<(PathBuf, String)>,
     /// What went wrong last, shown on the Trips page.
     pub error: Option<String>,
     /// What the page drew last frame, for the tests to click on.
@@ -463,6 +463,7 @@ impl TripsUi {
                 ui.separator();
                 self.pins_ui(ui, pins, exe_dir, &mut out);
             });
+        self.confirm_delete(&ui.ctx().clone(), pins, &mut out);
         out
     }
 
@@ -626,21 +627,17 @@ impl TripsUi {
         can_open: bool,
         out: &mut PageOut,
     ) {
-        let deleting = self.deleting.as_ref() == Some(&t.path);
         ui.horizontal(|ui| {
             let text = egui::RichText::new(&t.name).color(ink());
             let text = if open { text.strong() } else { text };
-            let row = item_row(ui, text, can_open, true, deleting);
-            let o = row
-                .name
-                .on_hover_text("Open in the Route page")
-                .on_disabled_hover_text("Open a map with routing to open a trip");
+            let row = item_row(ui, text, can_open, true, |_| ());
+            let o = row.row.on_hover_text(match can_open {
+                true => "Open in the Route page",
+                false => "Open a map with routing to open a trip",
+            });
             let r = row.rename.on_hover_text("Rename");
             let c = row.copy.map(|c| c.on_hover_text("Duplicate"));
-            let d = row.delete.on_hover_text(match deleting {
-                true => "Click again to delete this trip's file",
-                false => "Delete",
-            });
+            let d = row.delete.on_hover_text("Delete");
             for (k, resp) in [
                 ("open", Some(&o)),
                 ("rename", Some(&r)),
@@ -651,40 +648,73 @@ impl TripsUi {
                     self.targets.push((format!("{k}:{}", t.name), resp.rect));
                 }
             }
-            let (open, rename, delete) = (o.clicked(), r.clicked(), d.clicked());
-            let copy = c.is_some_and(|c| c.clicked());
-            if open {
+            if o.clicked() {
                 out.open = Some(t.path.clone());
             }
-            if rename {
+            if r.clicked() {
                 self.renaming = Some((t.path.clone(), t.name.clone()));
             }
-            if copy {
+            if c.is_some_and(|c| c.clicked()) {
                 if let Err(e) = files::duplicate(&t.path) {
                     self.error = Some(format!("Could not copy: {}.", files::io_text(&e)));
                 }
                 self.changed();
             }
-            if delete && !deleting {
-                self.deleting = Some(t.path.clone());
-            } else if delete {
-                self.deleting = None;
-                match std::fs::remove_file(&t.path) {
-                    Ok(()) => out.deleted = Some(t.path.clone()),
-                    Err(e) => {
-                        self.error = Some(format!(
-                            "Could not delete {}: {}.",
-                            t.name,
-                            files::io_text(&e)
-                        ));
-                    }
-                }
-                self.changed();
-            }
-            if (open || rename || copy) && deleting {
-                self.deleting = None;
+            if d.clicked() {
+                self.deleting = Some((t.path.clone(), t.name.clone()));
             }
         });
+    }
+
+    /// The window that asks before a trip, or a pushpin set, is deleted, and does it on
+    /// *Delete*. Enter says yes and Esc no.
+    fn confirm_delete(&mut self, ctx: &egui::Context, pins: &mut PinsUi, out: &mut PageOut) {
+        let (title, what) = match (&self.deleting, pins.deleting) {
+            (Some((_, name)), _) => (
+                "Delete trip?",
+                format!("The trip “{name}” and its file will be deleted."),
+            ),
+            (None, Some(i)) => {
+                let set = &pins.sets[i];
+                let n = set.pins.len();
+                (
+                    "Delete pushpin set?",
+                    format!(
+                        "The set “{}” and its file will be deleted, with its {n} pushpin{}.",
+                        set.name,
+                        if n == 1 { "" } else { "s" }
+                    ),
+                )
+            }
+            (None, None) => return,
+        };
+        let mut buttons = [egui::Rect::NOTHING; 2];
+        let answer = dialog::confirm(ctx, title, &what, "Delete", &mut buttons);
+        self.targets.push(("confirm-cancel".into(), buttons[0]));
+        self.targets.push(("confirm-delete".into(), buttons[1]));
+        match answer {
+            Some(false) => {
+                self.deleting = None;
+                pins.deleting = None;
+            }
+            Some(true) => {
+                if let Some((path, name)) = self.deleting.take() {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => out.deleted = Some(path),
+                        Err(e) => {
+                            self.error =
+                                Some(format!("Could not delete {name}: {}.", files::io_text(&e)));
+                        }
+                    }
+                    self.changed();
+                } else if let Some(i) = pins.deleting.take()
+                    && let Err(e) = pins.delete_set(i)
+                {
+                    pins.errors.push(e);
+                }
+            }
+            None => {}
+        }
     }
 
     fn pins_ui(&mut self, ui: &mut egui::Ui, pins: &mut PinsUi, exe_dir: &Path, out: &mut PageOut) {
@@ -749,17 +779,7 @@ impl TripsUi {
                 continue;
             }
             let set = &pins.sets[i];
-            let deleting = pins.deleting == Some(i);
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                let mut shown = set.shown;
-                let r = ui
-                    .checkbox(&mut shown, "")
-                    .on_hover_text("Show on the map, and in search");
-                self.targets.push((format!("show:{}", set.name), r.rect));
-                if r.changed() {
-                    act = Some(SetAct::Shown(i, shown));
-                }
                 let fold = if set.expanded { "⏷" } else { "⏵" };
                 let text = format!("{fold} {} ({})", set.name, set.pins.len());
                 let row = item_row(
@@ -767,9 +787,21 @@ impl TripsUi {
                     egui::RichText::new(text).color(ink()),
                     true,
                     false,
-                    deleting,
+                    |ui| {
+                        let mut shown = set.shown;
+                        let r = ui
+                            .checkbox(&mut shown, "")
+                            .on_hover_text("Show on the map, and in search");
+                        (r, shown)
+                    },
                 );
-                let r = row.name.on_hover_text(match set.expanded {
+                let (check, shown) = row.lead;
+                self.targets
+                    .push((format!("show:{}", set.name), check.rect));
+                if check.changed() {
+                    act = Some(SetAct::Shown(i, shown));
+                }
+                let r = row.row.on_hover_text(match set.expanded {
                     true => "Hide its pushpins",
                     false => "List its pushpins",
                 });
@@ -780,14 +812,11 @@ impl TripsUi {
                 if row.rename.on_hover_text("Rename").clicked() {
                     act = Some(SetAct::StartRename(i));
                 }
-                let d = row.delete.on_hover_text(match deleting {
-                    true => "Click again to delete this set and its file",
-                    false => "Delete",
-                });
+                let d = row.delete.on_hover_text("Delete");
                 self.targets
                     .push((format!("delete-set:{}", set.name), d.rect));
                 if d.clicked() {
-                    act = Some(SetAct::Delete(i, deleting));
+                    act = Some(SetAct::Delete(i));
                 }
             });
             if let Some(e) = &set.error {
@@ -813,9 +842,6 @@ impl TripsUi {
                 });
             }
         }
-        if !matches!(act, Some(SetAct::Delete(..)) | None) {
-            pins.deleting = None;
-        }
         match act {
             Some(SetAct::Shown(i, on)) => pins.set_shown(i, on),
             Some(SetAct::Fold(i)) => pins.sets[i].expanded = !pins.sets[i].expanded,
@@ -828,13 +854,7 @@ impl TripsUi {
                     pins.errors.push(e);
                 }
             }
-            Some(SetAct::Delete(i, false)) => pins.deleting = Some(i),
-            Some(SetAct::Delete(i, true)) => {
-                pins.deleting = None;
-                if let Err(e) = pins.delete_set(i) {
-                    pins.errors.push(e);
-                }
-            }
+            Some(SetAct::Delete(i)) => pins.deleting = Some(i),
             Some(SetAct::Elsewhere(i)) => {
                 let name = files::file_name(&pins.sets[i].name);
                 let b = Browser::new("Save pushpin set", Mode::Save, exe_dir, &name);
@@ -849,63 +869,51 @@ impl TripsUi {
 }
 
 /// A saved item's row, as [`item_row`] draws it.
-struct ItemRow {
-    name: egui::Response,
+struct ItemRow<T> {
+    /// The row as a whole, which is clicked to open the item.
+    row: egui::Response,
+    /// What `lead` gave.
+    lead: T,
     rename: egui::Response,
     copy: Option<egui::Response>,
     delete: egui::Response,
 }
 
-/// A saved item's row in what is left of `ui`'s line: its name, left aligned and cut to
-/// fit, clickable when `enabled`; then the buttons that rename it, copy it (with `copy`) and
-/// delete it, the last asking "Delete?" while `deleting`.
-fn item_row(
+/// A saved item's row across `ui`'s line: what `lead` draws, the name, left aligned and cut
+/// to fit, then the icons that rename it, copy it (with `copy`) and delete it. The whole row
+/// lights up and is clicked, when `enabled`.
+fn item_row<T>(
     ui: &mut egui::Ui,
     text: egui::RichText,
     enabled: bool,
     copy: bool,
-    deleting: bool,
-) -> ItemRow {
-    // Between the name and the buttons as everywhere; between the buttons, close.
-    let gap = ui.spacing().item_spacing.x;
-    let delete_w = if deleting { 56.0 } else { ROW_H };
-    let n = 1 + usize::from(copy);
-    let buttons = n as f32 * (ROW_H + BUTTON_GAP) + delete_w + gap;
-    let w = (ui.available_width() - buttons).max(40.0);
+    lead: impl FnOnce(&mut egui::Ui) -> T,
+) -> ItemRow<T> {
     let sense = if enabled {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
     };
-    let (rect, name) = ui.allocate_exact_size(egui::vec2(w, ROW_H), sense);
-    if enabled && name.hovered() {
-        let fill = ui.visuals().widgets.hovered.weak_bg_fill;
-        ui.painter().rect_filled(rect, 3.0, fill);
-    }
-    let mut job = egui::text::LayoutJob::default();
-    let text = if enabled { text } else { text.color(weak()) };
-    text.append_to(
-        &mut job,
-        ui.style(),
-        egui::FontSelection::Default,
-        egui::Align::Center,
-    );
-    job.wrap = egui::text::TextWrapping::truncate_at_width(w - 8.0);
-    let galley = ui.fonts_mut(|f| f.layout_job(job));
-    let at = egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0);
-    ui.painter().galley(at, galley, ink());
-    ui.spacing_mut().item_spacing.x = BUTTON_GAP;
-    let rename = glyph_button(ui, Glyph::Rename, ROW_H);
-    let copy = copy.then(|| glyph_button(ui, Glyph::Copy, ROW_H));
-    let delete = match deleting {
-        true => ui.add(
-            egui::Button::new(egui::RichText::new("Delete?").color(approx()))
-                .min_size(egui::vec2(delete_w, ROW_H)),
-        ),
-        false => glyph_button(ui, Glyph::Delete, ROW_H),
-    };
+    let out = row(ui, sense, |ui| {
+        ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+        let lead = lead(ui);
+        let n = 2 + usize::from(copy);
+        let w = (ui.available_width() - n as f32 * (ROW_H + BUTTON_GAP)).max(40.0);
+        let text = if enabled { text } else { text.color(weak()) };
+        ui.allocate_ui_with_layout(
+            egui::vec2(w, ROW_H),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| ui.add(egui::Label::new(text).truncate().selectable(false)),
+        );
+        let rename = icon_button(ui, Glyph::Rename, ROW_H);
+        let copy = copy.then(|| icon_button(ui, Glyph::Copy, ROW_H));
+        let delete = icon_button(ui, Glyph::Delete, ROW_H);
+        (lead, rename, copy, delete)
+    });
+    let (lead, rename, copy, delete) = out.inner;
     ItemRow {
-        name,
+        row: out.response,
+        lead,
         rename,
         copy,
         delete,
@@ -918,8 +926,7 @@ enum SetAct {
     Fold(usize),
     StartRename(usize),
     Rename(usize, String),
-    /// Delete, the second click if true.
-    Delete(usize, bool),
+    Delete(usize),
     Elsewhere(usize),
 }
 

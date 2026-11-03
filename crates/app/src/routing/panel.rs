@@ -29,7 +29,7 @@ use crate::dialog::{self, Size};
 use crate::keys::{self, Command};
 use crate::scale::Units;
 use crate::search::distance_text;
-use crate::theme::{Glyph, accent, approx, glyph_button, ink, weak};
+use crate::theme::{Glyph, accent, approx, icon_button, ink, row, weak};
 
 const ICON: f32 = 20.0;
 /// Where a step's text starts, from the row's left, and the line under it.
@@ -38,6 +38,8 @@ const STEP_FONT: FontId = FontId::proportional(13.5);
 const SUB_H: f32 = 16.0;
 /// The directions' column of clock times, when a time is set.
 const TIME_W: f32 = 64.0;
+/// The least zoom a click on a stop flies to.
+const STOP_ZOOM: f64 = 14.0;
 const SMALL: FontId = FontId::proportional(11.5);
 /// The *Make overnight stop* button under a night's row.
 const BUTTON_H: f32 = 20.0;
@@ -45,8 +47,7 @@ const BUTTON_H: f32 = 20.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Clear,
-    /// A stop's drag handle, and its row (where a dragged stop is dropped).
-    Handle(usize),
+    /// A stop's row: where it is clicked and dragged, and where a dragged stop is dropped.
     Row(usize),
     Remove(usize),
     Reverse,
@@ -81,6 +82,8 @@ enum Edit {
     Clear,
     Move(usize, usize),
     Remove(usize),
+    /// Show a stop on the map.
+    Show(usize),
     Reverse,
     Avoid(u8, bool),
     Optimize,
@@ -109,7 +112,7 @@ impl RouteUi {
     }
 
     /// Draws the page in `ui`, the directions filling what is left of its height. Returns
-    /// the view to fly to when a step is clicked.
+    /// the view to fly to when a step or a stop is clicked.
     pub fn page_ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -135,6 +138,10 @@ impl RouteUi {
                 Edit::Clear => self.apply(StopAction::Clear, Place::at([0.0, 0.0])),
                 Edit::Move(a, b) => self.move_stop(a, b),
                 Edit::Remove(i) => self.remove_stop(i),
+                Edit::Show(i) => {
+                    let at = geo::to_unit(self.stops()[i].1.p);
+                    fly = Some((at, cam.zoom.max(STOP_ZOOM)));
+                }
                 Edit::Reverse => self.reverse(),
                 Edit::Avoid(flag, on) => self.set_avoid(flag, on),
                 Edit::Optimize => self.optimize(),
@@ -162,7 +169,8 @@ impl RouteUi {
         fly
     }
 
-    /// The stops, each with its handle, numbered pin, name and remove button.
+    /// The stops, each a row with its numbered pin, name and remove button: clicking it shows
+    /// the stop on the map, and dragging it anywhere but on the button changes the order.
     fn stop_rows(&mut self, ui: &mut egui::Ui, edits: &mut Vec<Edit>) {
         let stops: Vec<(StopAction, String)> = self
             .stops()
@@ -172,69 +180,69 @@ impl RouteUi {
         let roads = self.route.as_ref().map(|r| r.roads.clone());
         let places: Vec<_> = self.stops().iter().map(|(_, p)| p.p).collect();
         let n = stops.len();
-        let dragging = egui::DragAndDrop::payload::<usize>(ui.ctx()).map(|p| *p);
         for (i, (kind, name)) in stops.iter().enumerate() {
-            let row = ui.horizontal(|ui| {
-                let (handle_rect, handle) =
-                    ui.allocate_exact_size(Vec2::new(12.0, 18.0), Sense::drag());
-                handle.dnd_set_drag_payload(i);
-                let handle = handle.on_hover_text("Drag to change the order");
-                self.targets.push((Target::Handle(i), handle_rect));
-                if n > 1 {
-                    let c = if handle.hovered() || dragging == Some(i) {
-                        ink()
-                    } else {
-                        weak()
-                    };
-                    for k in 0..3 {
-                        let y = handle_rect.center().y + (k as f32 - 1.0) * 4.0;
-                        ui.painter().hline(
-                            handle_rect.x_range().shrink(1.5),
-                            y,
-                            Stroke::new(1.5, c),
-                        );
-                    }
-                }
-                let fill = match kind {
-                    StopAction::From => start(),
-                    StopAction::To => end(),
-                    _ => via(),
-                };
-                numbered(ui, fill, i + 1);
-                // A search result by its name; a point on the map by the road it is on.
-                let road = roads
-                    .as_ref()
-                    .and_then(|r| r.get(i))
-                    .filter(|r| !r.is_empty());
-                let ll = geo::unit_to_lonlat(geo::to_unit(places[i]));
-                let text = match (name.is_empty(), road) {
-                    (false, _) => name.clone(),
-                    (true, Some(r)) => format!("Near {r}"),
-                    (true, None) => format!("{:.5}, {:.5}", ll[1], ll[0]),
-                };
-                let what = match kind {
-                    StopAction::From => "Start",
-                    StopAction::To => "Destination",
-                    _ => "Stop",
-                };
-                let rest = ui.available_width() - 26.0;
-                ui.allocate_ui(Vec2::new(rest.max(40.0), 18.0), |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(text).color(ink())).truncate())
-                        .on_hover_text(format!("{what}: {:.5}, {:.5}", ll[1], ll[0]));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = glyph_button(ui, Glyph::Close, 18.0).on_hover_text("Remove this stop");
-                    self.targets.push((Target::Remove(i), r.rect));
-                    if r.clicked() {
-                        edits.push(Edit::Remove(i));
-                    }
-                });
+            let row = row(ui, Sense::click_and_drag(), |ui| {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        let fill = match kind {
+                            StopAction::From => start(),
+                            StopAction::To => end(),
+                            _ => via(),
+                        };
+                        numbered(ui, fill, i + 1);
+                        // A search result by its name; a point on the map by the road it is on.
+                        let road = roads
+                            .as_ref()
+                            .and_then(|r| r.get(i))
+                            .filter(|r| !r.is_empty());
+                        let ll = geo::unit_to_lonlat(geo::to_unit(places[i]));
+                        let text = match (name.is_empty(), road) {
+                            (false, _) => name.clone(),
+                            (true, Some(r)) => format!("Near {r}"),
+                            (true, None) => format!("{:.5}, {:.5}", ll[1], ll[0]),
+                        };
+                        let what = match kind {
+                            StopAction::From => "Start",
+                            StopAction::To => "Destination",
+                            _ => "Stop",
+                        };
+                        let order = match n > 1 {
+                            true => "; drag to change the order",
+                            false => "",
+                        };
+                        let rest = ui.available_width() - 26.0;
+                        ui.allocate_ui(Vec2::new(rest.max(40.0), 18.0), |ui| {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(text).color(ink()))
+                                    .truncate()
+                                    .selectable(false),
+                            )
+                            .on_hover_text(format!(
+                                "{what}: {:.5}, {:.5}\nClick to show it on the map{order}",
+                                ll[1], ll[0]
+                            ));
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let r = icon_button(ui, Glyph::Close, 18.0)
+                                .on_hover_text("Remove this stop");
+                            self.targets.push((Target::Remove(i), r.rect));
+                            if r.clicked() {
+                                edits.push(Edit::Remove(i));
+                            }
+                        });
+                    });
+                    self.stop_times(ui, i, n, edits);
+                })
             });
-            let mut row = row.response;
-            if let Some(r) = self.stop_times(ui, i, n, edits) {
-                row = row.union(r);
-            }
+            let row = row.response;
             self.targets.push((Target::Row(i), row.rect));
+            if n > 1 && row.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+            row.dnd_set_drag_payload(i);
+            if row.clicked() {
+                edits.push(Edit::Show(i));
+            }
             if let Some(from) = row.dnd_hover_payload::<usize>()
                 && *from != i
             {
