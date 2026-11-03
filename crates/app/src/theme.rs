@@ -1,16 +1,108 @@
 //! The look of the app's own UI, apart from the map's style: colours (search, "what's here",
 //! the scale bar), egui's style as the app sets it, and buttons with drawn symbols.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Stroke, Vec2};
 
+use crate::config::UiTheme;
+
+/// Whether the UI is drawn dark: set by [`apply`], read by the colours below, so every
+/// window of the app agrees with the one egui theme.
+static DARK: AtomicBool = AtomicBool::new(false);
+
+fn pick(light: Color32, dark: Color32) -> Color32 {
+    if DARK.load(Ordering::Relaxed) {
+        dark
+    } else {
+        light
+    }
+}
+
 /// Main text, and the scale bar and credits over the map.
-pub const INK: Color32 = Color32::from_gray(40);
+pub fn ink() -> Color32 {
+    pick(Color32::from_gray(40), Color32::from_gray(225))
+}
 /// Secondary text: kinds, places, distances.
-pub const WEAK: Color32 = Color32::from_gray(105);
+pub fn weak() -> Color32 {
+    pick(Color32::from_gray(105), Color32::from_gray(160))
+}
 /// Marks a result or position that is only approximate.
-pub const APPROX: Color32 = Color32::from_rgb(176, 96, 0);
+pub fn approx() -> Color32 {
+    pick(
+        Color32::from_rgb(176, 96, 0),
+        Color32::from_rgb(235, 160, 60),
+    )
+}
 /// A time in another zone than the trip's departure (phase 4 decision 14).
-pub const ACCENT: Color32 = Color32::from_rgb(0, 112, 140);
+pub fn accent() -> Color32 {
+    pick(
+        Color32::from_rgb(0, 112, 140),
+        Color32::from_rgb(90, 195, 220),
+    )
+}
+/// An error: a message that something failed.
+pub fn error() -> Color32 {
+    pick(
+        Color32::from_rgb(180, 30, 30),
+        Color32::from_rgb(255, 120, 110),
+    )
+}
+/// The fill of the boxes over the map (scale bar, zoom buttons), a little see-through.
+pub fn map_box() -> Color32 {
+    pick(
+        Color32::from_white_alpha(215),
+        Color32::from_rgba_unmultiplied(34, 34, 38, 220),
+    )
+}
+/// The fill of the credit line over the map.
+pub fn map_credit() -> Color32 {
+    pick(
+        Color32::from_white_alpha(190),
+        Color32::from_rgba_unmultiplied(34, 34, 38, 190),
+    )
+}
+/// A selected row or card: a light blue, or a dark one.
+pub fn picked() -> Color32 {
+    pick(
+        Color32::from_rgb(222, 232, 250),
+        Color32::from_rgb(40, 58, 90),
+    )
+}
+/// A quiet note's fill.
+pub fn note_fill() -> Color32 {
+    pick(
+        Color32::from_rgb(243, 244, 250),
+        Color32::from_rgb(40, 42, 52),
+    )
+}
+/// A hairline over a fill: the outline of a mark.
+pub fn hairline() -> Color32 {
+    pick(Color32::from_gray(190), Color32::from_gray(90))
+}
+/// A wash over a hovered row or a rule between rows: black on light, white on dark.
+pub fn hover_wash(alpha: u8) -> Color32 {
+    pick(
+        Color32::from_black_alpha(alpha),
+        Color32::from_white_alpha(alpha),
+    )
+}
+/// The fill of a text box holding something that does not read.
+pub fn bad_field() -> Color32 {
+    pick(
+        Color32::from_rgb(253, 236, 220),
+        Color32::from_rgb(88, 52, 36),
+    )
+}
+/// The lighter of two neighbouring greys (an even row, a disabled field).
+pub fn soft_fill(strong: bool) -> Color32 {
+    match (strong, DARK.load(Ordering::Relaxed)) {
+        (true, false) => Color32::from_gray(232),
+        (false, false) => Color32::from_gray(244),
+        (true, true) => Color32::from_gray(58),
+        (false, true) => Color32::from_gray(46),
+    }
+}
 
 /// Height of the search box and the buttons beside it.
 pub const HEADER_H: f32 = 26.0;
@@ -29,13 +121,44 @@ const WIDGET_RADIUS: u8 = 3;
 const WINDOW_RADIUS: u8 = 4;
 /// The outline of a button or text box at rest, a little darker than a button's fill, so
 /// both stand out from the panel.
-const OUTLINE: Color32 = Color32::from_gray(185);
+fn outline() -> Color32 {
+    pick(Color32::from_gray(185), Color32::from_gray(95))
+}
 
-/// The app's look, over egui's light theme: smaller corner radii, outlined buttons and text
-/// boxes, and smaller window titles.
-pub fn apply(ctx: &egui::Context) {
-    // The map is light, so its controls and dialogs are too, whatever the system theme.
-    ctx.set_theme(egui::Theme::Light);
+/// Whether the UI is dark: the setting, or for "as the system" what the system asks for,
+/// light when it does not say. Independent of the map's style.
+pub fn wants_dark(setting: UiTheme, system: Option<egui::Theme>) -> bool {
+    match setting {
+        UiTheme::Light => false,
+        UiTheme::Dark => true,
+        UiTheme::System => system == Some(egui::Theme::Dark),
+    }
+}
+
+/// Whether [`apply`] last made the UI dark.
+pub fn is_dark() -> bool {
+    DARK.load(Ordering::Relaxed)
+}
+
+/// The app's look, over egui's light or dark theme: smaller corner radii, outlined buttons
+/// and text boxes, and smaller window titles.
+pub fn apply(ctx: &egui::Context, dark: bool) {
+    DARK.store(dark, Ordering::Relaxed);
+    style(ctx, dark);
+}
+
+/// The paper's text colours: the printed pages are always drawn light, whatever the UI is.
+pub const PAPER_INK: Color32 = Color32::from_gray(40);
+pub const PAPER_WEAK: Color32 = Color32::from_gray(105);
+pub const PAPER_APPROX: Color32 = Color32::from_rgb(176, 96, 0);
+
+/// [`apply`] for a context of its own (the printed pages), leaving the app's colours be.
+pub fn style(ctx: &egui::Context, dark: bool) {
+    ctx.set_theme(if dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
     ctx.all_styles_mut(|s| {
         // egui's 18 points look heavy on small dialogs.
         s.text_styles
@@ -51,7 +174,7 @@ pub fn apply(ctx: &egui::Context) {
         ] {
             wv.corner_radius = CornerRadius::same(WIDGET_RADIUS);
         }
-        w.inactive.bg_stroke = Stroke::new(1.0, OUTLINE);
+        w.inactive.bg_stroke = Stroke::new(1.0, outline());
         v.window_corner_radius = CornerRadius::same(WINDOW_RADIUS);
         v.menu_corner_radius = CornerRadius::same(WINDOW_RADIUS);
     });
@@ -151,4 +274,53 @@ pub fn glyph_button(ui: &mut egui::Ui, glyph: Glyph, side: f32) -> egui::Respons
         }
     }
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_setting_beats_the_system_and_unknown_is_light() {
+        use egui::Theme::{Dark, Light};
+        assert!(wants_dark(UiTheme::System, Some(Dark)));
+        assert!(!wants_dark(UiTheme::System, Some(Light)));
+        assert!(!wants_dark(UiTheme::System, None));
+        assert!(wants_dark(UiTheme::Dark, Some(Light)));
+        assert!(!wants_dark(UiTheme::Light, Some(Dark)));
+    }
+
+    /// WCAG contrast ratio of two opaque colours.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let lum = |c: Color32| {
+            let f = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        };
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn text_reads_on_the_panel_in_both_themes() {
+        for dark in [false, true] {
+            let ctx = egui::Context::default();
+            apply(&ctx, dark);
+            let panel = ctx.global_style().visuals.panel_fill;
+            assert!(contrast(ink(), panel) >= 4.5, "ink, dark={dark}");
+            for (name, c) in [("weak", weak()), ("approx", approx()), ("accent", accent())] {
+                assert!(contrast(c, panel) >= 3.0, "{name}, dark={dark}");
+            }
+            assert!(contrast(error(), panel) >= 3.0, "error, dark={dark}");
+            assert!(contrast(ink(), picked()) >= 4.5, "picked, dark={dark}");
+            assert!(contrast(ink(), note_fill()) >= 4.5, "note, dark={dark}");
+        }
+        apply(&egui::Context::default(), false);
+    }
 }

@@ -19,7 +19,7 @@ use crate::config;
 use crate::dialog::{self, Size};
 use crate::files::{self, Browser, Mode, Outcome, Saved};
 use crate::pins::{self, PinRef, PinsUi};
-use crate::theme::{ACCENT, APPROX, Glyph, INK, WEAK, glyph_button};
+use crate::theme::{Glyph, accent, approx, glyph_button, ink, weak};
 
 /// The folder next to the executable.
 pub const DIR: &str = "trips";
@@ -349,11 +349,11 @@ impl TripsUi {
                         "A trip named “{}” exists. Save again to replace it.",
                         files::file_name(&w.name)
                     ))
-                    .color(APPROX),
+                    .color(approx()),
                 );
             }
             if let Some(e) = &w.error {
-                ui.add(egui::Label::new(egui::RichText::new(e).color(APPROX)).wrap());
+                ui.add(egui::Label::new(egui::RichText::new(e).color(approx())).wrap());
             }
             ui.horizontal(|ui| {
                 let label = if w.replace { "Replace" } else { "Save" };
@@ -469,7 +469,7 @@ impl TripsUi {
     ) -> Vec<bool> {
         let mut clicked = vec![false; buttons.len()];
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(text).strong().color(INK));
+            ui.label(egui::RichText::new(text).strong().color(ink()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for (i, (id, label, enabled, tip, why)) in buttons.iter().enumerate().rev() {
@@ -490,17 +490,19 @@ impl TripsUi {
         let (text, color) = match (current.can_save, current.named, current.unsaved) {
             (false, _, _) => (
                 "Plan a route on the Route page to save it as a trip.".into(),
-                WEAK,
+                weak(),
             ),
-            (true, Some(n), false) => (format!("The route shown is the trip “{}”.", n.name), WEAK),
+            (true, Some(n), false) => {
+                (format!("The route shown is the trip “{}”.", n.name), weak())
+            }
             (true, Some(n), true) => (
                 format!(
                     "The route shown is the trip “{}”, with unsaved changes.",
                     n.name
                 ),
-                ACCENT,
+                accent(),
             ),
-            (true, None, _) => ("The route shown is not saved.".into(), WEAK),
+            (true, None, _) => ("The route shown is not saved.".into(), weak()),
         };
         ui.label(egui::RichText::new(text).size(11.5).color(color));
         ui.add_space(4.0);
@@ -561,12 +563,12 @@ impl TripsUi {
             Ok(l) => l.clone(),
             Err(e) => {
                 let e = e.clone();
-                ui.label(egui::RichText::new(e).color(APPROX));
+                ui.label(egui::RichText::new(e).color(approx()));
                 Vec::new()
             }
         };
         if list.is_empty() {
-            ui.label(egui::RichText::new("No saved trips yet.").color(WEAK));
+            ui.label(egui::RichText::new("No saved trips yet.").color(weak()));
         }
         for t in &list {
             match self.renaming.as_mut().filter(|(p, _)| *p == t.path) {
@@ -601,7 +603,7 @@ impl TripsUi {
             }
         }
         if let Some(e) = &self.error {
-            ui.add(egui::Label::new(egui::RichText::new(e).color(APPROX)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(e).color(approx())).wrap());
         }
     }
 
@@ -616,7 +618,7 @@ impl TripsUi {
     ) {
         let deleting = self.deleting.as_ref() == Some(&t.path);
         ui.horizontal(|ui| {
-            let text = egui::RichText::new(&t.name).color(INK);
+            let text = egui::RichText::new(&t.name).color(ink());
             let text = if open { text.strong() } else { text };
             let row = item_row(ui, text, can_open, true, deleting);
             let o = row
@@ -706,7 +708,7 @@ impl TripsUi {
         if pins.sets.is_empty() {
             ui.label(
                 egui::RichText::new("No pushpins. Right-click the map and choose Add pushpin.")
-                    .color(WEAK),
+                    .color(weak()),
             );
         }
         let mut act = None;
@@ -746,7 +748,7 @@ impl TripsUi {
                 let text = format!("{fold} {} ({})", set.name, set.pins.len());
                 let row = item_row(
                     ui,
-                    egui::RichText::new(text).color(INK),
+                    egui::RichText::new(text).color(ink()),
                     true,
                     false,
                     deleting,
@@ -773,7 +775,7 @@ impl TripsUi {
                 }
             });
             if let Some(e) = &set.error {
-                ui.add(egui::Label::new(egui::RichText::new(e).color(APPROX)).wrap());
+                ui.add(egui::Label::new(egui::RichText::new(e).color(approx())).wrap());
                 if ui.small_button("Save elsewhere…").clicked() {
                     act = Some(SetAct::Elsewhere(i));
                 }
@@ -781,7 +783,7 @@ impl TripsUi {
             if set.expanded {
                 ui.indent(("set-pins", i), |ui| {
                     if set.pins.is_empty() {
-                        ui.label(egui::RichText::new("No pushpins in this set.").color(WEAK));
+                        ui.label(egui::RichText::new("No pushpins in this set.").color(weak()));
                     }
                     for (k, p) in set.pins.iter().enumerate() {
                         if pins::pin_row(ui, p, None).clicked() {
@@ -821,7 +823,7 @@ impl TripsUi {
             None => {}
         }
         for e in &pins.errors {
-            ui.add(egui::Label::new(egui::RichText::new(e).color(APPROX)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(e).color(approx())).wrap());
         }
     }
 }
@@ -861,7 +863,7 @@ fn item_row(
         ui.painter().rect_filled(rect, 3.0, fill);
     }
     let mut job = egui::text::LayoutJob::default();
-    let text = if enabled { text } else { text.color(WEAK) };
+    let text = if enabled { text } else { text.color(weak()) };
     text.append_to(
         &mut job,
         ui.style(),
@@ -871,13 +873,13 @@ fn item_row(
     job.wrap = egui::text::TextWrapping::truncate_at_width(w - 8.0);
     let galley = ui.fonts_mut(|f| f.layout_job(job));
     let at = egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0);
-    ui.painter().galley(at, galley, INK);
+    ui.painter().galley(at, galley, ink());
     ui.spacing_mut().item_spacing.x = BUTTON_GAP;
     let rename = glyph_button(ui, Glyph::Rename, ROW_H);
     let copy = copy.then(|| glyph_button(ui, Glyph::Copy, ROW_H));
     let delete = match deleting {
         true => ui.add(
-            egui::Button::new(egui::RichText::new("Delete?").color(APPROX))
+            egui::Button::new(egui::RichText::new("Delete?").color(approx()))
                 .min_size(egui::vec2(delete_w, ROW_H)),
         ),
         false => glyph_button(ui, Glyph::Delete, ROW_H),

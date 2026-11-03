@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 
-use eframe::egui::{self, Color32, Event, EventFilter, Id, Key, Rect, Vec2};
+use eframe::egui::{self, Event, EventFilter, Id, Key, Rect, Vec2};
 use omp_core::find::Hit;
 use omp_core::schema::Schema;
 
@@ -17,7 +17,7 @@ use crate::here::{HereAnswer, HereQuery};
 use crate::memory::mib;
 use crate::routing::{self, MenuState, StopAction};
 use crate::scale::Units;
-use crate::theme::{Glyph, HEADER_H, INK, WEAK, glyph_button};
+use crate::theme::{Glyph, HEADER_H, glyph_button, ink, weak};
 
 /// Shown while the deeper search levels run.
 const SEARCHING_MORE: &str = "Searching smaller towns and more names…";
@@ -542,14 +542,14 @@ impl SearchUi {
             ui.spacing_mut().item_spacing.y = 0.0;
             let searching = |ui: &mut egui::Ui, text: &str| {
                 ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new().size(12.0).color(WEAK));
-                    ui.label(egui::RichText::new(text).color(WEAK));
+                    ui.add(egui::Spinner::new().size(12.0).color(weak()));
+                    ui.label(egui::RichText::new(text).color(weak()));
                 });
             };
             match &message {
                 Some(m) if m == SEARCHING_MORE => searching(ui, m),
                 Some(m) => {
-                    ui.label(egui::RichText::new(m).color(WEAK));
+                    ui.label(egui::RichText::new(m).color(weak()));
                 }
                 None => {}
             }
@@ -598,7 +598,7 @@ impl SearchUi {
                 (0, None) => format!("Nothing found for “{}”", res.text),
                 _ => format!("{n}{more} results for “{}”", res.text),
             };
-            ui.add(egui::Label::new(egui::RichText::new(title).strong().color(INK)).truncate());
+            ui.add(egui::Label::new(egui::RichText::new(title).strong().color(ink())).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 close = glyph_button(ui, Glyph::Close, 18.0)
                     .on_hover_text("Close  (Esc)")
@@ -649,10 +649,10 @@ const CLEAR: f32 = 18.0;
 fn clear_mark(p: &egui::Painter, r: Rect, hovered: bool) {
     let c = r.center();
     let color = if hovered {
-        p.circle_filled(c, r.width() / 2.0, Color32::from_gray(225));
-        INK
+        p.circle_filled(c, r.width() / 2.0, crate::theme::soft_fill(true));
+        ink()
     } else {
-        WEAK
+        weak()
     };
     let h = 3.5;
     let stroke = egui::Stroke::new(1.5, color);

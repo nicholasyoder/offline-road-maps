@@ -440,7 +440,7 @@ fn search_page(
         .or(pin_stop);
     if !p.search.has_results() {
         if !here {
-            let weak = |t: &str| egui::RichText::new(t).color(crate::theme::WEAK);
+            let weak = |t: &str| egui::RichText::new(t).color(crate::theme::weak());
             ui.label(weak("Type a place, an address, a postcode or a business."));
             ui.add_space(4.0);
             ui.label(weak(

@@ -28,22 +28,18 @@ use crate::camera::{self, Camera};
 use crate::dialog::{self, Size};
 use crate::scale::Units;
 use crate::search::distance_text;
-use crate::theme::{ACCENT, APPROX, Glyph, INK, WEAK, glyph_button};
+use crate::theme::{Glyph, accent, approx, glyph_button, ink, weak};
 
 const ICON: f32 = 20.0;
 /// Where a step's text starts, from the row's left, and the line under it.
 const TEXT_X: f32 = ICON + 14.0;
 const STEP_FONT: FontId = FontId::proportional(13.5);
 const SUB_H: f32 = 16.0;
-const PICKED_FILL: Color32 = Color32::from_rgb(222, 232, 250);
 /// The directions' column of clock times, when a time is set.
 const TIME_W: f32 = 64.0;
 const SMALL: FontId = FontId::proportional(11.5);
 /// The *Make overnight stop* button under a night's row.
 const BUTTON_H: f32 = 20.0;
-/// Behind the schedule's rows in the directions.
-const NOTE_FILL: Color32 = Color32::from_rgb(243, 244, 250);
-
 /// What a click or a drag in the page landed on, for the tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -185,9 +181,9 @@ impl RouteUi {
                 self.targets.push((Target::Handle(i), handle_rect));
                 if n > 1 {
                     let c = if handle.hovered() || dragging == Some(i) {
-                        INK
+                        ink()
                     } else {
-                        WEAK
+                        weak()
                     };
                     for k in 0..3 {
                         let y = handle_rect.center().y + (k as f32 - 1.0) * 4.0;
@@ -222,7 +218,7 @@ impl RouteUi {
                 };
                 let rest = ui.available_width() - 26.0;
                 ui.allocate_ui(Vec2::new(rest.max(40.0), 18.0), |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(text).color(INK)).truncate())
+                    ui.add(egui::Label::new(egui::RichText::new(text).color(ink())).truncate())
                         .on_hover_text(format!("{what}: {:.5}, {:.5}", ll[1], ll[0]));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -285,7 +281,7 @@ impl RouteUi {
                 self.optimize_open = !self.optimize_open;
             }
             if self.waiting.is_some() {
-                ui.add(egui::Spinner::new().size(12.0).color(WEAK));
+                ui.add(egui::Spinner::new().size(12.0).color(weak()));
             }
         });
         let open = self.more_open;
@@ -350,9 +346,9 @@ impl RouteUi {
             (None, None) => return None,
         };
         let color = if shown.against.is_some() {
-            ACCENT
+            accent()
         } else {
-            WEAK
+            weak()
         };
         let stay = self.stops().get(i).map(|(_, p)| p.stay).unwrap_or_default();
         let between = i > 0 && i + 1 < n;
@@ -370,7 +366,7 @@ impl RouteUi {
                 }
                 ui.horizontal_wrapped(|ui| {
                     if let Some(a) = &shown.against {
-                        ui.label(egui::RichText::new(a).size(11.5).color(ACCENT));
+                        ui.label(egui::RichText::new(a).size(11.5).color(accent()));
                     }
                     if !between {
                         return;
@@ -398,7 +394,7 @@ impl RouteUi {
                 ui.add_space(38.0);
                 let mut s = stay;
                 let mut min = (s.s / 60.0).round();
-                ui.label(egui::RichText::new("Time here").size(11.5).color(INK));
+                ui.label(egui::RichText::new("Time here").size(11.5).color(ink()));
                 let r = ui.add_enabled(
                     !s.overnight,
                     egui::DragValue::new(&mut min)
@@ -477,7 +473,7 @@ impl RouteUi {
                         Some(z) => format!("{}, {at}", z.strftime("%Z")),
                         None => at.to_string(),
                     };
-                    ui.label(egui::RichText::new(text).size(11.5).color(WEAK));
+                    ui.label(egui::RichText::new(text).size(11.5).color(weak()));
                 });
                 if self.plan.time.trim() != self.plan.s.depart
                     && parse_time(&self.plan.time).is_some()
@@ -529,7 +525,7 @@ impl RouteUi {
                     .changed();
             });
             if let Some(e) = self.times_failed() {
-                ui.label(egui::RichText::new(e).size(11.5).color(APPROX));
+                ui.label(egui::RichText::new(e).size(11.5).color(approx()));
             }
             if let Some(t) = self.timed().filter(|t| t.sched.waited) {
                 let d = t.sched.departure().map(|z| clock_short(z, false));
@@ -537,13 +533,13 @@ impl RouteUi {
                     "Leaves at {}, the start of the driving day.",
                     d.unwrap_or_default()
                 );
-                ui.label(egui::RichText::new(text).size(11.5).color(WEAK));
+                ui.label(egui::RichText::new(text).size(11.5).color(weak()));
             }
             if set {
                 ui.label(
                     egui::RichText::new("Times assume no traffic.")
                         .size(11.5)
-                        .color(WEAK),
+                        .color(weak()),
                 );
             }
         });
@@ -625,7 +621,7 @@ impl RouteUi {
                         Reordered::Failed(e) => format!("Could not optimize: {e}"),
                     };
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new(text).color(INK));
+                        ui.label(egui::RichText::new(text).color(ink()));
                         if matches!(done, Reordered::Saved { .. }) {
                             let r = ui
                                 .small_button("Undo")
@@ -640,7 +636,7 @@ impl RouteUi {
                 let blocked = self.optimize_blocked();
                 if let Some(why) = blocked.filter(|_| self.optimizing.is_none()) {
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new(why).color(WEAK));
+                    ui.label(egui::RichText::new(why).color(weak()));
                 }
                 // Close at the window's right edge (which its title may set): a right-to-left
                 // layout would stretch the window to its widest.
@@ -655,7 +651,7 @@ impl RouteUi {
                         if r.clicked() {
                             edits.push(Edit::CancelOptimize);
                         }
-                        ui.add(egui::Spinner::new().size(12.0).color(WEAK));
+                        ui.add(egui::Spinner::new().size(12.0).color(weak()));
                     } else {
                         let r = ui
                             .add_enabled(blocked.is_none(), egui::Button::new("Optimize"))
@@ -701,7 +697,7 @@ impl RouteUi {
                 }
                 (None, false) => "Pick a search result or right-click the map: “Route to here”.".into(),
             };
-            ui.label(egui::RichText::new(text).color(WEAK));
+            ui.label(egui::RichText::new(text).color(weak()));
             return;
         };
         let trip = &r.trip;
@@ -713,11 +709,11 @@ impl RouteUi {
             ))
             .size(16.0)
             .strong()
-            .color(INK),
+            .color(ink()),
         );
         self.leg_rows(ui, units, edits);
         for n in self.notices(units) {
-            ui.label(egui::RichText::new(format!("⚠ {n}")).color(APPROX));
+            ui.label(egui::RichText::new(format!("⚠ {n}")).color(approx()));
         }
     }
 
@@ -775,21 +771,21 @@ impl RouteUi {
             LegAlts::NotAsked => return,
             LegAlts::Looking(_) => {
                 ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new().size(12.0).color(WEAK));
-                    ui.label(egui::RichText::new("Checking for other routes…").color(WEAK));
+                    ui.add(egui::Spinner::new().size(12.0).color(weak()));
+                    ui.label(egui::RichText::new("Checking for other routes…").color(weak()));
                 });
                 return;
             }
             LegAlts::Failed(e) => {
                 let text = format!("Other routes could not be found: {e}");
-                ui.label(egui::RichText::new(text).color(APPROX));
+                ui.label(egui::RichText::new(text).color(approx()));
                 return;
             }
             LegAlts::Found(c) => c,
         };
         if c.routes.len() < 2 {
             let text = "No other route within a quarter of the quickest's time.";
-            ui.label(egui::RichText::new(text).size(12.0).color(WEAK));
+            ui.label(egui::RichText::new(text).size(12.0).color(weak()));
             return;
         }
         let quickest = c.routes[0].leg.time_s;
@@ -810,7 +806,7 @@ impl RouteUi {
             );
             let shown = self.chosen.get(li) == Some(&k);
             let r = ui
-                .selectable_label(shown, egui::RichText::new(text).color(INK))
+                .selectable_label(shown, egui::RichText::new(text).color(ink()))
                 .on_hover_text(format!(
                     "{} turns, {} U-turns",
                     x.turns.turns, x.turns.uturns
@@ -821,7 +817,7 @@ impl RouteUi {
             }
         }
         if let Some(why) = ranked_note(c) {
-            ui.label(egui::RichText::new(why).size(12.0).color(WEAK));
+            ui.label(egui::RichText::new(why).size(12.0).color(weak()));
         }
         self.targets.extend(targets);
     }
@@ -957,9 +953,9 @@ fn fold_row(
     let row = ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(12.0, 16.0), Sense::hover());
         if hover.is_some() {
-            triangle(ui.painter(), rect.center(), open, WEAK);
+            triangle(ui.painter(), rect.center(), open, weak());
         }
-        ui.add(egui::Label::new(egui::RichText::new(text).color(INK)).truncate());
+        ui.add(egui::Label::new(egui::RichText::new(text).color(ink())).truncate());
     });
     let rect = row.response.rect;
     let Some(hover) = hover else {
@@ -971,7 +967,7 @@ fn fold_row(
         .on_hover_text(hover);
     if resp.hovered() {
         ui.painter()
-            .rect_filled(rect, 3.0, Color32::from_black_alpha(8));
+            .rect_filled(rect, 3.0, crate::theme::hover_wash(8));
     }
     resp
 }
@@ -1174,20 +1170,23 @@ impl Rows {
             .map(|row| {
                 let h = match *row {
                     Row::Step(i) => {
-                        let g = p.layout(steps[i].text(), STEP_FONT, INK, text_w);
+                        let g = p.layout(steps[i].text(), STEP_FONT, ink(), text_w);
                         g.size().y + if subs[i].is_some() { SUB_H } else { 0.0 } + 8.0
                     }
                     Row::Note(k) => {
                         let n = &notes[k];
-                        let g = p.layout(n.text.clone(), STEP_FONT, INK, text_w);
+                        let g = p.layout(n.text.clone(), STEP_FONT, ink(), text_w);
                         let sub = n.sub.as_ref().map_or(0.0, |t| {
-                            p.layout(t.clone(), SMALL, WEAK, text_w).size().y + 1.0
+                            p.layout(t.clone(), SMALL, weak(), text_w).size().y + 1.0
                         });
                         let button = if n.movable { BUTTON_H + 4.0 } else { 0.0 };
                         g.size().y + sub + button + 8.0
                     }
                     Row::Gap(k) => {
-                        p.layout(gaps[k].1.clone(), STEP_FONT, INK, text_w).size().y + 8.0
+                        p.layout(gaps[k].1.clone(), STEP_FONT, ink(), text_w)
+                            .size()
+                            .y
+                            + 8.0
                     }
                 };
                 h.max(ICON + 8.0)
@@ -1229,7 +1228,7 @@ fn field(
         .desired_width(width)
         .hint_text(hint);
     if bad {
-        edit = edit.background_color(Color32::from_rgb(253, 236, 220));
+        edit = edit.background_color(crate::theme::bad_field());
     }
     ui.add(edit)
 }
@@ -1260,30 +1259,30 @@ fn step_row(
     let resp = ui.interact(rect, ui.scope_id().with(("step", i)), Sense::click());
     let p = ui.painter();
     if picked {
-        p.rect_filled(rect, 3.0, PICKED_FILL);
+        p.rect_filled(rect, 3.0, crate::theme::picked());
     } else if resp.hovered() {
-        p.rect_filled(rect, 3.0, Color32::from_black_alpha(10));
+        p.rect_filled(rect, 3.0, crate::theme::hover_wash(10));
     }
     let icon = Rect::from_min_size(rect.min + Vec2::new(2.0, 4.0), Vec2::splat(ICON));
     draw_icon(p, icon, s);
     let text_w = text_width(rect.width(), time.is_some());
-    let galley = p.layout(s.text(), STEP_FONT, INK, text_w);
+    let galley = p.layout(s.text(), STEP_FONT, ink(), text_w);
     let x = rect.left() + TEXT_X - 4.0;
     let text_h = galley.size().y;
-    p.galley(Pos2::new(x, rect.top() + 4.0), galley, INK);
+    p.galley(Pos2::new(x, rect.top() + 4.0), galley, ink());
     if let Some(sub) = sub {
         p.text(
             Pos2::new(x, rect.top() + 5.0 + text_h),
             Align2::LEFT_TOP,
             sub,
             FontId::proportional(11.5),
-            WEAK,
+            weak(),
         );
     }
     p.hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        Stroke::new(0.5, Color32::from_black_alpha(25)),
+        Stroke::new(0.5, crate::theme::hover_wash(25)),
     );
     if let Some(t) = time {
         time_cell(ui, rect, ("time", i), &t);
@@ -1299,7 +1298,11 @@ fn time_cell(
     id: impl std::hash::Hash + std::fmt::Debug,
     t: &super::times::Shown,
 ) {
-    let color = if t.against.is_some() { ACCENT } else { WEAK };
+    let color = if t.against.is_some() {
+        accent()
+    } else {
+        weak()
+    };
     let at = Pos2::new(rect.right() - 4.0, rect.top() + 6.0);
     let r = ui
         .painter()
@@ -1317,25 +1320,29 @@ fn time_cell(
 /// A leg with no route: a warning sign and `text`, on a note's fill.
 fn gap_row(ui: &egui::Ui, rect: Rect, text: &str) {
     let p = ui.painter();
-    p.rect_filled(rect.shrink2(Vec2::new(0.0, 1.0)), 3.0, NOTE_FILL);
+    p.rect_filled(
+        rect.shrink2(Vec2::new(0.0, 1.0)),
+        3.0,
+        crate::theme::note_fill(),
+    );
     let c = rect.min + Vec2::new(2.0 + ICON / 2.0, 4.0 + ICON / 2.0);
     p.text(
         c,
         Align2::CENTER_CENTER,
         "⚠",
         FontId::proportional(14.0),
-        APPROX,
+        approx(),
     );
     let g = p.layout(
         text.to_owned(),
         STEP_FONT,
-        INK,
+        ink(),
         text_width(rect.width(), false),
     );
     p.galley(
         Pos2::new(rect.left() + TEXT_X - 4.0, rect.top() + 4.0),
         g,
-        INK,
+        ink(),
     );
 }
 
@@ -1349,7 +1356,11 @@ fn note_row(
     time: Option<super::times::Shown>,
 ) -> Option<(usize, egui::Response)> {
     let p = ui.painter().clone();
-    p.rect_filled(rect.shrink2(Vec2::new(0.0, 1.0)), 3.0, NOTE_FILL);
+    p.rect_filled(
+        rect.shrink2(Vec2::new(0.0, 1.0)),
+        3.0,
+        crate::theme::note_fill(),
+    );
     let c = rect.min + Vec2::new(2.0 + ICON / 2.0, 4.0 + ICON / 2.0);
     match n.kind {
         NoteKind::Night { day, .. } => {
@@ -1366,26 +1377,26 @@ fn note_row(
             for dx in [-2.5, 2.5] {
                 p.line_segment(
                     [c + Vec2::new(dx, -5.0), c + Vec2::new(dx, 5.0)],
-                    Stroke::new(2.2, INK),
+                    Stroke::new(2.2, ink()),
                 );
             }
         }
         NoteKind::Zone => {
-            p.circle_stroke(c, 7.0, Stroke::new(1.6, INK));
-            p.line_segment([c, c + Vec2::new(0.0, -4.5)], Stroke::new(1.6, INK));
-            p.line_segment([c, c + Vec2::new(3.5, 0.0)], Stroke::new(1.6, INK));
+            p.circle_stroke(c, 7.0, Stroke::new(1.6, ink()));
+            p.line_segment([c, c + Vec2::new(0.0, -4.5)], Stroke::new(1.6, ink()));
+            p.line_segment([c, c + Vec2::new(3.5, 0.0)], Stroke::new(1.6, ink()));
         }
     }
     let text_w = text_width(rect.width(), time.is_some());
     let x = rect.left() + TEXT_X - 4.0;
     let mut y = rect.top() + 4.0;
-    let g = p.layout(n.text.clone(), STEP_FONT, INK, text_w);
+    let g = p.layout(n.text.clone(), STEP_FONT, ink(), text_w);
     y += g.size().y;
-    p.galley(Pos2::new(x, rect.top() + 4.0), g, INK);
+    p.galley(Pos2::new(x, rect.top() + 4.0), g, ink());
     if let Some(sub) = &n.sub {
-        let g = p.layout(sub.clone(), SMALL, WEAK, text_w);
+        let g = p.layout(sub.clone(), SMALL, weak(), text_w);
         let h = g.size().y;
-        p.galley(Pos2::new(x, y + 1.0), g, WEAK);
+        p.galley(Pos2::new(x, y + 1.0), g, weak());
         y += h + 1.0;
     }
     if let Some(t) = time {
@@ -1398,7 +1409,7 @@ fn note_row(
         return None;
     }
     let label = "Make overnight stop";
-    let g = p.layout_no_wrap(label.into(), SMALL, INK);
+    let g = p.layout_no_wrap(label.into(), SMALL, ink());
     let button = Rect::from_min_size(
         Pos2::new(x, y + 3.0),
         Vec2::new(g.size().x + 14.0, BUTTON_H),
@@ -1407,17 +1418,17 @@ fn note_row(
         .interact(button, ui.scope_id().with(("overnight", k)), Sense::click())
         .on_hover_text("Add a stop here that stays the night");
     let fill = match resp.hovered() {
-        true => Color32::from_gray(232),
-        false => Color32::from_gray(244),
+        true => crate::theme::soft_fill(true),
+        false => crate::theme::soft_fill(false),
     };
     p.rect(
         button,
         3.0,
         fill,
-        Stroke::new(1.0, Color32::from_gray(190)),
+        Stroke::new(1.0, crate::theme::hairline()),
         egui::StrokeKind::Inside,
     );
-    p.galley(button.center() - g.size() / 2.0, g, INK);
+    p.galley(button.center() - g.size() / 2.0, g, ink());
     Some((event, resp.on_hover_cursor(egui::CursorIcon::PointingHand)))
 }
 
@@ -1425,7 +1436,7 @@ fn note_row(
 /// and the stops' discs.
 fn draw_icon(p: &egui::Painter, r: Rect, s: &Step) {
     let c = r.center();
-    let ink = Stroke::new(2.2, INK);
+    let pen = Stroke::new(2.2, ink());
     let disc = |fill: Color32, label: String| {
         p.circle_filled(c, 8.5, fill);
         p.text(
@@ -1448,11 +1459,11 @@ fn draw_icon(p: &egui::Painter, r: Rect, s: &Step) {
                 c + Vec2::new(5.0, 5.0),
                 c + Vec2::new(-5.0, 5.0),
             ];
-            p.add(egui::Shape::convex_polygon(hull, INK, Stroke::NONE));
+            p.add(egui::Shape::convex_polygon(hull, ink(), Stroke::NONE));
             p.rect_filled(
                 Rect::from_min_size(c + Vec2::new(-4.0, -6.0), Vec2::new(7.0, 5.0)),
                 1.0,
-                INK,
+                ink(),
             );
             let wave: Vec<Pos2> = (0..=16)
                 .map(|k| {
@@ -1460,16 +1471,16 @@ fn draw_icon(p: &egui::Painter, r: Rect, s: &Step) {
                     c + Vec2::new(x, 8.5 + (x * 0.8).sin() * 1.2)
                 })
                 .collect();
-            p.add(egui::Shape::line(wave, Stroke::new(1.2, INK)));
+            p.add(egui::Shape::line(wave, Stroke::new(1.2, ink())));
         }
         Kind::Roundabout => {
             let ring = c + Vec2::new(0.0, 1.0);
-            p.circle_stroke(ring, 4.5, ink);
+            p.circle_stroke(ring, 4.5, pen);
             p.line_segment(
                 [Pos2::new(c.x, r.bottom() - 1.0), ring + Vec2::new(0.0, 4.5)],
-                ink,
+                pen,
             );
-            arrow(p, ring, s.angle, 4.5, ink);
+            arrow(p, ring, s.angle, 4.5, pen);
         }
         Kind::UTurn => {
             let right = s.angle > 0.0;
@@ -1485,8 +1496,8 @@ fn draw_icon(p: &egui::Painter, r: Rect, s: &Step) {
             }
             let tip = Pos2::new(c.x + sx * 3.5, c.y + 5.0);
             pts.push(tip);
-            p.add(egui::Shape::line(pts, ink));
-            head(p, tip, Vec2::new(0.0, 1.0), ink);
+            p.add(egui::Shape::line(pts, pen));
+            head(p, tip, Vec2::new(0.0, 1.0), pen);
         }
         _ => {
             let angle = match (s.kind, s.modifier) {
@@ -1495,29 +1506,29 @@ fn draw_icon(p: &egui::Painter, r: Rect, s: &Step) {
             };
             p.line_segment(
                 [Pos2::new(c.x, r.bottom() - 1.0), c + Vec2::new(0.0, 2.0)],
-                ink,
+                pen,
             );
-            arrow(p, c + Vec2::new(0.0, 2.0), angle, 0.0, ink);
+            arrow(p, c + Vec2::new(0.0, 2.0), angle, 0.0, pen);
         }
     }
 }
 
 /// An arrow from `from` (or `skip` along it) at `angle` degrees from straight ahead.
-fn arrow(p: &egui::Painter, from: Pos2, angle: f64, skip: f32, ink: Stroke) {
+fn arrow(p: &egui::Painter, from: Pos2, angle: f64, skip: f32, pen: Stroke) {
     let a = (angle.clamp(-150.0, 150.0) as f32).to_radians();
     let dir = Vec2::new(a.sin(), -a.cos());
     let start = from + dir * skip;
     let tip = from + dir * (skip + 8.0);
-    p.line_segment([start, tip], ink);
-    head(p, tip, dir, ink);
+    p.line_segment([start, tip], pen);
+    head(p, tip, dir, pen);
 }
 
-fn head(p: &egui::Painter, tip: Pos2, dir: Vec2, ink: Stroke) {
+fn head(p: &egui::Painter, tip: Pos2, dir: Vec2, pen: Stroke) {
     let n = Vec2::new(-dir.y, dir.x);
     let back = tip - dir * 4.5;
     p.add(egui::Shape::convex_polygon(
         vec![tip + dir * 1.0, back + n * 4.0, back - n * 4.0],
-        ink.color,
+        pen.color,
         Stroke::NONE,
     ));
 }

@@ -22,7 +22,7 @@ use crate::camera::{self, Camera};
 use crate::routing::{self, MenuState, Place, StopAction};
 use crate::scale::{self, Units};
 use crate::search::{self, Icons, SearchUi, Status};
-use crate::theme::{APPROX, Glyph, INK, WEAK, glyph_button};
+use crate::theme::{Glyph, approx, glyph_button, ink, weak};
 
 /// Places and POIs this far from the point, in screen points, are "nearby".
 pub const NEARBY_PX: f64 = 30.0;
@@ -299,16 +299,19 @@ impl HereUi {
             ui.horizontal(|ui| {
                 match &panel.hit {
                     Some(h) => {
-                        ui.label(egui::RichText::new(icons.of(h)).color(WEAK));
+                        ui.label(egui::RichText::new(icons.of(h)).color(weak()));
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(&h.name).strong().size(14.0).color(INK),
+                                egui::RichText::new(&h.name)
+                                    .strong()
+                                    .size(14.0)
+                                    .color(ink()),
                             )
                             .truncate(),
                         );
                     }
                     None => {
-                        ui.label(egui::RichText::new("What's here").strong().color(INK));
+                        ui.label(egui::RichText::new("What's here").strong().color(ink()));
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -320,18 +323,18 @@ impl HereUi {
             if let Some(h) = &panel.hit
                 && !h.context.is_empty()
             {
-                ui.label(egui::RichText::new(&h.context).size(11.5).color(WEAK));
+                ui.label(egui::RichText::new(&h.context).size(11.5).color(weak()));
             }
             let hit_name = panel.hit.as_ref().map(|h| h.name.as_str());
             match &panel.answer {
                 None => {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(12.0).color(WEAK));
-                        ui.label(egui::RichText::new("Looking…").color(WEAK));
+                        ui.add(egui::Spinner::new().size(12.0).color(weak()));
+                        ui.label(egui::RichText::new("Looking…").color(weak()));
                     });
                 }
                 Some(Err(e)) => {
-                    ui.label(egui::RichText::new(format!("Could not look: {e}")).color(APPROX));
+                    ui.label(egui::RichText::new(format!("Could not look: {e}")).color(approx()));
                 }
                 Some(Ok(shown)) => shown_ui(ui, shown, units, icons, hit_name),
             }
@@ -341,7 +344,7 @@ impl HereUi {
                 ui.label(
                     egui::RichText::new(lonlat_text(lon, lat))
                         .size(11.5)
-                        .color(INK),
+                        .color(ink()),
                 );
                 if ui
                     .small_button("Copy")
@@ -406,25 +409,32 @@ fn shown_ui(ui: &mut egui::Ui, s: &Shown, units: Units, icons: &Icons, hit_name:
             format!(" · {} away", search::distance_text(m, units))
         }
     };
-    let weak = |t: String| egui::RichText::new(t).size(11.5).color(WEAK);
+    let dim = |t: String| egui::RichText::new(t).size(11.5).color(weak());
     if let Some(a) = s
         .address
         .as_ref()
         .filter(|a| Some(a.label.as_str()) != hit_name)
     {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("🏠").color(WEAK));
-            ui.label(egui::RichText::new(&a.label).strong().size(14.0).color(INK));
+            ui.label(egui::RichText::new("🏠").color(weak()));
+            ui.label(
+                egui::RichText::new(&a.label)
+                    .strong()
+                    .size(14.0)
+                    .color(ink()),
+            );
             if a.approx {
-                ui.label(egui::RichText::new("approximate").size(11.0).color(APPROX))
-                    .on_hover_text(
-                        "Interpolated from a range of numbers, or a point per block face",
-                    );
+                ui.label(
+                    egui::RichText::new("approximate")
+                        .size(11.0)
+                        .color(approx()),
+                )
+                .on_hover_text("Interpolated from a range of numbers, or a point per block face");
             }
         });
-        ui.label(weak(format!("{}{}", s.address_place, away(a.dist_m))));
+        ui.label(dim(format!("{}{}", s.address_place, away(a.dist_m))));
         if !a.units.is_empty() {
-            ui.label(weak(format!("Units {}", a.units.join(", "))));
+            ui.label(dim(format!("Units {}", a.units.join(", "))));
         }
     }
     match &s.street {
@@ -444,13 +454,13 @@ fn shown_ui(ui: &mut egui::Ui, s: &Shown, units: Units, icons: &Icons, hit_name:
                 ""
             };
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("🚗").color(WEAK));
-                ui.label(egui::RichText::new(format!("{what}{name}{town}")).color(INK));
+                ui.label(egui::RichText::new("🚗").color(weak()));
+                ui.label(egui::RichText::new(format!("{what}{name}{town}")).color(ink()));
             });
-            ui.label(weak(away(*d).trim_start_matches(" · ").to_string()));
+            ui.label(dim(away(*d).trim_start_matches(" · ").to_string()));
         }
         None if s.address.is_none() => {
-            ui.label(weak(format!(
+            ui.label(dim(format!(
                 "No address or street within {}",
                 search::distance_text(omp_core::here::ADDRESS_RADIUS_M, units)
             )));
@@ -461,15 +471,15 @@ fn shown_ui(ui: &mut egui::Ui, s: &Shown, units: Units, icons: &Icons, hit_name:
         ui.add_space(3.0);
         for (e, d) in s.nearby.iter().take(NEARBY_SHOWN) {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(icons.of_entry(e.kind, e.class)).color(WEAK));
-                ui.label(egui::RichText::new(&e.name).color(INK));
+                ui.label(egui::RichText::new(icons.of_entry(e.kind, e.class)).color(weak()));
+                ui.label(egui::RichText::new(&e.name).color(ink()));
                 if *d >= 10.0 {
-                    ui.label(weak(search::distance_text(*d, units)));
+                    ui.label(dim(search::distance_text(*d, units)));
                 }
             });
         }
         if s.nearby.len() > NEARBY_SHOWN {
-            ui.label(weak(format!(
+            ui.label(dim(format!(
                 "and {} more nearby",
                 s.nearby.len() - NEARBY_SHOWN
             )));
@@ -477,7 +487,7 @@ fn shown_ui(ui: &mut egui::Ui, s: &Shown, units: Units, icons: &Icons, hit_name:
     }
     if !s.areas.is_empty() {
         ui.add_space(3.0);
-        ui.add(egui::Label::new(weak(format!("In {}", s.areas.join(", ")))).wrap());
+        ui.add(egui::Label::new(dim(format!("In {}", s.areas.join(", ")))).wrap());
     }
 }
 

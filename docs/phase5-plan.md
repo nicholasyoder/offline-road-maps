@@ -46,7 +46,7 @@ What phase 4 left in place for this:
 | 5.2 Audit: performance baseline and profiles | Done 2026-11-02 | Baseline and all profiles done (the North America build, P20), every lead triaged by the owner and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)); session G (still frames) done 2026-11-02 |
 | 5.3 Settings window | **Done** 2026-11-02 | Every value in a window of its own, tested headless and by hand on Linux and Windows; config read a value at a time and clamped |
 | 5.4 Map styles in the Map tab | **Done** 2026-11-02 | Default, Night, High contrast, `style.toml` and `styles/*.toml` listed as cards, switched in 5–13 ms, remembered; overlays from `[overlay]` |
-| 5.5 Dark UI with the night style | Not started | |
+| 5.5 Dark UI | In progress 2026-11-02 | Dark UI as its own setting (as the system / light / dark), apart from the map style; palette in `theme.rs`, system theme read on Linux and Windows; the by-hand check of every page in dark is left |
 | 5.6 High-contrast style and black-and-white printing | Not started | |
 | 5.7 UI polish | Not started | |
 | 5.8 Perf: cold reads from the stick | Not started | |
@@ -165,15 +165,18 @@ Built-in styles chosen in the side panel's Map tab (the Layers tab renamed, deci
 > - **Looks:** Night is dark slate land and water with muted warm roads (hierarchy kept) and light labels with dark halos; High contrast has white land, near-white tints, black to grey main roads with the widths kept, black labels with white halos, dark icon discs, and the route as wide as in the other styles (owner, 2026-11-02), dark blue with a white halo. Both seen at z12 and z15 on Ohio. The black-and-white printout is 5.6's check.
 > - **Left:** the UI stays light with Night (5.5); (Night's tuning on the 7490 dropped by the owner, 2026-11-02); a route drawn in the high-contrast style not yet seen (the test packs on the data disk have no routing section).
 
-## 5.5 Dark UI with the night style
+## 5.5 Dark UI
 
 The roadmap: "The UI follows a dark style."
 
-- Each style declares `ui = "light" | "dark"`. `theme::apply` sets egui's theme from it instead of always light.
-- The app's own colours (`INK`, `WEAK`, `APPROX`, `ACCENT`, `OUTLINE`, the shadow, and the ~30 colour constants in `app.rs`, `routing/`, `printui.rs`, `search/`, `pins.rs`) become one `Palette` with a light and a dark value each, read from the current theme. Text over the map (scale bar, credits) takes its colour from the style, since it sits on the map's land colour.
-- **Checks:** every page, dialog and popup by hand with the dark UI (a screenshot set from a bench flight with a `style = "night"` step, compared side by side), and contrast of text and weak text against the panel at least 4.5:1 and 3:1.
+- **Changed 2026-11-02 (owner):** the dark UI is a setting of its own (*Settings → Display → Theme*: As the system, Light, Dark; default As the system), **not tied to the map style**. Any style goes with either UI; the styles do not declare `ui`.
+- **Following the system:** Windows: winit reports it and egui passes it on, including changes while running. Linux: winit 0.30 reports nothing on X11 or Wayland, so `systheme.rs` reads the desktop's settings portal (`org.freedesktop.appearance color-scheme`, set by GNOME, KDE and others) with `gdbus`, falling back to `gsettings`, every 3 s on a thread; no D-Bus library is linked. A desktop with neither tool, or with no preference set, gets light.
+- The app's own colours (`INK`, `WEAK`, `APPROX`, `ACCENT`, error red, the fills of selected rows, notes and the boxes over the map) are functions in `theme.rs` that give a light or dark value by the theme `theme::apply` last set. The scale bar, coordinates and credit line sit in boxes with their own (see-through) fill, so they follow the UI theme, not the map's colours. Marks drawn on the map (pins, route, stops) keep their colours. The printed pages are always light (`PAPER_*`, `theme::style`).
+- **Checks:** every page, dialog and popup by hand with the dark UI, and contrast of text and weak text against the panel at least 4.5:1 and 3:1 (a unit test for both themes).
 
-**Done when:** the UI is dark with the night style and light with the others, with no hard-coded colour left outside the palette.
+**Done when:** the UI is dark or light by the setting or the system, whatever the map style, with no hard-coded UI colour left outside the palette.
+
+> **In progress 2026-11-02.** Code and tests are in (the contrast test, the setting round trip, the portal parsing). Left: the owner's look at every page, dialog and popup in dark on Linux and Windows (not seen yet; this machine's desktop reports no preference), and that a change of the system theme while the app runs is followed.
 
 ## 5.6 High-contrast style and black-and-white printing
 

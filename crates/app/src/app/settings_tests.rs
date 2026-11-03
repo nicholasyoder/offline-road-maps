@@ -7,6 +7,7 @@ fn changed() -> Config {
         display: Display {
             ui_size: 0.5,
             label_size: 1.5,
+            theme: crate::config::UiTheme::Dark,
         },
         movement: Movement {
             wheel_zoom: 0.5,

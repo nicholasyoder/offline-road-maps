@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Align2, Color32, Vec2};
+use eframe::egui::{self, Align2, Vec2};
 
 use super::App;
 use crate::config;
@@ -183,7 +183,7 @@ impl App {
                             seconds(secs)
                         )),
                         Outcome::Damaged(ids) => ui.colored_label(
-                            ERROR,
+                            crate::theme::error(),
                             format!(
                                 "The pack is damaged: {} {} not match {} checksum. \
                                      Copy the pack again from where it came from, or \
@@ -193,9 +193,10 @@ impl App {
                                 if ids.len() == 1 { "its" } else { "their" },
                             ),
                         ),
-                        Outcome::Failed(e) => {
-                            ui.colored_label(ERROR, format!("The pack could not be read: {e}"))
-                        }
+                        Outcome::Failed(e) => ui.colored_label(
+                            crate::theme::error(),
+                            format!("The pack could not be read: {e}"),
+                        ),
                         Outcome::Cancelled => ui.label("Cancelled."),
                     };
                     close = ui.button("Close").clicked();
@@ -218,7 +219,7 @@ impl App {
                 .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.set_max_width(480.0);
-                    ui.colored_label(ERROR, e);
+                    ui.colored_label(crate::theme::error(), e);
                     ui.label(
                         "The pack may be incomplete (a chunk file missing), damaged, or made \
                          for a newer version of the app.",
@@ -244,7 +245,7 @@ impl App {
                 .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.set_max_width(480.0);
-                    ui.colored_label(ERROR, e);
+                    ui.colored_label(crate::theme::error(), e);
                     ui.label(
                         "The pack may be damaged. Verify it to find out; it takes a minute or \
                          more for a large pack.",
@@ -282,8 +283,6 @@ impl App {
         }
     }
 }
-
-const ERROR: Color32 = Color32::from_rgb(180, 30, 30);
 
 fn seconds(s: f64) -> String {
     if s < 10.0 {

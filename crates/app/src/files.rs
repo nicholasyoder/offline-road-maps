@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::dialog::{self, Size};
-use crate::theme::{APPROX, INK, WEAK};
+use crate::theme::{approx, ink, weak};
 
 /// The extension of trips and pushpin sets.
 pub const EXT: &str = "toml";
@@ -291,7 +291,8 @@ impl Browser {
             .show(ui, |ui| match self.read() {
                 Err(e) => {
                     ui.label(
-                        egui::RichText::new(format!("Cannot read this folder: {e}")).color(APPROX),
+                        egui::RichText::new(format!("Cannot read this folder: {e}"))
+                            .color(approx()),
                     );
                 }
                 Ok((dirs, files)) => {
@@ -301,7 +302,7 @@ impl Browser {
                         }
                     }
                     for f in files {
-                        let r = ui.selectable_label(false, egui::RichText::new(f).color(INK));
+                        let r = ui.selectable_label(false, egui::RichText::new(f).color(ink()));
                         if r.clicked() {
                             picked = Some((f.clone(), false));
                         }
@@ -310,7 +311,7 @@ impl Browser {
                         }
                     }
                     if dirs.is_empty() && files.is_empty() {
-                        ui.label(egui::RichText::new("Nothing here.").color(WEAK));
+                        ui.label(egui::RichText::new("Nothing here.").color(weak()));
                     }
                 }
             });
@@ -338,7 +339,7 @@ impl Browser {
                 self.replace = None;
             }
             if self.mode == Mode::Save {
-                ui.label(egui::RichText::new(format!(".{}", self.ext)).color(WEAK));
+                ui.label(egui::RichText::new(format!(".{}", self.ext)).color(weak()));
             }
             submit |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         });
@@ -356,7 +357,7 @@ impl Browser {
                 out = Some(Outcome::Cancelled);
             }
             if let Some(p) = &self.replace {
-                ui.label(egui::RichText::new(format!("“{}” exists.", stem(p))).color(APPROX));
+                ui.label(egui::RichText::new(format!("“{}” exists.", stem(p))).color(approx()));
             }
             if submit && let Some(t) = target {
                 out = match self.mode {

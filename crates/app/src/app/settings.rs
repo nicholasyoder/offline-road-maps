@@ -6,11 +6,11 @@ use std::ops::RangeInclusive;
 use eframe::egui;
 
 use super::App;
-use crate::config::{Config, Display, Movement, Start};
+use crate::config::{Config, Display, Movement, Start, UiTheme};
 use crate::dialog::{self, Size};
 use crate::render;
 use crate::scale::Units;
-use crate::theme::INK;
+use crate::theme::{self, ink};
 
 /// What the window keeps besides the config.
 #[derive(Default)]
@@ -34,6 +34,14 @@ impl App {
             ctx.set_zoom_factor(want);
         }
         self.zoom_seen = want;
+    }
+
+    /// Draws the UI in the theme the setting and the system call for.
+    pub(super) fn sync_theme(&mut self, ctx: &egui::Context) {
+        let dark = theme::wants_dark(self.cfg.display.theme, self.sys_theme.get(ctx));
+        if dark != theme::is_dark() {
+            theme::apply(ctx, dark);
+        }
     }
 
     /// The Settings window: a window of its own, apart from the map's (egui falls back to
@@ -69,7 +77,7 @@ fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
         .inner_margin(10)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new(title).strong().size(15.0).color(INK));
+            ui.label(egui::RichText::new(title).strong().size(15.0).color(ink()));
             ui.separator();
             add(ui);
         });
@@ -135,6 +143,14 @@ fn contents(
                 }
                 ui.end_row();
 
+                ui.label("Theme");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut cfg.display.theme, UiTheme::System, "As the system");
+                    ui.radio_value(&mut cfg.display.theme, UiTheme::Light, "Light");
+                    ui.radio_value(&mut cfg.display.theme, UiTheme::Dark, "Dark");
+                });
+                ui.end_row();
+
                 ui.label("Label size");
                 percent(ui, &mut cfg.display.label_size, Display::LABEL_SIZE);
                 ui.end_row();
@@ -148,6 +164,10 @@ fn contents(
                 ),
             );
         }
+        note(
+            ui,
+            "Theme sets the colours of the panel, windows and buttons. It is apart from the map's style: a dark panel goes with any map.",
+        );
         note(
             ui,
             "Label size scales the names, road shields and icons on the map only. A printed map keeps its own sizes.",
@@ -176,7 +196,7 @@ fn contents(
         if render::samples(cfg.msaa) != running_msaa {
             ui.label(
                 egui::RichText::new("Applies the next time the app starts.")
-                    .color(crate::theme::APPROX),
+                    .color(crate::theme::approx()),
             );
         }
     });

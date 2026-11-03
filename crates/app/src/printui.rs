@@ -31,7 +31,7 @@ use crate::scale::Units;
 use crate::side::Page;
 use crate::snapshot::Gpu;
 use crate::style::{Style, StyleFile};
-use crate::theme::{INK, WEAK};
+use crate::theme::{ink, weak};
 
 /// The resolution of the previews: the page as it prints, only less sharp.
 const PREVIEW_DPI: f64 = 110.0;
@@ -290,11 +290,11 @@ impl PrintUi {
                 ui.horizontal(|ui| {
                     if loading {
                         ui.spinner();
-                        ui.label(egui::RichText::new("Loading printers…").color(WEAK));
+                        ui.label(egui::RichText::new("Loading printers…").color(weak()));
                     } else if let Some(reason) = &self.unavailable {
-                        ui.label(egui::RichText::new(reason).color(WEAK).size(12.0));
+                        ui.label(egui::RichText::new(reason).color(weak()).size(12.0));
                     } else if self.printers.is_empty() {
-                        ui.label(egui::RichText::new("No printers found").color(WEAK));
+                        ui.label(egui::RichText::new("No printers found").color(weak()));
                     } else {
                         egui::ComboBox::from_id_salt("print-printer")
                             .selected_text(chosen.clone().unwrap_or_default())
@@ -362,7 +362,7 @@ impl PrintUi {
             let layout = self.layout(settings);
             if let Some(area) = &self.area {
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(area.scale_text(&layout, around.units)).color(INK));
+                ui.label(egui::RichText::new(area.scale_text(&layout, around.units)).color(ink()));
             }
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
@@ -380,7 +380,7 @@ impl PrintUi {
                 egui::RichText::new(
                     "Drag the rectangle on the map to move it, or a corner to resize it.",
                 )
-                .color(WEAK)
+                .color(weak())
                 .size(12.0),
             );
         }
@@ -390,7 +390,7 @@ impl PrintUi {
                     "The printer does not list {}.",
                     settings.paper.name()
                 ))
-                .color(Color32::from_rgb(180, 30, 30))
+                .color(crate::theme::error())
                 .size(12.0),
             );
         }
@@ -402,7 +402,7 @@ impl PrintUi {
                     "This printer cannot print the outer {:.2} in; the page's edge is trimmed.",
                     m / 72.0
                 ))
-                .color(WEAK)
+                .color(weak())
                 .size(12.0),
             );
         }
@@ -440,14 +440,14 @@ impl PrintUi {
             }
         });
         if working {
-            ui.label(egui::RichText::new("Drawing the pages and sending them…").color(WEAK));
+            ui.label(egui::RichText::new("Drawing the pages and sending them…").color(weak()));
         }
         match &self.status {
             Some(Ok(m)) => {
-                ui.label(egui::RichText::new(m).color(INK));
+                ui.label(egui::RichText::new(m).color(ink()));
             }
             Some(Err(e)) => {
-                ui.label(egui::RichText::new(e).color(Color32::from_rgb(180, 30, 30)));
+                ui.label(egui::RichText::new(e).color(crate::theme::error()));
             }
             None => {}
         }
@@ -521,12 +521,12 @@ impl PrintUi {
         if let Some(e) = &self.preview.error {
             ui.label(
                 egui::RichText::new(format!("The page could not be drawn: {e}"))
-                    .color(Color32::from_rgb(180, 30, 30)),
+                    .color(crate::theme::error()),
             );
         }
         let Some(tex) = self.preview.pages.first() else {
             if busy {
-                ui.label(egui::RichText::new("Drawing the page…").color(WEAK));
+                ui.label(egui::RichText::new("Drawing the page…").color(weak()));
             }
             return;
         };
@@ -555,7 +555,7 @@ impl PrintUi {
                 Align2::CENTER_CENTER,
                 "Drawing the page…",
                 egui::FontId::proportional(13.0),
-                INK,
+                ink(),
             );
         }
         if resp

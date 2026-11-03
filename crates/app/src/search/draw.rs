@@ -11,7 +11,7 @@ use omp_core::search::Kind;
 use super::distance_text;
 use crate::camera::Camera;
 use crate::scale::Units;
-use crate::theme::{APPROX, INK, WEAK};
+use crate::theme::{approx, ink, weak};
 
 const PIN: Color32 = Color32::from_rgb(208, 52, 44);
 
@@ -123,9 +123,9 @@ pub(super) fn row(
     let p = ui.painter_at(rect);
     if selected || resp.hovered() {
         let fill = if selected {
-            Color32::from_rgb(218, 230, 248)
+            crate::theme::picked()
         } else {
-            Color32::from_gray(238)
+            crate::theme::soft_fill(false)
         };
         p.rect_filled(rect, 3.0, fill);
     }
@@ -135,24 +135,24 @@ pub(super) fn row(
         Align2::CENTER_CENTER,
         icon,
         FontId::proportional(15.0),
-        WEAK,
+        weak(),
     );
-    let right_g = p.layout_no_wrap(right, FontId::proportional(11.5), WEAK);
+    let right_g = p.layout_no_wrap(right, FontId::proportional(11.5), weak());
     let right_w = right_g.size().x;
     let top = rect.top() + if context.is_empty() { 5.0 } else { 3.0 };
     p.galley(
         Pos2::new(rect.right() - 4.0 - right_w, top + 2.0),
         right_g,
-        WEAK,
+        weak(),
     );
     let name_w = (rect.right() - 12.0 - right_w - x).max(40.0);
-    let name_g = one_line(&p, name, FontId::proportional(14.0), INK, name_w);
+    let name_g = one_line(&p, name, FontId::proportional(14.0), ink(), name_w);
     let after = x + name_g.size().x + 6.0;
-    p.galley(Pos2::new(x, top), name_g, INK);
+    p.galley(Pos2::new(x, top), name_g, ink());
     if let Some(t) = tag {
-        let g = p.layout_no_wrap(t.into(), FontId::proportional(11.0), APPROX);
+        let g = p.layout_no_wrap(t.into(), FontId::proportional(11.0), approx());
         if after + g.size().x < rect.right() - 12.0 - right_w {
-            p.galley(Pos2::new(after, top + 3.0), g, APPROX);
+            p.galley(Pos2::new(after, top + 3.0), g, approx());
         }
     }
     if !context.is_empty() {
@@ -160,10 +160,10 @@ pub(super) fn row(
             &p,
             context,
             FontId::proportional(11.5),
-            WEAK,
+            weak(),
             rect.right() - 4.0 - x,
         );
-        p.galley(Pos2::new(x, top + 18.0), g, WEAK);
+        p.galley(Pos2::new(x, top + 18.0), g, weak());
     }
     resp
 }
@@ -233,7 +233,7 @@ pub fn draw_marker(painter: &egui::Painter, origin: Pos2, cam: &Camera, hit: &Hi
     }
     let (head, r) = draw_pin(painter, tip, PIN, None);
 
-    let mut lines = vec![(hit.name.clone(), FontId::proportional(13.5), INK)];
+    let mut lines = vec![(hit.name.clone(), FontId::proportional(13.5), ink())];
     let mut context = hit.context.clone();
     if let Some(pc) = &hit.postcode {
         context = if context.is_empty() {
@@ -243,16 +243,16 @@ pub fn draw_marker(painter: &egui::Painter, origin: Pos2, cam: &Camera, hit: &Hi
         };
     }
     if !context.is_empty() {
-        lines.push((context, FontId::proportional(11.5), WEAK));
+        lines.push((context, FontId::proportional(11.5), weak()));
     }
     if hit.number_missing {
         lines.push((
             "Number not found on this street".into(),
             FontId::proportional(11.5),
-            APPROX,
+            approx(),
         ));
     } else if hit.approx {
-        lines.push(("Approximate".into(), FontId::proportional(11.5), APPROX));
+        lines.push(("Approximate".into(), FontId::proportional(11.5), approx()));
     }
     let galleys: Vec<_> = lines
         .into_iter()
@@ -266,8 +266,8 @@ pub fn draw_marker(painter: &egui::Painter, origin: Pos2, cam: &Camera, hit: &Hi
     painter.rect(
         rect,
         4.0,
-        Color32::from_white_alpha(235),
-        Stroke::new(1.0, Color32::from_gray(170)),
+        crate::theme::map_box(),
+        Stroke::new(1.0, crate::theme::hairline()),
         StrokeKind::Inside,
     );
     let mut y = rect.top() + pad.y;

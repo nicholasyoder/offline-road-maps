@@ -22,7 +22,7 @@ use crate::files::{self, Saved};
 use crate::pool::{Alloc, Kind, Pool};
 use crate::routing::{self, MenuState, Place, StopAction};
 use crate::style::{PIN_PAINTS, Rgba};
-use crate::theme::{APPROX, Glyph, INK, WEAK, glyph_button};
+use crate::theme::{Glyph, approx, glyph_button, ink, weak};
 
 /// The folder next to the executable.
 pub const DIR: &str = "pins";
@@ -245,13 +245,13 @@ pub fn draw_names<'a>(
         }
         let s = cam.world_to_screen(q);
         let at = Pos2::new(origin.x + s[0] as f32 + HALF + 3.0, origin.y + s[1] as f32);
-        let galley = painter.layout_no_wrap(pin.name.clone(), FontId::proportional(12.0), INK);
+        let galley = painter.layout_no_wrap(pin.name.clone(), FontId::proportional(12.0), ink());
         let rect = Rect::from_min_size(
             at - Vec2::new(2.0, galley.size().y / 2.0),
             galley.size() + Vec2::new(4.0, 0.0),
         );
-        painter.rect_filled(rect, 3.0, Color32::from_white_alpha(210));
-        painter.galley(rect.min + Vec2::new(2.0, 0.0), galley, INK);
+        painter.rect_filled(rect, 3.0, crate::theme::map_box());
+        painter.galley(rect.min + Vec2::new(2.0, 0.0), galley, ink());
         drawn += 1;
         if drawn == MAX_NAMES {
             break;
@@ -750,7 +750,7 @@ impl PinsUi {
             });
             if names.len() > 1 {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Set").size(11.5).color(WEAK));
+                    ui.label(egui::RichText::new("Set").size(11.5).color(weak()));
                     egui::ComboBox::from_id_salt("pin-set")
                         .selected_text(names[r.0].as_str())
                         .show_ui(ui, |ui| {
@@ -765,17 +765,17 @@ impl PinsUi {
                 ui.label(
                     egui::RichText::new(format!("In “{n}”"))
                         .size(11.5)
-                        .color(WEAK),
+                        .color(weak()),
                 );
             }
             let [lon, lat] = geo::unit_to_lonlat(geo::to_unit(pin.p));
             ui.label(
                 egui::RichText::new(crate::here::lonlat_text(lon, lat))
                     .size(11.5)
-                    .color(INK),
+                    .color(ink()),
             );
             if let Some(e) = &error {
-                ui.add(egui::Label::new(egui::RichText::new(e).color(APPROX)).wrap());
+                ui.add(egui::Label::new(egui::RichText::new(e).color(approx())).wrap());
             }
             ui.add_space(2.0);
             let (a, _) = routing::stop_buttons(ui, route);
@@ -842,7 +842,7 @@ impl PinsUi {
             egui::RichText::new("Pushpins")
                 .size(11.5)
                 .strong()
-                .color(WEAK),
+                .color(weak()),
         );
         for r in found {
             let Some(p) = self.pin(r) else { continue };
@@ -880,7 +880,7 @@ pub fn pin_row(ui: &mut egui::Ui, p: &Pin, set: Option<&str>) -> egui::Response 
         Align2::LEFT_CENTER,
         text,
         FontId::proportional(13.0),
-        INK,
+        ink(),
     );
     resp
 }
@@ -934,7 +934,7 @@ fn symbol_button(ui: &mut egui::Ui, shape: Shape, colour: Colour, on: bool) -> e
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
     if on {
         ui.painter()
-            .rect_stroke(rect, 3.0, Stroke::new(1.5, INK), egui::StrokeKind::Inside);
+            .rect_stroke(rect, 3.0, Stroke::new(1.5, ink()), egui::StrokeKind::Inside);
     } else if resp.hovered() {
         ui.painter()
             .rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);

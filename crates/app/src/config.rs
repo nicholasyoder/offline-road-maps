@@ -54,6 +54,19 @@ pub struct Display {
     pub ui_size: f64,
     /// A factor on the style's label sizes: names, shields and icons on the map only.
     pub label_size: f64,
+    /// Light or dark UI: by the system's, or one of them. Apart from the map's style.
+    pub theme: UiTheme,
+}
+
+/// Which colours the panel, dialogs and boxes over the map are drawn in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UiTheme {
+    /// What the desktop asks for (light when it does not say).
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 impl Display {
@@ -66,6 +79,7 @@ impl Default for Display {
         Self {
             ui_size: 1.0,
             label_size: 1.0,
+            theme: UiTheme::System,
         }
     }
 }
@@ -439,6 +453,7 @@ mod tests {
             display: Display {
                 ui_size: 0.85,
                 label_size: 1.25,
+                theme: UiTheme::Light,
             },
             movement: Movement {
                 wheel_zoom: 0.5,

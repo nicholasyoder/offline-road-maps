@@ -23,7 +23,7 @@ use crate::scale::{self, Units};
 use crate::search;
 use crate::snapshot::{self, Gpu, View};
 use crate::style::Style;
-use crate::theme::{self, APPROX, INK, WEAK};
+use crate::theme;
 
 /// The biggest side of a page image, the adapter's texture limit (render.rs).
 const MAX_SIDE: f64 = 8192.0;
@@ -83,7 +83,7 @@ pub struct Egui {
 impl Egui {
     pub fn new(gpu: &Gpu) -> Self {
         let ctx = egui::Context::default();
-        theme::apply(&ctx);
+        theme::style(&ctx, false);
         ctx.all_styles_mut(|s| s.animation_time = 0.0);
         let renderer = egui_wgpu::Renderer::new(
             &gpu.device,
@@ -341,7 +341,7 @@ fn draw_map_overlay(
             Align2::LEFT_CENTER,
             &page.label,
             FontId::proportional(15.0),
-            INK,
+            theme::PAPER_INK,
         );
     }
     let credit = to_u(layout.footer);
@@ -350,7 +350,7 @@ fn draw_map_overlay(
         Align2::RIGHT_CENTER,
         CREDIT,
         FontId::proportional(9.0),
-        WEAK,
+        theme::PAPER_WEAK,
     );
     let on_map = p.with_clip_rect(map);
     pins::draw_names(&on_map, origin, cam, page.pins.iter());
@@ -362,13 +362,18 @@ fn draw_map_overlay(
     // The scale bar, in the map's bottom-left corner on a white card.
     let per_u = page.area.metres_per_page_point(layout) * s;
     let look = scale::Look {
-        ink: INK,
+        ink: theme::PAPER_INK,
         card: Some(Color32::from_white_alpha(225)),
     };
     let size = scale::size(&on_map, per_u, page.units, look);
     let at = map.left_bottom() + Vec2::new(8.0, -8.0 - size.y);
     scale::paint(&on_map, at, per_u, page.units, look);
-    p.rect_stroke(map, 0.0, Stroke::new(0.75, INK), egui::StrokeKind::Outside);
+    p.rect_stroke(
+        map,
+        0.0,
+        Stroke::new(0.75, theme::PAPER_INK),
+        egui::StrokeKind::Outside,
+    );
 }
 
 /// How the directions' header is built: the label, the totals, what is said about the
@@ -499,14 +504,14 @@ pub fn render_directions(
                 Align2::LEFT_CENTER,
                 format!("Page {} of {total}", n + 1),
                 FontId::proportional(9.0),
-                WEAK,
+                theme::PAPER_WEAK,
             );
             p.text(
                 footer.right_center(),
                 Align2::RIGHT_CENTER,
                 CREDIT,
                 FontId::proportional(9.0),
-                WEAK,
+                theme::PAPER_WEAK,
             );
         })?;
         let mut rgba = blank(size_px);
@@ -536,22 +541,35 @@ fn directions_frame(layout: &Layout) -> (Vec2, Rect, Rect) {
 fn measure_head(ui: &egui::Ui, doc: &DirectionsDoc, width: f32) -> Head {
     let p = ui.painter();
     let label = (!doc.label.is_empty()).then(|| {
-        let g = p.layout(doc.label.clone(), FontId::proportional(17.0), INK, width);
+        let g = p.layout(
+            doc.label.clone(),
+            FontId::proportional(17.0),
+            theme::PAPER_INK,
+            width,
+        );
         Rect::from_min_size(Pos2::ZERO, g.size())
     });
-    let totals = p
-        .layout_no_wrap(doc.totals.clone(), FontId::proportional(14.0), INK)
+    let totals =
+        p.layout_no_wrap(
+            doc.totals.clone(),
+            FontId::proportional(14.0),
+            theme::PAPER_INK,
+        )
         .size()
-        .y
-        + 4.0;
+        .y + 4.0;
     let stops = doc
         .stops
         .iter()
         .map(|(_, name)| {
-            p.layout(name.clone(), FontId::proportional(13.0), INK, width - 26.0)
-                .size()
-                .y
-                .max(18.0)
+            p.layout(
+                name.clone(),
+                FontId::proportional(13.0),
+                theme::PAPER_INK,
+                width - 26.0,
+            )
+            .size()
+            .y
+            .max(18.0)
                 + 2.0
         })
         .collect();
@@ -577,7 +595,7 @@ fn notice_galley(p: &egui::Painter, text: &str, width: f32) -> std::sync::Arc<eg
     p.layout(
         format!("⚠ {text}"),
         FontId::proportional(13.0),
-        APPROX,
+        theme::PAPER_APPROX,
         width,
     )
 }
@@ -591,10 +609,10 @@ fn draw_head_piece(ui: &egui::Ui, doc: &DirectionsDoc, head: &Head, piece: Piece
             let g = p.layout(
                 doc.label.clone(),
                 FontId::proportional(17.0),
-                INK,
+                theme::PAPER_INK,
                 rect.width(),
             );
-            p.galley(Pos2::new(left, y), g, INK);
+            p.galley(Pos2::new(left, y), g, theme::PAPER_INK);
         }
         Piece::Totals => {
             p.text(
@@ -602,7 +620,7 @@ fn draw_head_piece(ui: &egui::Ui, doc: &DirectionsDoc, head: &Head, piece: Piece
                 Align2::LEFT_TOP,
                 &doc.totals,
                 FontId::proportional(14.0),
-                INK,
+                theme::PAPER_INK,
             );
         }
         Piece::Notice(i) => {
@@ -612,7 +630,7 @@ fn draw_head_piece(ui: &egui::Ui, doc: &DirectionsDoc, head: &Head, piece: Piece
             p.galley(
                 Pos2::new(left, y),
                 notice_galley(p, text, rect.width()),
-                APPROX,
+                theme::PAPER_APPROX,
             );
         }
         Piece::Stop(i) => {
@@ -631,13 +649,17 @@ fn draw_head_piece(ui: &egui::Ui, doc: &DirectionsDoc, head: &Head, piece: Piece
             let g = p.layout(
                 name.clone(),
                 FontId::proportional(13.0),
-                INK,
+                theme::PAPER_INK,
                 rect.width() - 26.0,
             );
-            p.galley(Pos2::new(left + 24.0, y + 1.0), g, INK);
+            p.galley(Pos2::new(left + 24.0, y + 1.0), g, theme::PAPER_INK);
         }
         Piece::Rule => {
-            p.hline(rect.x_range(), rect.center().y, Stroke::new(0.75, WEAK));
+            p.hline(
+                rect.x_range(),
+                rect.center().y,
+                Stroke::new(0.75, theme::PAPER_WEAK),
+            );
         }
         Piece::Label | Piece::Row(_) => {}
     }
@@ -712,7 +734,7 @@ mod tests {
             units: Units::Miles,
         };
         let ctx = egui::Context::default();
-        theme::apply(&ctx);
+        theme::style(&ctx, false);
         let mut plan = None;
         for _ in 0..2 {
             let raw = egui::RawInput {

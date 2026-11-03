@@ -236,6 +236,8 @@ pub struct App {
     settings: Option<settings::Window>,
     /// egui's zoom factor as last seen, to tell a change of its own from ours.
     zoom_seen: f32,
+    /// The system's light or dark, for the UI theme setting "as the system".
+    sys_theme: crate::systheme::Watch,
     /// MSAA samples the window was created with.
     msaa_now: u32,
     /// The picker's folder field.
@@ -264,7 +266,11 @@ impl App {
         let (style_id, style, why) = pick_style(&styles, want);
         notices.extend(why);
         style::set_overlay(style.overlay);
-        crate::theme::apply(&cc.egui_ctx);
+        let sys_theme = crate::systheme::Watch::start(&cc.egui_ctx);
+        crate::theme::apply(
+            &cc.egui_ctx,
+            crate::theme::wants_dark(cfg.display.theme, sys_theme.get(&cc.egui_ctx)),
+        );
         cc.egui_ctx.set_zoom_factor(cfg.display.ui_size as f32);
         let rs = cc.wgpu_render_state.as_ref();
         let adapter = rs.map_or_else(String::new, |rs| {
@@ -321,6 +327,7 @@ impl App {
             about: false,
             settings: None,
             zoom_seen: cfg_zoom,
+            sys_theme,
             msaa_now: s.msaa,
             path_input: String::new(),
         };
@@ -840,6 +847,7 @@ impl eframe::App for App {
             self.set_style(&ctx, &id);
         }
         self.sync_zoom(&ctx);
+        self.sync_theme(&ctx);
 
         if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
             self.cfg.debug_overlay = !self.cfg.debug_overlay;

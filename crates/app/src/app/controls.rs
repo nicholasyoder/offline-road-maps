@@ -1,13 +1,13 @@
 //! The buttons and readouts over the map: the button that opens the side panel, the scale
 //! bar and the cursor's coordinates, the zoom buttons and the credit line.
 
-use eframe::egui::{self, Align2, Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align2, Pos2, Rect, Sense, Stroke, Vec2};
 
 use super::App;
 use crate::here::lonlat_text;
 use crate::scale;
 use crate::side::Action;
-use crate::theme::{Glyph, INK, glyph_button};
+use crate::theme::{Glyph, glyph_button, ink};
 
 impl App {
     /// The buttons and readouts over the map: the button that opens the side panel at the
@@ -19,7 +19,7 @@ impl App {
         let panel = egui::Frame::popup(&ctx.global_style())
             .shadow(crate::theme::MAP_SHADOW)
             .inner_margin(egui::Margin::symmetric(6, 4))
-            .fill(Color32::from_white_alpha(215));
+            .fill(crate::theme::map_box());
         let mut action = None;
         if !self.cfg.side_panel.open {
             let side = &mut self.cfg.side_panel;
@@ -45,7 +45,7 @@ impl App {
                 panel.show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let look = scale::Look {
-                        ink: INK,
+                        ink: ink(),
                         card: None,
                     };
                     let size = scale::size(ui.painter(), mpp, units, look);
@@ -53,7 +53,7 @@ impl App {
                     scale::paint(ui.painter(), rect.min, mpp, units, look);
                     let text = cursor.map_or_else(String::new, |[lon, lat]| lonlat_text(lon, lat));
                     ui.add_space(3.0);
-                    ui.label(egui::RichText::new(text).size(11.0).color(INK));
+                    ui.label(egui::RichText::new(text).size(11.0).color(ink()));
                 });
             });
 
@@ -66,11 +66,11 @@ impl App {
             .pivot(Align2::RIGHT_BOTTOM)
             .show(ctx, |ui| {
                 egui::Frame::NONE
-                    .fill(Color32::from_white_alpha(190))
+                    .fill(crate::theme::map_credit())
                     .inner_margin(egui::Margin::symmetric(4, 1))
                     .show(ui, |ui| {
                         let label =
-                            egui::Label::new(egui::RichText::new(credit).size(10.5).color(INK))
+                            egui::Label::new(egui::RichText::new(credit).size(10.5).color(ink()))
                                 .sense(Sense::click());
                         if ui.add(label).on_hover_text("About this map").clicked() {
                             action = Some(Action::About);

@@ -7,7 +7,7 @@ use eframe::egui::{self, Rangef, Rect, Vec2};
 
 use crate::layers::Layers;
 use crate::styles::Entry;
-use crate::theme::{ACCENT, HEADER_H, INK, WEAK};
+use crate::theme::{HEADER_H, accent, ink, weak};
 
 /// The panel's width range, in points, and the most of a narrow window it may take.
 const WIDTH: [f32; 2] = [300.0, 480.0];
@@ -137,7 +137,7 @@ pub fn map_ui(
     current: &str,
 ) -> Option<String> {
     let mut picked = None;
-    ui.label(egui::RichText::new("Style").strong().color(INK));
+    ui.label(egui::RichText::new("Style").strong().color(ink()));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::splat(6.0);
         for e in styles {
@@ -148,7 +148,7 @@ pub fn map_ui(
     });
     ui.add_space(8.0);
     let (map, pois) = layers.groups();
-    ui.label(egui::RichText::new("Layers").strong().color(INK));
+    ui.label(egui::RichText::new("Layers").strong().color(ink()));
     for (name, on) in map {
         ui.checkbox(on, name);
     }
@@ -156,7 +156,7 @@ pub fn map_ui(
     ui.label(
         egui::RichText::new("Points of interest")
             .strong()
-            .color(INK),
+            .color(ink()),
     );
     for (name, on) in pois {
         ui.checkbox(on, name);
@@ -199,12 +199,12 @@ fn style_card(ui: &mut egui::Ui, e: &Entry, on: bool) -> bool {
             egui::Align2::CENTER_CENTER,
             "!",
             egui::FontId::proportional(18.0),
-            WEAK,
+            weak(),
         );
     }
     let (width, colour) = match (on, r.hovered() && usable) {
-        (true, _) => (2.0, ACCENT),
-        (false, true) => (1.5, WEAK),
+        (true, _) => (2.0, accent()),
+        (false, true) => (1.5, weak()),
         (false, false) => (1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
     };
     p.rect_stroke(
@@ -213,7 +213,7 @@ fn style_card(ui: &mut egui::Ui, e: &Entry, on: bool) -> bool {
         egui::Stroke::new(width, colour),
         egui::StrokeKind::Inside,
     );
-    let text = if usable { INK } else { WEAK };
+    let text = if usable { ink() } else { weak() };
     let name = p.layout(
         e.name.clone(),
         egui::FontId::proportional(12.0),
