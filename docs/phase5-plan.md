@@ -44,7 +44,7 @@ What phase 4 left in place for this:
 |---|---|---|
 | 5.1 Audit: bugs and design | **Done** 2026-11-02 | 10 bugs fixed (B1–B10); every finding triaged; fix sessions A–F done; the rest assigned to later steps |
 | 5.2 Audit: performance baseline and profiles | Done 2026-11-02 | Baseline and all profiles done (the North America build, P20), every lead triaged by the owner and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)); session G (still frames) done 2026-11-02 |
-| 5.3 Settings window | In progress 2026-11-02 | Everything is in the window and tested headless; the by-hand checks on the 7490 under Debian and on Windows are left |
+| 5.3 Settings window | **Done** 2026-11-02 | Every value in a window of its own, tested headless and by hand on Linux and Windows; config read a value at a time and clamped |
 | 5.4 Map styles in the Map tab | Not started | |
 | 5.5 Dark UI with the night style | Not started | |
 | 5.6 High-contrast style and black-and-white printing | Not started | |
@@ -129,7 +129,7 @@ A *Settings…* window from the ☰ menu (replacing the placeholder), saved to `
 
 **Done when:** every value above is in the window, takes effect as stated, survives a restart, and a damaged `config.toml` is kept and reported.
 
-> **In progress 2026-11-02** (the commit that adds this note). Code: `app/settings.rs` (the window, opened from ☰ → *Settings…*), `config.rs` (`Display`, `Movement`, `Start`; `Config::parse`, `clamp`).
+> **Done 2026-11-02** (commits `c2b3017`, `7f4ac98`, `fb9f3c4`; checked by hand by the owner on Linux and on Windows, where the release exe also starts without a console window, D6). Code: `app/settings.rs` (the window, opened from ☰ → *Settings…*), `config.rs` (`Display`, `Movement`, `Start`; `Config::parse`, `clamp`).
 >
 > - **After the first test on the laptops (2026-11-02):** the size sliders go down to 50%; the window is a window of its own (an egui immediate viewport, `show_viewport_immediate`, which falls back to a window inside the map's where the platform has no second window), with each section in a framed group with a title and a line under it, and each setting explained in small type (anti-aliasing most of all).
 > - **Window:** UI size 50–200% (the slider applies when let go, as the window changes size under it; shows the system's px/pt beside it; egui's own Ctrl+plus and Ctrl+minus are kept in step with it), label size 50–200%, MSAA 1×/2×/4× (read when the window is made, so "applies after a restart"; `render::samples` now lets 2 through, D4), wheel zoom per notch, zoom per key press, arrow-key pan speed, pan inertia on/off and a glide time, units (the Layers page lost its units), reopen the last view and pack, and *Restore defaults*.
@@ -137,7 +137,7 @@ A *Settings…* window from the ☰ menu (replacing the placeholder), saved to `
 > - **Label size** is a factor on the placed labels' size (`Placer::label_scale`, part of the frame's key). Tiles are not tessellated again: `prepare_tile` knows neither pixels per point nor the factor, and the glyph atlas draws at any size (the slot's em). The printed map keeps its own labels.
 > - **Config (R5, R6):** read a value at a time, so one bad value loses only itself and the notice names it; a file that is not TOML at all is renamed `config.toml.bad` and the notice says so once (it is now loaded once, in `main`, since the first load renames the file). Every number is clamped to its control's range on reading, the schedule's and the print copies among them (R6). Writes already went through a temporary file (`files::write_bytes`).
 > - **Tests:** the headless window test (draws the window, saves and loads every changed value, restore defaults), and the config's: a damaged file kept, one bad value, clamping.
-> - **Left:** the by-hand checks, on the 7490 under Debian with UI size 50% and on Windows; that 2× MSAA works on the laptops' GPUs (its Settings line says some cannot).
+> - **Left:** nothing. The 2× MSAA choice carries a note that not every GPU can do it.
 
 ## 5.4 Map styles in the Map tab
 
