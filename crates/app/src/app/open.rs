@@ -56,7 +56,8 @@ impl App {
                 .push("No GPU device: the map cannot be drawn.".into());
             return;
         };
-        let style = compile_style(&self.style, &opened);
+        let (style, warned) = compile_style(&self.style, &opened, &self.style_id);
+        self.notices.extend(warned);
         let loader = start_loader(&opened, &style, pool, ctx);
         self.cfg.pack = Some(config::store_path(&dir, &self.exe_dir));
         let units = packs::default_units(opened.meta.as_ref().ok());
@@ -112,12 +113,34 @@ impl App {
     }
 }
 
-pub(super) fn compile_style(file: &StyleFile, opened: &Opened) -> Arc<Style> {
+/// The style compiled for the map, and a notice for the user if it names things the map
+/// does not have (the warnings also go to stderr).
+pub(super) fn compile_style(
+    file: &StyleFile,
+    opened: &Opened,
+    id: &str,
+) -> (Arc<Style>, Option<String>) {
     let (style, warnings) = Style::compile(file, &opened.schema);
-    for w in warnings {
+    for w in &warnings {
         eprintln!("{w}");
     }
-    Arc::new(style)
+    let notice = warnings_notice(id, &warnings);
+    (Arc::new(style), notice)
+}
+
+/// What to tell the user about a style's warnings: the first few, and how many more.
+pub(super) fn warnings_notice(id: &str, warnings: &[String]) -> Option<String> {
+    const SHOWN: usize = 3;
+    warnings.first()?;
+    let mut s = format!("The style “{id}” does not fit this map:");
+    for w in warnings.iter().take(SHOWN) {
+        s += &format!("\n\u{2022} {}", w.trim_start_matches("style: "));
+    }
+    if warnings.len() > SHOWN {
+        s += &format!("\n\u{2022} and {} more", warnings.len() - SHOWN);
+    }
+    s += "\nThe parts it names that the map lacks are left out.";
+    Some(s)
 }
 
 /// Loader threads that read, tessellate with `style` and upload the pack's tiles.
@@ -135,4 +158,21 @@ pub(super) fn start_loader(
         move |id, tile| mesh::prepare_tile(id, &tile, &style, &pool),
         move || ctx.request_repaint(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn style_warnings_become_one_notice_of_a_few_lines() {
+        assert_eq!(warnings_notice("mine", &[]), None);
+        let w: Vec<String> = (1..=5)
+            .map(|i| format!("style: the map has no layer {i}"))
+            .collect();
+        let n = warnings_notice("mine", &w).unwrap();
+        assert!(n.starts_with("The style “mine” does not fit this map:"));
+        assert!(n.contains("\u{2022} the map has no layer 3") && !n.contains("layer 4"));
+        assert!(n.contains("and 2 more"));
+    }
 }

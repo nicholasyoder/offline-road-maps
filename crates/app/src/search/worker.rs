@@ -289,7 +289,7 @@ enum Next {
 }
 
 /// What the UI shows when the engine panics on a query.
-const CRASHED: &str = "the search crashed; Verify pack may help";
+const CRASHED: &str = "the search crashed; choose Verify map in the \u{2630} menu to check the map";
 
 /// Runs `f`; a panic in it is an error, so the worker goes on and the UI is answered (it
 /// would otherwise wait for good).

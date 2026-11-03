@@ -19,6 +19,7 @@ use omp_core::geo::{self, P};
 use omp_core::here::{HereAddress, Shown};
 
 use crate::camera::{self, Camera};
+use crate::keys::{self, Command};
 use crate::routing::{self, MenuState, Place, StopAction};
 use crate::scale::{self, Units};
 use crate::search::{self, Icons, SearchUi, Status};
@@ -214,7 +215,9 @@ impl HereUi {
                     r.on_disabled_hover_text(why.as_str());
                 }
                 Status::Failed(e) => {
-                    r.on_disabled_hover_text(format!("Search could not be opened: {e}"));
+                    r.on_disabled_hover_text(format!(
+                        "Search is not available: the map may be damaged. Choose Verify map in the \u{2630} menu to check it. ({e})"
+                    ));
                 }
                 _ => {}
             }
@@ -247,7 +250,7 @@ impl HereUi {
         if self.panel.is_none() || ctx.egui_wants_keyboard_input() {
             return false;
         }
-        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let esc = keys::take(ctx, Command::Close);
         if esc {
             self.panel = None;
         }
@@ -316,7 +319,7 @@ impl HereUi {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     close = glyph_button(ui, Glyph::Close, 18.0)
-                        .on_hover_text("Close  (Esc)")
+                        .on_hover_text(keys::with_hint("Close", Command::Close))
                         .clicked();
                 });
             });
@@ -334,7 +337,12 @@ impl HereUi {
                     });
                 }
                 Some(Err(e)) => {
-                    ui.label(egui::RichText::new(format!("Could not look: {e}")).color(approx()));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Could not find out what is here ({e}). Try again."
+                        ))
+                        .color(approx()),
+                    );
                 }
                 Some(Ok(shown)) => shown_ui(ui, shown, units, icons, hit_name),
             }
@@ -357,7 +365,11 @@ impl HereUi {
             ui.add_space(3.0);
             let (a, rects) = routing::stop_buttons(ui, route);
             self.buttons = Some(rects);
-            if ui.small_button("Add pushpin").clicked() {
+            if ui
+                .small_button("Add pushpin")
+                .on_hover_text("Mark this place on the map and keep it in a set of pushpins")
+                .clicked()
+            {
                 let name = match (&panel.hit, &panel.answer) {
                     (Some(h), _) => Some(h.name.clone()),
                     (None, Some(Ok(s))) => s.address.as_ref().map(|a| a.label.clone()),

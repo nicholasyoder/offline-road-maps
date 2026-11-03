@@ -9,6 +9,8 @@
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -19,6 +21,7 @@ use eframe::egui::{
 use crate::camera::Camera;
 use crate::dialog::{self, Size};
 use crate::files::{self, Browser, Mode, Outcome};
+use crate::keys::{self, Command};
 use crate::layers::Layers;
 use crate::packs;
 use crate::pages::{self, Egui, MapPage, Page as Printed};
@@ -139,6 +142,8 @@ pub struct PrintUi {
     want_print: bool,
     /// The worker making a printout, and what it was asked.
     output: Option<(Worker, u64)>,
+    /// Set to stop the printout in `output` before its next page.
+    cancel: Arc<AtomicBool>,
     /// What the last printout did.
     status: Option<Result<String, String>>,
 }
@@ -174,6 +179,7 @@ impl PrintUi {
             pdf_dir: exe_dir.to_path_buf(),
             want_print: false,
             output: None,
+            cancel: Arc::default(),
             status: None,
         }
     }
@@ -249,14 +255,13 @@ impl PrintUi {
     /// Escape closes the page, unless a text box has the keys.
     pub fn escape(&mut self, ctx: &egui::Context) -> bool {
         if self.big.is_some() {
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if keys::take(ctx, Command::Close) {
                 self.big = None;
                 return true;
             }
             return false;
         }
-        !ctx.egui_wants_keyboard_input()
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        !ctx.egui_wants_keyboard_input() && keys::take(ctx, Command::Close)
     }
 
     /// The page in the side panel.
@@ -401,11 +406,17 @@ impl PrintUi {
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .add_enabled(around.has_route, egui::Button::new("Fit to route"))
+                    .on_hover_text("Set the rectangle round the whole route")
+                    .on_disabled_hover_text("Plan a route first")
                     .clicked()
                 {
                     self.area = Some(self.initial_area(around.cam, around.route_bounds, &layout));
                 }
-                if ui.button("Use the view").clicked() {
+                if ui
+                    .button("Use the view")
+                    .on_hover_text("Set the rectangle to what the map window shows")
+                    .clicked()
+                {
                     self.area = Some(Area::of_view(around.cam, layout.aspect()).clamped(&layout));
                 }
             });
@@ -473,7 +484,12 @@ impl PrintUi {
             }
         });
         if working {
-            ui.label(egui::RichText::new("Drawing the pages and sending them…").color(weak()));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Drawing the pages and sending them…").color(weak()));
+                if ui.button("Cancel").clicked() {
+                    self.cancel();
+                }
+            });
         }
         match &self.status {
             Some(Ok(m)) => {
@@ -947,6 +963,7 @@ impl PrintUi {
             style: inputs.style.clone(),
             what,
             output: Output::Preview,
+            cancel: Arc::default(),
             ctx: ctx.clone(),
             gpu: inputs.gpu.clone(),
         });
@@ -965,17 +982,26 @@ impl PrintUi {
         self.seq += 1;
         self.status = None;
         let worker = Worker::start();
+        self.cancel = Arc::default();
         worker.send(Job {
             seq: self.seq,
             pack: inputs.pack.to_owned(),
             style: inputs.style.clone(),
             what,
             output,
+            cancel: self.cancel.clone(),
             ctx: ctx.clone(),
             gpu: inputs.gpu.clone(),
         });
         self.output = Some((worker, self.seq));
         ctx.request_repaint_after(Duration::from_millis(100));
+    }
+
+    /// Stops the printout in progress before its next page; what has not been sent is not.
+    pub fn cancel(&mut self) {
+        if self.output.is_some() {
+            self.cancel.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Print was clicked, the file browser answered, or a printout finished.
@@ -984,7 +1010,10 @@ impl PrintUi {
             && let Some(reply) = worker.try_reply()
             && reply.seq == *seq
         {
-            self.status = Some(reply.result.map(|d| d.note));
+            self.status = Some(match reply.result {
+                Err(e) if e == CANCELLED => Ok("Cancelled; nothing was printed.".into()),
+                r => r.map(|d| d.note),
+            });
             self.output = None;
             ctx.request_repaint();
         } else if self.output.is_some() {
@@ -1173,9 +1202,14 @@ struct Job {
     style: StyleFile,
     what: What,
     output: Output,
+    /// Set to stop before the next page.
+    cancel: Arc<AtomicBool>,
     ctx: egui::Context,
     gpu: Option<crate::snapshot::Shared>,
 }
+
+/// The error of a printout that was cancelled.
+const CANCELLED: &str = "cancelled";
 
 struct Done {
     pages: Vec<Printed>,
@@ -1293,6 +1327,10 @@ impl WorkerState {
             Output::Pdf(path) => Some(path.clone()),
             _ => None,
         };
+        if job.cancel.load(Ordering::Relaxed) {
+            return Err(CANCELLED.into());
+        }
+        let cancel = job.cancel;
         let mut sink = Sink::new(job.output, &title)?;
         let drawn = match job.what {
             What::Map(page) => {
@@ -1303,11 +1341,17 @@ impl WorkerState {
                         "z{:.1}, {} tiles, map {:.0} ms, overlay {:.0} ms",
                         stats.z, stats.tiles, stats.map_ms, stats.egui_ms
                     );
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(CANCELLED.into());
+                    }
                     sink.add(p)
                 })
             }
             What::Directions(doc, paper, text, dpi) => {
                 pages::render_directions(gpu, egui_pass, &doc, paper, text, dpi, &mut |p| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(CANCELLED.into());
+                    }
                     sink.add(p)
                 })
                 .map(drop)
@@ -1413,6 +1457,16 @@ mod tests {
             let layout = self.print.layout(&self.settings);
             self.print.corners(&self.cam, MAP.min, &layout).unwrap()
         }
+    }
+
+    #[test]
+    fn cancel_stops_a_printout_only_while_there_is_one() {
+        let mut print = PrintUi::new(Path::new("."));
+        print.cancel();
+        assert!(!print.cancel.load(Ordering::Relaxed));
+        print.output = Some((Worker::start(), 1));
+        print.cancel();
+        assert!(print.cancel.load(Ordering::Relaxed));
     }
 
     #[test]

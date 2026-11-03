@@ -143,6 +143,23 @@ pub fn duplicate(path: &Path) -> io::Result<PathBuf> {
     Ok(to)
 }
 
+/// Why an operation on a file failed, as a phrase without the system's error number:
+/// "it is not there any more".
+pub fn io_text(e: &io::Error) -> String {
+    match e.kind() {
+        io::ErrorKind::NotFound => "it is not there any more".into(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
+            "it may be read-only or locked".into()
+        }
+        io::ErrorKind::StorageFull => "the disk is full".into(),
+        io::ErrorKind::AlreadyExists => "a file of that name is already there".into(),
+        _ => {
+            let s = e.to_string();
+            s.split(" (os error").next().unwrap_or(&s).to_lowercase()
+        }
+    }
+}
+
 /// Why a file could not be saved in `dir`, said to the user.
 pub fn save_error(dir: &Path, e: &io::Error) -> String {
     match e.kind() {
@@ -150,7 +167,7 @@ pub fn save_error(dir: &Path, e: &io::Error) -> String {
             "{} cannot be written (it may be on a locked stick). Save somewhere else?",
             dir.display()
         ),
-        _ => format!("Could not save in {}: {e}", dir.display()),
+        _ => format!("Could not save in {}: {}.", dir.display(), io_text(e)),
     }
 }
 
@@ -291,7 +308,7 @@ impl Browser {
             .show(ui, |ui| match self.read() {
                 Err(e) => {
                     ui.label(
-                        egui::RichText::new(format!("Cannot read this folder: {e}"))
+                        egui::RichText::new(format!("This folder cannot be read: {}.", io_text(e)))
                             .color(approx()),
                     );
                 }

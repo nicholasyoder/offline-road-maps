@@ -44,6 +44,56 @@ pub struct Config {
     pub schedule: Schedule,
     /// The print page's settings (phase 4 step 4.9).
     pub print: crate::print::Settings,
+    /// Where the window was, restored at start (phase 5 step 5.7).
+    pub window: WindowState,
+}
+
+/// The window's size and place, as it was when last seen not maximized.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowState {
+    /// The inside of the window, in points.
+    pub size: [f32; 2],
+    /// Its top left corner on the desktop, when the system says (Wayland does not).
+    pub pos: Option<[f32; 2]>,
+    /// The size of the monitor it was on: when that has changed at the next start (a laptop
+    /// off its dock), the window is brought onto the monitor instead of kept where it was.
+    pub monitor: Option<[f32; 2]>,
+    pub maximized: bool,
+}
+
+impl WindowState {
+    pub const SIZE: RangeInclusive<f32> = 320.0..=16384.0;
+}
+
+impl WindowState {
+    /// The size and position to give the window when it turns out to be on a monitor of
+    /// `monitor` points that is not the one it was saved on (or is too big for it): not
+    /// bigger than the monitor less a margin, in its middle. `None` when it can stay.
+    pub fn fit(&self, monitor: [f32; 2]) -> Option<([f32; 2], [f32; 2])> {
+        let moved = self.monitor.is_some_and(|m| m != monitor);
+        let too_big = self.size[0] > monitor[0] || self.size[1] > monitor[1];
+        if !(moved || too_big) {
+            return None;
+        }
+        let size = [
+            self.size[0].min(monitor[0] - 80.0).max(320.0),
+            self.size[1].min(monitor[1] - 120.0).max(240.0),
+        ];
+        let pos = [(monitor[0] - size[0]) / 2.0, (monitor[1] - size[1]) / 2.0];
+        Some((size, pos.map(|v| v.max(0.0))))
+    }
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            size: [1280.0, 800.0],
+            pos: None,
+            monitor: None,
+            maximized: false,
+        }
+    }
 }
 
 /// Display settings: the factors on the UI's and the map labels' sizes.
@@ -175,6 +225,25 @@ impl Config {
         sc.break_every_h = within(sc.break_every_h, &(0.5..=12.0), s.break_every_h);
         sc.break_min = within(sc.break_min, &(5.0..=240.0), s.break_min);
         self.print.copies = self.print.copies.clamp(1, 99);
+        let w = &mut self.window;
+        let ok = |v: f32| v.is_finite();
+        if !w
+            .size
+            .iter()
+            .all(|v| ok(*v) && WindowState::SIZE.contains(v))
+        {
+            w.size = WindowState::default().size;
+        }
+        if w.pos
+            .is_some_and(|p| !p.iter().all(|v| ok(*v) && v.abs() < 1.0e6))
+        {
+            w.pos = None;
+        }
+        if w.monitor
+            .is_some_and(|m| !m.iter().all(|v| ok(*v) && *v > 0.0))
+        {
+            w.monitor = None;
+        }
         if let Some(v) = &self.view
             && !(v.lat.is_finite() && v.lon.is_finite() && v.zoom.is_finite())
         {
@@ -487,6 +556,12 @@ mod tests {
                 copies: 2,
                 ..Default::default()
             },
+            window: WindowState {
+                size: [1100.0, 700.0],
+                pos: Some([-1200.0, 40.0]),
+                monitor: Some([1920.0, 1080.0]),
+                maximized: true,
+            },
         };
         assert_eq!(cfg.pack.as_deref(), Some(Path::new("maps/ohio")));
         loc.save(&cfg).unwrap();
@@ -544,6 +619,34 @@ mod tests {
         assert_eq!(c.schedule.break_every_h, 0.5);
         assert_eq!(c.schedule.break_min, 240.0);
         assert_eq!(c.print.copies, 1);
+    }
+
+    #[test]
+    fn the_window_is_kept_unless_its_monitor_is_gone() {
+        let w = WindowState {
+            size: [1280.0, 800.0],
+            pos: Some([2000.0, 100.0]),
+            monitor: Some([2560.0, 1440.0]),
+            maximized: false,
+        };
+        assert_eq!(w.fit([2560.0, 1440.0]), None);
+        // The laptop's own screen: smaller, so the window is cut to it and centred.
+        let (size, pos) = w.fit([1366.0, 768.0]).unwrap();
+        assert_eq!(size, [1280.0, 648.0]);
+        assert!(pos[0] >= 0.0 && pos[1] >= 0.0 && pos[0] + size[0] <= 1366.0);
+        // Not knowing the old monitor, a window that fits stays.
+        let w = WindowState { monitor: None, ..w };
+        assert_eq!(w.fit([1920.0, 1080.0]), None);
+        assert!(w.fit([1024.0, 700.0]).is_some());
+    }
+
+    #[test]
+    fn a_bad_window_is_dropped() {
+        let (c, _) = Config::parse("[window]\nsize = [5.0, 1e9]\npos = [1e12, 0.0]\n").unwrap();
+        assert_eq!(c.window, WindowState::default());
+        let (c, _) = Config::parse("[window]\nsize = [900.0, 700.0]\nmaximized = true\n").unwrap();
+        assert_eq!(c.window.size, [900.0, 700.0]);
+        assert!(c.window.maximized);
     }
 
     #[test]

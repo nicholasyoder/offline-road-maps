@@ -3,25 +3,79 @@
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Align2, Vec2};
+use eframe::egui::{self, Align2, Color32, Vec2};
 
 use super::App;
 use crate::config;
 use crate::dialog::{self, Size};
+use crate::keys::{self, Command};
 use crate::memory::mib;
 use crate::packs;
-use crate::verify::{Outcome, Verify};
+use crate::verify::{self, Outcome, Verify};
 
 impl App {
+    /// What the window shows with no map open: what a map is, where the app looked and a
+    /// button to choose one.
+    pub(super) fn no_map(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let looked = self.exe_dir.join("maps");
+        let last = self
+            .cfg
+            .pack
+            .as_ref()
+            .filter(|_| self.cfg.start.reopen_pack)
+            .map(|p| config::resolve_path(p, &self.exe_dir));
+        let width = 440.0_f32.min(rect.width() - 32.0).max(120.0);
+        let place = egui::Rect::from_center_size(
+            rect.center_top() + Vec2::new(0.0, 60.0 + 100.0),
+            Vec2::new(width, 200.0),
+        );
+        let ink = Color32::from_gray(40);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(place), |ui| {
+            ui.set_width(width);
+            let t = |s: String| egui::RichText::new(s).color(ink);
+            ui.label(
+                egui::RichText::new("No map is open")
+                    .heading()
+                    .size(20.0)
+                    .color(ink),
+            );
+            ui.add_space(6.0);
+            ui.label(t(
+                "A map is a set of files ending in .omp.000, .omp.001 and so on, made by \
+                 this app's builder and kept in one folder. Without one there is nothing to \
+                 show."
+                    .into(),
+            ));
+            ui.add_space(6.0);
+            ui.label(t("The app looked in:".into()));
+            ui.label(t(format!("\u{2022} {}", looked.display())));
+            match &last {
+                Some(p) => ui.label(t(format!(
+                    "\u{2022} the last map, {}{}",
+                    p.display(),
+                    if p.exists() { "" } else { " (no longer there)" }
+                ))),
+                None => ui.label(t(
+                    "\u{2022} the last map you opened (there is none yet)".into()
+                )),
+            };
+            ui.add_space(10.0);
+            let open = ui.button(keys::with_hint("Choose a map\u{2026}", Command::OpenMap));
+            if open.clicked() {
+                self.picker = true;
+            }
+        });
+    }
+
     pub(super) fn picker_window(&mut self, ctx: &egui::Context) {
         if !self.picker {
             return;
         }
         let mut chosen = None;
-        let closed = dialog::show(ctx, "picker", "Open a pack", Size::Fit(576.0), |ui| {
+        let closed = dialog::show(ctx, "picker", "Open a map", Size::Fit(576.0), |ui| {
             if self.found.is_empty() {
                 ui.label(format!(
-                    "No packs found in {}.",
+                    "No maps found in {}.",
                     self.exe_dir.join("maps").display()
                 ));
             }
@@ -40,7 +94,7 @@ impl App {
                 }
             }
             ui.separator();
-            ui.label("Or open the pack in a folder:");
+            ui.label("Or open the map in a folder:");
             ui.horizontal(|ui| {
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut self.path_input)
@@ -53,8 +107,10 @@ impl App {
                     let found = packs::find(&dir);
                     match found.as_slice() {
                         [] => {
-                            self.pack_error =
-                                Some(format!("No pack (*.omp.000) in {}", dir.display()));
+                            self.pack_error = Some(format!(
+                                "There is no map in {} (a map's first file ends in .omp.000).",
+                                dir.display()
+                            ));
                         }
                         [one] => chosen = Some(one.clone()),
                         _ => self.found = found,
@@ -80,13 +136,46 @@ impl App {
         ));
     }
 
+    /// Keyboard shortcuts (F1): every key in [`keys::TABLE`].
+    pub(super) fn shortcuts_window(&mut self, ctx: &egui::Context) {
+        if !self.shortcuts {
+            return;
+        }
+        let closed = dialog::show(
+            ctx,
+            "shortcuts",
+            "Keyboard shortcuts",
+            Size::Fit(440.0),
+            |ui| {
+                egui::Grid::new("shortcuts-grid")
+                    .num_columns(2)
+                    .spacing([24.0, 6.0])
+                    .show(ui, |ui| {
+                        for e in keys::TABLE {
+                            ui.label(egui::RichText::new(keys::keys_text(e.command)).strong());
+                            ui.label(e.what);
+                            ui.end_row();
+                        }
+                        for (k, what) in keys::LIST_KEYS {
+                            ui.label(egui::RichText::new(*k).strong());
+                            ui.label(*what);
+                            ui.end_row();
+                        }
+                    });
+            },
+        );
+        if closed {
+            self.shortcuts = false;
+        }
+    }
+
     pub(super) fn about_window(&mut self, ctx: &egui::Context) {
         if !self.about {
             return;
         }
         let closed = dialog::show(ctx, "about", "About this map", Size::Fit(520.0), |ui| {
             let Some(m) = &self.map else {
-                ui.label("No pack is open.");
+                ui.label("No map is open.");
                 return;
             };
             let pack = m.opened.reader.pack();
@@ -117,7 +206,7 @@ impl App {
                         1 => "1 file".to_string(),
                         n => format!("{n} files"),
                     };
-                    row("Pack", format!("{} ({chunks})", dir.display()));
+                    row("Files", format!("{} ({chunks})", dir.display()));
                 });
             ui.separator();
             match &m.opened.meta {
@@ -155,11 +244,11 @@ impl App {
         let (done, total) = v.progress();
         let secs = v.elapsed().as_secs_f64();
         let mut close = false;
-        let closed = dialog::show(ctx, "verify", "Verify pack", Size::Fit(380.0), |ui| {
+        let closed = dialog::show(ctx, "verify", "Verify map", Size::Fit(380.0), |ui| {
             ui.set_width(380.0);
             match &outcome {
                 None => {
-                    ui.label("Checking every part of the pack against its checksum…");
+                    ui.label("Checking every part of the map against its checksum…");
                     let f = if total > 0 {
                         done as f32 / total as f32
                     } else {
@@ -177,7 +266,7 @@ impl App {
                 Some(o) => {
                     match o {
                         Outcome::Intact { sections, bytes } => ui.label(format!(
-                            "The pack is intact: all {sections} sections ({:.0} MiB) \
+                            "The map is intact: all {sections} parts ({:.0} MiB) \
                                  match their checksums. Checked in {}.",
                             mib(*bytes),
                             seconds(secs)
@@ -185,17 +274,18 @@ impl App {
                         Outcome::Damaged(ids) => ui.colored_label(
                             crate::theme::error(),
                             format!(
-                                "The pack is damaged: {} {} not match {} checksum. \
-                                     Copy the pack again from where it came from, or \
-                                     build it again.",
-                                ids.join(", "),
-                                if ids.len() == 1 { "does" } else { "do" },
-                                if ids.len() == 1 { "its" } else { "their" },
+                                "The map is damaged: {} did not pass the check. Copy \
+                                     the map again from where it came from, or build it \
+                                     again.",
+                                verify::damaged_parts(ids),
                             ),
                         ),
                         Outcome::Failed(e) => ui.colored_label(
                             crate::theme::error(),
-                            format!("The pack could not be read: {e}"),
+                            format!(
+                                "The map could not be read: {e}. If it is on a stick, check \
+                                 that the stick is still plugged in."
+                            ),
                         ),
                         Outcome::Cancelled => ui.label("Cancelled."),
                     };
@@ -221,11 +311,12 @@ impl App {
                     ui.set_max_width(480.0);
                     ui.colored_label(crate::theme::error(), e);
                     ui.label(
-                        "The pack may be incomplete (a chunk file missing), damaged, or made \
-                         for a newer version of the app.",
+                        "The map may be incomplete (one of its files missing or not copied \
+                         completely), damaged, or made for a newer version of the app. Copy it \
+                         again, or choose another map.",
                     );
                     ui.horizontal(|ui| {
-                        pick = ui.button("Choose a pack…").clicked();
+                        pick = ui.button("Choose a map…").clicked();
                         close = ui.button("OK").clicked();
                     });
                 });
@@ -247,11 +338,11 @@ impl App {
                     ui.set_max_width(480.0);
                     ui.colored_label(crate::theme::error(), e);
                     ui.label(
-                        "The pack may be damaged. Verify it to find out; it takes a minute or \
-                         more for a large pack.",
+                        "The map may be damaged. Verify it to find out; it takes a minute or \
+                         more for a large map.",
                     );
                     ui.horizontal(|ui| {
-                        verify = ui.button("Verify pack").clicked();
+                        verify = ui.button("Verify map").clicked();
                         close = ui.button("Not now").clicked();
                     });
                 });

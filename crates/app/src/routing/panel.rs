@@ -26,6 +26,7 @@ use super::{
 };
 use crate::camera::{self, Camera};
 use crate::dialog::{self, Size};
+use crate::keys::{self, Command};
 use crate::scale::Units;
 use crate::search::distance_text;
 use crate::theme::{Glyph, accent, approx, glyph_button, ink, weak};
@@ -100,7 +101,7 @@ impl RouteUi {
         if self.picked.is_none() || ctx.egui_wants_keyboard_input() {
             return false;
         }
-        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let esc = keys::take(ctx, Command::Close);
         if esc {
             self.pick(None);
         }
@@ -618,7 +619,9 @@ impl RouteUi {
                             format!("Saves {}{m}", duration_text(time_s.max(0.0)))
                         }
                         Reordered::Already => "The stops are already in the quickest order.".into(),
-                        Reordered::Failed(e) => format!("Could not optimize: {e}"),
+                        Reordered::Failed(e) => {
+                            format!("The stops could not be reordered ({e}). Try again.")
+                        }
                     };
                     ui.horizontal_wrapped(|ui| {
                         ui.label(egui::RichText::new(text).color(ink()));
@@ -690,7 +693,7 @@ impl RouteUi {
                     "Pick a search result or right-click the map: “Route from here”, “Route to here”."
                         .into()
                 }
-                (Some(e), _) => format!("Routing failed: {e}"),
+                (Some(e), _) => format!("No route could be worked out ({e}). Try again, or move the stops."),
                 (None, true) => "Routing…".into(),
                 (None, false) if self.from.is_none() => {
                     "Pick a search result or right-click the map: “Route from here”.".into()
@@ -777,7 +780,7 @@ impl RouteUi {
                 return;
             }
             LegAlts::Failed(e) => {
-                let text = format!("Other routes could not be found: {e}");
+                let text = format!("No other routes could be found ({e}).");
                 ui.label(egui::RichText::new(text).color(approx()));
                 return;
             }

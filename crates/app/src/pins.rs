@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::{self, Camera};
 use crate::files::{self, Saved};
+use crate::keys::{self, Command};
 use crate::pool::{Alloc, Kind, Pool};
 use crate::routing::{self, MenuState, Place, StopAction};
 use crate::style::{PIN_PAINTS, Rgba};
@@ -342,6 +343,9 @@ pub struct PinsUi {
     pub renaming: Option<(usize, String)>,
     /// The set whose Delete was clicked once.
     pub deleting: Option<usize>,
+    /// The open pin whose Delete was clicked once; the button asks "Delete pushpin?" until
+    /// the second click, as the Trips page's buttons do.
+    pub(crate) delete_asked: Option<PinRef>,
     /// Where the open pin's buttons were drawn, for the tests.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) buttons: Vec<(&'static str, Rect)>,
@@ -365,6 +369,7 @@ impl PinsUi {
             errors: Vec::new(),
             renaming: None,
             deleting: None,
+            delete_asked: None,
             buttons: Vec::new(),
         }
     }
@@ -381,7 +386,11 @@ impl PinsUi {
                     }
                 }
             }
-            Err(e) => ui.errors.push(format!("{}: {e}", ui.dir.display())),
+            Err(e) => ui.errors.push(format!(
+                "The pushpin sets in {} cannot be listed: {}.",
+                ui.dir.display(),
+                files::io_text(&e)
+            )),
         }
         ui
     }
@@ -574,7 +583,13 @@ impl PinsUi {
         match std::fs::remove_file(&s.path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("{}: {e}", s.path.display())),
+            Err(e) => {
+                return Err(format!(
+                    "Could not delete the set {}: {}.",
+                    s.name,
+                    files::io_text(&e)
+                ));
+            }
         }
         self.sets.remove(i);
         self.open = None;
@@ -684,6 +699,8 @@ impl PinsUi {
         let mut buttons = Vec::new();
         let mut close = false;
         let mut delete = false;
+        let mut ask = false;
+        let confirming = self.delete_asked == Some(r);
         let mut changed = false;
         let (mut typed, mut left) = (false, false);
         let mut move_to = None;
@@ -721,7 +738,7 @@ impl PinsUi {
                 left |= name.lost_focus();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     close = glyph_button(ui, Glyph::Close, 18.0)
-                        .on_hover_text("Close  (Esc)")
+                        .on_hover_text(keys::with_hint("Close", Command::Close))
                         .clicked();
                 });
             });
@@ -784,11 +801,18 @@ impl PinsUi {
                 place.name = Some(pin.name.clone()).filter(|n| !n.is_empty());
                 (a, place)
             });
-            let d = ui.small_button("Delete pushpin");
-            delete = d.clicked();
+            let d = if confirming {
+                ui.small_button(egui::RichText::new("Delete pushpin?").color(approx()))
+            } else {
+                ui.small_button("Delete pushpin")
+            };
+            delete = d.clicked() && confirming;
+            ask = d.clicked() && !confirming;
             buttons.push(("delete", d.rect));
         });
         self.buttons = buttons;
+        let other = changed || typed || close || chosen.is_some() || move_to.is_some();
+        self.delete_asked = (ask || (confirming && !other && !delete)).then_some(r);
         if typed {
             self.pending = Some(r.0);
             self.version += 1;
@@ -815,7 +839,7 @@ impl PinsUi {
         if self.open.is_none() || ctx.egui_wants_keyboard_input() {
             return false;
         }
-        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let esc = keys::take(ctx, Command::Close);
         if esc {
             self.flush();
             self.open = None;

@@ -264,8 +264,15 @@ impl TripsUi {
     /// The saved trips, read the first time and after a change.
     pub fn list(&mut self) -> &Result<Vec<Saved>, String> {
         let dir = &self.dir;
-        self.list
-            .get_or_insert_with(|| files::list(dir).map_err(|e| format!("{}: {e}", dir.display())))
+        self.list.get_or_insert_with(|| {
+            files::list(dir).map_err(|e| {
+                format!(
+                    "The trips in {} cannot be listed: {}.",
+                    dir.display(),
+                    files::io_text(&e)
+                )
+            })
+        })
     }
 
     /// Reads the folder again on the next look.
@@ -589,7 +596,10 @@ impl TripsUi {
                         self.renaming = None;
                         match files::rename(&t.path, &name) {
                             Ok(to) => out.renamed = Some((t.path.clone(), to)),
-                            Err(e) => self.error = Some(e.to_string()),
+                            Err(e) => {
+                                self.error =
+                                    Some(format!("Could not rename: {}.", files::io_text(&e)));
+                            }
                         }
                         self.changed();
                     } else if cancel {
@@ -651,7 +661,7 @@ impl TripsUi {
             }
             if copy {
                 if let Err(e) = files::duplicate(&t.path) {
-                    self.error = Some(e.to_string());
+                    self.error = Some(format!("Could not copy: {}.", files::io_text(&e)));
                 }
                 self.changed();
             }
@@ -661,7 +671,13 @@ impl TripsUi {
                 self.deleting = None;
                 match std::fs::remove_file(&t.path) {
                     Ok(()) => out.deleted = Some(t.path.clone()),
-                    Err(e) => self.error = Some(format!("{}: {e}", t.path.display())),
+                    Err(e) => {
+                        self.error = Some(format!(
+                            "Could not delete {}: {}.",
+                            t.name,
+                            files::io_text(&e)
+                        ));
+                    }
                 }
                 self.changed();
             }
@@ -776,7 +792,11 @@ impl TripsUi {
             });
             if let Some(e) = &set.error {
                 ui.add(egui::Label::new(egui::RichText::new(e).color(approx())).wrap());
-                if ui.small_button("Save elsewhere…").clicked() {
+                if ui
+                    .small_button("Save elsewhere…")
+                    .on_hover_text("Save this set in another folder, as it could not be saved here")
+                    .clicked()
+                {
                     act = Some(SetAct::Elsewhere(i));
                 }
             }

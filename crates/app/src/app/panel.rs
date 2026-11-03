@@ -11,6 +11,7 @@ use crate::bench::Bench;
 use crate::camera::Camera;
 use crate::config::Config;
 use crate::here::HereUi;
+use crate::keys::{self, Command};
 use crate::packs::{self, Opened};
 use crate::pins::{PinRef, PinsUi};
 use crate::printui::{self, PrintUi};
@@ -143,6 +144,7 @@ impl App {
             Some(Action::Pick) => self.picker = true,
             Some(Action::Verify) => self.start_verify(ctx),
             Some(Action::About) => self.about = true,
+            Some(Action::Shortcuts) => self.shortcuts = true,
             Some(Action::Settings) => self.settings = Some(Default::default()),
             Some(Action::Print) => {
                 if let Some(m) = &mut self.map {
@@ -244,10 +246,10 @@ fn side_panel(
     let units = cfg.units.unwrap_or(p.pack_units);
     let recent = &mut cfg.recent_searches;
     let side = &mut cfg.side_panel;
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
+    if keys::take(&ctx, Command::Panel) {
         side.open = !side.open;
     }
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::P)) {
+    if keys::take(&ctx, Command::Print) {
         side.open = true;
         open_print(&ctx, &mut p, &cfg.print, printui::Kind::Map);
     }
@@ -336,7 +338,7 @@ fn side_panel(
             let size = Vec2::new(ui.available_width(), crate::theme::HEADER_H);
             ui.allocate_ui_with_layout(size, row, |ui| {
                 let hide = glyph_button(ui, Glyph::Hide, crate::theme::HEADER_H)
-                    .on_hover_text("Hide the panel  (Ctrl+B)");
+                    .on_hover_text(keys::with_hint("Hide the panel", Command::Panel));
                 o.hide = hide.rect;
                 if hide.clicked() {
                     side.open = false;
@@ -356,6 +358,10 @@ fn side_panel(
             if *p.page == Page::Print && before != Page::Print {
                 *p.page = before;
                 open_print(&ctx, &mut p, print_cfg, printui::Kind::Map);
+            }
+            // Leaving the print page stops a printout still being made.
+            if *p.page != Page::Print {
+                p.print.cancel();
             }
             ui.add(egui::Separator::default().spacing(2.0));
             ui.add_space(3.0);

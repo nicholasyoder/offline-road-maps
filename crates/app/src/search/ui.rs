@@ -14,6 +14,7 @@ use super::session::{RESULTS, Session, Taken, remember};
 use super::worker::{Answer, Stats, Status, Worker};
 use crate::camera::Camera;
 use crate::here::{HereAnswer, HereQuery};
+use crate::keys::{self, Command};
 use crate::memory::mib;
 use crate::routing::{self, MenuState, StopAction};
 use crate::scale::Units;
@@ -183,7 +184,7 @@ impl SearchUi {
                 mib(s.bytes_read),
                 self.session.dropped
             ),
-            Status::Missing(_) => "search: none in this pack".into(),
+            Status::Missing(_) => "search: none in this map".into(),
             Status::Failed(e) => format!("search: failed: {e}"),
         }];
         if let Some((text, t)) = &self.session.last {
@@ -227,20 +228,10 @@ impl SearchUi {
     /// box and the search page.
     pub fn shortcut(&mut self, ctx: &egui::Context) -> bool {
         let enabled = matches!(self.status(), Status::Opening | Status::Ready);
-        if !enabled || ctx.egui_wants_keyboard_input() {
+        if !enabled {
             return false;
         }
-        let go = ctx.input_mut(|i| {
-            let slash = i
-                .events
-                .iter()
-                .any(|e| matches!(e, Event::Text(t) if t == "/"));
-            if slash {
-                i.events
-                    .retain(|e| !matches!(e, Event::Text(t) if t == "/"));
-            }
-            i.consume_key(egui::Modifiers::COMMAND, Key::F) || slash
-        });
+        let go = keys::take(ctx, Command::Search);
         if go {
             ctx.memory_mut(|m| m.request_focus(box_id()));
             self.dismissed = false;
@@ -361,8 +352,8 @@ impl SearchUi {
                 });
             }
             let hint = match &status {
-                Status::Missing(_) | Status::Failed(_) => "No search in this map",
-                _ => "Search  (Ctrl+F or /)",
+                Status::Missing(_) | Status::Failed(_) => "No search in this map".to_owned(),
+                _ => format!("Search  ({})", keys::keys_text(Command::Search)),
             };
             let filter = EventFilter {
                 horizontal_arrows: true,
@@ -399,7 +390,9 @@ impl SearchUi {
                     resp.on_disabled_hover_text(why.as_str());
                 }
                 Status::Failed(e) => {
-                    resp.on_disabled_hover_text(format!("Search could not be opened: {e}"));
+                    resp.on_disabled_hover_text(format!(
+                        "Search is not available: the map may be damaged. Choose Verify map in the \u{2630} menu to check it. ({e})"
+                    ));
                 }
                 _ => {}
             }
@@ -442,7 +435,7 @@ impl SearchUi {
         let message = if !self.text.trim().is_empty() && rows.is_empty() {
             match (&status, &self.session.error) {
                 (Status::Opening, _) => Some("Opening search…".to_string()),
-                (_, Some(e)) => Some(format!("Search failed: {e}")),
+                (_, Some(e)) => Some(format!("The search did not work ({e}). Try again.")),
                 _ if self.session.waiting() => Some("Searching…".into()),
                 _ if self.session.searching() => Some(SEARCHING_MORE.into()),
                 _ => Some("Nothing found".into()),
@@ -594,14 +587,14 @@ impl SearchUi {
             let n = res.hits.len();
             let more = if n >= RESULTS { " or more" } else { "" };
             let title = match (n, &self.session.error) {
-                (0, Some(e)) => format!("Search failed: {e}"),
+                (0, Some(e)) => format!("The search did not work ({e}). Try again."),
                 (0, None) => format!("Nothing found for “{}”", res.text),
                 _ => format!("{n}{more} results for “{}”", res.text),
             };
             ui.add(egui::Label::new(egui::RichText::new(title).strong().color(ink())).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 close = glyph_button(ui, Glyph::Close, 18.0)
-                    .on_hover_text("Close  (Esc)")
+                    .on_hover_text(keys::with_hint("Close", Command::Close))
                     .clicked();
             });
         });

@@ -253,10 +253,14 @@ fn contents(
 
     group(ui, "Start-up", |ui| {
         ui.checkbox(&mut cfg.start.reopen_view, "Reopen the last view");
-        ui.checkbox(&mut cfg.start.reopen_pack, "Reopen the last pack");
+        ui.checkbox(&mut cfg.start.reopen_pack, "Reopen the last map");
     });
 
-    if ui.button("Restore defaults").clicked() {
+    if ui
+        .button("Restore defaults")
+        .on_hover_text("Put the settings in this window back as they were at first")
+        .clicked()
+    {
         restore_defaults(cfg);
         state.ui_size = None;
     }

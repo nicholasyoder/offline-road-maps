@@ -561,4 +561,25 @@ fn trips_page_opens_renames_copies_and_deletes() {
     w.click(at(&w, "delete-set:Pushpins"));
     w.click(at(&w, "delete-set:Pushpins"));
     assert!(w.pins.sets.is_empty() && !set_file.exists());
+
+    // A pushpin's Delete asks first too, then deletes.
+    w.click(w.tabs[0].center());
+    w.here.add_pin = Some((w.cam.center, None));
+    w.frame(Vec::new());
+    w.frame(Vec::new());
+    let open = w.pins.open.expect("the new pin is open");
+    let delete = |w: &Window| {
+        w.pins
+            .buttons
+            .iter()
+            .find(|b| b.0 == "delete")
+            .unwrap()
+            .1
+            .center()
+    };
+    w.click(delete(&w));
+    assert!(w.pins.pin(open).is_some(), "deleted at once");
+    assert_eq!(w.pins.delete_asked, Some(open));
+    w.click(delete(&w));
+    assert!(w.pins.pin(open).is_none() && w.pins.delete_asked.is_none());
 }

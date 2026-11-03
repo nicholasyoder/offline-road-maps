@@ -5,6 +5,7 @@
 
 use eframe::egui::{self, Rangef, Rect, Vec2};
 
+use crate::keys::{self, Command};
 use crate::layers::Layers;
 use crate::styles::Entry;
 use crate::theme::{HEADER_H, accent, ink, weak};
@@ -35,6 +36,17 @@ impl Page {
         Self::Print,
     ];
 
+    /// What the page is for, for its tab's tooltip.
+    pub fn about(self) -> &'static str {
+        match self {
+            Self::Search => "Find places and addresses",
+            Self::Route => "Plan a route between stops",
+            Self::Trips => "Saved routes and pushpins",
+            Self::Map => "The map's style and what it shows",
+            Self::Print => "Print the map or the directions",
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Search => "Search",
@@ -54,6 +66,7 @@ pub enum Action {
     About,
     Print,
     Settings,
+    Shortcuts,
 }
 
 /// The widths the panel may take in a window `window` points wide.
@@ -62,49 +75,59 @@ pub fn width_range(window: f32) -> Rangef {
     Rangef::new(WIDTH[0].min(max), max)
 }
 
-/// A button for something a later phase adds: disabled, saying which phase and what it does.
-pub fn later_in(ui: &mut egui::Ui, phase: u8, label: &str, what: &str) {
-    ui.add_enabled(false, egui::Button::new(label).small())
-        .on_disabled_hover_text(format!("Phase {phase}: {what}"));
-}
-
 /// The row of tabs. Returns where each was drawn, for the tests.
 pub fn tabs(ui: &mut egui::Ui, page: &mut Page) -> [Rect; 5] {
     let mut rects = [Rect::NOTHING; 5];
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         for (i, p) in Page::TABS.into_iter().enumerate() {
-            rects[i] = ui.selectable_value(page, p, p.name()).rect;
+            rects[i] = ui
+                .selectable_value(page, p, p.name())
+                .on_hover_text(p.about())
+                .rect;
         }
     });
     rects
 }
 
-/// The ☰ menu: the pack, About this map, the debug overlay and Settings; phase 5's keys are
-/// a placeholder.
+/// The ☰ menu: the map, About this map, the debug overlay, Settings and the keys.
 pub fn menu(ui: &mut egui::Ui, debug_overlay: &mut bool) -> Option<Action> {
     let mut action = None;
     let button = egui::Button::new("").min_size(Vec2::splat(HEADER_H));
     let (r, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-        if ui.button("Open a pack…  (Ctrl+O)").clicked() {
+        if ui
+            .button(keys::with_hint("Open a map…", Command::OpenMap))
+            .clicked()
+        {
             action = Some(Action::Pick);
         }
-        if ui.button("Verify pack…").clicked() {
+        if ui.button("Verify map…").clicked() {
             action = Some(Action::Verify);
         }
-        if ui.button("Print map…  (Ctrl+P)").clicked() {
+        if ui
+            .button(keys::with_hint("Print map…", Command::Print))
+            .clicked()
+        {
             action = Some(Action::Print);
         }
         if ui.button("About this map…").clicked() {
             action = Some(Action::About);
         }
         ui.separator();
-        ui.checkbox(debug_overlay, "Debug overlay  (F3)");
+        ui.checkbox(
+            debug_overlay,
+            keys::with_hint("Debug overlay", Command::DebugOverlay),
+        );
         ui.separator();
         if ui.button("Settings…").clicked() {
             action = Some(Action::Settings);
         }
-        later_in(ui, 5, "Keyboard shortcuts", "a list of the keys");
+        if ui
+            .button(keys::with_hint("Keyboard shortcuts…", Command::Shortcuts))
+            .clicked()
+        {
+            action = Some(Action::Shortcuts);
+        }
     });
     let r = r.on_hover_text("Menu");
     // Drawn, not typed: egui's fonts have no ☰. Bars 2 points thick and 5 apart, on whole

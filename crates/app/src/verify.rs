@@ -24,6 +24,37 @@ pub enum Outcome {
     Cancelled,
 }
 
+/// What a section holds, in words for the user: "the map drawing" rather than "TIDX".
+pub fn section_name(id: &str) -> &'static str {
+    match id {
+        "TIDX" | "TDIC" | "TDAT" => "the map drawing",
+        "SCHM" => "the layer names",
+        "META" => "the map's details",
+        "SGRD" | "SSTR" | "SGEO" | "SADM" | "SAPL" => "the search by name",
+        id if id.starts_with('A') => "the addresses",
+        id if id.starts_with('R') => "the routing",
+        "TZON" => "the time zones",
+        _ => "a part of the map",
+    }
+}
+
+/// The parts of the map that damaged sections belong to, each once, as a sentence part:
+/// "the routing and the map drawing".
+pub fn damaged_parts(ids: &[String]) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    for id in ids {
+        let n = section_name(id);
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     done: AtomicU64,
@@ -130,6 +161,16 @@ impl Drop for Verify {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn damaged_sections_are_named_by_what_they_hold() {
+        let ids = ["RCHE", "TIDX", "RGEO", "TDAT"].map(String::from);
+        assert_eq!(
+            super::damaged_parts(&ids),
+            "the routing and the map drawing"
+        );
+        assert_eq!(super::damaged_parts(&["XXXX".into()]), "a part of the map");
+    }
+
     use super::*;
     use omp_core::pack::{Info, Writer};
 

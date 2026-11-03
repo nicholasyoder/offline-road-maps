@@ -54,23 +54,29 @@ pub fn open(first_chunk: &Path) -> Result<Opened, String> {
             "{}: the file ends too early; it may not have been copied completely",
             first_chunk.display()
         ),
-        _ => format!("{}: {e}", first_chunk.display()),
+        _ => format!(
+            "{}: the map cannot be read ({}). It may be damaged or not a map.",
+            first_chunk.display(),
+            crate::files::io_text(&e)
+        ),
     };
     let pack = Pack::open(first_chunk).map_err(err)?;
     let [w, s, e, n] = pack.info.bbox.map(|v| f64::from(v) * 1e-7);
     let [x0, y0] = geo::lonlat_to_unit(w, n);
     let [x1, y1] = geo::lonlat_to_unit(e, s);
-    let section = pack
-        .section(schema::ID)
-        .copied()
-        .ok_or_else(|| format!("{}: the pack has no SCHM section", first_chunk.display()))?;
+    let section = pack.section(schema::ID).copied().ok_or_else(|| {
+        format!(
+            "{}: the map has no list of its layers, so it is incomplete or damaged",
+            first_chunk.display()
+        )
+    })?;
     let schema = Schema::decode(&pack.read_section(&section).map_err(err)?).map_err(err)?;
     let meta = match pack.section(meta::ID) {
         Some(s) => pack
             .read_section(s)
             .and_then(|b| Meta::decode(&b))
-            .map_err(|e| format!("META could not be read: {e}")),
-        None => Err("the pack has no META section".into()),
+            .map_err(|e| format!("The map's details could not be read ({e})")),
+        None => Err("The map has no details section".into()),
     };
     let reader = TileReader::open(pack).map_err(err)?;
     let bounds = if x1 > x0 && y1 > y0 {

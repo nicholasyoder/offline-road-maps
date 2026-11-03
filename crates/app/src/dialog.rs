@@ -4,6 +4,8 @@
 
 use eframe::egui::{self, LayerId, Order, Pos2, Rect, UiBuilder, Vec2, ViewportClass};
 
+use crate::keys::{self, Command};
+
 /// The margin round a dialog's content.
 const MARGIN: i8 = 12;
 
@@ -82,7 +84,7 @@ pub fn show(
                 follow(ui.ctx(), key, used + margins());
             }
         });
-        ui.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
+        ui.input(|i| i.viewport().close_requested()) || keys::take(ui.ctx(), Command::Close)
     })
 }
 

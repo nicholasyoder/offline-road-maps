@@ -14,11 +14,13 @@ Plans and progress are in [docs/roadmap.md](docs/roadmap.md) and the per-phase p
 cargo run --release -p omp-app -- --pack $OMP_WORK/packs/ohio
 ```
 
-`$OMP_WORK` is the builder's work directory (default `./data`); packs are built into `$OMP_WORK/packs/<region>` (see below). A small region such as Delaware is quick to build and load. Without `--pack` the app opens `maps/` next to the executable, else the pack used last. Ctrl+O opens the pack picker.
+`$OMP_WORK` is the builder's work directory (default `./data`); packs are built into `$OMP_WORK/packs/<region>` (see below). A small region such as Delaware is quick to build and load. Without `--pack` the app opens `maps/` next to the executable, else the map used last; with none to open, the window says what a map is and where it looked. Ctrl+O opens the map picker. The window's size, place and maximized state are kept in `config.toml` and restored (a window that no longer fits the monitor is brought onto it).
 
-Controls: drag to pan, scroll or double-click to zoom, arrow keys to pan, `+`/`-` to zoom, F3 for the debug overlay.
+**Put maps on an exFAT stick.** Format the stick exFAT, not FAT32: on FAT32 the first read deep into each map file walks the file's cluster chain, which takes seconds on a USB 2 stick. FAT32 keeps working, only slower to start.
 
-The side panel on the left holds the search box, the ☰ menu (open or verify a pack, About this map, Settings, the debug overlay) and four pages: Search, Route, Trips (saved trips and pushpin sets) and Layers (the layer toggles). ☰ → Settings has the UI and label sizes, anti-aliasing, how the map moves, units and what the app opens to. Ctrl+B or the « and » buttons hide and show it; drag its edge to resize it. Right-clicking the map offers "What's here?", the route items and *Add pushpin*.
+Controls: drag to pan, scroll or double-click to zoom, arrow keys to pan, `+`/`-` to zoom, F3 for the debug overlay. F1 (or ☰ → Keyboard shortcuts) lists every key; the list is made from the same table the keys are handled with.
+
+The side panel on the left holds the search box, the ☰ menu (open or verify a map, print, About this map, Settings, Keyboard shortcuts, the debug overlay) and four pages: Search, Route, Trips (saved trips and pushpin sets) and Layers (the layer toggles). ☰ → Settings has the UI and label sizes, anti-aliasing, how the map moves, units and what the app opens to. Ctrl+B or the « and » buttons hide and show it; drag its edge to resize it. Right-clicking the map offers "What's here?", the route items and *Add pushpin*.
 
 Trips and pushpins are plain TOML files next to the executable, so they travel with the app on a stick: `trips/<name>.toml` (from *Save trip* on the Route page) and `pins/<set>.toml`. A trip keeps its stops by name and coordinates, never by the pack's IDs, so it opens on a newer build of the pack. Where that folder cannot be written, saving offers a file browser.
 

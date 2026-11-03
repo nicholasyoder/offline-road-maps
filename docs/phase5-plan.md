@@ -48,7 +48,7 @@ What phase 4 left in place for this:
 | 5.4 Map styles in the Map tab | **Done** 2026-11-02 | Default, Night, High contrast, `style.toml` and `styles/*.toml` listed as cards, switched in 5–13 ms, remembered; overlays from `[overlay]` |
 | 5.5 Dark UI | **Done** 2026-11-02 | Dark UI as its own setting (as the system / light / dark), apart from the map style; palette in `theme.rs`, system theme read on Linux and Windows; checked by hand by the owner on both |
 | 5.6 High-contrast style and black-and-white printing | **Done** | 2026-11-02 |
-| 5.7 UI polish | Not started | |
+| 5.7 UI polish | In progress | All six items are in the code and tested headless (2026-11-02); the by-hand check on Linux and Windows is left |
 | 5.8 Perf: cold reads from the stick | Not started | |
 | 5.9 Perf: long routes and directions | Not started | |
 | 5.10 Perf: memory | Not started | |
@@ -199,6 +199,18 @@ The print page has its own style choice (changed 2026-11-02, owner: decision 8),
 - **Plain error messages:** every error a user can see is written as what happened and what to do, not an `io::Error` debug string (list from 5.1). Errors from a damaged pack say to run *Verify pack*.
 
 **Done when:** each item works on Linux and Windows, checked by hand, and the shortcut list matches the keys (a test that each table entry has a handler).
+
+> **In progress 2026-11-02.** All six items are written, with R4, D7–D9 and D6's notice from the audit; `cargo fmt`, `clippy` and the tests pass. Left: the owner's by-hand check on Linux and Windows (then mark Done).
+> - **Keys:** `keys.rs` holds the one table (`Command`, `TABLE`); handlers call `keys::take(ctx, Command::X)`, the ☰ menu, the tooltips and the F1 window (☰ → Keyboard shortcuts…, replacing the placeholder) read the text from it. Tests: every command has one entry, no key twice, each entry's keys are taken, each entry has a handler in the source (the arrows are held, so `ARROWS` and `arrow_down`). The keys inside the search box (↑ ↓ Enter) are listed apart in `LIST_KEYS`.
+> - **Tooltips:** every icon button already had one; added to the tabs, *Fit to route*, *Use the view*, *Add pushpin*, *Save elsewhere…* and *Restore defaults*.
+> - **Window:** `[window]` in `config.toml` (`size`, `pos`, `monitor`, `maximized`), kept while the window is open and restored at start; read and clamped like the other values. egui reports only the monitor the window is on, not the others', so the check is: if the monitor's size at the first frame is not the one saved (a laptop off its dock), or the window is bigger than it, the window is cut to fit and centred (`WindowState::fit`, tested). A window left off-screen on a monitor of the same size as before is not found. Wayland gives no position; the size and maximized state are still kept.
+> - **First run:** with no map open the window says what a map is, where it looked (`maps/`, the last map and whether it is still there) and has *Choose a map…*.
+> - **exFAT:** in the README.
+> - **Plain errors (D7):** `files::io_text` for file errors; search, routing, "what's here", optimize, route and alternatives errors say what happened and what to try, and the two that mean a damaged map point to *Verify map*; map open errors name the problem in words; *Verify map* names the damaged parts as "the routing", "the map drawing" and so on rather than section IDs (`verify::damaged_parts`, tested).
+> - **One word (D8):** "map" in everything users read (menu, dialogs, Settings, errors, style warnings); "pack" stays in code, `--pack` and `.omp`.
+> - **Delete (D9):** trips and sets keep the first click turning the icon into "Delete?"; a pushpin's *Delete pushpin* button now does the same ("Delete pushpin?"), tested.
+> - **Cancel (R4):** a *Cancel* button beside "Drawing the pages and sending them…", and leaving the print page also stops the printout, before its next page (the one being drawn finishes); the status says "Cancelled; nothing was printed." Not run against a real printer.
+> - **Style warnings (D6):** a notice lists up to three, with how many more, when a style names layers or props the map lacks.
 
 ## 5.8 Perf: cold reads from the stick
 

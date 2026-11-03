@@ -5,6 +5,7 @@ use eframe::egui::{self, Align2, Pos2, Rect, Sense, Stroke, Vec2};
 
 use super::App;
 use crate::here::lonlat_text;
+use crate::keys::{self, Command};
 use crate::scale;
 use crate::side::Action;
 use crate::theme::{Glyph, glyph_button, ink};
@@ -26,8 +27,10 @@ impl App {
             egui::Area::new(egui::Id::unique("side-open"))
                 .fixed_pos(map_rect.left_top() + Vec2::new(8.0, 8.0))
                 .show(ctx, |ui| {
-                    let open = glyph_button(ui, Glyph::Show, 30.0)
-                        .on_hover_text("Show the panel: search, route, layers  (Ctrl+B)");
+                    let open = glyph_button(ui, Glyph::Show, 30.0).on_hover_text(keys::with_hint(
+                        "Show the panel: search, route, layers",
+                        Command::Panel,
+                    ));
                     if open.clicked() {
                         side.open = true;
                     }
@@ -99,10 +102,10 @@ impl App {
                         }
                         r.clicked()
                     };
-                    if button(ui, true, "Zoom in  (+)") {
+                    if button(ui, true, &keys::with_hint("Zoom in", Command::ZoomIn)) {
                         m.motion.zoom(1.0, center);
                     }
-                    if button(ui, false, "Zoom out  (\u{2212})") {
+                    if button(ui, false, &keys::with_hint("Zoom out", Command::ZoomOut)) {
                         m.motion.zoom(-1.0, center);
                     }
                 });

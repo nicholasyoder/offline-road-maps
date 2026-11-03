@@ -61,7 +61,9 @@ impl Status {
                  again with a newer omp-builder to plan routes."
             )),
             Status::Missing(_) => Some("This map was built without routing.".into()),
-            Status::Failed(e) => Some(format!("Routing could not be opened: {e}")),
+            Status::Failed(e) => Some(format!(
+                "Routes are not available: the map may be damaged. Choose Verify map in the \u{2630} menu to check it. ({e})"
+            )),
             _ => None,
         }
     }
@@ -459,7 +461,7 @@ fn serve(
 }
 
 /// What the UI is told when a job panics.
-const CRASHED: &str = "the route could not be worked out (a crash); Verify pack may help";
+const CRASHED: &str = "the route could not be worked out (a crash); choose Verify map in the \u{2630} menu to check the map";
 
 /// Runs `f` on a job; if it panics, answers the job with an error instead and forgets the
 /// kept route, so the worker goes on (a panic would otherwise leave the UI waiting for

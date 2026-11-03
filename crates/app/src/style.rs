@@ -425,7 +425,7 @@ impl Style {
         let mut warnings = Vec::new();
         for (order, rule) in file.rules.iter().enumerate() {
             let Some((l, layer)) = schema.layer(&rule.layer) else {
-                warnings.push(format!("style: the pack has no layer {}", rule.layer));
+                warnings.push(format!("style: the map has no layer {}", rule.layer));
                 continue;
             };
             let ids: Vec<u16> = rule
@@ -434,7 +434,7 @@ impl Style {
                 .filter_map(|c| {
                     let id = layer.class(c);
                     if id.is_none() {
-                        warnings.push(format!("style: the pack has no class {}/{c}", rule.layer));
+                        warnings.push(format!("style: the map has no class {}/{c}", rule.layer));
                     }
                     id
                 })
@@ -472,7 +472,7 @@ impl Style {
                 label.key = layer.prop(&label.prop);
                 if label.key.is_none() {
                     warnings.push(format!(
-                        "style: the pack has no prop {}.{}; {}/{} is not labelled",
+                        "style: the map has no prop {}.{}; {}/{} is not labelled",
                         rule.layer, label.prop, rule.layer, rule.classes[0]
                     ));
                     sym.label = None;
@@ -482,7 +482,7 @@ impl Style {
                 sh.key = layer.prop("routes");
                 if sh.key.is_none() {
                     warnings.push(format!(
-                        "style: the pack has no prop {}.routes; {}/{} gets no shields",
+                        "style: the map has no prop {}.routes; {}/{} gets no shields",
                         rule.layer, rule.layer, rule.classes[0]
                     ));
                     sym.shields = None;

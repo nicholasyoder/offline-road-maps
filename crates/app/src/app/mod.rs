@@ -28,6 +28,7 @@ use crate::camera::{Camera, Motion};
 use crate::config::Movement;
 use crate::config::{Config, Location, View};
 use crate::here::HereUi;
+use crate::keys::{self, Command};
 use crate::labels::{self, Placer, TileLabels};
 use crate::layers::{Hidden, Layers};
 use crate::loader::{Done, Loader};
@@ -232,6 +233,10 @@ pub struct App {
     tile_error: Option<String>,
     verify: Option<Verify>,
     about: bool,
+    /// The Keyboard shortcuts window is open.
+    shortcuts: bool,
+    /// The window has been checked against its monitor once.
+    window_checked: bool,
     /// The Settings window, when open.
     settings: Option<settings::Window>,
     /// egui's zoom factor as last seen, to tell a change of its own from ours.
@@ -325,6 +330,8 @@ impl App {
             tile_error: None,
             verify: None,
             about: false,
+            shortcuts: false,
+            window_checked: false,
             settings: None,
             zoom_seen: cfg_zoom,
             sys_theme,
@@ -412,7 +419,9 @@ impl App {
     fn apply_style(&mut self, ctx: &egui::Context) {
         style::set_overlay(self.style.overlay);
         if let (Some(m), Some(pool)) = (&mut self.map, self.pool.clone()) {
-            m.style = compile_style(&self.style, &m.opened);
+            let (style, warned) = compile_style(&self.style, &m.opened, &self.style_id);
+            m.style = style;
+            self.notices.extend(warned);
             m.loader = start_loader(&m.opened, &m.style, pool, ctx);
             m.cache = Cache::new(CACHE_BUDGET);
             m.placer = Placer::default();
@@ -431,6 +440,53 @@ impl App {
                 lon,
                 zoom: m.camera.zoom,
             });
+        }
+    }
+
+    /// Keeps the window's size and place in the config for the next start; the first time,
+    /// brings a window that the monitor cannot hold back onto it.
+    fn track_window(&mut self, ctx: &egui::Context) {
+        if self.bench.is_some() {
+            return;
+        }
+        let (inner, outer, monitor, maximized, minimized) = ctx.input(|i| {
+            let v = i.viewport();
+            (
+                v.inner_rect,
+                v.outer_rect,
+                v.monitor_size,
+                v.maximized == Some(true),
+                v.minimized == Some(true),
+            )
+        });
+        let w = &mut self.cfg.window;
+        if !self.window_checked
+            && let Some(m) = monitor
+        {
+            self.window_checked = true;
+            if let Some((size, pos)) = w.fit([m.x, m.y]).filter(|_| !maximized) {
+                w.size = size;
+                w.pos = Some(pos);
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.into()));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos.into()));
+            }
+            return;
+        }
+        if minimized {
+            return;
+        }
+        w.maximized = maximized;
+        if let Some(m) = monitor {
+            w.monitor = Some([m.x, m.y]);
+        }
+        // A maximized window's size is the screen's: the restored size is kept.
+        if !maximized && self.window_checked {
+            if let Some(r) = inner {
+                w.size = [r.width().round(), r.height().round()];
+            }
+            if let Some(r) = outer {
+                w.pos = Some([r.min.x.round(), r.min.y.round()]);
+            }
         }
     }
 
@@ -578,34 +634,26 @@ impl MapState {
         ui.input(|i| {
             if i.focused && !typing {
                 let key = |k| if i.key_down(k) { 1.0 } else { 0.0 };
-                let dx = key(egui::Key::ArrowLeft) - key(egui::Key::ArrowRight);
-                let dy = key(egui::Key::ArrowUp) - key(egui::Key::ArrowDown);
+                let [left, right, up, down] = keys::ARROWS;
+                let dx = key(left) - key(right);
+                let dy = key(up) - key(down);
                 if dx != 0.0 || dy != 0.0 {
                     cam.pan([dx * mv.key_pan * dt, dy * mv.key_pan * dt]);
                     self.motion.stop_flying();
                     self.motion.velocity = [0.0, 0.0];
                 }
-                if i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals) {
-                    self.motion.zoom(mv.key_zoom, center);
-                }
-                if i.key_pressed(egui::Key::Minus) {
-                    self.motion.zoom(-mv.key_zoom, center);
-                }
             }
         });
+        if keys::take(ui.ctx(), Command::ZoomIn) {
+            self.motion.zoom(mv.key_zoom, center);
+        }
+        if keys::take(ui.ctx(), Command::ZoomOut) {
+            self.motion.zoom(-mv.key_zoom, center);
+        }
     }
 
     fn keys_held(ui: &egui::Ui) -> bool {
-        ui.input(|i| {
-            [
-                egui::Key::ArrowLeft,
-                egui::Key::ArrowRight,
-                egui::Key::ArrowUp,
-                egui::Key::ArrowDown,
-            ]
-            .into_iter()
-            .any(|k| i.key_down(k))
-        })
+        keys::arrow_down(ui.ctx())
     }
 
     /// Draws the map for the current camera, with what `layers` shows: the last frame again
@@ -848,13 +896,16 @@ impl eframe::App for App {
         }
         self.sync_zoom(&ctx);
         self.sync_theme(&ctx);
+        self.track_window(&ctx);
 
-        if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
+        if keys::take(&ctx, Command::DebugOverlay) {
             self.cfg.debug_overlay = !self.cfg.debug_overlay;
         }
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O)) && self.bench.is_none()
-        {
+        if keys::take(&ctx, Command::OpenMap) && self.bench.is_none() {
             self.picker = !self.picker;
+        }
+        if keys::take(&ctx, Command::Shortcuts) {
+            self.shortcuts = !self.shortcuts;
         }
 
         self.side_panel(ui);
@@ -869,21 +920,7 @@ impl eframe::App for App {
                 let resp = ui.allocate_rect(rect, Sense::click_and_drag());
                 let painter = ui.painter_at(rect);
                 let Some(m) = &mut self.map else {
-                    let msg = if self.found.is_empty() {
-                        format!(
-                            "No map pack found.\nPut a pack in {} or start with --pack <folder>.",
-                            self.exe_dir.join("maps").display()
-                        )
-                    } else {
-                        "Choose a pack (Ctrl+O).".into()
-                    };
-                    painter.text(
-                        rect.center_top() + Vec2::new(0.0, 60.0),
-                        Align2::CENTER_TOP,
-                        msg,
-                        FontId::proportional(16.0),
-                        Color32::DARK_GRAY,
-                    );
+                    self.no_map(ui, rect);
                     return;
                 };
                 m.camera.size = [f64::from(rect.width()), f64::from(rect.height())];
@@ -1024,6 +1061,7 @@ impl eframe::App for App {
         self.map_controls(&ctx, map_rect);
         self.picker_window(&ctx);
         self.about_window(&ctx);
+        self.shortcuts_window(&ctx);
         self.settings_window(&ctx);
         self.verify_window(&ctx);
         self.error_windows(&ctx);

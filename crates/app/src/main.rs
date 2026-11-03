@@ -22,6 +22,7 @@ mod config;
 mod dialog;
 mod files;
 mod here;
+mod keys;
 mod labels;
 mod layers;
 mod loader;
@@ -204,7 +205,10 @@ fn main() -> ExitCode {
         Some(p) => {
             let f = packs::find(p);
             if f.is_empty() {
-                notices.push(format!("No pack (*.omp.000) in {}", p.display()));
+                notices.push(format!(
+                    "There is no map in {} (a map's first file ends in .omp.000).",
+                    p.display()
+                ));
             }
             f
         }
@@ -307,6 +311,17 @@ fn main() -> ExitCode {
         }
         None => None,
     };
+
+    if bench.is_none() {
+        let w = &cfg.window;
+        options.viewport = options.viewport.with_inner_size(w.size);
+        if let Some(p) = w.pos {
+            options.viewport = options.viewport.with_position(p);
+        }
+        if w.maximized {
+            options.viewport = options.viewport.with_maximized(true);
+        }
+    }
 
     let startup = app::Startup {
         exe_dir,
