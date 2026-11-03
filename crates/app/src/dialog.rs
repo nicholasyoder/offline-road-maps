@@ -2,7 +2,7 @@
 //! another window, egui draws the dialog inside the map's window instead (as it does in
 //! the tests), and the code is the same.
 
-use eframe::egui::{self, LayerId, Order, Pos2, Rect, UiBuilder, Vec2, ViewportClass};
+use eframe::egui::{self, Color32, LayerId, Order, Pos2, Rect, UiBuilder, Vec2, ViewportClass};
 
 use crate::keys::{self, Command};
 
@@ -92,7 +92,7 @@ pub fn show(
     })
 }
 
-/// A question in a window of its own, with a *Cancel* button and `yes` beside it. Returns
+/// A question in a window of its own, with `yes` and a *Cancel* button beside it, centred. Returns
 /// `Some(true)` when `yes` was clicked (or Enter pressed) and `Some(false)` when it was
 /// cancelled (or closed, or Escape pressed); the caller then stops asking. `buttons` gets
 /// where *Cancel* and `yes` were drawn, for the tests.
@@ -105,11 +105,21 @@ pub fn confirm(
 ) -> Option<bool> {
     let mut answer = None;
     let closed = show(ctx, "confirm", title, Size::Fit(340.0), |ui| {
-        ui.label(text);
-        ui.add_space(6.0);
+        // Room round the text, so a window made taller than its content keeps it centred.
+        ui.add_space(10.0);
+        ui.vertical_centered(|ui| ui.label(text));
+        ui.add_space(14.0);
+        // The buttons side by side in the middle: width is the text's and the padding.
+        let width = |ui: &egui::Ui, label: &str| {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font, Color32::WHITE));
+            galley.size().x + 2.0 * ui.spacing().button_padding.x
+        };
+        let both = width(ui, yes) + width(ui, "Cancel") + ui.spacing().item_spacing.x;
         ui.horizontal(|ui| {
-            let cancel = ui.button("Cancel");
+            ui.add_space(((ui.available_width() - both) / 2.0).max(0.0));
             let ok = ui.button(yes);
+            let cancel = ui.button("Cancel");
             *buttons = [cancel.rect, ok.rect];
             if cancel.clicked() {
                 answer = Some(false);
@@ -117,6 +127,7 @@ pub fn confirm(
                 answer = Some(true);
             }
         });
+        ui.add_space(10.0);
     });
     answer.or(closed.then_some(false))
 }
