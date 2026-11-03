@@ -9,6 +9,10 @@ use crate::keys::{self, Command};
 /// The margin round a dialog's content.
 const MARGIN: i8 = 12;
 
+/// The least a dialog's window is asked to be. A fixed size below it would put the window's
+/// minimum over its maximum, which Wayland answers by closing the app.
+const MIN_SIZE: Vec2 = Vec2::new(200.0, 80.0);
+
 /// How a dialog's window is sized.
 #[derive(Clone, Copy)]
 pub enum Size {
@@ -58,7 +62,7 @@ pub fn show(
             size: match size {
                 // Embedded, egui's window sizes itself.
                 Size::Fit(_) if ctx.embed_viewports() => Vec2::ZERO,
-                Size::Fit(width) => measure(ctx, viewport, width, &mut add),
+                Size::Fit(width) => measure(ctx, viewport, width, &mut add).max(MIN_SIZE),
                 Size::Resizable(size) => size,
             },
             pass,
@@ -69,7 +73,7 @@ pub fn show(
     let builder = egui::ViewportBuilder::default()
         .with_title(format!("{title} – Offline Road Maps"))
         .with_inner_size(seen.size)
-        .with_min_inner_size([200.0, 80.0])
+        .with_min_inner_size(MIN_SIZE)
         .with_resizable(!fit);
     ctx.show_viewport_immediate(viewport, builder, |ui, class| {
         if class == ViewportClass::EmbeddedWindow {
@@ -81,7 +85,7 @@ pub fn show(
         egui::CentralPanel::default().frame(panel).show(ui, |ui| {
             let used = ui.scope(&mut add).response.rect.size();
             if fit {
-                follow(ui.ctx(), key, used + margins());
+                follow(ui.ctx(), key, (used + margins()).max(MIN_SIZE));
             }
         });
         ui.input(|i| i.viewport().close_requested()) || keys::take(ui.ctx(), Command::Close)
