@@ -67,6 +67,20 @@ impl Plan {
         self.mode = mode;
     }
 
+    /// With no time set, the settings that count without a clock: the breaks. `None` with
+    /// none asked for.
+    pub fn untimed_settings(&self) -> Option<Settings> {
+        (self.mode == Mode::Off && self.s.breaks).then(|| Settings {
+            when: When::Depart(Timestamp::UNIX_EPOCH),
+            stays: Vec::new(),
+            day: None,
+            breaks: Some(Breaks {
+                every_s: self.s.break_every_h * 3600.0,
+                for_s: self.s.break_min * 60.0,
+            }),
+        })
+    }
+
     /// The stop whose zone the date and time are in.
     pub fn anchor(&self, stops: usize) -> usize {
         match self.mode {

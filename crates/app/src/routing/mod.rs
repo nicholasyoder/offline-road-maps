@@ -452,6 +452,10 @@ enum Times {
     Off,
     Failed(String),
     Ready(Box<Timed>),
+    /// No time set, but breaks asked for: only how long the trip takes with them.
+    Untimed {
+        total_s: f64,
+    },
 }
 
 impl RouteUi {
@@ -768,7 +772,7 @@ impl RouteUi {
         let places = self.places();
         let refs: Vec<&Place> = places.iter().collect();
         match self.plan.settings(&refs, &self.routed_stops, &local) {
-            None => Times::Off,
+            None => self.work_out_untimed(&local),
             Some(Err(e)) => Times::Failed(e),
             Some(Ok(st)) => match Timed::new(r, &self.routed_stops, &st, &local) {
                 Some(t) => Times::Ready(Box::new(t)),
@@ -778,6 +782,34 @@ impl RouteUi {
                 }),
             },
         }
+    }
+
+    /// With no time set, the trip's length with its breaks, from a departure that does not
+    /// show: nothing but the driving and the breaks counts, so it does not matter.
+    fn work_out_untimed(&self, local: &omp_core::schedule::Local) -> Times {
+        let Some((r, st)) = self.route.as_ref().zip(self.plan.untimed_settings()) else {
+            return Times::Off;
+        };
+        let total =
+            omp_core::schedule::schedule(&r.trip, &self.routed_stops, &st, local).and_then(|s| {
+                Some(s.arrival()?.timestamp().as_second() - s.departure()?.timestamp().as_second())
+            });
+        total.map_or(Times::Off, |t| Times::Untimed { total_s: t as f64 })
+    }
+
+    /// How long the trip takes with its breaks, stops and nights, if that is more than the
+    /// driving: the schedule's, or with no time set the breaks'.
+    pub fn total_s(&self) -> Option<f64> {
+        let driving = self.route.as_ref()?.trip.time_s();
+        let total = match &self.times {
+            Times::Ready(t) => {
+                (t.sched.arrival()?.timestamp().as_second()
+                    - t.sched.departure()?.timestamp().as_second()) as f64
+            }
+            Times::Untimed { total_s } => *total_s,
+            _ => return None,
+        };
+        (total - driving >= 60.0).then_some(total)
     }
 
     /// The schedule's settings or a stop's time changed: work it out again.

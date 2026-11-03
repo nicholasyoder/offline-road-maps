@@ -485,26 +485,29 @@ impl RouteUi {
                 }
             }
             let s = &mut self.plan.s;
-            ui.horizontal_wrapped(|ui| {
-                changed |= ui.checkbox(&mut s.window, "Drive from").changed();
-                let bad = parse_time(&s.day_start).is_none();
-                changed |= field(ui, &mut s.day_start, 64.0, bad, "8:00 AM").changed();
-                ui.label("to");
-                let bad = parse_time(&s.day_end).is_none();
-                changed |= field(ui, &mut s.day_end, 64.0, bad, "6:00 PM").changed();
-            });
-            ui.horizontal_wrapped(|ui| {
-                changed |= ui.checkbox(&mut s.max_drive, "At most").changed();
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut s.max_drive_h)
-                            .range(1.0..=24.0)
-                            .speed(0.25)
-                            .max_decimals(2)
-                            .suffix(" h"),
-                    )
-                    .changed();
-                ui.label("of driving a day");
+            // The day's hours need a clock; the breaks do not.
+            ui.add_enabled_ui(set, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    changed |= ui.checkbox(&mut s.window, "Drive from").changed();
+                    let bad = parse_time(&s.day_start).is_none();
+                    changed |= field(ui, &mut s.day_start, 64.0, bad, "8:00 AM").changed();
+                    ui.label("to");
+                    let bad = parse_time(&s.day_end).is_none();
+                    changed |= field(ui, &mut s.day_end, 64.0, bad, "6:00 PM").changed();
+                });
+                ui.horizontal_wrapped(|ui| {
+                    changed |= ui.checkbox(&mut s.max_drive, "At most").changed();
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut s.max_drive_h)
+                                .range(1.0..=24.0)
+                                .speed(0.25)
+                                .max_decimals(2)
+                                .suffix(" h"),
+                        )
+                        .changed();
+                    ui.label("of driving a day");
+                });
             });
             ui.horizontal_wrapped(|ui| {
                 changed |= ui.checkbox(&mut s.breaks, "A break every").changed();
@@ -706,16 +709,38 @@ impl RouteUi {
             return;
         };
         let trip = &r.trip;
-        ui.label(
-            egui::RichText::new(format!(
+        let head = |time: f64| {
+            format!(
                 "{} · {}",
                 distance_text(trip.metres(), units),
-                duration_text(trip.time_s())
-            ))
-            .size(16.0)
-            .strong()
-            .color(ink()),
-        );
+                duration_text(time)
+            )
+        };
+        match self.total_s() {
+            None => {
+                ui.label(
+                    egui::RichText::new(head(trip.time_s()))
+                        .size(16.0)
+                        .strong()
+                        .color(ink()),
+                );
+            }
+            Some(total) => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(head(total))
+                            .size(16.0)
+                            .strong()
+                            .color(ink()),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{} driving", duration_text(trip.time_s())))
+                            .color(weak()),
+                    )
+                    .on_hover_text("The driving alone, without breaks, stops and nights");
+                });
+            }
+        }
         self.leg_rows(ui, units, edits);
         for n in self.notices(units) {
             ui.label(egui::RichText::new(format!("⚠ {n}")).color(approx()));
@@ -1038,11 +1063,19 @@ impl RouteUi {
         Some(DirectionsDoc {
             label: label.to_owned(),
             stops,
-            totals: format!(
-                "{} · {}",
-                distance_text(r.trip.metres(), units),
-                duration_text(r.trip.time_s())
-            ),
+            totals: match self.total_s() {
+                None => format!(
+                    "{} · {}",
+                    distance_text(r.trip.metres(), units),
+                    duration_text(r.trip.time_s())
+                ),
+                Some(total) => format!(
+                    "{} · {} ({} driving)",
+                    distance_text(r.trip.metres(), units),
+                    duration_text(total),
+                    duration_text(r.trip.time_s())
+                ),
+            },
             notices: self.notices(units),
             steps: r.steps.clone(),
             gaps: super::gaps(&r.trip),

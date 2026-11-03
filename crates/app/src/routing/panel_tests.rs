@@ -603,3 +603,51 @@ fn a_leg_with_no_route_has_a_row_where_its_steps_would_be() {
     assert_eq!(rows.heights.len(), rows.rows.len());
     assert_eq!(rows.gaps[0], "No route from stop 2 to stop 3");
 }
+
+/// Breaks count in the trip's total time with or without a time set; with none, no clock
+/// shows (the day's hours need one).
+#[test]
+fn total_time_with_breaks() {
+    use super::super::times::Mode;
+    let mut u = Ui::new();
+    u.r.apply(StopAction::From, named("a", 40.0));
+    u.r.apply(StopAction::To, named("b", 40.2));
+    u.frame(Vec::new());
+    u.answer();
+    let driving = u.r.route.as_ref().unwrap().trip.time_s();
+    assert_eq!(u.r.total_s(), None);
+
+    // Breaks, no time: the total grows by the breaks, and nothing is timed.
+    u.r.plan.s.breaks = true;
+    u.r.plan.s.break_every_h = 0.04;
+    u.r.plan.s.break_min = 5.0;
+    u.r.retime();
+    u.frame(Vec::new());
+    let breaks = (driving / 144.0 - 1e-9).floor();
+    assert!(breaks >= 1.0, "{driving}");
+    let total = u.r.total_s().expect("a total with breaks");
+    assert!(
+        (total - driving - breaks * 300.0).abs() < 2.0,
+        "{total} {driving}"
+    );
+    assert!(u.r.timed().is_none());
+    assert!(u.r.notes.is_empty());
+
+    // Breaks off: the driving alone.
+    u.r.plan.s.breaks = false;
+    u.r.retime();
+    u.frame(Vec::new());
+    assert_eq!(u.r.total_s(), None);
+
+    // With a time, the same total as the schedule's.
+    u.r.plan.s.breaks = true;
+    u.r.plan.set_mode(Mode::Depart, &jiff::tz::TimeZone::UTC);
+    u.r.plan.date = "2026-09-01".into();
+    u.r.plan.time = "08:00".into();
+    u.r.plan.s.window = false;
+    u.r.retime();
+    u.frame(Vec::new());
+    let with_time = u.r.total_s().expect("a total");
+    assert!((with_time - total).abs() < 2.0, "{with_time} {total}");
+    assert!(u.r.timed().is_some());
+}
