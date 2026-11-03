@@ -3,7 +3,7 @@
 
 use std::ops::RangeInclusive;
 
-use eframe::egui::{self, Align2, Vec2};
+use eframe::egui;
 
 use super::App;
 use crate::config::{Config, Display, Movement, Start};
@@ -35,30 +35,55 @@ impl App {
         self.zoom_seen = want;
     }
 
+    /// The Settings window: a window of its own, apart from the map's (egui falls back to
+    /// one inside the map's window where the platform cannot make another).
     pub(super) fn settings_window(&mut self, ctx: &egui::Context) {
         let Some(mut state) = self.settings.take() else {
             return;
         };
         let pack_units = self.map.as_ref().map(|m| m.units);
         let running = self.msaa_now;
-        let mut open = true;
-        egui::Window::new("Settings")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
-                contents(ui, ctx, &mut state, &mut self.cfg, pack_units, running);
-            });
-        if open {
+        let builder = egui::ViewportBuilder::default()
+            .with_title("Settings – Offline Road Maps")
+            .with_inner_size([500.0, 640.0])
+            .with_min_inner_size([380.0, 300.0]);
+        let mut close = false;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("settings"),
+            builder,
+            |ui, _class| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        contents(ui, ctx, &mut state, &mut self.cfg, pack_units, running);
+                    });
+                });
+                close = ui.input(|i| i.viewport().close_requested())
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape));
+            },
+        );
+        if !close {
             self.settings = Some(state);
         }
     }
 }
 
-fn heading(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new(text).strong().color(INK));
+/// A group of settings: a framed box across the window, with its title above and a line
+/// under it.
+fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::group(ui.style())
+        .inner_margin(10)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(title).strong().size(15.0).color(INK));
+            ui.separator();
+            add(ui);
+        });
+    ui.add_space(6.0);
+}
+
+/// What a setting does, in small type under it.
+fn note(ui: &mut egui::Ui, text: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(text).small().weak()).wrap());
 }
 
 /// A slider showing a factor as a percentage, with the range's ends as its limits.
@@ -99,13 +124,12 @@ fn contents(
     pack_units: Option<Units>,
     running_msaa: u32,
 ) {
-    heading(ui, "Display");
-    egui::Grid::new("settings-display")
-        .num_columns(2)
-        .spacing([16.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("UI size");
-            ui.horizontal(|ui| {
+    group(ui, "Display", |ui| {
+        egui::Grid::new("settings-display")
+            .num_columns(2)
+            .spacing([16.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("UI size");
                 let mut v = state.ui_size.unwrap_or(cfg.display.ui_size);
                 let r = percent(ui, &mut v, Display::UI_SIZE);
                 if r.dragged() {
@@ -114,88 +138,109 @@ fn contents(
                     cfg.display.ui_size = v;
                     state.ui_size = None;
                 }
-                if let Some(native) = ctx.native_pixels_per_point() {
-                    let drawn = native * cfg.display.ui_size as f32;
-                    ui.weak(format!(
-                        "the system reports {native:.2} px/pt; drawn at {drawn:.2}"
-                    ));
-                }
+                ui.end_row();
+
+                ui.label("Label size");
+                percent(ui, &mut cfg.display.label_size, Display::LABEL_SIZE);
+                ui.end_row();
             });
-            ui.end_row();
-
-            ui.label("Label size");
-            let r = percent(ui, &mut cfg.display.label_size, Display::LABEL_SIZE);
-            r.on_hover_text("Names, shields and icons on the map; the printed map keeps its own");
-            ui.end_row();
-
-            ui.label("Anti-aliasing");
-            ui.horizontal(|ui| {
-                let mut n = render::samples(cfg.msaa);
-                for s in [1, 2, 4] {
-                    ui.radio_value(&mut n, s, format!("{s}×"));
-                }
-                cfg.msaa = (n != render::MSAA).then_some(n);
-                if render::samples(cfg.msaa) != running_msaa {
-                    ui.weak("applies after a restart");
-                } else if n == 2 {
-                    ui.weak("not every GPU can do 2×");
-                }
-            });
-            ui.end_row();
-        });
-
-    heading(ui, "Map movement");
-    let mv = &mut cfg.movement;
-    egui::Grid::new("settings-movement")
-        .num_columns(2)
-        .spacing([16.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("Wheel zoom per notch");
-            number(
+        if let Some(native) = ctx.native_pixels_per_point() {
+            let drawn = native * cfg.display.ui_size as f32;
+            note(
                 ui,
-                &mut mv.wheel_zoom,
-                Movement::WHEEL_ZOOM,
-                0.05,
-                " levels",
+                &format!(
+                    "UI size scales the panel, buttons and text. The system reports a scale of {native:.2}; the app draws at {drawn:.2}."
+                ),
             );
-            ui.end_row();
-            ui.label("Zoom per key press");
-            number(ui, &mut mv.key_zoom, Movement::KEY_ZOOM, 0.25, " levels");
-            ui.end_row();
-            ui.label("Arrow keys pan");
-            number(ui, &mut mv.key_pan, Movement::KEY_PAN, 50.0, " pt/s");
-            ui.end_row();
-            ui.label("Pan inertia");
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut mv.inertia, "Glide after a drag");
-            });
-            ui.end_row();
-            ui.label("Glide time");
-            ui.add_enabled_ui(mv.inertia, |ui| {
-                number(ui, &mut mv.glide, Movement::GLIDE, 0.1, " s")
-                    .on_hover_text("How long a glide takes to slow to almost nothing");
-            });
-            ui.end_row();
+        }
+        note(
+            ui,
+            "Label size scales the names, road shields and icons on the map only. A printed map keeps its own sizes.",
+        );
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Anti-aliasing");
+            let mut n = render::samples(cfg.msaa);
+            for s in [1, 2, 4] {
+                ui.radio_value(
+                    &mut n,
+                    s,
+                    if s == 1 {
+                        "Off".into()
+                    } else {
+                        format!("{s}×")
+                    },
+                );
+            }
+            cfg.msaa = (n != render::MSAA).then_some(n);
         });
+        note(
+            ui,
+            "Smooths the jagged, stair-stepped edges of roads, outlines and text on the map. Higher looks smoother but takes more of the graphics card's work: choose Off if the map is slow or looks wrong. Not every graphics card can do 2×.",
+        );
+        if render::samples(cfg.msaa) != running_msaa {
+            ui.label(
+                egui::RichText::new("Applies the next time the app starts.")
+                    .color(crate::theme::APPROX),
+            );
+        }
+    });
 
-    heading(ui, "Units");
-    ui.horizontal(|ui| {
+    group(ui, "Map movement", |ui| {
+        let mv = &mut cfg.movement;
+        egui::Grid::new("settings-movement")
+            .num_columns(2)
+            .spacing([16.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Wheel zoom per notch");
+                number(
+                    ui,
+                    &mut mv.wheel_zoom,
+                    Movement::WHEEL_ZOOM,
+                    0.05,
+                    " levels",
+                );
+                ui.end_row();
+                ui.label("Zoom per key press");
+                number(ui, &mut mv.key_zoom, Movement::KEY_ZOOM, 0.25, " levels");
+                ui.end_row();
+                ui.label("Arrow keys pan");
+                number(ui, &mut mv.key_pan, Movement::KEY_PAN, 50.0, " pt/s");
+                ui.end_row();
+                ui.label("Pan inertia");
+                ui.checkbox(&mut mv.inertia, "Keep gliding after a drag");
+                ui.end_row();
+                ui.label("Glide time");
+                ui.add_enabled_ui(mv.inertia, |ui| {
+                    number(ui, &mut mv.glide, Movement::GLIDE, 0.1, " s");
+                });
+                ui.end_row();
+            });
+        note(
+            ui,
+            "A level is one doubling of the scale. Glide time is how long a glide takes to slow almost to a stop.",
+        );
+    });
+
+    group(ui, "Units", |ui| {
         let auto = match pack_units {
             Some(u) => format!("As the map ({})", u.name()),
             None => "As the map".into(),
         };
-        ui.radio_value(&mut cfg.units, None, auto);
-        for u in Units::ALL {
-            ui.radio_value(&mut cfg.units, Some(u), u.name());
-        }
+        ui.horizontal_wrapped(|ui| {
+            ui.radio_value(&mut cfg.units, None, auto);
+            for u in Units::ALL {
+                ui.radio_value(&mut cfg.units, Some(u), u.name());
+            }
+        });
+        note(ui, "For the scale bar, the route page and the directions.");
     });
-    ui.weak("For the scale bar, the route page and the directions.");
 
-    heading(ui, "Start-up");
-    ui.checkbox(&mut cfg.start.reopen_view, "Reopen the last view");
-    ui.checkbox(&mut cfg.start.reopen_pack, "Reopen the last pack");
+    group(ui, "Start-up", |ui| {
+        ui.checkbox(&mut cfg.start.reopen_view, "Reopen the last view");
+        ui.checkbox(&mut cfg.start.reopen_pack, "Reopen the last pack");
+    });
 
-    ui.add_space(8.0);
     if ui.button("Restore defaults").clicked() {
         restore_defaults(cfg);
         state.ui_size = None;

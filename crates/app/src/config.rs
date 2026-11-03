@@ -55,8 +55,8 @@ pub struct Display {
 }
 
 impl Display {
-    pub const UI_SIZE: RangeInclusive<f64> = 0.75..=2.0;
-    pub const LABEL_SIZE: RangeInclusive<f64> = 0.75..=2.0;
+    pub const UI_SIZE: RangeInclusive<f64> = 0.5..=2.0;
+    pub const LABEL_SIZE: RangeInclusive<f64> = 0.5..=2.0;
 }
 
 impl Default for Display {

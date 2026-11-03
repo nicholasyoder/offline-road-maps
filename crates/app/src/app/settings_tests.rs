@@ -1,10 +1,11 @@
 use super::*;
 use crate::config::Location;
+use eframe::egui::Vec2;
 
 fn changed() -> Config {
     Config {
         display: Display {
-            ui_size: 0.75,
+            ui_size: 0.5,
             label_size: 1.5,
         },
         movement: Movement {
