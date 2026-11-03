@@ -459,8 +459,8 @@ impl RouteUi {
                         .on_hover_text("The date, year-month-day")
                         .changed();
                     let bad = parse_time(&self.plan.time).is_none();
-                    changed |= field(ui, &mut self.plan.time, 64.0, bad, "8:00 am")
-                        .on_hover_text("The time, like 8:00 am (24-hour also works)")
+                    changed |= field(ui, &mut self.plan.time, 64.0, bad, "8:00 AM")
+                        .on_hover_text("The time, like 8:00 AM (24-hour also works)")
                         .changed();
                     let at = match self.plan.mode {
                         Mode::ArriveBy => "at the destination",
@@ -486,10 +486,10 @@ impl RouteUi {
             ui.horizontal_wrapped(|ui| {
                 changed |= ui.checkbox(&mut s.window, "Drive from").changed();
                 let bad = parse_time(&s.day_start).is_none();
-                changed |= field(ui, &mut s.day_start, 64.0, bad, "8:00 am").changed();
+                changed |= field(ui, &mut s.day_start, 64.0, bad, "8:00 AM").changed();
                 ui.label("to");
                 let bad = parse_time(&s.day_end).is_none();
-                changed |= field(ui, &mut s.day_end, 64.0, bad, "6:00 pm").changed();
+                changed |= field(ui, &mut s.day_end, 64.0, bad, "6:00 PM").changed();
             });
             ui.horizontal_wrapped(|ui| {
                 changed |= ui.checkbox(&mut s.max_drive, "At most").changed();
@@ -550,7 +550,7 @@ impl RouteUi {
     }
 
     /// *Depart at / Arrive by*'s title: the time set, in its stop's zone, "Depart Sat Oct
-    /// 10, 8:00 am EDT".
+    /// 10, 8:00 AM EDT".
     fn times_title(&self) -> String {
         let verb = match self.plan.mode {
             Mode::Off => return "Depart at / Arrive by".into(),
@@ -567,7 +567,7 @@ impl RouteUi {
             _ => None,
         };
         match asked {
-            Some(z) => format!("{verb} {}", z.strftime("%a %b %-d, %-I:%M %P %Z")),
+            Some(z) => format!("{verb} {}", z.strftime("%a %b %-d, %-I:%M %p %Z")),
             None => verb.into(),
         }
     }
@@ -1211,11 +1211,11 @@ fn text_width(width: f32, timed: bool) -> f32 {
     width - TEXT_X - if timed { TIME_W } else { 0.0 }
 }
 
-/// "2:35 pm", or with `day` "Sun 8:00 am": a time beside one that gave its zone.
+/// "2:35 PM", or with `day` "Sun 8:00 AM": a time beside one that gave its zone.
 fn clock_short(z: &jiff::Zoned, day: bool) -> String {
     match day {
-        true => z.strftime("%a %-I:%M %P").to_string(),
-        false => z.strftime("%-I:%M %P").to_string(),
+        true => z.strftime("%a %-I:%M %p").to_string(),
+        false => z.strftime("%-I:%M %p").to_string(),
     }
 }
 

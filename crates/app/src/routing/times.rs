@@ -93,7 +93,7 @@ impl Plan {
                     format!("“{}” is not a date like 2026-11-01.", self.date.trim())
                 })?;
             let time = parse_time(&self.time)
-                .ok_or_else(|| format!("“{}” is not a time like 8:00 am.", self.time.trim()))?;
+                .ok_or_else(|| format!("“{}” is not a time like 8:00 AM.", self.time.trim()))?;
             let t = local
                 .tz(*when.1)
                 .to_timestamp(date.to_datetime(time))
@@ -151,11 +151,11 @@ pub struct Shown {
     pub hover: Option<String>,
 }
 
-/// "2:05 pm CDT", or with `day` "Sat 2:05 pm CDT".
+/// "2:05 PM CDT", or with `day` "Sat 2:05 PM CDT".
 pub fn clock(z: &Zoned, day: bool) -> String {
     match day {
-        true => z.strftime("%a %-I:%M %P %Z").to_string(),
-        false => z.strftime("%-I:%M %P %Z").to_string(),
+        true => z.strftime("%a %-I:%M %p %Z").to_string(),
+        false => z.strftime("%-I:%M %p %Z").to_string(),
     }
 }
 

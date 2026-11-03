@@ -312,7 +312,7 @@ fn reads(path: &[String], value: &toml::Value) -> bool {
     }
 }
 
-/// The schedule's settings, as the route page last had them: times are like `8:00 am` (24-hour also read), local.
+/// The schedule's settings, as the route page last had them: times are like `8:00 AM` (24-hour also read), local.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Schedule {
@@ -334,10 +334,10 @@ pub struct Schedule {
 impl Default for Schedule {
     fn default() -> Self {
         Self {
-            depart: "8:00 am".into(),
+            depart: "8:00 AM".into(),
             window: true,
-            day_start: "8:00 am".into(),
-            day_end: "6:00 pm".into(),
+            day_start: "8:00 AM".into(),
+            day_end: "6:00 PM".into(),
             max_drive: false,
             max_drive_h: 9.0,
             breaks: false,

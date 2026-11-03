@@ -71,7 +71,7 @@ pub struct Times {
     pub mode: TimesMode,
     /// `2026-07-11`, local to the stop the time is at.
     pub date: String,
-    /// `8:00 am`.
+    /// `8:00 AM`.
     pub time: String,
     #[serde(flatten)]
     pub settings: config::Schedule,

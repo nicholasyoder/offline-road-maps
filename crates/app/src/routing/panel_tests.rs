@@ -479,13 +479,13 @@ fn schedule() {
         t.sched
             .departure()
             .unwrap()
-            .strftime("%-I:%M %P")
+            .strftime("%-I:%M %p")
             .to_string(),
-        "8:00 am"
+        "8:00 AM"
     );
     assert_eq!(
-        t.sched.arrival().unwrap().strftime("%-I:%M %P").to_string(),
-        "8:06 am"
+        t.sched.arrival().unwrap().strftime("%-I:%M %p").to_string(),
+        "8:06 AM"
     );
     assert_eq!(t.sched.days(), 1);
     // Only the stop between the ends has a time there.
