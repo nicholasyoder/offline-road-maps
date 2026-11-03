@@ -394,16 +394,20 @@ impl PrintUi {
                         );
                     ui.end_row();
                 }
-                if self.kind == Kind::Map && around.has_route {
+                if self.kind == Kind::Map {
                     ui.label("");
-                    ui.checkbox(&mut settings.hide_stops, "Hide stop markers")
-                        .on_hover_text("Print the route without its numbered stop markers");
+                    ui.add_enabled(
+                        around.has_route,
+                        egui::Checkbox::new(&mut settings.hide_stops, "Hide stop markers"),
+                    )
+                    .on_hover_text("Print the route without its numbered stop markers")
+                    .on_disabled_hover_text("Plan a route first");
                     ui.end_row();
                 }
             });
         if self.kind == Kind::Map {
             let layout = self.layout(settings);
-            ui.add_space(2.0);
+            ui.separator();
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .add_enabled(around.has_route, egui::Button::new("Fit to route"))
