@@ -46,7 +46,7 @@ What phase 4 left in place for this:
 | 5.2 Audit: performance baseline and profiles | Done 2026-11-02 | Baseline and all profiles done (the North America build, P20), every lead triaged by the owner and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)); session G (still frames) done 2026-11-02 |
 | 5.3 Settings window | **Done** 2026-11-02 | Every value in a window of its own, tested headless and by hand on Linux and Windows; config read a value at a time and clamped |
 | 5.4 Map styles in the Map tab | **Done** 2026-11-02 | Default, Night, High contrast, `style.toml` and `styles/*.toml` listed as cards, switched in 5–13 ms, remembered; overlays from `[overlay]` |
-| 5.5 Dark UI | In progress 2026-11-02 | Dark UI as its own setting (as the system / light / dark), apart from the map style; palette in `theme.rs`, system theme read on Linux and Windows; the by-hand check of every page in dark is left |
+| 5.5 Dark UI | **Done** 2026-11-02 | Dark UI as its own setting (as the system / light / dark), apart from the map style; palette in `theme.rs`, system theme read on Linux and Windows; checked by hand by the owner on both |
 | 5.6 High-contrast style and black-and-white printing | Not started | |
 | 5.7 UI polish | Not started | |
 | 5.8 Perf: cold reads from the stick | Not started | |
@@ -176,7 +176,7 @@ The roadmap: "The UI follows a dark style."
 
 **Done when:** the UI is dark or light by the setting or the system, whatever the map style, with no hard-coded UI colour left outside the palette.
 
-> **In progress 2026-11-02.** Code and tests are in (the contrast test, the setting round trip, the portal parsing). Left: the owner's look at every page, dialog and popup in dark on Linux and Windows (not seen yet; this machine's desktop reports no preference), and that a change of the system theme while the app runs is followed.
+> **Done 2026-11-02** (commit `f5dccaa`; checked by hand by the owner on Linux and on Windows). Code: `theme.rs` (palette functions, `apply`, `wants_dark`, contrast test), `systheme.rs` (Linux: settings portal via `gdbus`, then `gsettings`; Windows: egui's system theme), `Config::display.theme`, the Theme row in `app/settings.rs`. Open: none. Not seen in dark on the E6430.
 
 ## 5.6 High-contrast style and black-and-white printing
 
