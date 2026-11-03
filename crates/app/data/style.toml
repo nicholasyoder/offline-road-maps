@@ -33,9 +33,37 @@
 #   shields           { size, priority, minzoom, maxzoom }: route shields from the `routes`
 #                     prop, along the line; size is their numbers' (step 1.8).
 # A rule without `pass` draws no geometry (labels and icons only).
+#
+# Top level:
+#   name              the style's name in the Map tab (a style without one is named after
+#                     its file);
+#   [overlay]         what is drawn over the map, any of: route, restricted, picked,
+#                     alternative, connector, halo, start, via, end, here, print_rect
+#                     (colours) and route_width, picked_width, alternative_width, halo_width
+#                     (points); what is left out keeps the values below;
+#   [colors] text, halo   the colour and halo of a label that sets none;
+#   [tunnel] fade_to  the colour a tunnel's road fades towards (default white).
 
 version = 1
+name = "Default"
 land = "#f4f1e8"
+
+[overlay]
+route = "#2468e0"
+restricted = "#9660c8"
+picked = "#0e2c7a"
+alternative = "#969ca6"
+connector = "#464646"
+halo = "#ffffff"
+route_width = 5.0
+picked_width = 7.0
+alternative_width = 4.5
+halo_width = 1.5
+start = "#289646"
+via = "#e68c14"
+end = "#d0342c"
+here = "#1e6edc"
+print_rect = "#00708c"
 
 [colors]
 water = "#a9cbe6"

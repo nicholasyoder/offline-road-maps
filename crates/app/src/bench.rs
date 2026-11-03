@@ -73,7 +73,7 @@ const KEYSTROKE_MS: f64 = 150.0;
 const SHOT_WAIT: Duration = Duration::from_secs(1);
 /// The side panel's pages screenshot after the flight: the tabs but Print, which the
 /// flight's own print steps show.
-const SHOT_PAGES: [Page; 4] = [Page::Search, Page::Route, Page::Trips, Page::Layers];
+const SHOT_PAGES: [Page; 4] = [Page::Search, Page::Route, Page::Trips, Page::Map];
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,6 +142,9 @@ pub struct Step {
     /// record the time and the memory it took (phase 4 step 4.11, criterion 7).
     pub print: Option<String>,
     pub print_dpi: Option<f64>,
+    /// Switch to this style (its id, as in the Map tab) as the step begins; with the step's
+    /// move a jump, its time to a detailed view is the switch's (phase 5 step 5.4).
+    pub style: Option<String>,
 }
 
 impl Flight {
@@ -391,6 +394,8 @@ struct TileLog {
 
 pub struct Bench {
     pub flight: Flight,
+    /// A style the step just begun asks for; the app takes it and switches.
+    pub style_ask: Option<String>,
     flight_path: PathBuf,
     out: PathBuf,
     started: Instant,
@@ -453,6 +458,7 @@ impl Bench {
         Self {
             logs: flight.steps.iter().map(|_| StepLog::default()).collect(),
             flight,
+            style_ask: None,
             flight_path,
             out,
             started,
@@ -509,6 +515,7 @@ impl Bench {
         self.phase_start = now;
         self.from = (cam.center, cam.zoom);
         self.logs[i].bytes_read_start = bytes_read;
+        self.style_ask = self.flight.steps[i].style.clone();
         if self.flight.steps[i].seconds <= 0.0 {
             let (c, z) = self.target(i, cam);
             cam.center = c;

@@ -31,7 +31,7 @@ use crate::scale::Units;
 use crate::side::Page;
 use crate::snapshot::Gpu;
 use crate::style::{Style, StyleFile};
-use crate::theme::{ACCENT, INK, WEAK};
+use crate::theme::{INK, WEAK};
 
 /// The resolution of the previews: the page as it prints, only less sharp.
 const PREVIEW_DPI: f64 = 110.0;
@@ -652,6 +652,7 @@ impl PrintUi {
         let Some(r) = self.corners(cam, map.min, &layout) else {
             return;
         };
+        let accent = crate::style::color32(crate::style::overlay().print_rect);
         let dim = Color32::from_black_alpha(95);
         let inside = r.intersect(map);
         if inside.is_positive() {
@@ -684,7 +685,7 @@ impl PrintUi {
         } else {
             painter.rect_filled(map, 0.0, dim);
         }
-        painter.rect_stroke(r, 0.0, Stroke::new(2.0, ACCENT), egui::StrokeKind::Outside);
+        painter.rect_stroke(r, 0.0, Stroke::new(2.0, accent), egui::StrokeKind::Outside);
         for c in [
             r.left_top(),
             r.right_top(),
@@ -696,7 +697,7 @@ impl PrintUi {
                 h,
                 1.0,
                 Color32::WHITE,
-                Stroke::new(1.5, ACCENT),
+                Stroke::new(1.5, accent),
                 egui::StrokeKind::Inside,
             );
         }
@@ -1037,6 +1038,7 @@ impl PrintUi {
         s.orientation.landscape(self.wide).hash(&mut h);
         inputs.units.name().hash(&mut h);
         inputs.pack.hash(&mut h);
+        inputs.style.hash.hash(&mut h);
         format!("{:?}", inputs.layers).hash(&mut h);
         if self.kind == Kind::Map
             && let Some(a) = self.area

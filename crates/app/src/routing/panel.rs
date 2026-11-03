@@ -22,7 +22,7 @@ use omp_core::schedule::Stay;
 use super::times::{Mode, Note, NoteKind, parse_time};
 use super::worker::Choices;
 use super::{
-    END, LegAlts, Place, Reordered, RouteUi, START, StopAction, VIA, delta_text, duration_text,
+    LegAlts, Place, Reordered, RouteUi, StopAction, delta_text, duration_text, end, start, via,
 };
 use crate::camera::{self, Camera};
 use crate::dialog::{self, Size};
@@ -199,9 +199,9 @@ impl RouteUi {
                     }
                 }
                 let fill = match kind {
-                    StopAction::From => START,
-                    StopAction::To => END,
-                    _ => VIA,
+                    StopAction::From => start(),
+                    StopAction::To => end(),
+                    _ => via(),
                 };
                 numbered(ui, fill, i + 1);
                 // A search result by its name; a point on the map by the road it is on.
@@ -247,7 +247,7 @@ impl RouteUi {
                     false => row.rect.bottom(),
                 };
                 ui.painter()
-                    .hline(row.rect.x_range(), y, Stroke::new(2.0, START));
+                    .hline(row.rect.x_range(), y, Stroke::new(2.0, start()));
             }
             if let Some(from) = row.dnd_release_payload::<usize>() {
                 edits.push(Edit::Move(*from, i));
@@ -1004,9 +1004,9 @@ impl RouteUi {
             .enumerate()
             .map(|(i, (kind, place))| {
                 let fill = match kind {
-                    StopAction::From => START,
-                    StopAction::To => END,
-                    _ => VIA,
+                    StopAction::From => start(),
+                    StopAction::To => end(),
+                    _ => via(),
                 };
                 let name = place
                     .name
@@ -1437,10 +1437,10 @@ fn draw_icon(p: &egui::Painter, r: Rect, s: &Step) {
         );
     };
     match s.kind {
-        Kind::Depart if s.leg == 0 => disc(START, "1".into()),
-        Kind::Depart => disc(VIA, (s.leg + 1).to_string()),
-        Kind::Stop => disc(VIA, s.stop.to_string()),
-        Kind::Arrive => disc(END, s.stop.to_string()),
+        Kind::Depart if s.leg == 0 => disc(start(), "1".into()),
+        Kind::Depart => disc(via(), (s.leg + 1).to_string()),
+        Kind::Stop => disc(via(), s.stop.to_string()),
+        Kind::Arrive => disc(end(), s.stop.to_string()),
         Kind::Ferry | Kind::OffFerry => {
             let hull = vec![
                 c + Vec2::new(-8.0, 0.0),

@@ -77,9 +77,16 @@ const CONNECTOR_M: f64 = 3.0;
 /// The farthest a stop may be from a road, as [`omp_core::route`] snaps (its last radius).
 const SNAP_MAX_KM: f64 = 50.0;
 
-pub(crate) const START: Color32 = Color32::from_rgb(40, 150, 70);
-pub(crate) const VIA: Color32 = Color32::from_rgb(230, 140, 20);
-pub(crate) const END: Color32 = Color32::from_rgb(208, 52, 44);
+/// The colours of a route's first, middle and last stop: the style's overlay.
+pub(crate) fn start() -> Color32 {
+    crate::style::color32(crate::style::overlay().start)
+}
+pub(crate) fn via() -> Color32 {
+    crate::style::color32(crate::style::overlay().via)
+}
+pub(crate) fn end() -> Color32 {
+    crate::style::color32(crate::style::overlay().end)
+}
 /// Where a day's driving ends.
 const NIGHT: Color32 = Color32::from_rgb(52, 62, 120);
 
@@ -1283,9 +1290,9 @@ impl RouteUi {
             .map(|(i, (kind, place))| crate::pages::StopMark {
                 p: geo::to_unit(place.p),
                 fill: match kind {
-                    StopAction::From => START,
-                    StopAction::To => END,
-                    _ => VIA,
+                    StopAction::From => start(),
+                    StopAction::To => end(),
+                    _ => via(),
                 },
                 label: (i + 1).to_string(),
             })
@@ -1345,9 +1352,9 @@ impl RouteUi {
             let s = cam.world_to_screen(geo::to_unit(place.p));
             let tip = Pos2::new(origin.x + s[0] as f32, origin.y + s[1] as f32);
             let fill = match kind {
-                StopAction::From => START,
-                StopAction::To => END,
-                _ => VIA,
+                StopAction::From => start(),
+                StopAction::To => end(),
+                _ => via(),
             };
             search::draw_pin(painter, tip, fill, Some(&(i + 1).to_string()));
         }

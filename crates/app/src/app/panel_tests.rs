@@ -10,6 +10,7 @@ use omp_core::geo;
 use super::*;
 use crate::app::keep_still;
 use crate::config::SidePanel;
+use crate::styles;
 use eframe::egui::Pos2;
 
 struct Window {
@@ -30,6 +31,7 @@ struct Window {
     pins: PinsUi,
     trips: TripsUi,
     print: crate::printui::PrintUi,
+    styles: Vec<Entry>,
     /// What the Trips page asked for last.
     trips_out: Vec<trips::PageOut>,
 }
@@ -61,6 +63,7 @@ impl Window {
             map: Rect::NOTHING,
             tabs: [Rect::NOTHING; 5],
             hide: Rect::NOTHING,
+            styles: styles::list(Path::new("/nonexistent"), None),
         }
     }
 
@@ -83,6 +86,8 @@ impl Window {
                 trips: &mut self.trips,
                 print: &mut self.print,
                 exe_dir: self.dir.path(),
+                styles: &self.styles,
+                style_id: styles::DEFAULT,
             };
             let o = side_panel(ui, &mut self.cfg, parts, &mut None);
             (self.tabs, self.hide) = (o.tabs, o.hide);
@@ -197,7 +202,7 @@ fn open_close_resize_and_pages() {
     assert!(same(w.world_at(800.0), still));
 
     // Ctrl+F opens it on the search page with the box focused.
-    w.page = Page::Layers;
+    w.page = Page::Map;
     w.key(Key::F, Modifiers::COMMAND);
     assert!(w.cfg.side_panel.open && w.page == Page::Search);
     assert!(w.search.focused(&w.ctx));
@@ -208,7 +213,7 @@ fn open_close_resize_and_pages() {
 
     // The tabs switch pages.
     w.click(w.tabs[3].center());
-    assert_eq!(w.page, Page::Layers);
+    assert_eq!(w.page, Page::Map);
     w.click(w.tabs[2].center());
     assert_eq!(w.page, Page::Trips);
 
@@ -281,7 +286,7 @@ fn picked_result_and_whats_here_set_stops() {
     // A result picked opens "what's here" at it on the search page, under its name.
     let a = hit("1 Capitol Square", c, Some(7));
     w.search.session.marker = Some(a.clone());
-    w.page = Page::Layers;
+    w.page = Page::Map;
     w.frame(Vec::new());
     w.frame(Vec::new());
     assert_eq!(w.page, Page::Search);

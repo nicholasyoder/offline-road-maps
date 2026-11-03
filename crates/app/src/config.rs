@@ -31,6 +31,8 @@ pub struct Config {
     /// The scale bar's units; unset, they follow the pack.
     pub units: Option<Units>,
     pub layers: Layers,
+    /// The map style chosen in the Map tab: its id (`styles.rs`).
+    pub style: String,
     /// The Settings window (phase 5 step 5.3).
     pub display: Display,
     pub movement: Movement,
@@ -433,6 +435,7 @@ mod tests {
             debug_overlay: true,
             msaa: Some(2),
             units: Some(Units::Kilometres),
+            style: "night".into(),
             display: Display {
                 ui_size: 0.85,
                 label_size: 1.25,

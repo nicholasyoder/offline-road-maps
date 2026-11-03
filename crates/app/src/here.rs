@@ -30,7 +30,10 @@ pub const NEARBY_PX: f64 = 30.0;
 const NEARBY_M: [f64; 2] = [15.0, 300.0];
 /// Nearby places and POIs shown.
 const NEARBY_SHOWN: usize = 5;
-const DOT: Color32 = Color32::from_rgb(30, 110, 220);
+/// The dot's colour: the style's overlay.
+fn dot() -> Color32 {
+    crate::style::color32(crate::style::overlay().here)
+}
 
 /// A "what's here" request, as sent to the search worker.
 #[derive(Clone, Debug)]
@@ -268,13 +271,13 @@ impl HereUi {
         {
             let p = screen(geo::to_unit(a.p));
             if p.distance(at) > 8.0 {
-                let stroke = Stroke::new(1.5, DOT);
-                painter.line_segment([at, p], Stroke::new(1.0, DOT.gamma_multiply(0.6)));
+                let stroke = Stroke::new(1.5, dot());
+                painter.line_segment([at, p], Stroke::new(1.0, dot().gamma_multiply(0.6)));
                 painter.circle(p, 5.0, Color32::from_white_alpha(200), stroke);
             }
         }
         painter.circle_filled(at, 7.5, Color32::WHITE);
-        painter.circle_filled(at, 5.5, DOT);
+        painter.circle_filled(at, 5.5, dot());
     }
 
     /// The answer, in the side panel's search page, under a heading with its ×: "What's

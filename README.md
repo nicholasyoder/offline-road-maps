@@ -24,7 +24,7 @@ Trips and pushpins are plain TOML files next to the executable, so they travel w
 
 Search: Ctrl+F or `/` goes to the search box, opening the panel if needed. Suggestions show in the panel as you type; the arrow keys move through them, Enter or a click picks one and flies there with a marker, and Enter with none selected lists every result. Escape closes the suggestions, then leaves the box, then steps back in the page: on the search page it closes "what's here", then the results list, then removes the marker; on the route page it lets go of the step picked (the × in the box clears the search). A pack built before search (format 0.3 or older) opens with the box disabled.
 
-The style comes from `--style <file>`, else `style.toml` next to the executable, else the built-in [crates/app/data/style.toml](crates/app/data/style.toml). A debug build (`cargo run -p omp-app -- --style crates/app/data/style.toml ...`) reloads the style when the file changes.
+The style is chosen in the side panel's Map tab and remembered: the built-in Default ([crates/app/data/style.toml](crates/app/data/style.toml)), Night and High contrast, then `style.toml` and every `styles/*.toml` next to the executable. `--style <file>` uses that file for the run, whatever the tab has chosen. A debug build (`cargo run -p omp-app -- --style crates/app/data/style.toml ...`) reloads the style in use when its file changes.
 
 Other modes:
 

@@ -44,6 +44,7 @@ mod shapes;
 mod side;
 mod snapshot;
 mod style;
+mod styles;
 mod text;
 mod theme;
 mod tiles;
@@ -68,8 +69,11 @@ const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
                  maps/ next to the executable, else the pack used last
   --bench <file> fly the path in <file> and write a JSON report, then exit
   --out <file>   where the bench report goes (default: bench-<flight name>.json)
-  --style <file> the map style; default: style.toml next to the executable, else the
-                 built-in style (debug builds reload it when it changes)
+  --style <file> use this map style file, whatever the Map tab has chosen; the Map tab
+                 lists the built-in styles, style.toml and styles/*.toml next to the
+                 executable (debug builds reload the file in use when it changes).
+                 With --render, the default is style.toml next to the executable if
+                 there is one, else the built-in style
   --render       draw one view offscreen to <out.png>, without a window; --size in
                  pixels (default 1200x800), --scale in pixels per point (default 1),
                  --msaa 1 to turn antialiasing off; --route draws the route through
@@ -171,16 +175,17 @@ fn main() -> ExitCode {
         .and_then(|p| p.canonicalize().ok())
         .and_then(|p| p.parent().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
-    // --style, else style.toml next to the executable if there is one, else the built-in one.
-    let style_path = args
-        .style
-        .clone()
-        .unwrap_or_else(|| exe_dir.join(style::FILE));
-    let style = match args.style.is_some() || style_path.exists() {
-        true => style::StyleFile::read(&style_path),
-        false => Ok(style::StyleFile::builtin()),
-    };
     if args.render {
+        // --style, else style.toml next to the executable if there is one, else the
+        // built-in one.
+        let path = args
+            .style
+            .clone()
+            .unwrap_or_else(|| exe_dir.join(style::FILE));
+        let style = match args.style.is_some() || path.exists() {
+            true => style::StyleFile::read(&path),
+            false => Ok(style::StyleFile::builtin()),
+        };
         return match style {
             Ok(style) => render(&args, style),
             Err(e) => {
@@ -194,10 +199,6 @@ fn main() -> ExitCode {
 
     // --pack, else maps/ next to the executable, else the pack used last.
     let mut notices = Vec::new();
-    let style = style.unwrap_or_else(|e| {
-        notices.push(format!("{e}\nUsing the built-in style."));
-        style::StyleFile::builtin()
-    });
     let found = match &args.pack {
         Some(p) => {
             let f = packs::find(p);
@@ -317,8 +318,7 @@ fn main() -> ExitCode {
         bench,
         started,
         msaa,
-        style,
-        style_path,
+        style_arg: args.style.clone(),
     };
     let res = eframe::run_native(
         "Offline Road Maps",

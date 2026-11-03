@@ -1,0 +1,51 @@
+# Bench flight for switching the map style (phase 5 step 5.4): each step shows the same view
+# in another style; the step's time to a detailed view is the switch's (the tiles in view
+# are tessellated again). Over North America at the views the plan asks about, and Columbus.
+# omp-app --bench crates/app/bench/styles.toml --pack $OMP_WORK/packs/north-america
+name = "styles"
+window = [1280, 800]
+
+[[step]]
+label = "North America z4"
+lat = 39.0
+lon = -98.0
+zoom = 4
+hold = 1
+
+[[step]]
+label = "to night"
+style = "night"
+hold = 1
+
+[[step]]
+label = "to high contrast"
+style = "high-contrast"
+hold = 1
+
+[[step]]
+label = "back to default"
+style = "default"
+hold = 1
+
+[[step]]
+label = "Columbus z11"
+lat = 39.9612
+lon = -82.9988
+zoom = 11
+hold = 1
+
+[[step]]
+label = "Columbus z11 to night"
+style = "night"
+hold = 1
+
+[[step]]
+label = "Columbus z14 to default"
+style = "default"
+zoom = 14
+hold = 1
+
+[[step]]
+label = "Columbus z14 to night"
+style = "night"
+hold = 1

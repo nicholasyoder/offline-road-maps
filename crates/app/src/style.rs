@@ -232,12 +232,92 @@ struct Draw {
     bridge: Option<Paint>,
 }
 
+/// What is drawn over the map, outside the tiles: the route and its stops, the "what's
+/// here" dot and the print rectangle. The `[overlay]` table of a style file sets any of
+/// these; the rest keep [`Overlay::DEFAULT`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Overlay {
+    pub route: Rgba,
+    /// The route where it runs on a private or destination-only road.
+    pub restricted: Rgba,
+    /// The step picked in the directions.
+    pub picked: Rgba,
+    /// The legs' other routes.
+    pub alternative: Rgba,
+    /// The dashed line from a stop to its road.
+    pub connector: Rgba,
+    /// Under every line of the route but the restricted one, on both sides.
+    pub halo: Rgba,
+    pub route_width: f32,
+    pub picked_width: f32,
+    pub alternative_width: f32,
+    pub halo_width: f32,
+    pub start: Rgba,
+    pub via: Rgba,
+    pub end: Rgba,
+    pub here: Rgba,
+    /// The print rectangle's border and handles.
+    pub print_rect: Rgba,
+}
+
+impl Overlay {
+    pub const DEFAULT: Self = Self {
+        route: [36, 104, 224, 255],
+        restricted: [150, 96, 200, 255],
+        picked: [14, 44, 122, 255],
+        alternative: [150, 156, 166, 255],
+        connector: [70, 70, 70, 255],
+        halo: [255, 255, 255, 255],
+        route_width: 5.0,
+        picked_width: 7.0,
+        alternative_width: 4.5,
+        halo_width: 1.5,
+        start: [40, 150, 70, 255],
+        via: [230, 140, 20, 255],
+        end: [208, 52, 44, 255],
+        here: [30, 110, 220, 255],
+        print_rect: [0, 112, 140, 255],
+    };
+}
+
+impl Default for Overlay {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// An overlay colour for egui.
+pub fn color32(c: Rgba) -> eframe::egui::Color32 {
+    eframe::egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+}
+
+/// The overlay of the style on screen, for the parts drawn with egui: stop markers, the
+/// "what's here" dot, the print rectangle. Set when the style changes; the print page
+/// draws with it too, as printing uses the style on screen.
+static CURRENT: std::sync::RwLock<Overlay> = std::sync::RwLock::new(Overlay::DEFAULT);
+
+pub fn overlay() -> Overlay {
+    CURRENT.read().map_or(Overlay::DEFAULT, |o| *o)
+}
+
+pub fn set_overlay(o: Overlay) {
+    if let Ok(mut c) = CURRENT.write() {
+        *c = o;
+    }
+}
+
 /// A parsed and checked style file.
 #[derive(Clone, Debug)]
 pub struct StyleFile {
+    /// Its name in the Map tab, when the file gives one.
+    pub name: Option<String>,
     /// The colour each tile is drawn on.
     land: Rgba,
     rules: Vec<Rule>,
+    pub overlay: Overlay,
+    /// A hash of the file's text: tells one style from another, or an edited one from
+    /// itself.
+    pub hash: u64,
 }
 
 impl StyleFile {
@@ -246,8 +326,31 @@ impl StyleFile {
     }
 
     pub fn parse(text: &str) -> Result<Self, String> {
+        use std::hash::{Hash, Hasher};
         let f: file::File = toml::from_str(text).map_err(|e| e.to_string())?;
-        file::resolve(f)
+        let mut file = file::resolve(f)?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        file.hash = h.finish();
+        Ok(file)
+    }
+
+    /// Land, water and a main road: the colours of the style's card in the Map tab.
+    pub fn swatch(&self) -> [Rgba; 3] {
+        let first = |layer: &str, class: Option<&str>| {
+            self.rules
+                .iter()
+                .filter(|r| r.layer == layer)
+                .filter(|r| class.is_none_or(|c| r.classes.iter().any(|n| n == c)))
+                .find_map(|r| r.draw.as_ref().map(|d| d.paint.color))
+        };
+        [
+            self.land,
+            first("water", None).unwrap_or(self.land),
+            first("roads", Some("motorway"))
+                .or_else(|| first("roads", None))
+                .unwrap_or(self.land),
+        ]
     }
 
     pub fn read(path: &Path) -> Result<Self, String> {
@@ -271,6 +374,7 @@ pub struct ClassStyle {
 
 /// A style resolved against one pack's schema.
 pub struct Style {
+    pub overlay: Overlay,
     /// Per layer ID, per class ID: how its geometry is drawn.
     pub classes: Vec<Vec<Option<ClassStyle>>>,
     /// Per layer ID, per class ID: its label, icon and shields.
@@ -402,6 +506,7 @@ impl Style {
             tunnel: l.prop("tunnel"),
         });
         let style = Self {
+            overlay: file.overlay,
             classes,
             symbols,
             paints,
@@ -498,7 +603,10 @@ mod file {
     #[serde(deny_unknown_fields)]
     pub struct File {
         version: u32,
+        name: Option<String>,
         land: String,
+        #[serde(default)]
+        overlay: OverlayFile,
         #[serde(default)]
         colors: BTreeMap<String, String>,
         #[serde(default)]
@@ -509,6 +617,68 @@ mod file {
         bridge: Variant,
         #[serde(default, rename = "rule")]
         rules: Vec<RuleFile>,
+    }
+
+    #[derive(Default, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OverlayFile {
+        route: Option<String>,
+        restricted: Option<String>,
+        picked: Option<String>,
+        alternative: Option<String>,
+        connector: Option<String>,
+        halo: Option<String>,
+        route_width: Option<f32>,
+        picked_width: Option<f32>,
+        alternative_width: Option<f32>,
+        halo_width: Option<f32>,
+        start: Option<String>,
+        via: Option<String>,
+        end: Option<String>,
+        here: Option<String>,
+        print_rect: Option<String>,
+    }
+
+    /// `d` with what `o` sets, colours looked up in `n`.
+    fn overlay(o: &OverlayFile, n: &Lookup) -> Result<Overlay, String> {
+        let mut d = Overlay::DEFAULT;
+        let colors: [(&Option<String>, &mut Rgba, &str); 11] = [
+            (&o.route, &mut d.route, "route"),
+            (&o.restricted, &mut d.restricted, "restricted"),
+            (&o.picked, &mut d.picked, "picked"),
+            (&o.alternative, &mut d.alternative, "alternative"),
+            (&o.connector, &mut d.connector, "connector"),
+            (&o.halo, &mut d.halo, "halo"),
+            (&o.start, &mut d.start, "start"),
+            (&o.via, &mut d.via, "via"),
+            (&o.end, &mut d.end, "end"),
+            (&o.here, &mut d.here, "here"),
+            (&o.print_rect, &mut d.print_rect, "print_rect"),
+        ];
+        for (set, to, name) in colors {
+            if let Some(c) = set {
+                *to = n.color(c).map_err(|e| format!("overlay.{name}: {e}"))?;
+            }
+        }
+        let widths = [
+            (o.route_width, &mut d.route_width, "route_width"),
+            (o.picked_width, &mut d.picked_width, "picked_width"),
+            (
+                o.alternative_width,
+                &mut d.alternative_width,
+                "alternative_width",
+            ),
+            (o.halo_width, &mut d.halo_width, "halo_width"),
+        ];
+        for (set, to, name) in widths {
+            if let Some(w) = set {
+                if !(w.is_finite() && (0.0..=64.0).contains(&w)) {
+                    return Err(format!("overlay.{name}: want 0 to 64 points"));
+                }
+                *to = w;
+            }
+        }
+        Ok(d)
     }
 
     /// A number, zoom stops, or a name from `[widths]`.
@@ -530,8 +700,9 @@ mod file {
     #[derive(Clone, Default, Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Variant {
-        /// How far the line's and casing's colours move towards white, 0–1.
+        /// How far the line's and casing's colours move towards `fade_to` (white), 0–1.
         fade: Option<f32>,
+        fade_to: Option<String>,
         color: Option<String>,
         casing: Option<String>,
         dash: Option<[f32; 2]>,
@@ -590,6 +761,15 @@ mod file {
     }
 
     impl Lookup<'_> {
+        /// The colour named `name` in `[colors]` if the style has one, else `fallback`: what
+        /// a label without its own colour or halo uses.
+        fn default_for<'a>(&self, name: &'a str, fallback: &'a str) -> &'a str {
+            match self.colors.contains_key(name) {
+                true => name,
+                false => fallback,
+            }
+        }
+
         fn color(&self, s: &str) -> Result<Rgba, String> {
             let hex = match s.starts_with('#') {
                 true => s,
@@ -656,6 +836,7 @@ mod file {
             widths: &f.widths,
         };
         let land = n.color(&f.land).map_err(|e| format!("land: {e}"))?;
+        let overlay = overlay(&f.overlay, &n)?;
         let mut rules = Vec::with_capacity(f.rules.len());
         for (i, r) in f.rules.into_iter().enumerate() {
             let classes = match &r.class {
@@ -714,7 +895,13 @@ mod file {
                 symbols,
             });
         }
-        Ok(StyleFile { land, rules })
+        Ok(StyleFile {
+            name: f.name,
+            land,
+            rules,
+            overlay,
+            hash: 0,
+        })
     }
 
     fn rule_draw(
@@ -797,6 +984,7 @@ mod file {
     fn merge(global: &Variant, own: &Variant) -> Variant {
         Variant {
             fade: own.fade.or(global.fade),
+            fade_to: own.fade_to.clone().or_else(|| global.fade_to.clone()),
             color: own.color.clone().or_else(|| global.color.clone()),
             casing: own.casing.clone().or_else(|| global.casing.clone()),
             dash: own.dash.or(global.dash),
@@ -811,9 +999,15 @@ mod file {
             if !(0.0..=1.0).contains(&f) {
                 return Err("fade must be from 0 to 1".into());
             }
+            let to = match &v.fade_to {
+                Some(c) => n.color(c)?,
+                None => [255; 4],
+            };
             let fade = |c: Rgba| {
-                let m = |v: u8| (f32::from(v) + (255.0 - f32::from(v)) * f).round() as u8;
-                [m(c[0]), m(c[1]), m(c[2]), c[3]]
+                let m = |i: usize| {
+                    (f32::from(c[i]) + (f32::from(to[i]) - f32::from(c[i])) * f).round() as u8
+                };
+                [m(0), m(1), m(2), c[3]]
             };
             p.color = fade(p.color);
             p.casing = fade(p.casing);
@@ -851,8 +1045,16 @@ mod file {
             key: None,
             font: l.font.unwrap_or(Font::Regular),
             size: n.stops(l.size.as_ref().unwrap_or(&Num::One(12.0)))?,
-            color: n.color(l.color.as_deref().unwrap_or("#333333"))?,
-            halo: n.color(l.halo.as_deref().unwrap_or("#ffffffd9"))?,
+            color: n.color(
+                l.color
+                    .as_deref()
+                    .unwrap_or(n.default_for("text", "#333333")),
+            )?,
+            halo: n.color(
+                l.halo
+                    .as_deref()
+                    .unwrap_or(n.default_for("halo", "#ffffffd9")),
+            )?,
             halo_width: l.halo_width.unwrap_or(1.5),
             priority: l.priority.unwrap_or(0),
             placement: l.placement.unwrap_or(Placement::Point),
@@ -1008,6 +1210,25 @@ mod tests {
         assert!(style.class(rl, layer.class("primary").unwrap()).is_none());
         // Land, the rule's paint, its tunnel and its bridge.
         assert_eq!(style.paints.len(), 4);
+    }
+
+    #[test]
+    fn the_overlay_keeps_defaults_for_what_it_leaves_out() {
+        assert_eq!(StyleFile::parse(SMALL).unwrap().overlay, Overlay::DEFAULT);
+        // The built-in default states every value, and they are the defaults.
+        assert_eq!(StyleFile::builtin().overlay, Overlay::DEFAULT);
+        let text = SMALL.replacen(
+            "[colors]",
+            "[overlay]\nroute = \"red\"\nroute_width = 9\n[colors]",
+            1,
+        );
+        let o = StyleFile::parse(&text).unwrap().overlay;
+        assert_eq!((o.route, o.route_width), ([255, 0, 0, 128], 9.0));
+        assert_eq!(o.picked, Overlay::DEFAULT.picked);
+        let bad = |from: &str, to: &str| StyleFile::parse(&text.replacen(from, to, 1)).unwrap_err();
+        assert!(bad("route_width = 9", "route_width = -1").contains("overlay.route_width"));
+        assert!(bad("route = ", "rout = ").contains("unknown field"));
+        assert!(bad("\"red\"\nroute_width", "\"blue\"\nroute_width").contains("overlay.route"));
     }
 
     #[test]

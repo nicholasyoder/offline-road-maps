@@ -45,7 +45,7 @@ What phase 4 left in place for this:
 | 5.1 Audit: bugs and design | **Done** 2026-11-02 | 10 bugs fixed (B1–B10); every finding triaged; fix sessions A–F done; the rest assigned to later steps |
 | 5.2 Audit: performance baseline and profiles | Done 2026-11-02 | Baseline and all profiles done (the North America build, P20), every lead triaged by the owner and grouped into sessions G–L ([perf-findings.md](perf-findings.md#order-of-work)); session G (still frames) done 2026-11-02 |
 | 5.3 Settings window | **Done** 2026-11-02 | Every value in a window of its own, tested headless and by hand on Linux and Windows; config read a value at a time and clamped |
-| 5.4 Map styles in the Map tab | Not started | |
+| 5.4 Map styles in the Map tab | **Done** 2026-11-02 | Default, Night, High contrast, `style.toml` and `styles/*.toml` listed as cards, switched in 5–13 ms, remembered; overlays from `[overlay]` |
 | 5.5 Dark UI with the night style | Not started | |
 | 5.6 High-contrast style and black-and-white printing | Not started | |
 | 5.7 UI polish | Not started | |
@@ -154,6 +154,16 @@ Built-in styles chosen in the side panel's Map tab (the Layers tab renamed, deci
 - **Map tuning is dropped** (owner, 2026-10-29): road widths and colours look right as they are. Anything the audit or the night and high-contrast styles turn up about label density or POI and shield priorities is fixed in the style it concerns.
 
 **Done when:** the three built-in styles and a user `style.toml` are listed in the Map tab, switch at runtime within the target, are remembered across a restart, and the overlays follow the style.
+
+> **Done 2026-11-02** (commit: this one). Code: `styles.rs` (the list and ids), `style.rs` (`Overlay`, `[overlay]`, `name`, `fade_to`, `[colors] text`/`halo` as label defaults, `StyleFile::swatch`), `data/night.toml`, `data/high-contrast.toml`, `side::map_ui` (the cards), `App::set_style`/`apply_style`, `Config::style`.
+>
+> - **Tab:** *Layers* is now *Map*: a row of cards (a swatch of land, water and a main road, and the name), then the layer toggles in two groups (`Layers::groups`, which replaces the heading placed by index, D13). A style that does not load is greyed with its error as the tooltip. Units had already moved (5.3).
+> - **Styles:** ids `default`, `night`, `high-contrast`, `custom` (`style.toml`) and `custom:<file>` (`styles/*.toml`, named by its `name` or its file name); `--style` adds a "(--style)" card for the run and is not saved. An unreadable or missing choice in the config opens the default, and says so when the file is there but broken. The built-in Night and High contrast are the default's rules with other colours (generated once from it, then kept as plain files), and a test checks that they draw the same classes, labels, icons and shields. **`style.toml` next to the executable no longer replaces the default by itself:** it is a card to choose (the owner's own copy beside `target/release`, if there is one, must be picked once). `--render` still reads `--style`, else `style.toml`.
+> - **Switching** compiles the style against the pack's schema and starts a new loader and cache, as the debug reload did. Measured with the new `bench/styles.toml` (a `style` key on a flight step switches as the step begins; `$OMP_WORK/measure/p5/5.4/styles.json`), warm, North America pack, dev machine: back to detail in **5–13 ms** at North America z4, Columbus z11 and z14 (target 0.5 s), RSS unchanged. Cold from a stick the tiles are read again, as any view is. No progress cue is needed at this speed; E6430 not measured.
+> - **Overlay:** `[overlay]` holds the route's, restricted stretch's, picked step's, alternatives' and connector's colours, the halo, the route, picked, alternative and halo widths, the three stop markers, the "what's here" dot and the print rectangle; each left out keeps today's value. The route lines are GPU paints taken from the compiled style (so the print page, which compiles its own, follows it); the egui parts read `style::overlay()`, set when the style changes. **Pins keep their own colours:** the user chose them, and they carry meaning.
+> - **B4:** the print preview's signature includes a hash of the style file, so a switch redraws it.
+> - **Looks:** Night is dark slate land and water with muted warm roads (hierarchy kept) and light labels with dark halos; High contrast has white land, near-white tints, black to grey main roads with the widths kept, black labels with white halos, dark icon discs, and a route 8 points wide with a 2.5-point white halo. Both seen at z12 and z15 on Ohio. Night is not yet tuned on the 7490 at night brightness, and the black-and-white printout is 5.6's check.
+> - **Left:** the UI stays light with Night (5.5); Night's tuning on the laptops; a route drawn in the high-contrast style not yet seen (the test packs on the data disk have no routing section).
 
 ## 5.5 Dark UI with the night style
 

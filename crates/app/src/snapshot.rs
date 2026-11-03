@@ -366,9 +366,9 @@ impl Snapshot {
                 .enumerate()
                 .map(|(i, _)| {
                     let fill = match i {
-                        0 => routing::START,
-                        i if i + 1 == routing.stops.len() => routing::END,
-                        _ => routing::VIA,
+                        0 => routing::start(),
+                        i if i + 1 == routing.stops.len() => routing::end(),
+                        _ => routing::via(),
                     };
                     let name = match routing.roads.get(i).filter(|r| !r.is_empty()) {
                         Some(road) => road.clone(),
@@ -441,9 +441,9 @@ impl Snapshot {
                 .map(|(i, &p)| pages::StopMark {
                     p: omp_core::geo::to_unit(p),
                     fill: match i {
-                        0 => routing::START,
-                        i if i == last => routing::END,
-                        _ => routing::VIA,
+                        0 => routing::start(),
+                        i if i == last => routing::end(),
+                        _ => routing::via(),
                     },
                     label: (i + 1).to_string(),
                 })

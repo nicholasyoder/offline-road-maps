@@ -46,19 +46,30 @@ const LODGING: &[&str] = &["hotel", "campground"];
 const FOOD: &[&str] = &["restaurant", "fast_food"];
 
 impl Layers {
-    /// The toggles with their names in the Layers menu, in menu order.
-    pub fn entries(&mut self) -> [(&'static str, &mut bool); 9] {
-        [
-            ("Land cover", &mut self.landcover),
-            ("Boundaries", &mut self.boundaries),
-            ("Rail", &mut self.rail),
-            ("Labels", &mut self.labels),
-            ("Route shields", &mut self.shields),
-            ("Fuel and charging", &mut self.fuel),
-            ("Lodging and camping", &mut self.lodging),
-            ("Food", &mut self.food),
-            ("Other places", &mut self.other_pois),
-        ]
+    /// The toggles with their names in the Map tab, in two groups: the map's, then the
+    /// points of interest.
+    #[allow(clippy::type_complexity)]
+    pub fn groups(
+        &mut self,
+    ) -> (
+        Vec<(&'static str, &mut bool)>,
+        Vec<(&'static str, &mut bool)>,
+    ) {
+        (
+            vec![
+                ("Land cover", &mut self.landcover),
+                ("Boundaries", &mut self.boundaries),
+                ("Rail", &mut self.rail),
+                ("Labels", &mut self.labels),
+                ("Route shields", &mut self.shields),
+            ],
+            vec![
+                ("Fuel and charging", &mut self.fuel),
+                ("Lodging and camping", &mut self.lodging),
+                ("Food", &mut self.food),
+                ("Other places", &mut self.other_pois),
+            ],
+        )
     }
 
     fn poi_shown(&self, class: &str) -> bool {

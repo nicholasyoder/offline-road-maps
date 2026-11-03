@@ -42,7 +42,8 @@ use crate::routing::{Bands, Place, RouteDraw, RouteUi, StopAction};
 use crate::scale::Units;
 use crate::search::{self, SearchUi};
 use crate::side::Page;
-use crate::style::{Style, StyleFile};
+use crate::style::{self, Style, StyleFile};
+use crate::styles::{self, Entry};
 use crate::tiles::{self, Cover, Known, Resolved, TileId};
 use crate::trips::TripsUi;
 use crate::verify::Verify;
@@ -75,10 +76,8 @@ pub struct Startup {
     pub started: Instant,
     /// MSAA samples the window was created with.
     pub msaa: u32,
-    /// The style, and the file it comes from when that exists (`--style`, else `style.toml`
-    /// next to the executable).
-    pub style: StyleFile,
-    pub style_path: PathBuf,
+    /// `--style`: the style file that is used whatever the config says.
+    pub style_arg: Option<PathBuf>,
 }
 
 enum TileData {
@@ -216,8 +215,13 @@ pub struct App {
     /// Tile geometry on the GPU.
     pool: Option<Arc<Pool>>,
     srgb: bool,
+    /// The styles the Map tab lists, and the one in use: its id, and the file it was
+    /// compiled from.
+    styles: Vec<Entry>,
+    style_id: String,
     style: StyleFile,
-    style_path: PathBuf,
+    /// The file of the style in use, when it is not built in.
+    style_path: Option<PathBuf>,
     /// The style file's modification time when last read; debug builds reload it when it
     /// changes.
     style_mtime: Option<SystemTime>,
@@ -250,6 +254,16 @@ impl App {
         let mut notices = s.notices;
         notices.extend(s.config.fallback.clone());
         notices.extend(s.cfg_note);
+        let styles = styles::list(&s.exe_dir, s.style_arg.as_deref());
+        // The bench draws the default style unless it is given one.
+        let want = match (&s.style_arg, &s.bench) {
+            (Some(_), _) => styles::FORCED,
+            (None, Some(_)) => styles::DEFAULT,
+            (None, None) => cfg.style.as_str(),
+        };
+        let (style_id, style, why) = pick_style(&styles, want);
+        notices.extend(why);
+        style::set_overlay(style.overlay);
         crate::theme::apply(&cc.egui_ctx);
         cc.egui_ctx.set_zoom_factor(cfg.display.ui_size as f32);
         let rs = cc.wgpu_render_state.as_ref();
@@ -295,9 +309,11 @@ impl App {
             gpu: rs.map(|rs| (rs.adapter.clone(), rs.device.clone(), rs.queue.clone())),
             pool: rs.map(|rs| Pool::new(rs.device.clone(), rs.queue.clone())),
             srgb: rs.is_some_and(|rs| rs.target_format.is_srgb()),
-            style: s.style,
-            style_mtime: mtime(&s.style_path),
-            style_path: s.style_path,
+            style_path: styles::find(&styles, &style_id).and_then(|e| e.path.clone()),
+            style_mtime: None,
+            style_id,
+            style,
+            styles,
             style_checked: Instant::now(),
             pack_error: None,
             tile_error: None,
@@ -314,33 +330,81 @@ impl App {
         app
     }
 
-    /// Debug builds: reads the style file again when it has changed, and redraws the map
-    /// with it. Checked once a second.
+    /// Debug builds: reads the style file in use again when it has changed, and redraws
+    /// the map with it. Checked once a second.
     fn reload_style(&mut self, ctx: &egui::Context) {
         const EVERY: Duration = Duration::from_secs(1);
         if !cfg!(debug_assertions) || self.bench.is_some() {
             return;
         }
+        let Some(path) = self.style_path.clone() else {
+            return;
+        };
         ctx.request_repaint_after(EVERY);
         if self.style_checked.elapsed() < EVERY {
             return;
         }
         self.style_checked = Instant::now();
-        let t = mtime(&self.style_path);
+        let t = mtime(&path);
         if t.is_none() || t == self.style_mtime {
             return;
         }
+        if self.style_mtime.is_none() {
+            // The first look: remember the file as it is.
+            self.style_mtime = t;
+            return;
+        }
         self.style_mtime = t;
-        match StyleFile::read(&self.style_path) {
-            Ok(f) => self.style = f,
+        match StyleFile::read(&path) {
+            Ok(f) => {
+                if let Some(e) = self.styles.iter_mut().find(|e| e.id == self.style_id) {
+                    e.file = Ok(f.clone());
+                }
+                self.style = f;
+            }
             Err(e) => {
                 self.notices.push(format!("Style not reloaded: {e}"));
                 return;
             }
         }
-        eprintln!("style: reloaded {}", self.style_path.display());
+        eprintln!("style: reloaded {}", path.display());
+        self.apply_style(ctx);
+    }
+
+    /// Switches to the style `id` of the Map tab: the tiles in view are tessellated again
+    /// and the choice is kept in the config. A style that cannot be used is reported and
+    /// leaves the one in use.
+    fn set_style(&mut self, ctx: &egui::Context, id: &str) {
+        if id == self.style_id {
+            return;
+        }
+        let Some(entry) = styles::find(&self.styles, id) else {
+            return;
+        };
+        let file = match &entry.file {
+            Ok(f) => f.clone(),
+            Err(e) => {
+                self.notices
+                    .push(format!("{} cannot be used: {e}", entry.name));
+                return;
+            }
+        };
+        self.style_path = entry.path.clone();
+        self.style_mtime = None;
+        self.style_id = id.into();
+        self.style = file;
+        // `--style` is this run's choice only.
+        if id != styles::FORCED {
+            self.cfg.style = id.into();
+        }
+        self.apply_style(ctx);
+    }
+
+    /// Compiles the style in use for the open pack and draws everything with it. The meshes
+    /// hold style IDs, so every tile is prepared again.
+    fn apply_style(&mut self, ctx: &egui::Context) {
+        style::set_overlay(self.style.overlay);
         if let (Some(m), Some(pool)) = (&mut self.map, self.pool.clone()) {
-            // The meshes hold style IDs, so every tile is prepared again.
             m.style = compile_style(&self.style, &m.opened);
             m.loader = start_loader(&m.opened, &m.style, pool, ctx);
             m.cache = Cache::new(CACHE_BUDGET);
@@ -348,6 +412,7 @@ impl App {
             m.hidden_for = None;
             m.last_frame = None;
         }
+        ctx.request_repaint();
     }
 
     /// Puts the camera's view into the config.
@@ -392,6 +457,18 @@ impl App {
             _ => self.save_config(),
         }
     }
+}
+
+/// The style `want` names, with its id, else the default; and why not, when that is so.
+fn pick_style(styles: &[Entry], want: &str) -> (String, StyleFile, Option<String>) {
+    let mut why = None;
+    if let Some(e) = styles::find(styles, want) {
+        match &e.file {
+            Ok(f) => return (e.id.clone(), f.clone(), None),
+            Err(err) => why = Some(format!("{err}\nUsing the default style.")),
+        }
+    }
+    (styles::DEFAULT.into(), StyleFile::builtin(), why)
 }
 
 fn mtime(path: &Path) -> Option<SystemTime> {
@@ -759,6 +836,9 @@ impl eframe::App for App {
         let dt = interval.as_secs_f64().min(0.1);
         let ctx = ui.ctx().clone();
         self.reload_style(&ctx);
+        if let Some(id) = self.bench.as_mut().and_then(|b| b.style_ask.take()) {
+            self.set_style(&ctx, &id);
+        }
         self.sync_zoom(&ctx);
 
         if ctx.input(|i| i.key_pressed(egui::Key::F3)) {

@@ -18,6 +18,7 @@ use crate::routing::{Place, RouteUi, StopAction};
 use crate::scale::Units;
 use crate::search::{self, SearchUi, Status};
 use crate::side::{self, Action, Page};
+use crate::styles::Entry;
 use crate::theme::{Glyph, glyph_button};
 use crate::trips::{self, Browsed, Named, TripFile, TripsUi};
 
@@ -36,6 +37,8 @@ impl App {
             trips: &mut self.trips,
             print: &mut self.print,
             exe_dir: &self.exe_dir,
+            styles: &self.styles,
+            style_id: &self.style_id,
         };
         let o = side_panel(ui, &mut self.cfg, parts, &mut self.bench);
         // A result picked: fly there. The bench records it, and jumps there itself.
@@ -92,6 +95,9 @@ impl App {
             }
         }
         let ctx = ui.ctx().clone();
+        if let Some(id) = o.style {
+            self.set_style(&ctx, &id);
+        }
         self.act(&ctx, o.action);
     }
 
@@ -152,6 +158,8 @@ impl App {
                         trips: &mut self.trips,
                         print: &mut self.print,
                         exe_dir: &self.exe_dir,
+                        styles: &self.styles,
+                        style_id: &self.style_id,
                     };
                     open_print(ctx, &mut parts, &self.cfg.print, printui::Kind::Map);
                 }
@@ -184,6 +192,9 @@ struct Parts<'a> {
     trips: &'a mut TripsUi,
     print: &'a mut PrintUi,
     exe_dir: &'a Path,
+    /// The styles the Map tab lists, and the one in use.
+    styles: &'a [Entry],
+    style_id: &'a str,
 }
 
 /// What was picked in the side panel, done once it is drawn.
@@ -194,6 +205,8 @@ struct SideOut {
     /// A step of the directions: its view.
     fly: Option<(crate::camera::Vec2, f64)>,
     action: Option<Action>,
+    /// The id of a style clicked in the Map tab.
+    style: Option<String>,
     /// A pushpin found by search, clicked.
     pin: Option<PinRef>,
     /// What the Trips page asked for.
@@ -222,6 +235,7 @@ fn side_panel(
         stop: None,
         fly: None,
         action: None,
+        style: None,
         pin: None,
         trips: trips::PageOut::default(),
         tabs: [Rect::NOTHING; 5],
@@ -250,7 +264,7 @@ fn side_panel(
             Page::Route => {
                 p.routing.escape(&ctx);
             }
-            Page::Trips | Page::Layers => {}
+            Page::Trips | Page::Map => {}
             Page::Print => {
                 if p.print.escape(&ctx) {
                     *p.page = p.print.back;
@@ -371,7 +385,7 @@ fn side_panel(
                     };
                     o.trips = p.trips.page_ui(ui, p.pins, current, can_open, p.exe_dir);
                 }
-                Page::Layers => side::layers_ui(ui, layers),
+                Page::Map => o.style = side::map_ui(ui, layers, p.styles, p.style_id),
                 Page::Print => {
                     let around = printui::Around {
                         cam: p.camera,

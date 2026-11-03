@@ -52,19 +52,8 @@ pub fn samples(requested: Option<u32>) -> u32 {
 }
 const EXTENT: f64 = (1u32 << omp_core::tile::EXTENT_BITS) as f64;
 
-/// The route's lines and their halo on each side, in points, and their colours.
-const ROUTE_WIDTH: f32 = 5.0;
-const ROUTE_HALO: f32 = 1.5;
-const ROUTE_COLOR: Rgba = [36, 104, 224, 255];
-const ROUTE_HALO_COLOR: Rgba = [255, 255, 255, 255];
-const RESTRICTED_COLOR: Rgba = [150, 96, 200, 255];
-const PICKED_WIDTH: f32 = 7.0;
-const PICKED_COLOR: Rgba = [14, 44, 122, 255];
 const CONNECTOR_WIDTH: f32 = 2.0;
 const CONNECTOR_DASH: [f32; 2] = [4.0, 3.0];
-const CONNECTOR_COLOR: Rgba = [70, 70, 70, 255];
-const ALTERNATIVE_WIDTH: f32 = 4.5;
-const ALTERNATIVE_COLOR: Rgba = [150, 156, 166, 255];
 
 /// A tile's vertex data on the GPU, in ranges of the pool's slabs.
 pub struct GpuMesh {
@@ -236,17 +225,18 @@ pub fn paints(
         .chain(std::iter::repeat(GpuPaint::default()))
         .take(ROUTE_PAINTS)
         .chain(Look::ALL.map(|look| {
+            let o = &style.overlay;
             let (c, w, dash) = match look {
-                Look::Alternative => (ALTERNATIVE_COLOR, ALTERNATIVE_WIDTH, [0.0; 2]),
-                Look::Connector => (CONNECTOR_COLOR, CONNECTOR_WIDTH, CONNECTOR_DASH),
-                Look::Route => (ROUTE_COLOR, ROUTE_WIDTH, [0.0; 2]),
-                Look::Restricted => (RESTRICTED_COLOR, ROUTE_WIDTH, [0.0; 2]),
-                Look::Picked => (PICKED_COLOR, PICKED_WIDTH, [0.0; 2]),
+                Look::Alternative => (o.alternative, o.alternative_width, [0.0; 2]),
+                Look::Connector => (o.connector, CONNECTOR_WIDTH, CONNECTOR_DASH),
+                Look::Route => (o.route, o.route_width, [0.0; 2]),
+                Look::Restricted => (o.restricted, o.route_width, [0.0; 2]),
+                Look::Picked => (o.picked, o.picked_width, [0.0; 2]),
             };
             GpuPaint {
                 color: color(c),
-                casing: color(ROUTE_HALO_COLOR),
-                width: [w * ppp, (w + 2.0 * ROUTE_HALO) * ppp],
+                casing: color(o.halo),
+                width: [w * ppp, (w + 2.0 * o.halo_width) * ppp],
                 dash: dash.map(|d| d * ppp),
                 ..GpuPaint::default()
             }
