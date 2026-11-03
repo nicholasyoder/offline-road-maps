@@ -83,7 +83,7 @@ fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
 
 /// What a setting does, in small type under it.
 fn note(ui: &mut egui::Ui, text: &str) {
-    ui.add(egui::Label::new(egui::RichText::new(text).small().weak()).wrap());
+    ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
 }
 
 /// A slider showing a factor as a percentage, with the range's ends as its limits.
