@@ -49,8 +49,8 @@ What phase 4 left in place for this:
 | 5.5 Dark UI | **Done** 2026-11-02 | Dark UI as its own setting (as the system / light / dark), apart from the map style; palette in `theme.rs`, system theme read on Linux and Windows; checked by hand by the owner on both |
 | 5.6 High-contrast style and black-and-white printing | **Done** | 2026-11-02 |
 | 5.7 UI polish | **Done** 2026-11-02 | Shortcuts table and F1 window, tooltips, window state, first-run screen, exFAT note, plain messages, print Cancel; checked by the owner on Linux |
-| 5.8 Perf: cold reads from the stick | Not started | |
-| 5.9 Perf: long routes and directions | Not started | |
+| 5.8 Perf: cold reads from the stick | Deferred 2026-11-03 | Owner: cold reads do not feel slow in use. P8 (the routing top's warm-up) tried and left: see [perf-findings.md](perf-findings.md); P9, P16 and the regression hunt not taken |
+| 5.9 Perf: long routes and directions | Deferred 2026-11-03 | Owner: routing is fast enough in use, and the segment cache stays as it is rather than spend RSS; P10 not taken |
 | 5.10 Perf: memory | Not started | |
 | 5.11 Perf: printing | Not started | |
 | 5.12 Perf: builder and pack size | Not started | |
@@ -223,6 +223,8 @@ The first search (1.1–1.3 s against 1 s), the first route (6–11 s against 3 
 
 **Done when:** the regressions are explained (and fixed if they are the app's), and the first search, first route and start-up from the stick are measured before and after each change taken.
 
+> **Deferred 2026-11-03** (owner: nothing here feels slow when running the app). The one quick win tried, P8, did not pay: reading the routing top in 128 KiB pieces changed nothing on the stick, and dropping the warm-up trades a faster first jump (1.0 to 0.71 s) and an at-open route (6.36 to 5.62 s) for a slower route asked after start-up (3.5 to 3.95 s). Numbers in [perf-findings.md](perf-findings.md) (P8); no code changed. Left open: the start-up regression, P9 and P16.
+
 ## 5.9 Perf: long routes and directions
 
 Warm coast to coast is 0.35 s on the dev machine and 0.9–1.5 s on the laptops; 25 stops through *Optimize* until the reordered route is shown take 2.2 s on the dev machine and 8.5–14.8 s on the laptops (the route alone is 5.3 s on 25 long legs on the dev machine); alternatives coast to coast 5–9 s on the laptops.
@@ -233,6 +235,8 @@ Warm coast to coast is 0.35 s on the dev machine and 0.9–1.5 s on the laptops;
 - **Alternatives:** their directions are most of their time (4.2: decoding their lines and naming their steps); the same cell cache helps.
 
 **Done when:** each change taken is measured before and after on the dev machine and, for the final numbers, the E6430 and the 7490.
+
+> **Deferred 2026-11-03** (owner: routing is decently fast; no RSS is to be spent on a larger segment cache). Nothing taken; P10 and the lines above stay as leads.
 
 ## 5.10 Perf: memory
 
