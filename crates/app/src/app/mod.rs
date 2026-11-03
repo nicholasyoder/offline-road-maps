@@ -302,8 +302,10 @@ impl App {
             cfg_loc: s.config,
             saved: cfg.clone(),
             cfg,
-            // With no pack to open, the picker, whose folder field can find one.
-            picker: s.chosen.is_none() && s.bench.is_none(),
+            // Not opened by itself: a dialog window that starts behind the map's keeps the
+            // map's window from being drawn (it waits for the dialog's frame), so the
+            // no-map screen's button opens it instead.
+            picker: false,
             found: s.found,
             map: None,
             notices,
