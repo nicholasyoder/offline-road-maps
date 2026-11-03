@@ -105,6 +105,14 @@ fn from_file(id: String, fallback: String, path: PathBuf) -> Entry {
     }
 }
 
+/// The style a printout is drawn with: the entry `id` when it is there and loads, else
+/// `map`, the style on screen. An empty `id` is the map's.
+pub fn for_print<'a>(entries: &'a [Entry], id: &str, map: &'a StyleFile) -> &'a StyleFile {
+    find(entries, id)
+        .and_then(|e| e.file.as_ref().ok())
+        .unwrap_or(map)
+}
+
 /// The entry with `id`.
 pub fn find<'a>(entries: &'a [Entry], id: &str) -> Option<&'a Entry> {
     entries.iter().find(|e| e.id == id)
@@ -126,6 +134,18 @@ mod tests {
         assert_ne!(sw[0], sw[2]);
         assert_eq!(sw[2][0], [255, 255, 255, 255]);
         assert!(sw[1][0][0] < 60, "night land is dark");
+    }
+
+    #[test]
+    fn print_style_is_the_chosen_one_else_the_maps() {
+        let v = list(Path::new("/nonexistent"), None);
+        let map = StyleFile::builtin();
+        let hc = for_print(&v, "high-contrast", &map);
+        assert_eq!(hc.hash, v[2].file.as_ref().unwrap().hash);
+        assert_ne!(hc.hash, map.hash);
+        for id in ["", "gone", "custom"] {
+            assert_eq!(for_print(&v, id, &map).hash, map.hash, "{id:?}");
+        }
     }
 
     /// Every built-in style draws the same classes and labels as the default one, so

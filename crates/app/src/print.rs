@@ -191,6 +191,8 @@ pub struct Settings {
     pub orientation: Orientation,
     pub text: TextSize,
     pub copies: u32,
+    /// The id of the style the page is drawn with (`styles.rs`); empty, the map's own.
+    pub style: String,
 }
 
 impl Default for Settings {
@@ -201,6 +203,7 @@ impl Default for Settings {
             orientation: Orientation::default(),
             text: TextSize::default(),
             copies: 1,
+            style: String::new(),
         }
     }
 }
@@ -576,6 +579,7 @@ mod tests {
             orientation: Orientation::Landscape,
             text: TextSize(130),
             copies: 2,
+            style: "high-contrast".into(),
         };
         let text = toml::to_string(&s).unwrap();
         assert_eq!(toml::from_str::<Settings>(&text).unwrap(), s);

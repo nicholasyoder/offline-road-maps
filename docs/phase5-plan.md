@@ -18,13 +18,13 @@ What phase 4 left in place for this:
 - The map style is a TOML file (`data/style.toml`, compiled in), replaced by `style.toml` next to the executable or `--style`. Debug builds already reload it when it changes (`App::reload_style`), so switching at runtime is a matter of compiling another `StyleFile` against the pack's schema and swapping it in.
 - The app's own UI colours are constants in `theme.rs` (`INK`, `WEAK`, `APPROX`, `ACCENT`), plus about 30 more `Color32` constants in `app.rs`, `routing/`, `printui.rs`, `search/` and `pins.rs`. `theme::apply` forces egui's light theme because the map is light.
 - The route line, stop markers, pins and the print rectangle are drawn in fixed colours, not from the style.
-- The print page takes the style and a text size as parameters (phase 4, "carried from earlier phases"); printing keeps using the style on screen (decision 8).
+- The print page takes the style and a text size as parameters (phase 4, "carried from earlier phases"); the print page has a style choice of its own, the map's by default (decision 8).
 - The bench flights in `crates/app/bench/` (`north-america.toml`, `north-america-p4.toml`, `na-print.toml`, …) and their reports from 4.11 are the baseline for every performance item.
 
 ### Exit criteria (expanded)
 
 1. **Settings.** Every setting in `config.toml` that a user would change is reachable from the UI (in the Settings window or the Map tab), takes effect without a restart (MSAA may ask for one), and survives a restart. A `config.toml` that is missing, from an older version, or damaged opens with defaults for what cannot be read, and says so once; it is never lost silently.
-2. **Styles.** At least three built-in styles (default, night, high contrast) and any user `style.toml` are listed in the Map tab and switch at runtime within one frame's work plus the tiles' re-tessellation (aim: under 0.5 s on the dev machine at a North America view). The choice is remembered. The UI is dark with the night style. Printing uses the style on screen (decision 8); a black-and-white printout of a route with the high-contrast style keeps the route, roads and labels readable (the owner's ET-2400, 4.10's open check).
+2. **Styles.** At least three built-in styles (default, night, high contrast) and any user `style.toml` are listed in the Map tab and switch at runtime within one frame's work plus the tiles' re-tessellation (aim: under 0.5 s on the dev machine at a North America view). The choice is remembered. The UI is dark with the night style. The print page has a style choice of its own, the map's by default and remembered (decision 8); a black-and-white printout of a route with the high-contrast style keeps the route, roads and labels readable (the owner's ET-2400, 4.10's open check).
 3. **Polish.** Each item of 5.7 is done and checked by hand on Linux and Windows.
 4. **Audit.** Every module of `omp-core`, `omp-builder` and `omp-app` has been read, and the findings are in the [audit findings](audit-findings.md) with what was done about each. No finding marked a bug is left open without the owner's say.
 5. **Performance.** Each of 5.8–5.12 has before and after numbers on the dev machine and the laptops it concerns, against the targets below, with what was taken and what was not and why. Targets, from the misses phases 1–4 accepted:
@@ -47,7 +47,7 @@ What phase 4 left in place for this:
 | 5.3 Settings window | **Done** 2026-11-02 | Every value in a window of its own, tested headless and by hand on Linux and Windows; config read a value at a time and clamped |
 | 5.4 Map styles in the Map tab | **Done** 2026-11-02 | Default, Night, High contrast, `style.toml` and `styles/*.toml` listed as cards, switched in 5–13 ms, remembered; overlays from `[overlay]` |
 | 5.5 Dark UI | **Done** 2026-11-02 | Dark UI as its own setting (as the system / light / dark), apart from the map style; palette in `theme.rs`, system theme read on Linux and Windows; checked by hand by the owner on both |
-| 5.6 High-contrast style and black-and-white printing | Not started | |
+| 5.6 High-contrast style and black-and-white printing | In progress | Style choice on the print page done 2026-11-02; the paper check is open |
 | 5.7 UI polish | Not started | |
 | 5.8 Perf: cold reads from the stick | Not started | |
 | 5.9 Perf: long routes and directions | Not started | |
@@ -147,7 +147,7 @@ Built-in styles chosen in the side panel's Map tab (the Layers tab renamed, deci
 - **Built-in styles,** compiled in as TOML like today's:
   - *Default:* today's `style.toml`.
   - *Night:* dark land and water, roads in muted warm colours with the hierarchy kept, light labels with dark halos. Tuned on screen at night brightness on the 7490 and the dev machine.
-  - *High contrast:* white land, no land cover fills (or very light), black or dark grey roads with widths kept, strong labels, the route line thick and dark with a white casing. For anyone who wants a plainer, sharper map on screen, and the one to pick before printing in black and white (5.6). It is a style like the others, not a print setting: printing always uses the style on screen (decision 8).
+  - *High contrast:* white land, no land cover fills (or very light), black or dark grey roads with widths kept, strong labels, the route line thick and dark with a white casing. For anyone who wants a plainer, sharper map on screen, and the one to pick before printing in black and white (5.6). It is a style like the others, not a print setting; the print page has its own style choice (5.6, decision 8).
 - **User styles:** `style.toml` next to the executable is listed as "Custom (style.toml)", as are any `styles/*.toml` next to it (proposed: lets a user keep several). `--style` still forces one. A style that fails to load is listed greyed out with its error as a tooltip. Debug builds still reload the selected file on change.
 - **Switching:** compile the new `StyleFile` against the open pack's schema and swap it in. Measure what has to be redone: paints and widths are uniforms; tiles are tessellated per style (line widths, which classes are drawn), so the visible tiles are re-tessellated and the cache dropped. Target under 0.5 s on the dev machine at a North America view; a progress cue if it can be longer on the E6430.
 - **The overlays from the style:** the route line and its casing, alternatives' grey, stop markers (start, via, end), pins, the print rectangle and the "what's here" marker get an `[overlay]` table in the style, with today's colours as the default, so the night and high-contrast styles can change them.
@@ -180,12 +180,14 @@ The roadmap: "The UI follows a dark style."
 
 ## 5.6 High-contrast style and black-and-white printing
 
-Printing uses the style on screen, with no style choice of its own (decision 8). The high-contrast style of 5.4 is tuned so that a user who switches to it before printing gets a clear black-and-white page.
+The print page has its own style choice (changed 2026-11-02, owner: decision 8), so a user can print in high contrast without switching the whole map.
 
-- The print page names the style the page is drawn with, and when that is not the high-contrast one, a short hint says it can be chosen in the Map tab for black-and-white printers. Nothing switches by itself.
+- **Style** row on the print page (Map content only; the directions page has no map): *Same as the map (<name>)*, the default, or any style that loads. Kept in `config.toml` (`[print] style`, empty = the map's) so a user who views in one style and prints in another does not have to set it each time. A style that has gone falls back to the map's. It changes the preview (the signature hashes the style), *Print* and *Save as PDF*, and nothing on screen.
 - Black and white: the printer's own grey output is used; no separate dithering. The check is 4.10's open one: the owner prints a route on the ET-2400 in black and white from Linux and Windows, with the default and the high-contrast style, and checks the route, roads and labels are readable with the high-contrast one.
 
-**Done when:** the preview, *Print* and *Save as PDF* follow the style on screen, and the black-and-white printout with the high-contrast style passes the owner's check.
+> **In progress 2026-11-02:** the Style row is in (`styles::for_print`, `print::Settings::style`, `printui::Around`), with a test. Open: the paper check, and a route drawn in high contrast not yet seen.
+
+**Done when:** the preview, *Print* and *Save as PDF* follow the style chosen on the print page, and the black-and-white printout with the high-contrast style passes the owner's check.
 
 ## 5.7 UI polish
 
@@ -295,7 +297,7 @@ Settled by the owner (2026-10-29), from draft 1's questions:
 
 6. **The Layers tab is renamed Map** (question a): the style first, then the layer toggles.
 7. **Units move to the Settings window** (question b), since they set the route page and directions as well as the scale bar.
-8. **Printing uses the style on screen** (question c). The high-contrast style is a style like the others, named for what it is, not "print": it is never switched to for printing by itself, and the user picks it in the Map tab if they want it on paper.
+8. **Printing has a style choice of its own** (question c; changed 2026-11-02). The high-contrast style is a style like the others, named for what it is, not "print": it is never switched to for printing by itself. The print page's *Style* row defaults to the map's and is remembered, so the user can print in high contrast whatever the map shows.
 9. **A North America rebuild is decided when a step next touches the packs** (question d), by the time the owner has then; 5.12 only measures the size levers.
 10. **The audit fixes design and architecture problems as well as bugs** (question e), such as splitting `app.rs`.
 11. **Performance targets are goals to aim for** (question f), not gates; misses are measured and written up, as in phases 3 and 4.
@@ -308,7 +310,7 @@ Open: none.
 
 - New features: GPX, KML and CSV, fuel and rest suggestions, a larger POI set, GPS (roadmap *Later or optional*).
 - Map tuning beyond what the night and high-contrast styles need (decision 2).
-- A print-only style, or a style choice on the print page (decision 8).
+- A print-only style (decision 8): the print page chooses among the existing styles.
 - A style editor in the app; users edit `style.toml` by hand, as today.
 - U-turn work (phase 4 decision 22): stays as it is unless 5.9's work on directions makes the hidden-variant search cheap.
 - macOS and anything for distribution (phase 6).

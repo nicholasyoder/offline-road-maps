@@ -31,6 +31,8 @@ use crate::scale::Units;
 use crate::side::Page;
 use crate::snapshot::Gpu;
 use crate::style::{Style, StyleFile};
+use crate::styles;
+use crate::styles::Entry;
 use crate::theme::{ink, weak};
 
 /// The resolution of the previews: the page as it prints, only less sharp.
@@ -79,6 +81,9 @@ pub struct Around<'a> {
     pub units: Units,
     pub has_route: bool,
     pub route_bounds: Option<[f64; 4]>,
+    /// The styles to choose from, and the id of the one on screen.
+    pub styles: &'a [Entry],
+    pub map_style: &'a str,
 }
 
 enum Drag {
@@ -354,6 +359,34 @@ impl PrintUi {
                     settings.text = TextSize(percent);
                 }
                 ui.end_row();
+                if self.kind == Kind::Map {
+                    ui.label("Style");
+                    let map_name = styles::find(around.styles, around.map_style)
+                        .map_or("Default", |e| e.name.as_str());
+                    let shown = match styles::find(around.styles, &settings.style) {
+                        Some(e) if !settings.style.is_empty() => e.name.clone(),
+                        _ => format!("Same as the map ({map_name})"),
+                    };
+                    egui::ComboBox::from_id_salt("print-style")
+                        .selected_text(shown)
+                        .width(180.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut settings.style,
+                                String::new(),
+                                format!("Same as the map ({map_name})"),
+                            );
+                            for e in around.styles.iter().filter(|e| e.file.is_ok()) {
+                                ui.selectable_value(&mut settings.style, e.id.clone(), &e.name);
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "The map style the printout is drawn in, whatever the map shows. \
+                             High contrast prints clearest on a black-and-white printer.",
+                        );
+                    ui.end_row();
+                }
                 ui.label("Copies");
                 ui.add(egui::DragValue::new(&mut settings.copies).range(1..=99));
                 ui.end_row();

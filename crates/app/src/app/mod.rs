@@ -1000,7 +1000,7 @@ impl eframe::App for App {
         {
             let inputs = printui::Inputs {
                 pack: &m.opened.first_chunk,
-                style: &self.style,
+                style: styles::for_print(&self.styles, &self.cfg.print.style, &self.style),
                 layers: self.cfg.layers,
                 units: self.cfg.units.unwrap_or(m.units),
                 msaa: render::samples(self.cfg.msaa),

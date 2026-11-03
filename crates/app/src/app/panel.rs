@@ -392,6 +392,8 @@ fn side_panel(
                         units,
                         has_route: p.routing.route.is_some(),
                         route_bounds: p.routing.route_bounds(),
+                        styles: p.styles,
+                        map_style: p.style_id,
                     };
                     p.print.page_ui(ui, print_cfg, &around);
                 }
