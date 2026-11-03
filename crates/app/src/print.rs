@@ -193,6 +193,8 @@ pub struct Settings {
     pub copies: u32,
     /// The id of the style the page is drawn with (`styles.rs`); empty, the map's own.
     pub style: String,
+    /// Leave the route's stop markers off the printed map, so they cover none of its line.
+    pub hide_stops: bool,
 }
 
 impl Default for Settings {
@@ -204,6 +206,7 @@ impl Default for Settings {
             text: TextSize::default(),
             copies: 1,
             style: String::new(),
+            hide_stops: false,
         }
     }
 }
@@ -580,6 +583,7 @@ mod tests {
             text: TextSize(130),
             copies: 2,
             style: "high-contrast".into(),
+            hide_stops: true,
         };
         let text = toml::to_string(&s).unwrap();
         assert_eq!(toml::from_str::<Settings>(&text).unwrap(), s);

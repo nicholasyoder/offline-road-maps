@@ -392,6 +392,12 @@ impl PrintUi {
                         );
                     ui.end_row();
                 }
+                if self.kind == Kind::Map && around.has_route {
+                    ui.label("");
+                    ui.checkbox(&mut settings.hide_stops, "Hide stop markers")
+                        .on_hover_text("Print the route without its numbered stop markers");
+                    ui.end_row();
+                }
                 ui.label("Copies");
                 ui.add(egui::DragValue::new(&mut settings.copies).range(1..=99));
                 ui.end_row();
@@ -931,7 +937,11 @@ impl PrintUi {
                     dpi,
                     msaa: inputs.msaa,
                     lines: inputs.routing.print_lines(),
-                    stops: inputs.routing.stop_marks(),
+                    stops: if s.hide_stops {
+                        Vec::new()
+                    } else {
+                        inputs.routing.stop_marks()
+                    },
                     pins: inputs.pins.shown_pins(),
                 })))
             }
@@ -1098,6 +1108,7 @@ impl PrintUi {
         let s = &inputs.settings;
         (self.kind as u8, &self.label, s.paper as u8, s.text.0).hash(&mut h);
         s.orientation.landscape(self.wide).hash(&mut h);
+        s.hide_stops.hash(&mut h);
         inputs.units.name().hash(&mut h);
         inputs.pack.hash(&mut h);
         inputs.style.hash.hash(&mut h);
