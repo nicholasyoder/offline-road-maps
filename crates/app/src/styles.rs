@@ -161,9 +161,20 @@ mod tests {
                 }
             }
         }
-        // The overlays differ from the default's, and the high-contrast route is thicker.
-        assert_ne!(compile(&v[1]).overlay, base.overlay);
-        assert!(compile(&v[2]).overlay.route_width > base.overlay.route_width);
+        // The overlays differ in colour from the default's, not in width.
+        for e in &v[1..] {
+            let o = compile(e).overlay;
+            assert_ne!(o, base.overlay);
+            let w = |o: &style::Overlay| {
+                (
+                    o.route_width,
+                    o.picked_width,
+                    o.alternative_width,
+                    o.halo_width,
+                )
+            };
+            assert_eq!(w(&o), w(&base.overlay), "{}", e.id);
+        }
     }
 
     #[test]
