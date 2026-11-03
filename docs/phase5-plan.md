@@ -47,7 +47,7 @@ What phase 4 left in place for this:
 | 5.3 Settings window | **Done** 2026-11-02 | Every value in a window of its own, tested headless and by hand on Linux and Windows; config read a value at a time and clamped |
 | 5.4 Map styles in the Map tab | **Done** 2026-11-02 | Default, Night, High contrast, `style.toml` and `styles/*.toml` listed as cards, switched in 5–13 ms, remembered; overlays from `[overlay]` |
 | 5.5 Dark UI | **Done** 2026-11-02 | Dark UI as its own setting (as the system / light / dark), apart from the map style; palette in `theme.rs`, system theme read on Linux and Windows; checked by hand by the owner on both |
-| 5.6 High-contrast style and black-and-white printing | In progress | Style choice on the print page done 2026-11-02; the paper check is open |
+| 5.6 High-contrast style and black-and-white printing | **Done** | 2026-11-02 |
 | 5.7 UI polish | Not started | |
 | 5.8 Perf: cold reads from the stick | Not started | |
 | 5.9 Perf: long routes and directions | Not started | |
@@ -185,7 +185,7 @@ The print page has its own style choice (changed 2026-11-02, owner: decision 8),
 - **Style** row on the print page (Map content only; the directions page has no map): *Same as the map (<name>)*, the default, or any style that loads. Kept in `config.toml` (`[print] style`, empty = the map's) so a user who views in one style and prints in another does not have to set it each time. A style that has gone falls back to the map's. It changes the preview (the signature hashes the style), *Print* and *Save as PDF*, and nothing on screen.
 - Black and white: the printer's own grey output is used; no separate dithering. The check is 4.10's open one: the owner prints a route on the ET-2400 in black and white from Linux and Windows, with the default and the high-contrast style, and checks the route, roads and labels are readable with the high-contrast one.
 
-> **In progress 2026-11-02:** the Style row is in (`styles::for_print`, `print::Settings::style`, `printui::Around`), with a test. Open: the paper check, and a route drawn in high contrast not yet seen.
+> **Done 2026-11-02** (commit `a59d3b9`). The Style row is in (`styles::for_print`, `print::Settings::style`, `printui::Around`), with a test. The owner printed a route in black and white on the ET-2400 and found it good, and saw a route drawn in the high-contrast style on screen; both fine. Open: the check was done on one system (not stated which); the other, and the E6430, go in 5.13's hand checks.
 
 **Done when:** the preview, *Print* and *Save as PDF* follow the style chosen on the print page, and the black-and-white printout with the high-contrast style passes the owner's check.
 
