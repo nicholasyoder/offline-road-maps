@@ -69,8 +69,7 @@ pub struct Startup {
     /// tell the user about it.
     pub cfg: Config,
     pub cfg_note: Option<String>,
-    /// First-chunk files found, and the one to open.
-    pub found: Vec<PathBuf>,
+    /// The first-chunk file to open.
     pub chosen: Option<PathBuf>,
     pub notices: Vec<String>,
     pub bench: Option<Bench>,
@@ -193,8 +192,8 @@ pub struct App {
     exe_dir: PathBuf,
     cfg_loc: Location,
     cfg: Config,
-    found: Vec<PathBuf>,
-    picker: bool,
+    /// The file browser that chooses a map, while it is open.
+    picker: Option<crate::files::Browser>,
     map: Option<MapState>,
     notices: Vec<String>,
     bench: Option<Bench>,
@@ -245,8 +244,6 @@ pub struct App {
     sys_theme: crate::systheme::Watch,
     /// MSAA samples the window was created with.
     msaa_now: u32,
-    /// The picker's folder field.
-    path_input: String,
     /// Saved trips and pushpins (phase 4 step 4.7).
     trips: TripsUi,
     pins: PinsUi,
@@ -305,8 +302,7 @@ impl App {
             // Not opened by itself: a dialog window that starts behind the map's keeps the
             // map's window from being drawn (it waits for the dialog's frame), so the
             // no-map screen's button opens it instead.
-            picker: false,
-            found: s.found,
+            picker: None,
             map: None,
             notices,
             bench: s.bench,
@@ -338,7 +334,6 @@ impl App {
             zoom_seen: cfg_zoom,
             sys_theme,
             msaa_now: s.msaa,
-            path_input: String::new(),
         };
         if let Some(p) = s.chosen {
             app.open(&cc.egui_ctx, &p);
@@ -904,7 +899,10 @@ impl eframe::App for App {
             self.cfg.debug_overlay = !self.cfg.debug_overlay;
         }
         if keys::take(&ctx, Command::OpenMap) && self.bench.is_none() {
-            self.picker = !self.picker;
+            match self.picker {
+                Some(_) => self.picker = None,
+                None => self.open_picker(),
+            }
         }
         if keys::take(&ctx, Command::Shortcuts) {
             self.shortcuts = !self.shortcuts;

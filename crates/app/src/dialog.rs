@@ -127,7 +127,6 @@ pub fn confirm(
                 answer = Some(true);
             }
         });
-        ui.add_space(10.0);
     });
     answer.or(closed.then_some(false))
 }

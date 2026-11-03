@@ -1,13 +1,12 @@
 //! The dialogs apart from the map's window: the pack picker, About this map, Verify pack, the errors
 //! (a pack that could not be opened, a tile that could not be read) and the notices.
 
-use std::path::PathBuf;
-
 use eframe::egui::{self, Align2, Color32, Vec2};
 
 use super::App;
 use crate::config;
 use crate::dialog::{self, Size};
+use crate::files::{self, Browser, Mode};
 use crate::keys::{self, Command};
 use crate::memory::mib;
 use crate::packs;
@@ -62,67 +61,43 @@ impl App {
             ui.add_space(10.0);
             let open = ui.button(keys::with_hint("Choose a map\u{2026}", Command::OpenMap));
             if open.clicked() {
-                self.picker = true;
+                self.open_picker();
             }
         });
     }
 
+    /// Opens the file browser to choose a map, in the folder of the one open, else of the
+    /// last one, else the `maps` folder next to the app.
+    pub(super) fn open_picker(&mut self) {
+        let maps = self.exe_dir.join("maps");
+        let last = self
+            .cfg
+            .pack
+            .as_ref()
+            .map(|p| config::resolve_path(p, &self.exe_dir));
+        let open = self.map.as_ref().map(|m| m.opened.first_chunk.clone());
+        let start = [open, last]
+            .into_iter()
+            .flatten()
+            .map(|p| packs::pack_dir(&p))
+            .chain([maps])
+            .find(|d| d.is_dir())
+            .unwrap_or_else(|| self.exe_dir.clone());
+        let browser = Browser::new("Open a map", Mode::Open, &start, "").with_ext("omp.000");
+        self.picker = Some(browser);
+    }
+
     pub(super) fn picker_window(&mut self, ctx: &egui::Context) {
-        if !self.picker {
+        let Some(browser) = &mut self.picker else {
             return;
-        }
-        let mut chosen = None;
-        let closed = dialog::show(ctx, "picker", "Open a map", Size::Fit(576.0), |ui| {
-            if self.found.is_empty() {
-                ui.label(format!(
-                    "No maps found in {}.",
-                    self.exe_dir.join("maps").display()
-                ));
+        };
+        match browser.ui(ctx) {
+            Some(files::Outcome::Chosen(p)) => {
+                self.picker = None;
+                self.open(ctx, &p);
             }
-            for p in &self.found {
-                let dir = packs::pack_dir(p);
-                let shown = config::store_path(&dir, &self.exe_dir);
-                let current = self
-                    .map
-                    .as_ref()
-                    .is_some_and(|m| &m.opened.first_chunk == p);
-                if ui
-                    .selectable_label(current, shown.display().to_string())
-                    .clicked()
-                {
-                    chosen = Some(p.clone());
-                }
-            }
-            ui.separator();
-            ui.label("Or open the map in a folder:");
-            ui.horizontal(|ui| {
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut self.path_input)
-                        .hint_text("folder or .omp.000 file")
-                        .desired_width(320.0),
-                );
-                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.button("Open").clicked() || enter) && !self.path_input.trim().is_empty() {
-                    let dir = PathBuf::from(self.path_input.trim());
-                    let found = packs::find(&dir);
-                    match found.as_slice() {
-                        [] => {
-                            self.pack_error = Some(format!(
-                                "There is no map in {} (a map's first file ends in .omp.000).",
-                                dir.display()
-                            ));
-                        }
-                        [one] => chosen = Some(one.clone()),
-                        _ => self.found = found,
-                    }
-                }
-            });
-        });
-        if let Some(p) = chosen {
-            self.open(ctx, &p);
-            self.picker = false;
-        } else {
-            self.picker = !closed;
+            Some(files::Outcome::Cancelled) => self.picker = None,
+            None => {}
         }
     }
 
@@ -321,7 +296,7 @@ impl App {
                     });
                 });
             if pick {
-                self.picker = true;
+                self.open_picker();
             }
             if pick || close {
                 self.pack_error = None;

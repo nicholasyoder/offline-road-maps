@@ -199,7 +199,8 @@ pub struct Browser {
     path_field: String,
     /// Saving over an existing file was asked: it needs a second click.
     replace: Option<PathBuf>,
-    /// The extension of the files it lists and saves, without the dot.
+    /// The extension of the files it lists and saves, without the dot (`omp.000` for a map's
+    /// first file).
     ext: &'static str,
 }
 
@@ -242,7 +243,7 @@ impl Browser {
                 let path = e.path();
                 if path.is_dir() {
                     dirs.push(name);
-                } else if path.extension().is_some_and(|x| x == self.ext) {
+                } else if name.ends_with(&format!(".{}", self.ext)) {
                     files.push(name);
                 }
             }
@@ -278,8 +279,95 @@ impl Browser {
         out
     }
 
+    /// The window's content: the folder's bar and list above, and the name and buttons at
+    /// the bottom, drawn first so the list takes the height between and nothing is left
+    /// under the buttons.
     fn body(&mut self, ui: &mut egui::Ui) -> Option<Outcome> {
         let mut out = None;
+        let mut submit = false;
+        let mut go = None;
+        let mut picked = None;
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Cancel").clicked() {
+                        out = Some(Outcome::Cancelled);
+                    }
+                    let label = match (self.mode, &self.replace) {
+                        (Mode::Save, Some(_)) => "Replace",
+                        (Mode::Save, None) => "Save",
+                        (Mode::Open, _) => "Open",
+                    };
+                    submit |= ui
+                        .add_enabled(self.target().is_some(), egui::Button::new(label))
+                        .clicked();
+                    if let Some(p) = &self.replace {
+                        let text = format!("“{}” exists.", stem(p));
+                        ui.label(egui::RichText::new(text).color(approx()));
+                    }
+                });
+            });
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                // The box takes what the label and the extension leave.
+                let ext = (self.mode == Mode::Save).then(|| format!(".{}", self.ext));
+                let gap = ui.spacing().item_spacing.x;
+                let after = ext.as_ref().map_or(0.0, |e| {
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    let galley =
+                        ui.fonts_mut(|f| f.layout_no_wrap(e.clone(), font, egui::Color32::WHITE));
+                    galley.size().x + gap
+                });
+                let width = (ui.available_width() - after).max(60.0);
+                let r = ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(width));
+                if r.changed() {
+                    self.replace = None;
+                }
+                if let Some(e) = ext {
+                    ui.label(egui::RichText::new(e).color(weak()));
+                }
+                submit |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            });
+            ui.separator();
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                self.folder_bar(ui);
+                ui.separator();
+                self.list(ui, &mut go, &mut picked);
+            });
+        });
+        if let Some(d) = go {
+            let dir = self.dir.join(d);
+            self.go(dir);
+        }
+        if let Some((f, twice)) = picked {
+            self.name = match self.mode {
+                Mode::Save => f
+                    .strip_suffix(&format!(".{}", self.ext))
+                    .unwrap_or(&f)
+                    .to_string(),
+                Mode::Open => f,
+            };
+            self.replace = None;
+            submit |= twice;
+            ui.ctx().request_repaint();
+        }
+        if submit && let Some(t) = self.target() {
+            out = match self.mode {
+                Mode::Save if t.exists() && self.replace.as_ref() != Some(&t) => {
+                    self.replace = Some(t);
+                    ui.ctx().request_repaint();
+                    None
+                }
+                Mode::Open if !t.is_file() => None,
+                _ => Some(Outcome::Chosen(t)),
+            };
+        }
+        out
+    }
+
+    /// *Up* and the folder's path, which goes to the folder typed on Enter.
+    fn folder_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let up = self.dir.parent().map(Path::to_path_buf);
             if ui
@@ -298,96 +386,49 @@ impl Browser {
                 }
             }
         });
-        ui.separator();
-        let mut go = None;
-        let mut picked = None;
-        let list_h = (ui.available_height() - 64.0).max(80.0);
+    }
+
+    /// The folder's subfolders and files, a row each across the list's width. A folder
+    /// clicked goes to `go`; a file to `picked`, with whether it was double clicked.
+    fn list(
+        &mut self,
+        ui: &mut egui::Ui,
+        go: &mut Option<String>,
+        picked: &mut Option<(String, bool)>,
+    ) {
         egui::ScrollArea::vertical()
-            .max_height(list_h)
             .auto_shrink([false, false])
-            .show(ui, |ui| match self.read() {
-                Err(e) => {
-                    ui.label(
-                        egui::RichText::new(format!("This folder cannot be read: {}.", io_text(e)))
-                            .color(approx()),
-                    );
-                }
-                Ok((dirs, files)) => {
-                    for d in dirs {
-                        if ui.selectable_label(false, format!("🗀 {d}")).clicked() {
-                            go = Some(d.clone());
+            .show(ui, |ui| {
+                ui.with_layout(
+                    egui::Layout::top_down_justified(egui::Align::LEFT),
+                    |ui| match self.read() {
+                        Err(e) => {
+                            let text = format!("This folder cannot be read: {}.", io_text(e));
+                            ui.label(egui::RichText::new(text).color(approx()));
                         }
-                    }
-                    for f in files {
-                        let r = ui.selectable_label(false, egui::RichText::new(f).color(ink()));
-                        if r.clicked() {
-                            picked = Some((f.clone(), false));
+                        Ok((dirs, files)) => {
+                            for d in dirs {
+                                if ui.selectable_label(false, format!("🗀 {d}")).clicked() {
+                                    *go = Some(d.clone());
+                                }
+                            }
+                            for f in files {
+                                let r =
+                                    ui.selectable_label(false, egui::RichText::new(f).color(ink()));
+                                if r.clicked() {
+                                    *picked = Some((f.clone(), false));
+                                }
+                                if r.double_clicked() {
+                                    *picked = Some((f.clone(), true));
+                                }
+                            }
+                            if dirs.is_empty() && files.is_empty() {
+                                ui.label(egui::RichText::new("Nothing here.").color(weak()));
+                            }
                         }
-                        if r.double_clicked() {
-                            picked = Some((f.clone(), true));
-                        }
-                    }
-                    if dirs.is_empty() && files.is_empty() {
-                        ui.label(egui::RichText::new("Nothing here.").color(weak()));
-                    }
-                }
+                    },
+                );
             });
-        if let Some(d) = go {
-            let dir = self.dir.join(d);
-            self.go(dir);
-        }
-        let mut submit = false;
-        if let Some((f, twice)) = picked {
-            self.name = match self.mode {
-                Mode::Save => f
-                    .strip_suffix(&format!(".{}", self.ext))
-                    .unwrap_or(&f)
-                    .to_string(),
-                Mode::Open => f,
-            };
-            self.replace = None;
-            submit = twice;
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Name");
-            let r = ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(240.0));
-            if r.changed() {
-                self.replace = None;
-            }
-            if self.mode == Mode::Save {
-                ui.label(egui::RichText::new(format!(".{}", self.ext)).color(weak()));
-            }
-            submit |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        });
-        ui.horizontal(|ui| {
-            let label = match (self.mode, &self.replace) {
-                (Mode::Save, Some(_)) => "Replace",
-                (Mode::Save, None) => "Save",
-                (Mode::Open, _) => "Open",
-            };
-            let target = self.target();
-            submit |= ui
-                .add_enabled(target.is_some(), egui::Button::new(label))
-                .clicked();
-            if ui.button("Cancel").clicked() {
-                out = Some(Outcome::Cancelled);
-            }
-            if let Some(p) = &self.replace {
-                ui.label(egui::RichText::new(format!("“{}” exists.", stem(p))).color(approx()));
-            }
-            if submit && let Some(t) = target {
-                out = match self.mode {
-                    Mode::Save if t.exists() && self.replace.as_ref() != Some(&t) => {
-                        self.replace = Some(t);
-                        None
-                    }
-                    Mode::Open if !t.is_file() => None,
-                    _ => Some(Outcome::Chosen(t)),
-                };
-            }
-        });
-        out
     }
 }
 

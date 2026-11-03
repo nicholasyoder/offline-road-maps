@@ -143,7 +143,7 @@ impl App {
 
     pub(super) fn act(&mut self, ctx: &egui::Context, action: Option<Action>) {
         match action {
-            Some(Action::Pick) => self.picker = true,
+            Some(Action::Pick) => self.open_picker(),
             Some(Action::Verify) => self.start_verify(ctx),
             Some(Action::About) => self.about = true,
             Some(Action::Shortcuts) => self.shortcuts = true,

@@ -328,7 +328,6 @@ fn main() -> ExitCode {
         config,
         cfg,
         cfg_note,
-        found,
         chosen,
         notices,
         bench,
