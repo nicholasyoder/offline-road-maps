@@ -334,8 +334,7 @@ impl TripsUi {
         let w = self.save.as_mut()?;
         let mut targets = Vec::new();
         let (mut save, mut cancel, mut elsewhere) = (false, false, false);
-        let closed = dialog::show(ctx, "save-trip", "Save trip", Size::Fit(384.0), |ui| {
-            ui.set_max_width(360.0);
+        let closed = dialog::show(ctx, "save-trip", "Save trip", Size::Fit(360.0), |ui| {
             ui.horizontal(|ui| {
                 ui.label("Name");
                 let r = ui.add(egui::TextEdit::singleline(&mut w.name).desired_width(240.0));

@@ -18,7 +18,7 @@ impl App {
             return;
         }
         let mut chosen = None;
-        let closed = dialog::show(ctx, "picker", "Open a pack", Size::Fit(600.0), |ui| {
+        let closed = dialog::show(ctx, "picker", "Open a pack", Size::Fit(576.0), |ui| {
             if self.found.is_empty() {
                 ui.label(format!(
                     "No packs found in {}.",
@@ -84,8 +84,7 @@ impl App {
         if !self.about {
             return;
         }
-        let closed = dialog::show(ctx, "about", "About this map", Size::Fit(544.0), |ui| {
-            ui.set_max_width(520.0);
+        let closed = dialog::show(ctx, "about", "About this map", Size::Fit(520.0), |ui| {
             let Some(m) = &self.map else {
                 ui.label("No pack is open.");
                 return;
@@ -156,7 +155,7 @@ impl App {
         let (done, total) = v.progress();
         let secs = v.elapsed().as_secs_f64();
         let mut close = false;
-        let closed = dialog::show(ctx, "verify", "Verify pack", Size::Fit(404.0), |ui| {
+        let closed = dialog::show(ctx, "verify", "Verify pack", Size::Fit(380.0), |ui| {
             ui.set_width(380.0);
             match &outcome {
                 None => {

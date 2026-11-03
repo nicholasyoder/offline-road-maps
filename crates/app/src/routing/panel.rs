@@ -586,9 +586,8 @@ impl RouteUi {
             ctx,
             "optimize",
             "Optimize stop order",
-            Size::Fit(304.0),
+            Size::Fit(280.0),
             |ui| {
-                ui.set_max_width(280.0);
                 let round = self.ends.round_trip;
                 let boxes = [
                     (Target::KeepFirst, "Keep first stop", round),

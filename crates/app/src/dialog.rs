@@ -10,8 +10,8 @@ const MARGIN: i8 = 12;
 /// How a dialog's window is sized.
 #[derive(Clone, Copy)]
 pub enum Size {
-    /// To its content, which the window follows as it changes: at most this wide (and as
-    /// wide as the content sets itself, when that is less).
+    /// To its content, which the window follows as it changes: the content at most this
+    /// wide (and as wide as it sets itself, when that is less), the margins round it added.
     Fit(f32),
     /// To this size, which the user may change.
     Resizable(Vec2),
@@ -40,6 +40,12 @@ pub fn show(
     size: Size,
     mut add: impl FnMut(&mut egui::Ui),
 ) -> bool {
+    let mut add = |ui: &mut egui::Ui| {
+        if let Size::Fit(width) = size {
+            ui.set_max_width(width);
+        }
+        add(ui);
+    };
     let viewport = egui::ViewportId::from_hash_of(id);
     let key = viewport.0.with("dialog-size");
     let pass = ctx.cumulative_pass_nr();
@@ -92,7 +98,9 @@ fn measure(
     width: f32,
     add: &mut impl FnMut(&mut egui::Ui),
 ) -> Vec2 {
-    let room = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 2000.0) - margins());
+    // Taller than any dialog: those that could grow past the screen (Settings, Page
+    // preview) keep themselves within the monitor's height.
+    let room = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 2000.0));
     let layer = LayerId::new(Order::Background, viewport.0);
     let builder = UiBuilder::new()
         .layer_id(layer)
@@ -103,7 +111,8 @@ fn measure(
     ui.scope(add).response.rect.size() + margins()
 }
 
-/// Asks for the window to be `want` big when it is not (to a pixel) already.
+/// Keeps `want` as the window's size when it is not (to a pixel) the size already: the
+/// next frame's builder asks for it, and egui resizes the window to match.
 fn follow(ctx: &egui::Context, key: egui::Id, want: Vec2) {
     let Some(mut seen) = ctx.data(|d| d.get_temp::<Seen>(key)) else {
         return;
@@ -111,7 +120,7 @@ fn follow(ctx: &egui::Context, key: egui::Id, want: Vec2) {
     if (want - seen.size).abs().max_elem() >= 1.0 {
         seen.size = want;
         ctx.data_mut(|d| d.insert_temp(key, seen));
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
-        ctx.request_repaint();
+        // The builder is made in the parent's frame, which draws this window's too.
+        ctx.request_repaint_of(ctx.parent_viewport_id());
     }
 }

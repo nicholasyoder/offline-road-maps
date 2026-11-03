@@ -591,7 +591,7 @@ impl PrintUi {
             ctx,
             "page-preview",
             "Page preview",
-            Size::Fit(fit.x + 24.0),
+            Size::Fit(fit.x),
             |ui| {
                 if n > 1 {
                     ui.horizontal(|ui| {

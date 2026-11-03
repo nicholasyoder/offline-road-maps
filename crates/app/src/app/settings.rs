@@ -49,7 +49,7 @@ impl App {
             .input(|i| i.viewport().monitor_size)
             .map_or(700.0, |m| m.y - 120.0)
             .max(300.0);
-        let close = dialog::show(ctx, "settings", "Settings", Size::Fit(500.0), |ui| {
+        let close = dialog::show(ctx, "settings", "Settings", Size::Fit(476.0), |ui| {
             egui::ScrollArea::vertical()
                 .max_height(room)
                 .show(ui, |ui| {
