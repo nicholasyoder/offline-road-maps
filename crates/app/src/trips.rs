@@ -225,9 +225,8 @@ pub struct TripsUi {
 pub struct PageOut {
     /// A trip to open in the route page.
     pub open: Option<PathBuf>,
-    /// A trip renamed (from, to) or deleted: the route page's own follows.
+    /// A trip renamed (from, to): the route page's own follows.
     pub renamed: Option<(PathBuf, PathBuf)>,
-    pub deleted: Option<PathBuf>,
     /// A pushpin clicked in a set's list.
     pub show_pin: Option<PinRef>,
     /// *Save trip* or *Save as…* was clicked: the app saves the route shown.
@@ -463,7 +462,6 @@ impl TripsUi {
                 ui.separator();
                 self.pins_ui(ui, pins, exe_dir, &mut out);
             });
-        self.confirm_delete(&ui.ctx().clone(), pins, &mut out);
         out
     }
 
@@ -667,8 +665,10 @@ impl TripsUi {
     }
 
     /// The window that asks before a trip, or a pushpin set, is deleted, and does it on
-    /// *Delete*. Enter says yes and Esc no.
-    fn confirm_delete(&mut self, ctx: &egui::Context, pins: &mut PinsUi, out: &mut PageOut) {
+    /// *Delete*. Enter says yes and Esc no. Drawn with the app's other windows, not inside
+    /// the panel. Returns the trip deleted, for the route page's own to follow.
+    pub fn delete_window(&mut self, ctx: &egui::Context, pins: &mut PinsUi) -> Option<PathBuf> {
+        let mut gone = None;
         let (title, what) = match (&self.deleting, pins.deleting) {
             (Some((_, name)), _) => (
                 "Delete trip?",
@@ -686,7 +686,7 @@ impl TripsUi {
                     ),
                 )
             }
-            (None, None) => return,
+            (None, None) => return None,
         };
         let mut buttons = [egui::Rect::NOTHING; 2];
         let answer = dialog::confirm(ctx, title, &what, "Delete", &mut buttons);
@@ -700,7 +700,7 @@ impl TripsUi {
             Some(true) => {
                 if let Some((path, name)) = self.deleting.take() {
                     match std::fs::remove_file(&path) {
-                        Ok(()) => out.deleted = Some(path),
+                        Ok(()) => gone = Some(path),
                         Err(e) => {
                             self.error =
                                 Some(format!("Could not delete {name}: {}.", files::io_text(&e)));
@@ -715,6 +715,7 @@ impl TripsUi {
             }
             None => {}
         }
+        gone
     }
 
     fn pins_ui(&mut self, ui: &mut egui::Ui, pins: &mut PinsUi, exe_dir: &Path, out: &mut PageOut) {

@@ -84,11 +84,6 @@ impl App {
             n.name = trips_name(&to);
             n.path = to;
         }
-        if let Some(gone) = o.trips.deleted
-            && m.routing.named.as_ref().is_some_and(|n| n.path == gone)
-        {
-            m.routing.named = None;
-        }
         if let Some(ask) = o.trips.save {
             let file = m.routing.to_file(&pack_label(&m.opened));
             if let Some(n) = self.trips.save(ask, file, m.routing.named.as_ref()) {
@@ -126,6 +121,13 @@ impl App {
         {
             m.routing.named = Some(n);
         }
+        if let Some(gone) = self.trips.delete_window(ctx, &mut self.pins)
+            && let Some(m) = &mut self.map
+            && m.routing.named.as_ref().is_some_and(|n| n.path == gone)
+        {
+            m.routing.named = None;
+        }
+        self.pins.delete_window(ctx);
         match self.trips.browser_window(ctx) {
             Some(Browsed::Saved(n)) => {
                 if let Some(m) = &mut self.map {

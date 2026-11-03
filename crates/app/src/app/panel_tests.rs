@@ -118,6 +118,12 @@ impl Window {
             if let Some(n) = self.trips.save_window(ui.ctx(), self.dir.path()) {
                 self.routing.named = Some(n);
             }
+            if let Some(gone) = self.trips.delete_window(ui.ctx(), &mut self.pins)
+                && self.routing.named.as_ref().is_some_and(|n| n.path == gone)
+            {
+                self.routing.named = None;
+            }
+            self.pins.delete_window(ui.ctx());
             // As the app does with what was picked.
             if let Some((a, h)) = o.out.route {
                 self.routing.apply(a, Place::of_hit(&h));

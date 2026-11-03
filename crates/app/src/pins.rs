@@ -810,22 +810,6 @@ impl PinsUi {
         if ask {
             self.delete_asked = Some(r);
         }
-        let mut delete = false;
-        if self.delete_asked == Some(r) {
-            let name = self.pin(r).map(|p| p.name.clone()).unwrap_or_default();
-            let what = match name.is_empty() {
-                true => "This pushpin will be deleted.".to_string(),
-                false => format!("The pushpin “{name}” will be deleted."),
-            };
-            let mut b = [Rect::NOTHING; 2];
-            let answer = dialog::confirm(ui.ctx(), "Delete pushpin?", &what, "Delete", &mut b);
-            self.buttons.push(("confirm-cancel", b[0]));
-            self.buttons.push(("confirm-delete", b[1]));
-            if let Some(yes) = answer {
-                self.delete_asked = None;
-                delete = yes;
-            }
-        }
         if typed {
             self.pending = Some(r.0);
             self.version += 1;
@@ -839,12 +823,36 @@ impl PinsUi {
         if let Some(to) = move_to {
             self.open = Some(self.move_to(r, to));
         }
-        if delete {
-            self.remove(r);
-        } else if close {
+        if close {
             self.open = None;
         }
         chosen
+    }
+
+    /// The window that asks before the open pin is deleted, drawn with the app's other
+    /// windows rather than inside the panel. Enter says yes and Esc no.
+    pub fn delete_window(&mut self, ctx: &egui::Context) {
+        let Some(r) = self.delete_asked else { return };
+        if self.open != Some(r) {
+            self.delete_asked = None;
+            return;
+        }
+        let name = self.pin(r).map(|p| p.name.clone()).unwrap_or_default();
+        let what = match name.is_empty() {
+            true => "This pushpin will be deleted.".to_string(),
+            false => format!("The pushpin “{name}” will be deleted."),
+        };
+        let mut b = [Rect::NOTHING; 2];
+        let answer = dialog::confirm(ctx, "Delete pushpin?", &what, "Delete", &mut b);
+        self.buttons.push(("confirm-cancel", b[0]));
+        self.buttons.push(("confirm-delete", b[1]));
+        if let Some(yes) = answer {
+            self.delete_asked = None;
+            if yes {
+                self.flush();
+                self.remove(r);
+            }
+        }
     }
 
     /// Escape closes the open pin; true if it did.
