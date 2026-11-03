@@ -435,7 +435,13 @@ fn times_as_typed() {
     assert_eq!(t("08:00").as_deref(), Some("08:00:00"));
     assert_eq!(t(" 8:30 ").as_deref(), Some("08:30:00"));
     assert_eq!(t("18").as_deref(), Some("18:00:00"));
-    for bad in ["", "24:00", "8:60", "8:", "x", "8:005"] {
+    assert_eq!(t("8:30 am").as_deref(), Some("08:30:00"));
+    assert_eq!(t("6PM").as_deref(), Some("18:00:00"));
+    assert_eq!(t("12:15 am").as_deref(), Some("00:15:00"));
+    assert_eq!(t("12 pm").as_deref(), Some("12:00:00"));
+    for bad in [
+        "", "24:00", "13 pm", "0 am", "pm", "8:60", "8:", "x", "8:005",
+    ] {
         assert_eq!(t(bad), None, "{bad:?}");
     }
 }

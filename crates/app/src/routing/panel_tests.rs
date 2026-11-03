@@ -476,12 +476,16 @@ fn schedule() {
     let t = u.r.timed().expect("a schedule");
     // Two legs of 3 minutes.
     assert_eq!(
-        t.sched.departure().unwrap().strftime("%H:%M").to_string(),
-        "08:00"
+        t.sched
+            .departure()
+            .unwrap()
+            .strftime("%-I:%M %P")
+            .to_string(),
+        "8:00 am"
     );
     assert_eq!(
-        t.sched.arrival().unwrap().strftime("%H:%M").to_string(),
-        "08:06"
+        t.sched.arrival().unwrap().strftime("%-I:%M %P").to_string(),
+        "8:06 am"
     );
     assert_eq!(t.sched.days(), 1);
     // Only the stop between the ends has a time there.

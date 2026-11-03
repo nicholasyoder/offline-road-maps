@@ -218,12 +218,24 @@ impl Day {
     }
 }
 
-/// A time of day as typed: `08:00`, `8:00`, `8:30` or `8`.
+/// A time of day as typed: `8:30 am`, `6 pm`, or on the 24-hour clock `18:00` or `8`.
 pub fn parse_time(s: &str) -> Option<civil::Time> {
-    let s = s.trim();
+    let s = s.trim().to_ascii_lowercase();
+    let (s, pm) = match (s.strip_suffix("am"), s.strip_suffix("pm")) {
+        (Some(r), _) => (r.trim_end(), Some(false)),
+        (_, Some(r)) => (r.trim_end(), Some(true)),
+        _ => (s.as_str(), None),
+    };
     let (h, m) = s.split_once(':').unwrap_or((s, "0"));
     let num = |t: &str| (!t.is_empty() && t.len() <= 2).then(|| t.parse::<i8>().ok())?;
-    civil::Time::new(num(h)?, num(m)?, 0, 0).ok()
+    let mut h = num(h)?;
+    if let Some(pm) = pm {
+        if !(1..=12).contains(&h) {
+            return None;
+        }
+        h = h % 12 + if pm { 12 } else { 0 };
+    }
+    civil::Time::new(h, num(m)?, 0, 0).ok()
 }
 
 /// The point `s` seconds into `leg`, along its pieces' points.
