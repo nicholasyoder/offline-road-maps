@@ -970,6 +970,11 @@ impl eframe::App for App {
                             Some(r) => self.pins.show(r),
                             None => {
                                 m.routing.click(&m.camera, at);
+                                // A click elsewhere on the map drops the search's marker.
+                                let world = m.camera.screen_to_world(at);
+                                if marker_at(&m.search, &m.camera, world).is_none() {
+                                    m.search.session.marker = None;
+                                }
                             }
                         }
                     }

@@ -414,6 +414,15 @@ impl SearchUi {
             }
         });
 
+        // Back in the box: its suggestions open again, and its text is asked again (the
+        // recent searches show for an empty box).
+        // A click in the box gives it the focus while it is drawn, after `focused` was read.
+        if ctx.memory(|m| m.has_focus(id)) && !self.was_focused {
+            self.dismissed = false;
+            self.selected = None;
+            self.sent.clear();
+        }
+
         // A query when the text has changed.
         if enabled && self.text != self.sent {
             self.sent = self.text.clone();

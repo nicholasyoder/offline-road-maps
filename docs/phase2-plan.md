@@ -280,7 +280,7 @@ The search engine itself, in `omp-core`, so it is tested without the app.
 
 - **Search box** in the top bar, focused with Ctrl+F or `/`. Suggestions in a list under it as you type, up to 8, each with the name, a kind icon, the admin context ("Springfield, Illinois") and distance from the view centre. Arrow keys, Enter and Escape work; Enter with no selection takes the first.
 - **Off the UI thread:** queries run on one worker; a new keystroke replaces the pending query, and stale answers are dropped, as the tile loader does. The UI repaints when an answer arrives, so the idle CPU stays near 0%.
-- **Picking a result** flies the camera there at a zoom that fits it (a street's extent, a city's area, z17 for an address), and drops a marker with a label. "Approximate" shows on the marker and in the result line for interpolated and blockface addresses. Escape or a clear button removes it.
+- **Picking a result** flies the camera there at a zoom that fits it (a street's extent, a city's area, at least z14 for an address, a pin or a route stop), and drops a marker with a label. "Approximate" shows on the marker and in the result line for interpolated and blockface addresses. Escape or a clear button removes it.
 - **Results panel** for Enter on a query with many results: a scrollable list, as Streets & Trips did.
 - **Packs without search** (built before phase 2) show the box disabled, with a note.
 - Keep the last few searches in `config.toml`.

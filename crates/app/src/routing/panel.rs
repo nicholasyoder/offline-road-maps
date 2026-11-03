@@ -38,8 +38,6 @@ const STEP_FONT: FontId = FontId::proportional(13.5);
 const SUB_H: f32 = 16.0;
 /// The directions' column of clock times, when a time is set.
 const TIME_W: f32 = 64.0;
-/// The least zoom a click on a stop flies to.
-const STOP_ZOOM: f64 = 14.0;
 const SMALL: FontId = FontId::proportional(11.5);
 /// The *Make overnight stop* button under a night's row.
 const BUTTON_H: f32 = 20.0;
@@ -139,8 +137,7 @@ impl RouteUi {
                 Edit::Move(a, b) => self.move_stop(a, b),
                 Edit::Remove(i) => self.remove_stop(i),
                 Edit::Show(i) => {
-                    let at = geo::to_unit(self.stops()[i].1.p);
-                    fly = Some((at, cam.zoom.max(STOP_ZOOM)));
+                    fly = Some(cam.point_view(geo::to_unit(self.stops()[i].1.p)));
                 }
                 Edit::Reverse => self.reverse(),
                 Edit::Avoid(flag, on) => self.set_avoid(flag, on),

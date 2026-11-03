@@ -45,11 +45,11 @@ impl App {
         // A result picked: fly there. The bench records it, and jumps there itself.
         if let Some(b) = &mut self.bench {
             for t in &o.out.taken {
-                let view = t.first.as_ref().map(|h| search::view_for(h, m.camera.size));
+                let view = t.first.as_ref().map(|h| search::view_for(h, &m.camera));
                 b.search_answer(t, view);
             }
         } else if let Some(h) = o.out.fly {
-            let (c, z) = search::view_for(&h, m.camera.size);
+            let (c, z) = search::view_for(&h, &m.camera);
             m.motion.fly_to(&m.camera, c, z);
         }
         if let Some((a, h)) = o.out.route {

@@ -14,6 +14,8 @@ pub const TILE_PX: f64 = 512.0;
 pub const MIN_ZOOM: f64 = 0.0;
 /// z14 is the deepest tile zoom; z15–z18 overzoom it.
 pub const MAX_ZOOM: f64 = 18.0;
+/// The least zoom a flight to a point (an address, a pin, a stop) ends at.
+pub const POINT_ZOOM: f64 = 14.0;
 
 /// A world point ([`geo::Unit`]) or a screen point.
 pub type Vec2 = [f64; 2];
@@ -30,6 +32,11 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// The view that shows the point `at`: centred, zoomed in to at least [`POINT_ZOOM`].
+    pub fn point_view(&self, at: Vec2) -> (Vec2, f64) {
+        (at, self.zoom.max(POINT_ZOOM))
+    }
+
     pub fn new(bounds: [f64; 4]) -> Self {
         let mut c = Self {
             center: [0.5, 0.5],

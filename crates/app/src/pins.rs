@@ -42,8 +42,6 @@ const MAX_NAMES: usize = 200;
 const CLICK_PT: f64 = HALF as f64 + 3.0;
 /// Pins listed above the search's results.
 const MAX_FOUND: usize = 6;
-/// The zoom a pin opened from search or the Trips page is shown at, at least.
-const SHOW_ZOOM: f64 = 15.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -631,10 +629,10 @@ impl PinsUi {
         self.opened = true;
     }
 
-    /// The view that shows pin `r`, zoomed in to at least [`SHOW_ZOOM`].
+    /// The view that shows pin `r`, zoomed in to at least [`camera::POINT_ZOOM`].
     pub fn view_of(&self, r: PinRef, cam: &Camera) -> Option<(camera::Vec2, f64)> {
         let p = self.pin(r)?;
-        Some((geo::to_unit(p.p), cam.zoom.max(SHOW_ZOOM)))
+        Some(cam.point_view(geo::to_unit(p.p)))
     }
 
     /// The shown pins whose name or note holds `text`, case aside: names first.

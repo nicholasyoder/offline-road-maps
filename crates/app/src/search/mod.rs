@@ -24,18 +24,17 @@ pub use session::Taken;
 pub use ui::{BenchKey, Out, SearchUi};
 pub use worker::Status;
 
-/// The zoom an address is shown at.
-const ADDRESS_ZOOM: f64 = 17.0;
 /// The most a place or street is zoomed in to, and the least.
 const FIT_ZOOM: [f64; 2] = [4.0, 17.0];
 
-/// The view to fly to for a hit: an address at z17, anything else zoomed so its radius
-/// takes 40% of the shorter side of the window.
-pub fn view_for(hit: &Hit, size: camera::Vec2) -> (camera::Vec2, f64) {
+/// The view to fly to for a hit: an address as [`camera::Camera::point_view`], anything
+/// else zoomed so its radius takes 40% of the shorter side of the window.
+pub fn view_for(hit: &Hit, cam: &camera::Camera) -> (camera::Vec2, f64) {
     let w = geo::to_unit(hit.p);
     if hit.kind == HitKind::Address {
-        return (w, ADDRESS_ZOOM);
+        return cam.point_view(w);
     }
+    let size = cam.size;
     let lat = geo::unit_to_lonlat(w)[1];
     let radius = hit.radius_m.max(50.0) / (geo::EARTH_CIRCUMFERENCE_M * lat.to_radians().cos());
     let side = size[0].min(size[1]).max(100.0);
@@ -109,15 +108,31 @@ mod tests {
 
     #[test]
     fn views_fit_results() {
-        let size = [1280.0, 800.0];
-        let (_, z) = view_for(&hit(HitKind::Address, 40.0, -83.0, 10.0), size);
-        assert_eq!(z, ADDRESS_ZOOM);
+        let mut size = camera::Camera {
+            center: [0.5, 0.5],
+            zoom: 3.0,
+            size: [1280.0, 800.0],
+            bounds: [0.0, 0.0, 1.0, 1.0],
+        };
+        let (_, z) = view_for(&hit(HitKind::Address, 40.0, -83.0, 10.0), &size);
+        assert_eq!(z, camera::POINT_ZOOM);
+        // Already closer than that: the zoom stays.
+        size.zoom = 16.0;
+        let (_, z) = view_for(&hit(HitKind::Address, 40.0, -83.0, 10.0), &size);
+        assert_eq!(z, 16.0);
+        size.zoom = 3.0;
         // A city 8 km across fills 40% of 800 points at about z11.
-        let (_, z) = view_for(&hit(HitKind::Entry(Kind::Place), 40.0, -83.0, 8000.0), size);
+        let (_, z) = view_for(
+            &hit(HitKind::Entry(Kind::Place), 40.0, -83.0, 8000.0),
+            &size,
+        );
         assert!((10.5..11.5).contains(&z), "{z}");
-        let (_, z) = view_for(&hit(HitKind::Entry(Kind::Admin), 40.0, -83.0, 2e6), size);
+        let (_, z) = view_for(&hit(HitKind::Entry(Kind::Admin), 40.0, -83.0, 2e6), &size);
         assert_eq!(z, FIT_ZOOM[0]);
-        let (w, _) = view_for(&hit(HitKind::Entry(Kind::Street), 40.0, -83.0, 500.0), size);
+        let (w, _) = view_for(
+            &hit(HitKind::Entry(Kind::Street), 40.0, -83.0, 500.0),
+            &size,
+        );
         let [lon, lat] = geo::unit_to_lonlat(w);
         assert!((lat - 40.0).abs() < 1e-6 && (lon + 83.0).abs() < 1e-6);
     }
