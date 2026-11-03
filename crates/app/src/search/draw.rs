@@ -125,7 +125,7 @@ pub(super) fn row(
         let fill = if selected {
             crate::theme::picked()
         } else {
-            crate::theme::soft_fill(false)
+            crate::theme::hover_fill()
         };
         p.rect_filled(rect, 3.0, fill);
     }

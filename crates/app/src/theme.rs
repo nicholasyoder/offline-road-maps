@@ -80,7 +80,11 @@ pub fn note_fill() -> Color32 {
 pub fn hairline() -> Color32 {
     pick(Color32::from_gray(190), Color32::from_gray(90))
 }
-/// A wash over a hovered row or a rule between rows: black on light, white on dark.
+/// The fill of a hovered row or button, in every list and in egui's own widgets.
+pub fn hover_fill() -> Color32 {
+    pick(Color32::from_gray(220), Color32::from_gray(64))
+}
+/// A wash over a rule between rows: black on light, white on dark.
 pub fn hover_wash(alpha: u8) -> Color32 {
     pick(
         Color32::from_black_alpha(alpha),
@@ -175,6 +179,7 @@ pub fn style(ctx: &egui::Context, dark: bool) {
             wv.corner_radius = CornerRadius::same(WIDGET_RADIUS);
         }
         w.inactive.bg_stroke = Stroke::new(1.0, outline());
+        w.hovered.weak_bg_fill = hover_fill();
         v.window_corner_radius = CornerRadius::same(WINDOW_RADIUS);
         v.menu_corner_radius = CornerRadius::same(WINDOW_RADIUS);
     });
@@ -212,7 +217,7 @@ pub fn icon_button(ui: &mut egui::Ui, glyph: Glyph, side: f32) -> egui::Response
         let fill = if r.is_pointer_button_down_on() {
             w.active.weak_bg_fill
         } else {
-            w.hovered.weak_bg_fill
+            hover_fill()
         };
         ui.painter().rect_filled(rect, WIDGET_RADIUS, fill);
         ink()
@@ -333,7 +338,7 @@ pub fn row<R>(
         && ui.rect_contains_pointer(out.response.rect)
         && !egui::DragAndDrop::has_any_payload(ui.ctx());
     if lit {
-        let fill_color = ui.visuals().widgets.hovered.weak_bg_fill;
+        let fill_color = hover_fill();
         ui.painter().set(
             fill,
             egui::Shape::rect_filled(out.response.rect, WIDGET_RADIUS, fill_color),

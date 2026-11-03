@@ -955,6 +955,8 @@ fn fold_row(
     text: &str,
     hover: Option<&str>,
 ) -> egui::Response {
+    // The slot for the hover fill, which goes under the text.
+    let fill = ui.painter().add(egui::Shape::Noop);
     let row = ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(12.0, 16.0), Sense::hover());
         if hover.is_some() {
@@ -971,8 +973,10 @@ fn fold_row(
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(hover);
     if resp.hovered() {
-        ui.painter()
-            .rect_filled(rect, 3.0, crate::theme::hover_wash(8));
+        ui.painter().set(
+            fill,
+            egui::Shape::rect_filled(rect, 3.0, crate::theme::hover_fill()),
+        );
     }
     resp
 }
@@ -1266,7 +1270,7 @@ fn step_row(
     if picked {
         p.rect_filled(rect, 3.0, crate::theme::picked());
     } else if resp.hovered() {
-        p.rect_filled(rect, 3.0, crate::theme::hover_wash(10));
+        p.rect_filled(rect, 3.0, crate::theme::hover_fill());
     }
     let icon = Rect::from_min_size(rect.min + Vec2::new(2.0, 4.0), Vec2::splat(ICON));
     draw_icon(p, icon, s);

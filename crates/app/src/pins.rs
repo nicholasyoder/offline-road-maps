@@ -905,7 +905,7 @@ pub fn pin_row(ui: &mut egui::Ui, p: &Pin, set: Option<&str>) -> egui::Response 
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 22.0), Sense::click());
     if resp.hovered() {
         ui.painter()
-            .rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+            .rect_filled(rect, 3.0, crate::theme::hover_fill());
     }
     let painter = ui.painter_at(rect);
     let c = Pos2::new(rect.left() + 11.0, rect.center().y);
@@ -980,7 +980,7 @@ fn symbol_button(ui: &mut egui::Ui, shape: Shape, colour: Colour, on: bool) -> e
             .rect_stroke(rect, 3.0, Stroke::new(1.5, ink()), egui::StrokeKind::Inside);
     } else if resp.hovered() {
         ui.painter()
-            .rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+            .rect_filled(rect, 3.0, crate::theme::hover_fill());
     }
     draw_symbol(ui.painter(), rect.center(), 5.5, shape, colour);
     resp
