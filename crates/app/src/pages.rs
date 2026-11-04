@@ -28,6 +28,18 @@ use crate::theme;
 /// The biggest side of a page image, the adapter's texture limit (render.rs).
 const MAX_SIDE: f64 = 8192.0;
 
+/// The most pixels of a map drawn in one go (about Letter at 360 dpi): a larger map is drawn
+/// in bands of whole rows, each read back into the page before the next (step 5.11).
+const BAND_PIXELS: u64 = 12_000_000;
+
+/// The rows of a band for a map `width` pixels wide; `OMP_BAND_ROWS` sets it (the checks).
+pub fn band_rows(width: u32) -> u32 {
+    std::env::var("OMP_BAND_ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| (BAND_PIXELS / u64::from(width.max(1))).max(1) as u32)
+}
+
 /// A page: opaque RGB.
 pub struct Page {
     pub size: [u32; 2],
@@ -186,7 +198,15 @@ impl Egui {
                 .forget_lifetime();
             self.renderer.render(&mut pass, &jobs, &screen);
         }
-        render::read_texture_rows(gpu_parts(gpu), enc, &texture, px, extra, rows)
+        render::read_texture_rows(
+            gpu_parts(gpu),
+            enc,
+            &texture,
+            px,
+            extra,
+            band_rows(px[0]),
+            rows,
+        )
     }
 }
 
@@ -194,10 +214,10 @@ fn gpu_parts(gpu: &Gpu) -> (&wgpu::Device, &wgpu::Queue) {
     (&gpu.device, &gpu.queue)
 }
 
-/// `top` (premultiplied RGBA) laid over `base` (opaque RGBA), in place.
+/// `top` (premultiplied RGBA) laid over `base` (opaque RGB), in place.
 fn over(base: &mut [u8], top: &[u8]) {
     for (b, t) in base
-        .as_chunks_mut::<4>()
+        .as_chunks_mut::<3>()
         .0
         .iter_mut()
         .zip(top.as_chunks::<4>().0)
@@ -209,28 +229,21 @@ fn over(base: &mut [u8], top: &[u8]) {
     }
 }
 
-fn rgb_of(mut rgba: Vec<u8>) -> Vec<u8> {
-    // In place: each pixel's three bytes move down over the ones already read.
-    let n = rgba.len() / 4;
-    for i in 0..n {
-        rgba.copy_within(i * 4..i * 4 + 3, i * 3);
+/// `src` (RGBA) as the RGB pixels of `dst`.
+fn copy_rgb(dst: &mut [u8], src: &[u8]) {
+    for (d, s) in dst
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(src.as_chunks::<4>().0)
+    {
+        d.copy_from_slice(&s[..3]);
     }
-    rgba.truncate(n * 3);
-    rgba.shrink_to_fit();
-    rgba
 }
 
-/// A white page of `size` pixels.
+/// A white page of `size` pixels, RGB.
 fn blank(size: [u32; 2]) -> Vec<u8> {
-    vec![255; size[0] as usize * size[1] as usize * 4]
-}
-
-/// Copies `src` (`w` pixels wide, RGBA) into `dst` (`dw` wide) with its corner at `at`.
-fn blit(dst: &mut [u8], dw: usize, src: &[u8], w: usize, at: [usize; 2]) {
-    for (y, row) in src.chunks_exact(w * 4).enumerate() {
-        let o = ((at[1] + y) * dw + at[0]) * 4;
-        dst[o..o + row.len()].copy_from_slice(row);
-    }
+    vec![255; size[0] as usize * size[1] as usize * 3]
 }
 
 /// Draws one map page: the map, then egui's layer over it.
@@ -263,23 +276,22 @@ pub fn render_map(
         hidden: &hidden,
         lines: &page.lines,
         pins: &page.pins,
+        band: band_rows(map_px[0]),
     };
-    let drawn = snapshot::draw_view(gpu, opened, style, &view)?;
-    let map_ms = t0.elapsed().as_secs_f64() * 1e3;
-
-    let mut rgba = blank(size_px);
+    // The map goes into the page row by row as it is read back.
+    let mut rgb = blank(size_px);
     let at = [
         (layout.map[0] * dpi / 72.0).round() as usize,
         (layout.map[1] * dpi / 72.0).round() as usize,
     ];
-    blit(
-        &mut rgba,
-        size_px[0] as usize,
-        &drawn.pixels,
-        map_px[0] as usize,
-        at,
-    );
-    drop(drawn.pixels);
+    let page_w = size_px[0] as usize;
+    let drawn = snapshot::draw_view(gpu, opened, style, &view, &mut |y, row| {
+        let o = ((at[1] + y) * page_w + at[0]) * 3;
+        if let Some(dst) = rgb.get_mut(o..o + row.len() / 4 * 3) {
+            copy_rgb(dst, row);
+        }
+    })?;
+    let map_ms = t0.elapsed().as_secs_f64() * 1e3;
 
     let t1 = std::time::Instant::now();
     // egui's units: the paper's points over the text size.
@@ -293,8 +305,8 @@ pub fn render_map(
         ppp as f32,
         |ui| draw_map_overlay(ui, page, &cam, origin, s),
         &mut |y, row| {
-            let at = y * width * 4;
-            if let Some(base) = rgba.get_mut(at..at + row.len()) {
+            let at = y * width * 3;
+            if let Some(base) = rgb.get_mut(at..at + row.len() / 4 * 3) {
                 over(base, row);
             }
         },
@@ -304,7 +316,7 @@ pub fn render_map(
         Page {
             size: size_px,
             size_pt: layout.page,
-            rgb: rgb_of(rgba),
+            rgb,
         },
         MapStats {
             z: cam.zoom,
@@ -483,43 +495,54 @@ pub fn render_directions(
     let plan = plan.ok_or("the directions were not laid out")?;
     let total = plan.pages.len();
     for (n, pieces) in plan.pages.iter().enumerate() {
-        let top = egui_pass.frame(gpu, screen, ppp, |ui| {
-            let p = ui.painter().clone();
-            // Nothing is drawn past the body, into the footer.
-            ui.set_clip_rect(body);
-            let mut y = body.top();
-            for (i, &(piece, h)) in pieces.iter().enumerate() {
-                let rect =
-                    Rect::from_min_size(Pos2::new(body.left(), y), Vec2::new(body.width(), h));
-                match piece {
-                    Piece::Row(r) => plan.rows.paint(ui, rect, doc, r),
-                    // A rule that would start a page has nothing above it to set apart.
-                    Piece::Rule if i == 0 => {}
-                    _ => draw_head_piece(ui, doc, &plan.head, piece, rect),
+        let mut rgb = blank(size_px);
+        let width = size_px[0] as usize;
+        egui_pass.frame_rows(
+            gpu,
+            screen,
+            ppp,
+            |ui| {
+                let p = ui.painter().clone();
+                // Nothing is drawn past the body, into the footer.
+                ui.set_clip_rect(body);
+                let mut y = body.top();
+                for (i, &(piece, h)) in pieces.iter().enumerate() {
+                    let rect =
+                        Rect::from_min_size(Pos2::new(body.left(), y), Vec2::new(body.width(), h));
+                    match piece {
+                        Piece::Row(r) => plan.rows.paint(ui, rect, doc, r),
+                        // A rule that would start a page has nothing above it to set apart.
+                        Piece::Rule if i == 0 => {}
+                        _ => draw_head_piece(ui, doc, &plan.head, piece, rect),
+                    }
+                    y += h;
                 }
-                y += h;
-            }
-            p.text(
-                footer.left_center(),
-                Align2::LEFT_CENTER,
-                format!("Page {} of {total}", n + 1),
-                FontId::proportional(9.0),
-                theme::PAPER_WEAK,
-            );
-            p.text(
-                footer.right_center(),
-                Align2::RIGHT_CENTER,
-                CREDIT,
-                FontId::proportional(9.0),
-                theme::PAPER_WEAK,
-            );
-        })?;
-        let mut rgba = blank(size_px);
-        over(&mut rgba, &top);
+                p.text(
+                    footer.left_center(),
+                    Align2::LEFT_CENTER,
+                    format!("Page {} of {total}", n + 1),
+                    FontId::proportional(9.0),
+                    theme::PAPER_WEAK,
+                );
+                p.text(
+                    footer.right_center(),
+                    Align2::RIGHT_CENTER,
+                    CREDIT,
+                    FontId::proportional(9.0),
+                    theme::PAPER_WEAK,
+                );
+            },
+            &mut |y, row| {
+                let at = y * width * 3;
+                if let Some(base) = rgb.get_mut(at..at + row.len() / 4 * 3) {
+                    over(base, row);
+                }
+            },
+        )?;
         each(Page {
             size: size_px,
             size_pt: layout.page,
-            rgb: rgb_of(rgba),
+            rgb,
         })?;
     }
     Ok(total)
@@ -671,24 +694,12 @@ mod tests {
 
     #[test]
     fn over_blends_premultiplied() {
-        let mut base = vec![200, 100, 0, 255, 10, 20, 30, 255];
+        let mut base = vec![200, 100, 0, 10, 20, 30];
         // Opaque white over the first pixel, half-transparent black (premultiplied: 0s) over
         // the second.
         over(&mut base, &[255, 255, 255, 255, 0, 0, 0, 128]);
-        assert_eq!(base[..4], [255, 255, 255, 255]);
-        assert_eq!(base[4..7], [5, 10, 15]);
-    }
-
-    #[test]
-    fn blit_places_the_rows() {
-        let mut dst = vec![0u8; 4 * 4 * 4];
-        let src = vec![9u8; 2 * 2 * 4];
-        blit(&mut dst, 4, &src, 2, [1, 2]);
-        let px = |x: usize, y: usize| dst[(y * 4 + x) * 4];
-        assert_eq!(px(1, 2), 9);
-        assert_eq!(px(2, 3), 9);
-        assert_eq!(px(0, 2), 0);
-        assert_eq!(px(3, 3), 0);
+        assert_eq!(base[..3], [255, 255, 255]);
+        assert_eq!(base[3..], [5, 10, 15]);
     }
 
     #[test]

@@ -48,6 +48,15 @@ const GRAB: f32 = 11.0;
 /// The most dpi a page is printed at when the window's GPU is GL.
 const GL_MAX_DPI: f64 = 360.0;
 
+/// [`GL_MAX_DPI`], or what `OMP_GL_MAX_DPI` says (to try banded pages on a GL laptop,
+/// step 5.11).
+fn gl_max_dpi() -> f64 {
+    std::env::var("OMP_GL_MAX_DPI")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(GL_MAX_DPI)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Kind {
     #[default]
@@ -890,22 +899,7 @@ impl PrintUi {
                     self.preview.error = None;
                     self.preview.took = done.took;
                     self.preview.note = done.note;
-                    self.preview.pages = done
-                        .pages
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, p)| {
-                            let img = egui::ColorImage::from_rgb(
-                                [p.size[0] as usize, p.size[1] as usize],
-                                &p.rgb,
-                            );
-                            ctx.load_texture(
-                                format!("print-page-{i}"),
-                                img,
-                                egui::TextureOptions::LINEAR,
-                            )
-                        })
-                        .collect();
+                    self.preview.pages = done.pages;
                 }
                 Err(e) => {
                     self.preview.error = Some(e);
@@ -1072,7 +1066,7 @@ impl PrintUi {
                 ctx,
                 inputs,
                 Output::Print(request),
-                if gl { dpi.min(GL_MAX_DPI) } else { dpi },
+                if gl { dpi.min(gl_max_dpi()) } else { dpi },
             );
         }
     }
@@ -1149,15 +1143,17 @@ enum What {
 
 /// Where the pages of a job go as they are drawn.
 enum Sink {
-    Collect(Vec<Printed>),
+    /// A preview's pages, each made a texture as it is drawn, so no page's pixels are kept
+    /// (step 5.11).
+    Collect(egui::Context, Vec<TextureHandle>),
     Pdf(Pdf<std::io::BufWriter<std::fs::File>>, PathBuf),
     Spool(printer::Spool),
 }
 
 impl Sink {
-    fn new(output: Output, title: &str) -> Result<Self, String> {
+    fn new(output: Output, title: &str, ctx: &egui::Context) -> Result<Self, String> {
         Ok(match output {
-            Output::Preview => Self::Collect(Vec::new()),
+            Output::Preview => Self::Collect(ctx.clone(), Vec::new()),
             Output::Pdf(path) => {
                 let file = std::fs::File::create(&path)
                     .map_err(|e| files::save_error(path.parent().unwrap_or(Path::new(".")), &e))?;
@@ -1176,8 +1172,13 @@ impl Sink {
 
     fn add(&mut self, page: Printed) -> Result<(), String> {
         match self {
-            Self::Collect(v) => {
-                v.push(page);
+            Self::Collect(ctx, v) => {
+                let img = egui::ColorImage::from_rgb(
+                    [page.size[0] as usize, page.size[1] as usize],
+                    &page.rgb,
+                );
+                let name = format!("print-page-{}", v.len());
+                v.push(ctx.load_texture(name, img, egui::TextureOptions::LINEAR));
                 Ok(())
             }
             Self::Pdf(pdf, path) => pdf
@@ -1188,9 +1189,9 @@ impl Sink {
     }
 
     /// Closes the document; the pages kept (a preview's) and what to tell the user.
-    fn finish(self) -> Result<(Vec<Printed>, String), String> {
+    fn finish(self) -> Result<(Vec<TextureHandle>, String), String> {
         match self {
-            Self::Collect(v) => Ok((v, String::new())),
+            Self::Collect(_, v) => Ok((v, String::new())),
             Self::Pdf(pdf, path) => {
                 let w = pdf
                     .finish()
@@ -1222,7 +1223,7 @@ struct Job {
 const CANCELLED: &str = "cancelled";
 
 struct Done {
-    pages: Vec<Printed>,
+    pages: Vec<TextureHandle>,
     took: Duration,
     note: String,
 }
@@ -1341,7 +1342,7 @@ impl WorkerState {
             return Err(CANCELLED.into());
         }
         let cancel = job.cancel;
-        let mut sink = Sink::new(job.output, &title)?;
+        let mut sink = Sink::new(job.output, &title, &job.ctx)?;
         let drawn = match job.what {
             What::Map(page) => {
                 log::info!("print worker: drawing the map page at {} dpi", page.dpi);

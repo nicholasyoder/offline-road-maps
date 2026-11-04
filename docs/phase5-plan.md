@@ -52,7 +52,7 @@ What phase 4 left in place for this:
 | 5.8 Perf: cold reads from the stick | Deferred 2026-11-03 | Owner: cold reads do not feel slow in use. P8 (the routing top's warm-up) tried and left: see [perf-findings.md](perf-findings.md); P9, P16 and the regression hunt not taken |
 | 5.9 Perf: long routes and directions | Deferred 2026-11-03 | Owner: routing is fast enough in use, and the segment cache stays as it is rather than spend RSS; P10 not taken |
 | 5.10 Perf: memory | **Done** 2026-11-04 | glibc arenas capped at 2: North America flight 328 → 298 MiB on the dev machine (target 300 met); the other leads measured and left; DX12 and the E6430's GL leak: no setting helps. Found on the way: `panic = "unwind"` crashes the E6430 at start-up, so the app is back on `abort` (5.14) |
-| 5.11 Perf: printing | Not started | |
+| 5.11 Perf: printing | In progress | Dev machine done 2026-11-04; the GL cap and DX12 wait for the laptops |
 | 5.12 Perf: builder and pack size | Not started | |
 | 5.13 Final checks on every machine | Not started | |
 | 5.14 Why unwinding crashes the E6430 | Not started | Research; before 5.13, so the final checks run on the build that will ship |
@@ -290,6 +290,21 @@ After 4.11's fix the dev machine is within +100 MiB at 300 and 360 dpi (+82 and 
 - **Directions pages:** 749 steps at 360 dpi take 8.6 s and +177 MiB on the dev machine; pages are drawn one at a time, so look at why memory grows with the page count.
 
 **Done when:** printing is within +100 MiB at 300 and 360 dpi on every machine, 600 dpi is drawn in bands (and the GL cap lifted or kept with its reason), and the numbers are recorded.
+
+> **In progress 2026-11-04** (dev machine done; the laptops remain). Taken, each measured with the `print-rss` flight (North America pack, RADV; logs in `$OMP_WORK/measure/p5/5.11/`, two runs per row, RSS peak minus RSS before the step):
+>
+> | Step | 4.11 / 5.2 baseline | 5.10 build | Now |
+> |---|---:|---:|---:|
+> | Map 300 dpi | +95 | +69 / +70 | **+45 / +46** |
+> | Map 360 dpi | +82 | +72 / +73 | **+35 / +40** |
+> | Map 600 dpi | +243 (4.11: +330) | +197 / +199 | **+101 / +100** |
+> | Directions, 5 stops, 360 dpi | +152 | +137 / +144 | **+38 / +55** |
+> | Directions, 749 steps, 360 dpi: preview | +164 | +143 / +158 | **+15 / +1** |
+> | Directions, 749 steps, 360 dpi: whole step | | +163 / +204 | **+50 / +70** (34 pages; PDF 13 s as before, 20.6 MiB) |
+>
+> What changed: **(1)** the map is drawn in horizontal bands (`snapshot::draw_view`, `render::draw_offscreen_rows`): a band is its own target and readback buffer, the renderer's globals hold the band's shift (`Renderer::set_view`, `shift` in `map.wgsl` and `text.wgsl`), and labels are placed once for the whole page, so nothing is decided per band. Pages over 12 MP (`pages::BAND_PIXELS`, Letter above 360 dpi) are banded; `OMP_BAND_ROWS` overrides it (`100000` draws whole). **(2)** The map rows go straight into the page (no page-sized copy of the map), the overlay's readback is banded too, and the page is held as RGB from the start (no RGBA page and no conversion). **(3)** The PDF predicts and compresses 64 rows at a time (`pdf::Deflater`), byte for byte what the one-shot compression made (test); it held a predicted copy of the page. **(4)** The directions pages stream their overlay into the page as the map's overlay does. **(5)** The preview turns each page into a texture as it is drawn, so a 34-page preview holds one page, not all (P18: +158 → +1…15). The banded page is not bit-identical to the whole one: a vertex can land on the other side of the rasteriser's 1/256 pixel grid, so about 1 byte in 10,000 differs, by antialiasing amounts (worst 41 of 255, at 1.5 ppp without MSAA), nowhere near the band edges; a band as tall as the page is identical. Test: `snapshot::tests::banded_equals_whole` (ignored, needs `OMP_TEST_PACK`). 600 dpi's +100 is the page itself (97 MiB of RGB); the rest would need the PDF written from bands, which the encoder's predictor could do but the printers' GDI path (a whole page) could not.
+>
+> **Left for the laptops:** (a) whether banding lifts the GL cap and the "Could not lock adapter context" panic on the E6430: `OMP_GL_MAX_DPI=600` lifts the cap for a try, and `print-bands.bat` on the stick draws the 600 dpi pages banded and whole; (b) the DX12 print memory on the 7490 under Windows (`print-rss`), and the numbers above on the 7490 (Debian) and the E6430. The cap stays at 360 until (a) is run.
 
 ## 5.12 Perf: builder and pack size
 

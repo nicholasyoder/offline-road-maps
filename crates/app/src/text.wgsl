@@ -2,9 +2,10 @@
 // drawn twice, first every halo and then every glyph, so no halo covers a letter.
 
 struct Globals {
-    // Viewport size in pixels.
+    // Target size in pixels, and the frame position of its top-left corner (a band of a
+    // printed page is drawn on a target of its own).
     size: vec2<f32>,
-    _pad: vec2<f32>,
+    shift: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -37,7 +38,7 @@ fn glyph(
     let local = (corner * 2.0 - 1.0) * half;
     let px = center + axis * local.x + vec2<f32>(-axis.y, axis.x) * local.y;
     var out: GlyphOut;
-    out.pos = vec4<f32>(px.x / globals.size.x * 2.0 - 1.0, 1.0 - px.y / globals.size.y * 2.0, 0.0, 1.0);
+    out.pos = vec4<f32>((px.x - globals.shift.x) / globals.size.x * 2.0 - 1.0, 1.0 - (px.y - globals.shift.y) / globals.size.y * 2.0, 0.0, 1.0);
     out.uv = mix(uv.xy, uv.zw, corner);
     out.color = vec4<f32>(color.rgb * color.a, color.a);
     out.scale = scale;

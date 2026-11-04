@@ -157,12 +157,13 @@ impl Snapshot {
             hidden: &hidden,
             lines: &route,
             pins: &[],
+            band: 0,
         };
-        let d = draw_view(&gpu, &opened, &style, &view)?;
+        let (d, pixels) = draw_image(&gpu, &opened, &style, &view)?;
         let adapter = &gpu.adapter;
         let (z, tiles, mesh_bytes, loaded_in) = (d.z, d.tiles, d.mesh_bytes, d.loaded_in);
         let (n_labels, n_shields, label_ms) = (d.labels, d.shields, d.label_ms);
-        let (atlas_fill, samples, pixels) = (d.atlas_fill, d.samples, d.pixels);
+        let (atlas_fill, samples) = (d.atlas_fill, d.samples);
         route_msg += &d.route_msg;
         write_png(&self.out, self.size, &pixels)
             .map_err(|e| format!("{}: {e}", self.out.display()))?;
@@ -606,12 +607,13 @@ pub struct View<'a> {
     /// The route's lines, in the order drawn.
     pub lines: &'a [(Look, Line)],
     pub pins: &'a [Pin],
+    /// Draw in bands of this many rows (`0`: whole), each read back before the next
+    /// (step 5.11).
+    pub band: u32,
 }
 
 /// An offscreen map and what it took.
 pub struct Drawn {
-    /// RGBA, row by row.
-    pub pixels: Vec<u8>,
     pub z: u8,
     pub tiles: usize,
     pub mesh_bytes: usize,
@@ -626,14 +628,30 @@ pub struct Drawn {
     pub route_msg: String,
 }
 
+/// As [`draw_view`], with the image in memory: RGBA, row by row.
+pub fn draw_image(
+    gpu: &Gpu,
+    opened: &packs::Opened,
+    style: &Style,
+    view: &View,
+) -> Result<(Drawn, Vec<u8>), String> {
+    let mut pixels = Vec::new();
+    let drawn = draw_view(gpu, opened, style, view, &mut |_, row| {
+        pixels.extend_from_slice(row)
+    })?;
+    Ok((drawn, pixels))
+}
+
 /// Draws `view` of the pack, waiting for every tile it needs: nothing is drawn
 /// progressively, as the window does. The size in pixels is the camera's size in points
-/// times `pixels_per_point`.
+/// times `pixels_per_point`. Each row of the image (`y` and its RGBA bytes) goes to `rows`
+/// as it is read back, so the caller need not hold the whole image.
 pub fn draw_view(
     gpu: &Gpu,
     opened: &packs::Opened,
     style: &Style,
     view: &View,
+    rows: &mut dyn FnMut(usize, &[u8]),
 ) -> Result<Drawn, String> {
     let t0 = Instant::now();
     let (adapter, device, queue, pool) = (&gpu.adapter, &gpu.device, &gpu.queue, &gpu.pool);
@@ -776,15 +794,22 @@ pub fn draw_view(
         "page: labels placed, drawing, {:.0} ms",
         t0.elapsed().as_secs_f64() * 1e3
     );
-    let pixels = render::draw_offscreen(device, queue, &mut renderer, &frame, no_map);
+    let drawn = render::draw_offscreen_rows(
+        device,
+        queue,
+        &mut renderer,
+        &frame,
+        no_map,
+        view.band,
+        rows,
+    );
     // The readback waited for the GPU: the tiles' ranges can be reused by the next page.
     drop((frame, known));
     pool.idle();
-    let pixels = pixels?;
+    drawn?;
     log::info!("page: drawn, {:.0} ms", t0.elapsed().as_secs_f64() * 1e3);
     let failed = failed.into_inner();
     Ok(Drawn {
-        pixels,
         z,
         tiles,
         mesh_bytes,
@@ -841,13 +866,62 @@ mod tests {
             hidden: &hidden,
             lines: &[],
             pins: &[],
+            band: 0,
         };
         let mut bytes = Vec::new();
         for _ in 0..12 {
-            draw_view(&gpu, &opened, &style, &view).unwrap();
+            draw_image(&gpu, &opened, &style, &view).unwrap();
             bytes.push(gpu.pool.bytes().0);
         }
         assert!(bytes[0] > 0);
         assert_eq!(bytes[11], bytes[0], "slab bytes after each page: {bytes:?}");
+    }
+
+    /// A map drawn in bands is the map drawn whole, to within the rasteriser's rounding
+    /// (step 5.11); one band as tall as the map is identical.
+    /// `OMP_TEST_PACK=<first chunk> cargo test -p omp-app --release -- --ignored banded`.
+    #[test]
+    #[ignore = "needs OMP_TEST_PACK and a GPU"]
+    fn banded_equals_whole() {
+        let first = std::path::PathBuf::from(std::env::var_os("OMP_TEST_PACK").expect("pack"));
+        let opened = packs::open(&first).unwrap();
+        let (style, _) = Style::compile(&StyleFile::builtin(), &opened.schema);
+        let gpu = Gpu::headless().unwrap();
+        let hidden = Hidden::default();
+        for (zoom, ppp, msaa) in [(2.0, 1.0, 4), (4.0, 2.0, 4), (3.0, 1.5, 1)] {
+            let mut cam = Camera::new(opened.bounds);
+            cam.size = [640.0, 480.0];
+            cam.zoom += zoom;
+            let draw = |band| {
+                let view = View {
+                    cam: &cam,
+                    pixels_per_point: ppp,
+                    msaa,
+                    hidden: &hidden,
+                    lines: &[],
+                    pins: &[],
+                    band,
+                };
+                draw_image(&gpu, &opened, &style, &view).unwrap().1
+            };
+            let whole = draw(0);
+            for band in [1, 97, (240.0 * ppp) as u32, 4000] {
+                let banded = draw(band);
+                let differ = whole.iter().zip(&banded).filter(|(a, b)| a != b).count();
+                assert_eq!(whole.len(), banded.len());
+                let worst = whole.iter().zip(&banded).map(|(a, b)| a.abs_diff(*b)).max();
+                if band >= 4000 {
+                    assert_eq!(differ, 0, "one band is the whole map");
+                }
+                // A band computes its clip positions from its own origin, so a vertex
+                // can land on the other side of the rasteriser's 1/256 pixel grid: a few
+                // bytes in 10,000 differ, by antialiasing amounts, nowhere near band edges.
+                assert!(
+                    differ * 5000 < whole.len() && worst.unwrap_or(0) < 64,
+                    "zoom +{zoom}, {ppp} ppp, band {band}: {differ} of {} bytes differ, worst {worst:?}",
+                    whole.len()
+                );
+            }
+        }
     }
 }

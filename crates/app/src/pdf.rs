@@ -7,6 +7,10 @@
 
 use std::io::{self, Write};
 
+use miniz_oxide::deflate::core::{
+    CompressorOxide, TDEFLFlush, TDEFLStatus, compress, create_comp_flags_from_zip_params,
+};
+
 const LEVEL: u8 = 6;
 
 /// A document being written to `W`.
@@ -77,7 +81,13 @@ impl<W: Write> Pdf<W> {
         self.put(format!("<< /Length {} >>\nstream\n", content.len()).as_bytes())?;
         self.put(content.as_bytes())?;
         self.put(b"endstream\nendobj\n")?;
-        let packed = miniz_oxide::deflate::compress_to_vec_zlib(&predict(rgb, w as usize), LEVEL);
+        // Predicted and compressed a few rows at a time: the predicted image is never held.
+        let mut deflate = Deflater::new();
+        predict(rgb, w as usize, &mut |rows| {
+            deflate.push(rows, TDEFLFlush::None)
+        });
+        deflate.push(&[], TDEFLFlush::Finish);
+        let packed = deflate.finish();
         self.begin(page + 2)?;
         self.put(
             format!(
@@ -148,12 +158,56 @@ fn escape(s: &str) -> String {
         .collect()
 }
 
+/// A zlib stream built up from pieces, as `compress_to_vec_zlib` makes it from one.
+struct Deflater {
+    c: CompressorOxide,
+    out: Vec<u8>,
+    len: usize,
+}
+
+impl Deflater {
+    fn new() -> Self {
+        Self {
+            c: CompressorOxide::new(create_comp_flags_from_zip_params(LEVEL.into(), 1, 0)),
+            out: vec![0; 1 << 16],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, mut input: &[u8], flush: TDEFLFlush) {
+        loop {
+            if self.out.len() - self.len < 1 << 12 {
+                self.out.resize(self.out.len() * 2, 0);
+            }
+            let (status, used, made) =
+                compress(&mut self.c, input, &mut self.out[self.len..], flush);
+            self.len += made;
+            input = &input[used..];
+            match status {
+                TDEFLStatus::Done => return,
+                TDEFLStatus::Okay if flush == TDEFLFlush::None && input.is_empty() => return,
+                TDEFLStatus::Okay => {}
+                _ => panic!("Bug! Unexpectedly failed to compress!"),
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        self.out.truncate(self.len);
+        self.out
+    }
+}
+
+/// Rows predicted per piece handed on.
+const PIECE_ROWS: usize = 64;
+
 /// The rows with a PNG predictor in front of each (Predictor 15): Sub, Up or none, whichever
-/// leaves the smallest bytes in all, as signed values.
-fn predict(rgb: &[u8], width: usize) -> Vec<u8> {
+/// leaves the smallest bytes in all, as signed values. Handed to `out` in pieces of
+/// [`PIECE_ROWS`] rows.
+fn predict(rgb: &[u8], width: usize, out: &mut dyn FnMut(&[u8])) {
     let row = width * 3;
     let rows = rgb.len().checked_div(row).unwrap_or(0);
-    let mut out = Vec::with_capacity(rgb.len() + rows);
+    let mut piece = Vec::with_capacity((row + 1) * PIECE_ROWS);
     let mut sub = vec![0u8; row];
     let mut up = vec![0u8; row];
     let cost = |bytes: &[u8]| {
@@ -173,17 +227,20 @@ fn predict(rgb: &[u8], width: usize) -> Vec<u8> {
         let none = cost(cur);
         let (s, u) = (cost(&sub), cost(&up));
         if u <= s && u <= none {
-            out.push(2);
-            out.extend_from_slice(&up);
+            piece.push(2);
+            piece.extend_from_slice(&up);
         } else if s <= none {
-            out.push(1);
-            out.extend_from_slice(&sub);
+            piece.push(1);
+            piece.extend_from_slice(&sub);
         } else {
-            out.push(0);
-            out.extend_from_slice(cur);
+            piece.push(0);
+            piece.extend_from_slice(cur);
+        }
+        if (y + 1) % PIECE_ROWS == 0 || y + 1 == rows {
+            out(&piece);
+            piece.clear();
         }
     }
-    out
 }
 
 #[cfg(test)]
@@ -211,6 +268,24 @@ mod tests {
         out
     }
 
+    fn predicted(rgb: &[u8], width: usize) -> Vec<u8> {
+        let mut all = Vec::new();
+        predict(rgb, width, &mut |piece| all.extend_from_slice(piece));
+        all
+    }
+
+    /// Compressing in pieces gives the bytes compressing the whole does.
+    #[test]
+    fn pieces_compress_like_the_whole() {
+        let (w, h) = (300, 200);
+        let rgb = picture(w, h);
+        let mut d = Deflater::new();
+        predict(&rgb, w, &mut |piece| d.push(piece, TDEFLFlush::None));
+        d.push(&[], TDEFLFlush::Finish);
+        let whole = miniz_oxide::deflate::compress_to_vec_zlib(&predicted(&rgb, w), LEVEL);
+        assert!(d.finish() == whole);
+    }
+
     fn picture(w: usize, h: usize) -> Vec<u8> {
         (0..w * h * 3)
             .map(|i| ((i / 3 % w) * 3 + (i / 3 / w) * 7 + i % 3 * 50) as u8)
@@ -220,9 +295,9 @@ mod tests {
     #[test]
     fn predictors_round_trip() {
         let rgb = picture(37, 23);
-        assert_eq!(unpredict(&predict(&rgb, 37), 37), rgb);
+        assert_eq!(unpredict(&predicted(&rgb, 37), 37), rgb);
         let flat = vec![200u8; 30 * 10 * 3];
-        assert_eq!(unpredict(&predict(&flat, 30), 30), flat);
+        assert_eq!(unpredict(&predicted(&flat, 30), 30), flat);
     }
 
     /// Finds the offset `startxref` gives and reads the table it points at.

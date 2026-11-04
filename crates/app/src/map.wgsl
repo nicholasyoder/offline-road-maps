@@ -7,9 +7,10 @@
 // white edge of its line width.
 
 struct Globals {
-    // Viewport size in pixels.
+    // Target size in pixels, and the frame position of its top-left corner (a band of a
+    // printed page is drawn on a target of its own).
     size: vec2<f32>,
-    _pad: vec2<f32>,
+    shift: vec2<f32>,
 }
 
 struct Paint {
@@ -36,7 +37,7 @@ struct TileTransform {
 @group(1) @binding(0) var<uniform> tile: TileTransform;
 
 fn to_clip(px: vec2<f32>) -> vec4<f32> {
-    return vec4<f32>(px.x / globals.size.x * 2.0 - 1.0, 1.0 - px.y / globals.size.y * 2.0, 0.0, 1.0);
+    return vec4<f32>((px.x - globals.shift.x) / globals.size.x * 2.0 - 1.0, 1.0 - (px.y - globals.shift.y) / globals.size.y * 2.0, 0.0, 1.0);
 }
 
 fn premultiply(c: vec4<f32>) -> vec4<f32> {

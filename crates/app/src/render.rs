@@ -158,7 +158,9 @@ pub struct GpuPaint {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Globals {
     size: [f32; 2],
-    _pad: [f32; 2],
+    /// The frame position (pixels) of the target's top-left corner: nonzero when a band of
+    /// the frame is drawn (step 5.11).
+    shift: [f32; 2],
 }
 
 #[repr(C)]
@@ -350,7 +352,8 @@ pub struct Renderer {
     // What was last written, so what has not changed is not written again (step 5.2, P12).
     /// The window's last frame: drawn again, it is on the GPU already.
     prepared: Weak<Frame>,
-    size: [f32; 2],
+    /// The globals last written: the target's size, then its shift.
+    view: [f32; 4],
     written_paints: Vec<GpuPaint>,
     /// The tile transforms, made in here each frame.
     transform_data: Vec<u8>,
@@ -514,7 +517,7 @@ impl Renderer {
             srgb: format.is_srgb(),
             samples,
             prepared: Weak::new(),
-            size: [0.0; 2],
+            view: [0.0; 4],
             written_paints: Vec::new(),
             transform_data: Vec::new(),
         }
@@ -690,6 +693,17 @@ impl Renderer {
         (buf, bg)
     }
 
+    /// Draws onto a target of `size` pixels showing the frame from `shift`: the whole frame
+    /// from `[0, 0]`, or one band of it (step 5.11). [`Self::prepare`] resets it.
+    pub fn set_view(&mut self, queue: &wgpu::Queue, size: [f32; 2], shift: [f32; 2]) {
+        let view = [size[0], size[1], shift[0], shift[1]];
+        if view != self.view {
+            self.view = view;
+            let globals = Globals { size, shift };
+            queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
+        }
+    }
+
     /// Uploads the frame's uniforms.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
         let route = frame.route.as_ref().map_or(0, RouteDraw::pieces);
@@ -701,14 +715,7 @@ impl Renderer {
             (self.transforms, self.transforms_bg) =
                 Self::transforms(device, &self.tile_layout, self.stride, self.capacity);
         }
-        if frame.size != self.size {
-            self.size = frame.size;
-            let globals = Globals {
-                size: frame.size,
-                _pad: [0.0; 2],
-            };
-            queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
-        }
+        self.set_view(queue, frame.size, [0.0; 2]);
         // The paints change with the zoom, not while the map pans.
         let paints = &frame.paints[..frame.paints.len().min(MAX_PAINTS)];
         if bytemuck::cast_slice::<_, u8>(paints)
@@ -1024,21 +1031,27 @@ const READBACK_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 /// The format `--render` draws in: not sRGB, like egui's usual target, so colours match.
 pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// Draws `frame` offscreen on `background` and returns the RGBA pixels, row by row.
-pub fn draw_offscreen(
+/// Draws `frame` offscreen on `background`, handing each row (`y` and its RGBA bytes) to
+/// `rows`. With `band` rows or more, the frame is drawn in horizontal bands of that many
+/// rows, each read back before the next is drawn: the target and the readback buffer are a
+/// band's, and no submit draws more than a band (step 5.11). `0` draws it whole.
+pub fn draw_offscreen_rows(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     renderer: &mut Renderer,
     frame: &Frame,
     background: Rgba,
-) -> Result<Vec<u8>, String> {
+    band: u32,
+    rows: &mut dyn FnMut(usize, &[u8]),
+) -> Result<(), String> {
     let [w, h] = frame.size.map(|v| v as u32);
+    let band = if band == 0 { h } else { band.min(h) }.max(1);
     let texture = |samples, usage| {
         device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen"),
             size: wgpu::Extent3d {
                 width: w,
-                height: h,
+                height: band,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -1055,108 +1068,132 @@ pub fn draw_offscreen(
     let resolved_view = resolved.create_view(&Default::default());
     let msaa_view = msaa.as_ref().map(|t| t.create_view(&Default::default()));
     renderer.prepare(device, queue, frame);
-    let mut enc = device.create_command_encoder(&Default::default());
-    {
-        let c = |v: u8| f64::from(v) / 255.0;
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("offscreen map"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: msaa_view.as_ref().unwrap_or(&resolved_view),
-                depth_slice: None,
-                resolve_target: msaa_view.as_ref().map(|_| &resolved_view),
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: c(background[0]),
-                        g: c(background[1]),
-                        b: c(background[2]),
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
-        renderer.paint(&mut pass, frame, [0, 0], [0, 0, w, h]);
+    let mut y0 = 0;
+    while y0 < h {
+        let rows_here = band.min(h - y0);
+        if band < h {
+            renderer.set_view(queue, [w as f32, band as f32], [0.0, y0 as f32]);
+        }
+        let mut enc = device.create_command_encoder(&Default::default());
+        {
+            let c = |v: u8| f64::from(v) / 255.0;
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("offscreen map"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: msaa_view.as_ref().unwrap_or(&resolved_view),
+                    depth_slice: None,
+                    resolve_target: msaa_view.as_ref().map(|_| &resolved_view),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: c(background[0]),
+                            g: c(background[1]),
+                            b: c(background[2]),
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            renderer.paint(&mut pass, frame, [0, -(y0 as i32)], [0, 0, w, band]);
+        }
+        read_texture_rows(
+            (device, queue),
+            enc,
+            &resolved,
+            [w, rows_here],
+            Vec::new(),
+            0,
+            &mut |y, row| rows(y0 as usize + y, row),
+        )?;
+        y0 += band;
     }
-    read_texture((device, queue), enc, &resolved, [w, h], Vec::new())
+    Ok(())
 }
 
 /// Reads back `texture` (`size` pixels, [`OFFSCREEN_FORMAT`]) after the commands in `enc`
-/// and `extra` have run: RGBA, row by row.
-pub fn read_texture(
-    gpu: (&wgpu::Device, &wgpu::Queue),
+/// the mapped buffer, so a page-sized copy of the image is never made (step 4.11). With
+/// `band` rows or more at a time, the copy-out is in bands too, so the buffer is a band's
+/// (step 5.11); `0` reads it whole.
+/// the mapped buffer, so a page-sized copy of the image is never made (step 4.11).
+pub fn read_texture_rows(
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
     enc: wgpu::CommandEncoder,
     texture: &wgpu::Texture,
     [w, h]: [u32; 2],
     extra: Vec<wgpu::CommandBuffer>,
-) -> Result<Vec<u8>, String> {
-    let mut pixels = Vec::with_capacity((w * h * 4) as usize);
-    read_texture_rows(gpu, enc, texture, [w, h], extra, &mut |_, row| {
-        pixels.extend_from_slice(row)
-    })?;
-    Ok(pixels)
-}
-
-/// As [`read_texture`], but hands each row (`y` and its RGBA bytes) to `rows` straight from
-/// the mapped buffer, so a page-sized copy of the image is never made (step 4.11).
-pub fn read_texture_rows(
-    (device, queue): (&wgpu::Device, &wgpu::Queue),
-    mut enc: wgpu::CommandEncoder,
-    texture: &wgpu::Texture,
-    [w, h]: [u32; 2],
-    extra: Vec<wgpu::CommandBuffer>,
+    band: u32,
     rows: &mut dyn FnMut(usize, &[u8]),
 ) -> Result<(), String> {
     let row =
         (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let out = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("offscreen readback"),
-        size: u64::from(row * h),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    enc.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &out,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(row),
-                rows_per_image: Some(h),
+    let band = if band == 0 { h } else { band.min(h) }.max(1);
+    // The first band's copy goes after the commands in `enc`; the others have their own.
+    let mut first = Some((enc, extra));
+    let mut y0 = 0;
+    while y0 < h {
+        let n = band.min(h - y0);
+        let out = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("offscreen readback"),
+            size: u64::from(row * n),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let (mut enc, extra) = first.take().unwrap_or_else(|| {
+            (
+                device.create_command_encoder(&Default::default()),
+                Vec::new(),
+            )
+        });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                origin: wgpu::Origin3d { x: 0, y: y0, z: 0 },
+                ..texture.as_image_copy()
             },
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
-    log::info!("readback: submitting");
-    queue.submit(extra.into_iter().chain([enc.finish()]));
-    log::info!("readback: submitted");
-    let slice = out.slice(..);
-    let mapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = mapped.clone();
-    slice.map_async(wgpu::MapMode::Read, move |_| {
-        flag.store(true, std::sync::atomic::Ordering::Release);
-    });
-    // The GL backend gives up a wait after a while (a big page on the E6430 took longer),
-    // so ask again until the buffer is mapped.
-    let start = std::time::Instant::now();
-    while !mapped.load(std::sync::atomic::Ordering::Acquire) {
-        match device.poll(wgpu::PollType::wait_indefinitely()) {
-            Err(wgpu::PollError::Timeout) if start.elapsed() < READBACK_LIMIT => {}
-            r => {
-                r.map_err(|e| format!("GPU: {e}"))?;
+            wgpu::TexelCopyBufferInfo {
+                buffer: &out,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(n),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: n,
+                depth_or_array_layers: 1,
+            },
+        );
+        log::info!("readback: submitting");
+        queue.submit(extra.into_iter().chain([enc.finish()]));
+        log::info!("readback: submitted");
+        let slice = out.slice(..);
+        let mapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = mapped.clone();
+        slice.map_async(wgpu::MapMode::Read, move |_| {
+            flag.store(true, std::sync::atomic::Ordering::Release);
+        });
+        // The GL backend gives up a wait after a while (a big page on the E6430 took
+        // longer), so ask again until the buffer is mapped.
+        let start = std::time::Instant::now();
+        while !mapped.load(std::sync::atomic::Ordering::Acquire) {
+            match device.poll(wgpu::PollType::wait_indefinitely()) {
+                Err(wgpu::PollError::Timeout) if start.elapsed() < READBACK_LIMIT => {}
+                r => {
+                    r.map_err(|e| format!("GPU: {e}"))?;
+                }
             }
         }
-    }
-    let data = slice
-        .get_mapped_range()
-        .map_err(|e| format!("reading back the image: {e}"))?;
-    for y in 0..h as usize {
-        let at = y * row as usize;
-        rows(y, &data[at..at + w as usize * 4]);
+        let data = slice
+            .get_mapped_range()
+            .map_err(|e| format!("reading back the image: {e}"))?;
+        for y in 0..n as usize {
+            let at = y * row as usize;
+            rows(y0 as usize + y, &data[at..at + w as usize * 4]);
+        }
+        drop(data);
+        out.destroy();
+        y0 += n;
     }
     Ok(())
 }
