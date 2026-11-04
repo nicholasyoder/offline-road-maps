@@ -277,7 +277,7 @@ impl App {
         let rs = cc.wgpu_render_state.as_ref();
         crate::trace::mark("App::new");
         if let Some(rs) = rs {
-            crate::trace::survive(&rs.device);
+            crate::trace::on_errors(&rs.device);
         }
         let adapter = rs.map_or_else(String::new, |rs| {
             let i = rs.adapter.get_info();
@@ -882,8 +882,9 @@ impl MapState {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         crate::trace::frame();
+        crate::trace::gpu_wait(frame, ui.ctx());
         let t0 = Instant::now();
         let interval = self.last_frame.map_or(Duration::ZERO, |l| t0 - l);
         self.last_frame = Some(t0);

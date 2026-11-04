@@ -19,11 +19,8 @@ jobs:
           # The failing build with symbols, and the abort control.
           - { name: app-unwind, env: { CARGO_PROFILE_RELEASE_PANIC: unwind } }
           - { name: app-abort, env: { CARGO_PROFILE_RELEASE_PANIC: abort } }
-          # Which part of the compilation matters (item 3).
-          - { name: app-unwind-nolto, env: { CARGO_PROFILE_RELEASE_PANIC: unwind, CARGO_PROFILE_RELEASE_LTO: "off" } }
-          - { name: app-unwind-cgu16, env: { CARGO_PROFILE_RELEASE_PANIC: unwind, CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16" } }
-          - { name: app-unwind-opt2, env: { CARGO_PROFILE_RELEASE_PANIC: unwind, CARGO_PROFILE_RELEASE_OPT_LEVEL: "2" } }
-          - { name: app-unwind-opt1, env: { CARGO_PROFILE_RELEASE_PANIC: unwind, CARGO_PROFILE_RELEASE_OPT_LEVEL: "1" } }
+          # Round 1 (compiler settings: nolto, cgu16, opt1, opt2) crashed the same way; see
+          # the git history of this file for how they were set.
     env: ${{ matrix.env }}
     steps:
       - uses: actions/checkout@v7
@@ -46,30 +43,6 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
-          path: out
-
-  app-debug:
-    # An unoptimised build (debug builds unwind and have never run on the E6430); the bench
-    # may be slow in it, the question is only whether it starts.
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: probe-app-debug
-      - name: Build
-        shell: pwsh
-        run: cargo build -p omp-app
-      - name: Collect
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path out/app-debug | Out-Null
-          Copy-Item target/debug/omp-app.exe out/app-debug/
-          Copy-Item target/debug/omp_app.pdb out/app-debug/
-      - uses: actions/upload-artifact@v7
-        with:
-          name: app-debug
           path: out
 
   probe:
