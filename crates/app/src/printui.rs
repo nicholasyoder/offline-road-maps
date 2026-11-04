@@ -45,18 +45,6 @@ const DEBOUNCE: Duration = Duration::from_millis(250);
 /// How near a point a corner's handle takes a click, in points.
 const GRAB: f32 = 11.0;
 
-/// The most dpi a page is printed at when the window's GPU is GL.
-const GL_MAX_DPI: f64 = 360.0;
-
-/// [`GL_MAX_DPI`], or what `OMP_GL_MAX_DPI` says (to try banded pages on a GL laptop,
-/// step 5.11).
-fn gl_max_dpi() -> f64 {
-    std::env::var("OMP_GL_MAX_DPI")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(GL_MAX_DPI)
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Kind {
     #[default]
@@ -1055,19 +1043,8 @@ impl PrintUi {
                     self.label.trim().to_owned()
                 },
             };
-            // One submit of a larger page holds wgpu's GL context for over a second, and the
-            // window thread then panics waiting for it (the E6430 at 600 dpi, step 4.11).
-            let gl = inputs
-                .gpu
-                .as_ref()
-                .is_some_and(|(a, _, _)| a.get_info().backend == eframe::wgpu::Backend::Gl);
             let dpi = printer::dpi_for(caps.dpi);
-            self.start_output(
-                ctx,
-                inputs,
-                Output::Print(request),
-                if gl { dpi.min(gl_max_dpi()) } else { dpi },
-            );
+            self.start_output(ctx, inputs, Output::Print(request), dpi);
         }
     }
 
