@@ -358,9 +358,20 @@ fn main() -> ExitCode {
 #[cfg(all(windows, not(debug_assertions)))]
 #[allow(unsafe_code)]
 fn attach_console() {
-    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
-    // SAFETY: takes no pointers; a failure (no parent console) changes nothing.
-    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: GetStdHandle and AttachConsole take no pointers; a failure (no parent console)
+    // changes nothing.
+    unsafe {
+        // Output already redirected to a file or pipe (`> log.txt` in a batch file): attaching
+        // to the console would replace those handles and the log would stay empty.
+        let redirected = |h| !GetStdHandle(h).is_null();
+        if redirected(STD_OUTPUT_HANDLE) || redirected(STD_ERROR_HANDLE) {
+            return;
+        }
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
 }
 
 #[cfg(not(all(windows, not(debug_assertions))))]
