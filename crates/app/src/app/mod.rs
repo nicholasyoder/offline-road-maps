@@ -884,6 +884,7 @@ impl MapState {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         crate::trace::frame();
+        crate::trace::window(ui.ctx());
         crate::trace::gpu_wait(frame, ui.ctx());
         let t0 = Instant::now();
         let interval = self.last_frame.map_or(Duration::ZERO, |l| t0 - l);

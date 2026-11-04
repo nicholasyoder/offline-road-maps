@@ -280,10 +280,13 @@ fn main() -> ExitCode {
                 }
                 return ExitCode::FAILURE;
             }
+            // OMP_WINDOW=WxH and OMP_RESIZABLE=1 change the window the flight opens, to test
+            // what triggers the E6430's resize-time crash (phase5-plan.md 5.14, round 3).
+            let size = trace::window_override().unwrap_or(flight.window);
             options.viewport = options
                 .viewport
-                .with_inner_size(flight.window)
-                .with_resizable(false);
+                .with_inner_size(size)
+                .with_resizable(std::env::var_os("OMP_RESIZABLE").is_some());
             // Frame times are only meaningful without vsync. Wayland compositors still pace
             // frames to the display, so use X11 (XWayland) when there is one. OMP_BENCH_VSYNC
             // keeps vsync, to compare (the HD 4000's GL driver leaked per frame without it).

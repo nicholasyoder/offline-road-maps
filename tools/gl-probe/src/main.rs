@@ -8,11 +8,26 @@ use std::time::{Duration, Instant};
 struct Probe {
     start: Instant,
     frames: u64,
+    last: String,
 }
 
 impl eframe::App for Probe {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         self.frames += 1;
+        let now = ui.ctx().input(|i| {
+            format!(
+                "{:?} monitor {:?}",
+                i.viewport().inner_rect,
+                i.viewport().monitor_size
+            )
+        });
+        if now != self.last && self.frames < 600 {
+            eprintln!(
+                "[probe +{} ms] window: inner {now}",
+                self.start.elapsed().as_millis()
+            );
+            self.last = now;
+        }
         if self.frames <= 3 {
             eprintln!(
                 "[probe +{} ms] frame {}",
@@ -44,12 +59,20 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4u16);
+    // OMP_WINDOW=WxH and OMP_RESIZABLE=1, as in the app.
+    let size = std::env::var("OMP_WINDOW")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once(['x', 'X'])?;
+            Some([w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?])
+        })
+        .unwrap_or([1280.0, 800.0]);
     let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         multisampling: msaa,
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_resizable(false)
+            .with_inner_size(size)
+            .with_resizable(std::env::var_os("OMP_RESIZABLE").is_some())
             .with_title("gl-probe"),
         ..Default::default()
     };
@@ -81,7 +104,11 @@ fn main() {
                     i.backend
                 );
             }
-            Ok(Box::new(Probe { start, frames: 0 }))
+            Ok(Box::new(Probe {
+                start,
+                frames: 0,
+                last: String::new(),
+            }))
         }),
     );
     match res {

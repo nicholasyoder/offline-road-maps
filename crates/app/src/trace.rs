@@ -53,6 +53,39 @@ pub fn mark(label: &str) {
     }
 }
 
+/// `OMP_WINDOW=WxH`: the size the bench opens its window with instead of the flight's.
+pub fn window_override() -> Option<[f32; 2]> {
+    let v = std::env::var("OMP_WINDOW").ok()?;
+    let (w, h) = v.split_once(['x', 'X'])?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
+}
+
+/// Logs the window's size and position when they change (the first few times), to see which
+/// resizes the system makes after the window opens.
+pub fn window(ctx: &egui::Context) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<String>> = Mutex::new(None);
+    static CHANGES: AtomicU32 = AtomicU32::new(0);
+    if START.get().is_none() || CHANGES.load(Ordering::Relaxed) >= 20 {
+        return;
+    }
+    let (inner, outer, mon) = ctx.input(|i| {
+        let v = i.viewport();
+        (v.inner_rect, v.outer_rect, v.monitor_size)
+    });
+    let now = format!(
+        "inner {inner:?}, outer {outer:?}, monitor {mon:?}, ppp {}",
+        ctx.pixels_per_point()
+    );
+    if let Ok(mut last) = LAST.lock()
+        && last.as_deref() != Some(now.as_str())
+    {
+        CHANGES.fetch_add(1, Ordering::Relaxed);
+        mark(&format!("window: {now}"));
+        *last = Some(now);
+    }
+}
+
 /// Called at the start of every frame; marks the first few.
 pub fn frame() {
     if START.get().is_none() {
