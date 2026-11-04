@@ -33,6 +33,8 @@ toml = "1.1.8"
 [target.'cfg(target_os = "linux")'.dependencies]
 # Already in the tree through eframe; used to pick X11 for the bench.
 winit = { version = "0.30.13", default-features = false }
+# Also in the tree; used to cap glibc's malloc arenas (main.rs).
+libc = "0.2.191"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_System_Console", "Win32_System_ProcessStatus", "Win32_System_Threading"] }

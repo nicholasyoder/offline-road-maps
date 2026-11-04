@@ -161,6 +161,7 @@ fn parse_args() -> Result<Args, String> {
 fn main() -> ExitCode {
     let started = Instant::now();
     attach_console();
+    cap_malloc_arenas();
     logger::init();
     let args = match parse_args() {
         Ok(a) => a,
@@ -323,6 +324,7 @@ fn main() -> ExitCode {
         }
     }
 
+    surface_overrides(&mut options);
     let startup = app::Startup {
         exe_dir,
         config,
@@ -456,4 +458,42 @@ fn print_job(args: &Args) -> Result<Option<snapshot::PrintJob>, String> {
         dpi,
         units,
     }))
+}
+
+/// glibc gives every thread that allocates an arena of its own, and the loaders, the routing
+/// and search workers and the print worker each keep what they freed. Two arenas hold the
+/// same work in about 30 MiB less on the North America flight, with the same frame times
+/// (phase5-plan.md 5.10). Called before any thread is started.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[allow(unsafe_code)]
+fn cap_malloc_arenas() {
+    // SAFETY: mallopt takes plain integers; a failure leaves glibc's default.
+    unsafe { libc::mallopt(libc::M_ARENA_MAX, 2) };
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn cap_malloc_arenas() {}
+
+/// Diagnostics for the memory checks on other machines (phase5-plan.md 5.10): OMP_PRESENT
+/// (`fifo`, `mailbox`, `immediate`, `auto`) and OMP_LATENCY (frames the swapchain may queue)
+/// replace the window's present mode and frame latency. Without them nothing changes.
+fn surface_overrides(options: &mut eframe::NativeOptions) {
+    use eframe::wgpu::PresentMode;
+    let surface = &mut options.wgpu_options.surface;
+    if let Ok(v) = std::env::var("OMP_PRESENT") {
+        match v.to_ascii_lowercase().as_str() {
+            "fifo" => surface.present_mode = PresentMode::Fifo,
+            "mailbox" => surface.present_mode = PresentMode::Mailbox,
+            "immediate" => surface.present_mode = PresentMode::Immediate,
+            "auto" => surface.present_mode = PresentMode::AutoVsync,
+            "autonovsync" => surface.present_mode = PresentMode::AutoNoVsync,
+            other => eprintln!("OMP_PRESENT={other}: not one of fifo, mailbox, immediate, auto"),
+        }
+    }
+    if let Some(n) = std::env::var("OMP_LATENCY")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+    {
+        surface.desired_maximum_frame_latency = Some(n);
+    }
 }

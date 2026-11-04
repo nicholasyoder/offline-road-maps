@@ -51,7 +51,7 @@ What phase 4 left in place for this:
 | 5.7 UI polish | **Done** 2026-11-02 | Shortcuts table and F1 window, tooltips, window state, first-run screen, exFAT note, plain messages, print Cancel; checked by the owner on Linux |
 | 5.8 Perf: cold reads from the stick | Deferred 2026-11-03 | Owner: cold reads do not feel slow in use. P8 (the routing top's warm-up) tried and left: see [perf-findings.md](perf-findings.md); P9, P16 and the regression hunt not taken |
 | 5.9 Perf: long routes and directions | Deferred 2026-11-03 | Owner: routing is fast enough in use, and the segment cache stays as it is rather than spend RSS; P10 not taken |
-| 5.10 Perf: memory | Not started | |
+| 5.10 Perf: memory | In progress | Dev machine done 2026-11-03: glibc arenas capped at 2 (−30 MiB, North America flight 328 → 298 MiB, target met); other leads measured and left. Windows DX12 and the E6430's GL leak wait for the laptops (`run-mem` on the stick) |
 | 5.11 Perf: printing | Not started | |
 | 5.12 Perf: builder and pack size | Not started | |
 | 5.13 Final checks on every machine | Not started | |
@@ -247,6 +247,22 @@ RSS on the North America flight: dev 329 MiB (target 300 MB), 7490 Windows DX12 
 - **E6430's GL leak:** one time-boxed look (half a day): whether it depends on the present mode, the swapchain format, or a wgpu or driver setting, and whether a newer wgpu fixes it. If not, it stays the known upstream issue it was accepted as in phase 1.
 
 **Done when:** each lead taken is measured before and after, and the RSS on every machine is recorded.
+
+> **In progress 2026-11-03.** Dev machine (RADV, warm, North America pack, each build run twice; logs and reports in `$OMP_WORK/measure/p5/5.10/`):
+>
+> | Variant | NA flight RSS peak | `na-alternatives` RSS | Cost |
+> |---|---:|---:|---|
+> | baseline (`f3aacf4`) | 327 / 329 MiB | 206 / 206 | |
+> | `MALLOC_ARENA_MAX=2` (env) | 297 / 300 | | frame p95 1.17 (1.15), none else |
+> | `MALLOC_ARENA_MAX=1` (env) | 288 / 288 | | frame p95 1.20, so contention starts to show; not taken |
+> | **arena cap 2 in `main.rs`** (taken) | **300 / 297** | 199 / 198 | frame p95 1.09–1.15; coast-to-coast route 353–378 ms (base 337–485), print times unchanged |
+> | tile cache 64 MiB (on top) | 293 / 293 | | −5 MiB for 1 MiB more read; left at 96 |
+> | routing caches 8 + 8 MiB (on top) | | 178 / 177 (−20) | short Cincinnati–Cleveland route 42 → 75 ms, 25-stop frame p95 1.9 → 2.3 ms; **not taken** (costs speed) |
+>
+> The `p4` flight (routes, three prints) peaks at 436 / 486 MiB before and 400 / 408 after; the prints add +80 MiB at 300 dpi and +76–87 at 360 (was +98 and +89). Cause of the saving: the loaders, routing, search and print workers each had a glibc arena that kept what it freed; two arenas share it. Windows has no glibc and is unchanged. **Newer wgpu:** none; 30.0.1 (with eframe 0.37) is the latest on crates.io.
+>
+> **Left for the laptops:** the diagnostics `OMP_PRESENT` (`fifo`, `mailbox`, `immediate`, `auto`) and `OMP_LATENCY` (frame latency) exist, and wgpu reads `WGPU_DX12_PRESENTATION_SYSTEM`; `run-mem.bat` on the stick runs the North America flight with each (the 7490 under DX12, the E6430 under GL, whose leak is per frame presented), and `run-mem.sh` the Linux ones. Then: what the 7490's extra 200 MiB is, whether any setting lowers it or the E6430's leak, and the RSS on every machine recorded here.
+
 
 ## 5.11 Perf: printing
 
