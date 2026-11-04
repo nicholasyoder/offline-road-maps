@@ -23,8 +23,11 @@ all = { level = "warn", priority = -1 }
 lto = "fat"
 codegen-units = 1
 strip = true
-# Unwinding, so a worker's panic is caught and shown as an error, not an abort (5.1 R8).
-panic = "unwind"
+# Abort. R8 (5.1) made this "unwind" so workers could catch a panic, but every build with it
+# crashes at start-up on the E6430 (GL): Surface::configure fails with "Failed to wait for
+# GPU to come idle" (5.10). The catches in the loader and workers stay and work in tests,
+# debug builds and the builder's profile.
+panic = "abort"
 
 # For perf and heaptrack (phase 5 step 5.2): the release build with symbols and line tables.
 [profile.profiling]

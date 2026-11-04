@@ -879,8 +879,6 @@ impl MapState {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // A frame that did not reach the map's paint left the loaders' gate closed.
-        crate::pool::GATE.open();
         let t0 = Instant::now();
         let interval = self.last_frame.map_or(Duration::ZERO, |l| t0 - l);
         self.last_frame = Some(t0);

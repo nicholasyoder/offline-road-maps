@@ -11,8 +11,7 @@
 //! too, so one spare stays.
 
 use std::ops::Range;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use eframe::egui_wgpu::wgpu;
 
@@ -22,79 +21,6 @@ pub const SLAB: u64 = 8 << 20;
 const ALIGN: u64 = 16;
 /// Frames a range given back waits before it is reused.
 const HOLD: u64 = 3;
-
-/// Keeps the loader threads' GPU calls out of the window's frame, from the map's `prepare` to
-/// its `paint` (render.rs). egui configures the surface in between, when the window was
-/// resized, and wgpu fails that with "Failed to wait for GPU to come idle" if another thread
-/// submits meanwhile; on the E6430's GL driver, where the wait is long, that happened at
-/// start-up and ended the app (phase5-plan.md 5.10). The loaders also take the GL context for
-/// seconds at a time in that wait and wgpu panics a thread that waits for it over a second.
-pub struct Gate {
-    state: Mutex<GateState>,
-    changed: Condvar,
-}
-
-#[derive(Default)]
-struct GateState {
-    closed: bool,
-    /// Uploads under way.
-    active: u32,
-}
-
-/// Longest a loader waits at a closed gate, and the frame for an upload under way to finish:
-/// a frame that never reaches its `paint` (no surface texture) must not stop the loaders.
-const GATE_WAIT: Duration = Duration::from_millis(100);
-
-pub static GATE: Gate = Gate {
-    state: Mutex::new(GateState {
-        closed: false,
-        active: 0,
-    }),
-    changed: Condvar::new(),
-};
-
-/// An upload under way; dropping it lets the frame go on.
-struct Upload(&'static Gate);
-
-impl Gate {
-    fn lock(&self) -> MutexGuard<'_, GateState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn enter(&'static self) -> Upload {
-        let st = self.lock();
-        let (mut st, _) = self
-            .changed
-            .wait_timeout_while(st, GATE_WAIT, |s| s.closed)
-            .unwrap_or_else(|e| e.into_inner());
-        st.active += 1;
-        Upload(self)
-    }
-
-    /// Closes the gate and waits for the uploads under way. Called by the frame, before it
-    /// can configure the surface.
-    pub fn close(&self) {
-        let mut st = self.lock();
-        st.closed = true;
-        let _ = self
-            .changed
-            .wait_timeout_while(st, 2 * GATE_WAIT, |s| s.active > 0)
-            .unwrap_or_else(|e| e.into_inner());
-    }
-
-    /// Lets the loaders go on.
-    pub fn open(&self) {
-        self.lock().closed = false;
-        self.changed.notify_all();
-    }
-}
-
-impl Drop for Upload {
-    fn drop(&mut self) {
-        self.0.lock().active -= 1;
-        self.0.changed.notify_all();
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -217,7 +143,6 @@ impl Pool {
     /// Copies `data`, whose length is a multiple of 4, into a free range.
     pub fn upload(self: &Arc<Self>, kind: Kind, data: &[u8]) -> Alloc {
         debug_assert!(data.len().is_multiple_of(4));
-        let _gate = GATE.enter();
         let len = (data.len() as u64).next_multiple_of(ALIGN).max(ALIGN);
         let (slab, range, buffer) = {
             let mut st = self.lock();

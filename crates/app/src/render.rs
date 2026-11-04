@@ -954,8 +954,6 @@ impl egui_wgpu::CallbackTrait for MapCallback {
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        // Opened again by `paint`, after the surface has been configured and acquired.
-        crate::pool::GATE.close();
         if let Some(r) = resources.get_mut::<Renderer>()
             && !std::ptr::eq(r.prepared.as_ptr(), Arc::as_ptr(&self.0))
         {
@@ -972,7 +970,6 @@ impl egui_wgpu::CallbackTrait for MapCallback {
         pass: &mut wgpu::RenderPass<'static>,
         resources: &egui_wgpu::CallbackResources,
     ) {
-        crate::pool::GATE.open();
         let Some(r) = resources.get::<Renderer>() else {
             return;
         };
