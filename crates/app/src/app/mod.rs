@@ -275,6 +275,10 @@ impl App {
         );
         cc.egui_ctx.set_zoom_factor(cfg.display.ui_size as f32);
         let rs = cc.wgpu_render_state.as_ref();
+        crate::trace::mark("App::new");
+        if let Some(rs) = rs {
+            crate::trace::survive(&rs.device);
+        }
         let adapter = rs.map_or_else(String::new, |rs| {
             let i = rs.adapter.get_info();
             format!("{} ({:?})", i.name, i.backend)
@@ -879,6 +883,7 @@ impl MapState {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        crate::trace::frame();
         let t0 = Instant::now();
         let interval = self.last_frame.map_or(Duration::ZERO, |l| t0 - l);
         self.last_frame = Some(t0);

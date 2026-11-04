@@ -1,0 +1,104 @@
+# Test builds for the E6430 crash hunt (docs/phase5-plan.md, 5.14). Run by hand from the
+# Actions tab or `gh workflow run probe.yml`; every variant is a Windows build with symbols
+# (the .pdb goes with the .exe so a panic's backtrace names functions). Not part of CI.
+name: Probe builds
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  app:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The failing build with symbols, and the abort control.
+          - { name: app-unwind, env: { CARGO_PROFILE_RELEASE_PANIC: unwind } }
+          - { name: app-abort, env: { CARGO_PROFILE_RELEASE_PANIC: abort } }
+          # Which part of the compilation matters (item 3).
+          - { name: app-unwind-nolto, env: { CARGO_PROFILE_RELEASE_PANIC: unwind, CARGO_PROFILE_RELEASE_LTO: "off" } }
+          - { name: app-unwind-cgu16, env: { CARGO_PROFILE_RELEASE_PANIC: unwind, CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16" } }
+          - { name: app-unwind-opt2, env: { CARGO_PROFILE_RELEASE_PANIC: unwind, CARGO_PROFILE_RELEASE_OPT_LEVEL: "2" } }
+          - { name: app-unwind-opt1, env: { CARGO_PROFILE_RELEASE_PANIC: unwind, CARGO_PROFILE_RELEASE_OPT_LEVEL: "1" } }
+    env: ${{ matrix.env }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: probe-${{ matrix.name }}
+      - name: Build
+        shell: pwsh
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: "false"
+          CARGO_PROFILE_RELEASE_DEBUG: limited
+        run: cargo build --release -p omp-app
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path out/${{ matrix.name }} | Out-Null
+          Copy-Item target/release/omp-app.exe out/${{ matrix.name }}/
+          Copy-Item target/release/omp_app.pdb out/${{ matrix.name }}/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: out
+
+  app-debug:
+    # An unoptimised build (debug builds unwind and have never run on the E6430); the bench
+    # may be slow in it, the question is only whether it starts.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: probe-app-debug
+      - name: Build
+        shell: pwsh
+        run: cargo build -p omp-app
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path out/app-debug | Out-Null
+          Copy-Item target/debug/omp-app.exe out/app-debug/
+          Copy-Item target/debug/omp_app.pdb out/app-debug/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: app-debug
+          path: out
+
+  probe:
+    # eframe's own window with the app's options (tools/gl-probe), unwinding and aborting.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        panic: [unwind, abort]
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/gl-probe
+          key: probe-stock-${{ matrix.panic }}
+      - name: Build
+        shell: pwsh
+        working-directory: tools/gl-probe
+        env:
+          CARGO_PROFILE_RELEASE_PANIC: ${{ matrix.panic }}
+        run: cargo build --release
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path out/probe-${{ matrix.panic }} | Out-Null
+          Copy-Item tools/gl-probe/target/release/gl-probe.exe out/probe-${{ matrix.panic }}/
+          Copy-Item tools/gl-probe/target/release/gl_probe.pdb out/probe-${{ matrix.panic }}/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: probe-${{ matrix.panic }}
+          path: out

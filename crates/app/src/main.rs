@@ -50,6 +50,7 @@ mod systheme;
 mod text;
 mod theme;
 mod tiles;
+mod trace;
 mod trips;
 mod verify;
 
@@ -162,6 +163,7 @@ fn main() -> ExitCode {
     let started = Instant::now();
     attach_console();
     cap_malloc_arenas();
+    trace::init(started);
     logger::init();
     let args = match parse_args() {
         Ok(a) => a,
@@ -337,6 +339,7 @@ fn main() -> ExitCode {
         msaa,
         style_arg: args.style.clone(),
     };
+    trace::mark("run_native");
     let res = eframe::run_native(
         "Offline Road Maps",
         options,
