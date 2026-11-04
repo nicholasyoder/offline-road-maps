@@ -277,7 +277,7 @@ impl App {
         let rs = cc.wgpu_render_state.as_ref();
         crate::trace::mark("App::new");
         if let Some(rs) = rs {
-            crate::trace::on_errors(&rs.device);
+            crate::trace::survive(&rs.device);
         }
         let adapter = rs.map_or_else(String::new, |rs| {
             let i = rs.adapter.get_info();

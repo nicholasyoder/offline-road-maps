@@ -26,7 +26,8 @@ strip = true
 # Abort. R8 (5.1) made this "unwind" so workers could catch a panic, but every build with it
 # crashes at start-up on the E6430 (GL): Surface::configure fails with "Failed to wait for
 # GPU to come idle" (5.10). The catches in the loader and workers stay and work in tests,
-# debug builds and the builder's profile.
+# debug builds and the builder's profile. Not a bug of ours: a plain eframe window does the same,
+# and a tolerated error breaks the next resize (phase5-plan.md 5.14, decision 12).
 panic = "abort"
 
 # For perf and heaptrack (phase 5 step 5.2): the release build with symbols and line tables.

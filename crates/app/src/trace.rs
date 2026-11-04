@@ -97,32 +97,20 @@ pub fn frame() {
     }
 }
 
-/// The message of the error wgpu raises when `Surface::configure`'s wait for the GPU runs out
-/// (the GL backend gives up after about 2 s; the E6430's first frames take longer).
-const IDLE_WAIT: &str = "Failed to wait for GPU to come idle";
-
-/// Replaces wgpu's default handler for errors nothing captures, which panics (5.14). The
-/// failed wait of a surface configure is logged and the frame goes on: the configure is
-/// skipped, the surface keeps its size and the next resize or frame configures it again, as
-/// the E6430 run with `OMP_SURVIVE` showed. Any other error panics as before, unless
-/// `OMP_SURVIVE` is set (everything is logged). `OMP_STRICT` keeps wgpu's default for all, to
-/// reproduce the crash. Errors before `App::new` (the first configure) are not reached.
-pub fn on_errors(device: &eframe::wgpu::Device) {
-    if std::env::var_os("OMP_STRICT").is_some() {
+/// `OMP_SURVIVE`: replaces wgpu's default handler for errors nothing captures (which panics)
+/// with one that logs them. A diagnostic only (5.14): after a failed `Surface::configure` the
+/// surface keeps its old size while egui_wgpu has already resized its multisample view, and
+/// the next frame fails with "Attachments have differing sizes", so this is not a fix.
+/// Errors before `App::new` (the first configure) are not reached.
+pub fn survive(device: &eframe::wgpu::Device) {
+    if std::env::var_os("OMP_SURVIVE").is_none() {
         return;
     }
-    let all = std::env::var_os("OMP_SURVIVE").is_some();
-    device.on_uncaptured_error(std::sync::Arc::new(move |e: eframe::wgpu::Error| {
-        let text = e.to_string();
-        // The message sits in the error's source chain, so look at the debug text too.
-        if all || text.contains(IDLE_WAIT) || format!("{e:?}").contains(IDLE_WAIT) {
-            eprintln!(
-                "[trace +{} ms] wgpu error tolerated: {e}",
-                elapsed_ms().unwrap_or(0)
-            );
-        } else {
-            panic!("wgpu error: {e}");
-        }
+    device.on_uncaptured_error(std::sync::Arc::new(|e: eframe::wgpu::Error| {
+        eprintln!(
+            "[trace +{} ms] wgpu error survived: {e}",
+            elapsed_ms().unwrap_or(0)
+        );
     }));
 }
 
