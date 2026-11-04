@@ -1,0 +1,31 @@
+# First four steps of north-america.toml, no route: a short start-up check (5.10).
+#
+# Each step moves to lat/lon/zoom at once (seconds = 0, a jump, which then waits until the
+# view is fully detailed) or linearly over `seconds`. `hold` stays put afterwards.
+name = "north-america"
+window = [1280, 800]
+# Miami to Seattle (phase3-plan.md 3.9), asked as the pack opens, so on a fresh start it is
+# the first route from a cold stick; shown until the route steps at the end.
+[[step]]
+label = "continent z3"
+lat = 45.0
+lon = -100.0
+zoom = 3
+hold = 1
+
+[[step]]
+label = "zoom to z5"
+zoom = 5
+seconds = 3
+
+[[step]]
+label = "Manhattan z12"
+lat = 40.758
+lon = -73.9855
+zoom = 12
+
+[[step]]
+label = "zoom to z15"
+zoom = 15
+seconds = 3
+

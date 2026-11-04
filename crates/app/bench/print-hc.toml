@@ -1,0 +1,35 @@
+# Printing in the high-contrast style (phase 5 step 5.13): the coast-to-coast route, then a
+# Letter map page at 300 dpi in the default style, the same page after switching to the
+# high-contrast style (the print page follows the map's style, decision 8), and the
+# directions. The pages' times and memory are the same as print-rss.toml's; the style switch
+# is the second step's.
+# omp-app --bench crates/app/bench/print-hc.toml --pack $OMP_WORK/packs/north-america
+name = "print-hc"
+window = [1280, 800]
+[[step]]
+label = "route: coast to coast"
+lat = 38.0
+lon = -98.0
+zoom = 4.2
+route = "40.7128,-74.0060;41.8781,-87.6298;39.7392,-104.9903;33.4484,-112.0740;34.0522,-118.2437"
+hold = 3
+[[step]]
+label = "print: map at 300 dpi, default style"
+print = "map"
+print_dpi = 300
+hold = 3
+[[step]]
+label = "print: map at 300 dpi, high contrast"
+style = "high-contrast"
+print = "map"
+print_dpi = 300
+hold = 3
+[[step]]
+label = "print: directions at 300 dpi, high contrast"
+print = "directions"
+print_dpi = 300
+hold = 3
+[[step]]
+label = "back to the default style"
+style = "default"
+hold = 2

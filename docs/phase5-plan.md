@@ -391,7 +391,7 @@ After 4.11's fix the dev machine is within +100 MiB at 300 and 360 dpi (+82 and 
 >
 > Correctness on the new pack: `verify` OK (28 sections); route set 72/72; `route --check 300 --pbf` 0 differ from Dijkstra, 0 bad paths, 0 forbidden paths in 17,558 restricted approaches (peak 30 GiB; it needs more than 20 GB for the graph rebuild); address set 965/1000 first at its point, "what's here" 995/1000; `queries.tsv` Ohio 77/90, Quebec 76/79, Ontario 66/72 (not compared with the old pack). Long trips p50 108-122 ms, the cross-continent routes 220-265 ms. Copied to the stick (`maps/`, replacing the old pack; 51 min, read back byte-identical); the old bisect builds and scripts were removed from it.
 >
-> **Left open:** the build log has only the final line, not the per-stage lines with the resident size (the `now` column); the flights on the new pack (`north-america`, `north-america-p4`, warm and cold from the stick) have not been run; `packs/north-america` still holds the 0.6 pack.
+> **Left open:** the build log has only the final line, not the per-stage lines with the resident size (the `now` column); the flights on the new pack (`north-america`, `north-america-p4`, warm and cold from the stick) have not been run; `packs/north-america` held the old pack until 5.13's preparation (2026-11-04), when the 0.7 pack was moved there.
 
 ## 5.13 Final checks on every machine
 
@@ -400,6 +400,8 @@ As 4.11, for this phase:
 - exit criteria 1–6 measured on each, with any miss written up for the owner;
 - hand checks from a `README.txt` on the stick: the Settings window, styles and the dark UI, the first-run screen (a stick with no `maps/`), window position on a laptop off its dock, and a black-and-white printout;
 - the binary's size and `cargo tree`.
+
+> **Prepared 2026-11-04.** The final build is CI's of the commit that adds `print-hc.toml` (below); `panic = "abort"`. Stick: `run-final.bat` (Windows: E6430, 7490) and `run-final.sh` (7490 Debian) run `north-america` cold and warm, `north-america-p4`, `styles`, `print-rss` (banded; 300, 360 and 600 dpi; on the E6430 the 600 dpi page), `print-hc` (a Letter page and the directions after switching to the high-contrast style; new, in `crates/app/bench/` with `print-rss.toml` and `quick.toml`, which had only been on the stick), `ohio` and `ohio-pins`, into `results/5.13/<machine>-<system>-<flight>.json/.log`. On the dev machine the same flights run from `$OMP_WORK/packs/` (the 0.7 pack, now at `packs/north-america`; the old one is `packs/north-america-0.6-old`). The hand checks are in the stick's `README.txt`.
 
 **Done when:** every exit criterion is measured on every machine, with any that miss written up for the owner.
 
