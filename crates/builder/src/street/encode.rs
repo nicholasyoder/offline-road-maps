@@ -4,6 +4,7 @@ use std::io;
 
 use anyhow::Result;
 use omp_core::varint::{Reader, invalid, put, put_str, zigzag};
+use omp_core::zframe;
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -72,23 +73,52 @@ fn geometry(s: &Street, cur: &mut [i32; 2], out: &mut Vec<u8>) {
     }
 }
 
-/// `count:u32 nblocks:u32 (first:u32 offset:u32 length:u32)* block*`, offsets from the
-/// section's start.
-pub fn blocked(count: usize, blocks: Blocks) -> Result<(Vec<u8>, u64)> {
-    let frames: Vec<(u32, Vec<u8>)> = blocks
+/// Dictionary size for the blocked sections that have one, in KiB.
+pub const DICT_KIB: usize = 112;
+
+/// Compresses `blocks`, with a zstd dictionary of `dict_kib` KiB trained on them if that is
+/// not 0 and there is at least 16 times as much to train on (a dictionary costs its size); returns the frames and the dictionary (empty for
+/// none). Samples are taken evenly, about 100 times the dictionary's size.
+pub fn compress_blocks(blocks: Blocks, dict_kib: usize) -> Result<(Blocks, Vec<u8>)> {
+    let raw: usize = blocks.iter().map(|(_, b)| b.len()).sum();
+    let mut dict = Vec::new();
+    if dict_kib > 0 && blocks.len() >= 8 && raw >= 16 * (dict_kib << 10) {
+        let step = (raw / ((dict_kib << 10) * 100)).max(1);
+        let samples: Vec<&[u8]> = blocks.iter().step_by(step).map(|(_, b)| &b[..]).collect();
+        dict = zstd::dict::from_samples(&samples, dict_kib << 10).unwrap_or_default();
+    }
+    let frames = blocks
         .into_par_iter()
-        .map(|(f, b)| Ok((f, zstd::bulk::compress(&b, LEVEL)?)))
+        .map_init(
+            || zframe::block_compressor(LEVEL, &dict),
+            |c, (f, b)| -> Result<(u32, Vec<u8>)> {
+                let c = c.as_mut().map_err(|e| anyhow::anyhow!("zstd: {e}"))?;
+                Ok((f, c.compress(&b)?))
+            },
+        )
         .collect::<Result<_>>()?;
+    Ok((frames, dict))
+}
+
+/// `count:u32 nblocks:u32 dict_offset:u32 dict_length:u32 (first:u32 offset:u32 length:u32)*
+/// dict block*`, offsets from the section's start.
+pub fn blocked(count: usize, blocks: Blocks, dict_kib: usize) -> Result<(Vec<u8>, u64)> {
+    let (frames, dict) = compress_blocks(blocks, dict_kib)?;
     let mut out = Vec::new();
     out.extend_from_slice(&(count as u32).to_le_bytes());
     out.extend_from_slice(&(frames.len() as u32).to_le_bytes());
-    let mut offset = 8 + 12 * frames.len();
+    let dict_at = 16 + 12 * frames.len();
+    for v in [dict_at, dict.len()] {
+        out.extend_from_slice(&(v as u32).to_le_bytes());
+    }
+    let mut offset = dict_at + dict.len();
     for (f, b) in &frames {
         out.extend_from_slice(&f.to_le_bytes());
         out.extend_from_slice(&(offset as u32).to_le_bytes());
         out.extend_from_slice(&(b.len() as u32).to_le_bytes());
         offset += b.len();
     }
+    out.extend_from_slice(&dict);
     for (_, b) in &frames {
         out.extend_from_slice(b);
     }
@@ -125,9 +155,9 @@ fn blocks(
 pub fn sections(table: &Table, block: usize) -> Result<(Vec<u8>, Vec<u8>, Sizes)> {
     let n = table.streets.len();
     let (b, sstr_raw) = blocks(&table.streets, block, |s, _, out| record(s, out));
-    let (sstr, sstr_blocks) = blocked(n, b)?;
+    let (sstr, sstr_blocks) = blocked(n, b, DICT_KIB)?;
     let (b, sgeo_raw) = blocks(&table.streets, block, geometry);
-    let (sgeo, sgeo_blocks) = blocked(n, b)?;
+    let (sgeo, sgeo_blocks) = blocked(n, b, 0)?;
     let sizes = Sizes {
         block_kib: block >> 10,
         streets: n as u64,
@@ -173,15 +203,24 @@ pub fn read_blocks(section: &[u8]) -> io::Result<(usize, Blocks)> {
     };
     let count = u32_at(0)? as usize;
     let n = u32_at(4)? as usize;
+    let (dict_at, dict_len) = (u32_at(8)? as usize, u32_at(12)? as usize);
+    let dict = section
+        .get(dict_at..dict_at + dict_len)
+        .ok_or_else(|| invalid("dictionary past the end"))?;
+    let mut dec = zstd::bulk::Decompressor::with_dictionary(dict)?;
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        let first = u32_at(8 + 12 * i)?;
-        let offset = u32_at(12 + 12 * i)? as usize;
-        let len = u32_at(16 + 12 * i)? as usize;
+        let first = u32_at(16 + 12 * i)?;
+        let offset = u32_at(20 + 12 * i)? as usize;
+        let len = u32_at(24 + 12 * i)? as usize;
         let frame = section
             .get(offset..offset + len)
             .ok_or_else(|| invalid("block past the end"))?;
-        out.push((first, zstd::stream::decode_all(frame)?));
+        let size = zstd::zstd_safe::get_frame_content_size(frame)
+            .ok()
+            .flatten()
+            .ok_or_else(|| invalid("block without a content size"))? as usize;
+        out.push((first, dec.decompress(frame, size)?));
     }
     Ok((count, out))
 }

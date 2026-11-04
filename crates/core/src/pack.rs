@@ -11,10 +11,14 @@ use crate::varint::invalid;
 
 pub const MAGIC: [u8; 8] = *b"\x89OMP\r\n\x1a\n";
 pub const MAJOR: u16 = 0;
-pub const MINOR: u16 = 6;
+pub const MINOR: u16 = 7;
+/// The first minor version whose blocked sections have a dictionary field in their header
+/// and whose `RCHE` blocks are compressed.
+pub const DICT_MINOR: u16 = 7;
 /// The oldest minor version the reader opens: 0.4 only added sections (`SGRD`) and
 /// changed provisional ones that the 0.3 reader did not read; 0.5 added the routing
-/// sections, and 0.6 the time zones (`TZON`).
+/// sections, 0.6 the time zones (`TZON`), and 0.7 compressed `RCHE` blocks and zstd
+/// dictionaries in the blocked sections.
 pub const MIN_MINOR: u16 = 3;
 /// Chunk pages and section alignment.
 pub const PAGE: u64 = 4096;

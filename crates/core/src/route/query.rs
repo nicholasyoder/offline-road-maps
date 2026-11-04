@@ -461,8 +461,12 @@ mod tests {
         }
         put(&mut block, 0); // node 2
         put(&mut block, 0);
+        let block = crate::zframe::block_compressor(3, &[])
+            .unwrap()
+            .compress(&block)
+            .unwrap();
         let mut rche = Vec::new();
-        for v in [3, 1, 16, 16 + block.len() as u32] {
+        for v in [3, 1, 0, 0, 24, 24 + block.len() as u32] {
             rche.extend_from_slice(&v.to_le_bytes());
         }
         rche.extend_from_slice(&block);
@@ -476,7 +480,7 @@ mod tests {
         w.section(RHDR, &header.encode().unwrap()).unwrap();
         w.section(RCHE, &rche).unwrap();
         for id in [RGEO, RNAM, RGRD, RCPY, RJCT] {
-            w.section(id, &[0; 8]).unwrap();
+            w.section(id, &[0; 16]).unwrap();
         }
         let info = Info {
             pack_id: [1; 16],

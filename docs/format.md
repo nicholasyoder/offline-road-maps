@@ -1,6 +1,6 @@
 # Pack format
 
-*Version 0.6 (draft), 2026-10-28. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom. 0.4 (phase 2 step 2.5): the search, address, admin and street sections are specified, with their readers in `omp-core`; `SGRD` (the spatial grid) is new, and `SAPL` takes the block layout the other sections share. 0.5 (phase 3 step 3.3): the routing sections are specified, and a blocked section may be spanning. 0.6 (phase 4 step 4.5): the time zones (`TZON`).*
+*Version 0.7 (draft), 2026-11-04. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom. 0.4 (phase 2 step 2.5): the search, address, admin and street sections are specified, with their readers in `omp-core`; `SGRD` (the spatial grid) is new, and `SAPL` takes the block layout the other sections share. 0.5 (phase 3 step 3.3): the routing sections are specified, and a blocked section may be spanning. 0.6 (phase 4 step 4.5): the time zones (`TZON`). 0.7 (phase 5 step 5.12): `RCHE`'s blocks are zstd frames, and every blocked section has a dictionary field in its header (empty, or a zstd dictionary for `RCHE`, `RGEO`, `SSTR`, `SENT`, `ASUF`, `AUNI`, `ALSE` and `ARNG`); 0.6 and older packs keep the old header and a raw `RCHE`, which the reader still opens.*
 
 A **pack** holds everything the app needs for one region: map tiles, addresses, and later routing and search data. It is built by `omp-builder` and read by `omp-app`, usually from a USB flash drive. This document is the contract between the two.
 
@@ -103,7 +103,7 @@ Each section ID appears at most once. Sections do not overlap. The table itself 
 
 - **Major** version: the reader opens a pack only if the major version equals its own. Any change that an old reader would misread bumps it: a changed field, encoding or meaning.
 - **Minor** version: additions only. New sections, and new fields in space that older versions wrote as zero (the header's tail, reserved flag bits). A reader ignores section IDs it does not know, and accepts any minor version. It may show "built by a newer builder".
-- Version 0.x is the development series. Until 1.0, the app and builder are released together and the major version stays 0. Breaking changes bump the minor version, and the reader requires a minor version it knows: 0.6, 0.5, 0.4, and 0.3, since 0.4 only changed sections the 0.3 reader never read (`SAPL`) and added others, 0.5 only added the routing sections, and 0.6 only `TZON`. A 0.3 pack opens with its tiles; the search readers need 0.4, the routing reader 0.5 and the time zones 0.6, so the app hides what an older pack lacks (without `TZON`, a schedule's times are all in the computer's zone).
+- Version 0.x is the development series. Until 1.0, the app and builder are released together and the major version stays 0. Breaking changes bump the minor version, and the reader requires a minor version it knows: 0.7, 0.6, 0.5, 0.4, and 0.3, since 0.4 only changed sections the 0.3 reader never read (`SAPL`) and added others, 0.5 only added the routing sections, 0.6 only `TZON`, and 0.7 changed the blocked layout and `RCHE` (the reader tells the old and new apart by the pack's minor version). A 0.3 pack opens with its tiles; the search readers need 0.4, the routing reader 0.5 and the time zones 0.6, so the app hides what an older pack lacks (without `TZON`, a schedule's times are all in the computer's zone).
 
 ## Checksums
 
@@ -115,7 +115,7 @@ Every section has an XXH3-64 checksum in the section table. The app does **not**
 ## `META`: metadata and attribution (contiguous)
 
 A UTF-8 JSON object, zstd-compressed (one frame). Fields:
-- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.6"`).
+- `region`, `bbox` (west, south, east, north in degrees), `build_time` (Unix seconds), `builder_version`, `format_version` (`"0.7"`).
 - `sources`: the `fetch` manifest. For each input: `name`, `url`, `date` (of download, RFC 3339), `sha256`, `license`, and optionally `license_url` and `attribution`. Every OpenAddresses source is listed, including those whose license is `unspecified` (decision 13).
 - `attribution`: the text the app shows on its "About this map" screen, built from `sources` (e.g. "© OpenStreetMap contributors, ODbL", the Statistics Canada NAR licence, each OpenAddresses source's attribution).
 - `settings`: the build options that shaped the data (whitelist version, simplification tolerances, address dedup and attach distances).
@@ -242,8 +242,10 @@ Addresses are stored per **street**, as in roadmap §4 and decision 9 (A3). A st
 `build --addresses` writes six sections (phase 2 step 2.4); `omp-core::addr` reads them, and `omp-core::search::Search` places them along their streets and finds the addresses near a point through [`SGRD`](#sgrd-spatial-grid-contiguous). Each is a run of zstd blocks (level 19) behind an index, in the same layout as the [street sections](#streets):
 
 ```
-section = count:u32  nblocks:u32  (first:u32  offset:u32  length:u32)*  block*
+section = count:u32  nblocks:u32  dict_offset:u32  dict_length:u32  (first:u32  offset:u32  length:u32)*  dict  block*
 ```
+
+From 0.7 (before, the header was `count` and `nblocks` alone and no section had a dictionary). `dict` is a zstd dictionary the blocks were compressed with, `dict_length` bytes at `dict_offset` (0 for none: then `dict_offset` is not read); in a spanning section it is a record of its own between the index and the first block. The builder trains one (112 KiB, from blocks sampled evenly) for `RGEO`, `SSTR`, `SENT`, `ASUF`, `AUNI`, `ALSE` and `ARNG` when the section has at least 16 times that much data; the rest have none. The frames have no checksum and no dictionary ID.
 
 `offset` is from the start of the section. What `count` and `first` mean depends on the section. Blocks hold about 16 KiB uncompressed. 4 KiB blocks would make the sections 5.1% larger (North America) and save about 0.3 ms per USB 2 read, which the 1 s cold-lookup target does not need.
 
@@ -325,7 +327,7 @@ A zstd-compressed JSON object: `nodes`, `edges` (of the hierarchy), `segments`, 
 
 ### `RCHE`: the hierarchy (spanning)
 
-`count` is the number of nodes. Block *k* holds nodes *k* × `block_nodes` onwards (32, fewer in the last block), and its `first` is its first node. Blocks are **not compressed**: a block is about 1 KiB, and decoding varints is faster than decompressing.
+`count` is the number of nodes. Block *k* holds nodes *k* × `block_nodes` onwards (32, fewer in the last block), and its `first` is its first node. Blocks are zstd frames from 0.7 (level 19, a 64 KiB dictionary trained on them, no checksum or dictionary ID): about 700 bytes each uncompressed, they shrink by a third, and the reader decodes a block once into its cache. Before 0.7 they were stored raw, since decoding varints beats decompressing; Ohio's routes took 0.2–0.3 ms longer on a cache miss for it ([phase 5 step 5.12](phase5-plan.md#512-perf-builder-and-pack-size)). The section starts with `nodes:u32  nblocks:u32  dict_offset:u32  dict_length:u32  offset:u32 × (nblocks + 1)` (before 0.7 without the dictionary fields), then the dictionary, then the blocks; each block runs to the next one's offset, and a frame's end is found in the frame, so the padding at a chunk boundary after it is ignored. The block below is what a frame holds.
 
 ```
 block = node*
@@ -431,7 +433,7 @@ area  = level:u8  parent:varint  flags:varint  name:str  abbr:str  population:va
 Polygons simplified to 50 m, in zstd blocks of consecutive areas (about 64 KiB uncompressed each), in the layout of the [street sections](#streets) (0.4; 0.3 had no `count`):
 
 ```
-SAPL    = count:u32  nblocks:u32  (first_area:u32  offset:u32  length:u32)*  block*
+SAPL    = count:u32  nblocks:u32  dict_offset:u32  dict_length:u32  (first_area:u32  offset:u32  length:u32)*  dict  block*
 block   = polygon*                                        ; one per area, first_area onwards
 polygon = nrings:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
 ```
@@ -447,7 +449,7 @@ One record per street (phase 2 step 2.2): connected named OSM ways whose `name` 
 Both sections are zstd blocks (level 19) of consecutive streets, about 32 KiB uncompressed each, with an index in front:
 
 ```
-section = count:u32  nblocks:u32  (first_street:u32  offset:u32  length:u32)*  block*
+section = count:u32  nblocks:u32  dict_offset:u32  dict_length:u32  (first_street:u32  offset:u32  length:u32)*  dict  block*
 ```
 
 `count` is the number of streets; `offset` is from the start of the section. To read street `s`, binary-search `first_street` and decompress that block. A street never spans two blocks.
@@ -483,7 +485,7 @@ street = nparts:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
 For each **z14 cell** (`(x >> 18, y >> 18)` of world coordinates, about 1.9 km at 40° N) that holds part of a street or an unattached address, the streets with a segment in it and whether it has `ALSE` points, so "what's here" and snapping (phase 3) read only the streets near a point. Cells are in **Hilbert order** (`omp_core::tile::hilbert` at z14, as `TIDX`), in zstd blocks of about 16 KiB uncompressed, in the layout of the street sections:
 
 ```
-SGRD  = count:u32  nblocks:u32  (first_key:u32  offset:u32  length:u32)*  block*
+SGRD  = count:u32  nblocks:u32  dict_offset:u32  dict_length:u32  (first_key:u32  offset:u32  length:u32)*  dict  block*
 block = cell*
 cell  = key_delta:varint  (nstreets << 1 | loose):varint  [first:zvarint  street_delta:varint*]
 ```
@@ -506,7 +508,7 @@ The search index (phase 2 step 2.3). Four sections: the entries (`SENT`), the to
 zstd blocks (level 19) of consecutive entries, about 16 KiB uncompressed each, in the same layout as the [street sections](#streets):
 
 ```
-section = count:u32  nblocks:u32  (first_entry:u32  offset:u32  length:u32)*  block*
+section = count:u32  nblocks:u32  dict_offset:u32  dict_length:u32  (first_entry:u32  offset:u32  length:u32)*  dict  block*
 block   = entry*
 entry   = (class << 3 | kind):varint  importance:u8  name:str  dx:zvarint  dy:zvarint
           admin:varint  town:varint  ref:varint  nalt:varint  alt:str*

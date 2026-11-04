@@ -20,7 +20,7 @@ use serde::Serialize;
 use super::merge::{APPROX, Attached, Merged, OSM, UNATTACHED};
 use super::streets::morton;
 use crate::geom::P;
-use crate::street::encode::{Blocks, blocked, read_blocks, string};
+use crate::street::encode::{Blocks, DICT_KIB, blocked, read_blocks, string};
 use crate::street::{STEP_M, Table};
 
 /// The section IDs; `ALSE` blocks hold whole cells of [`CELL_ZOOM`], and its positions are
@@ -544,14 +544,14 @@ pub fn sections(inp: &Input, block: usize) -> Result<(Sections, Sizes)> {
     };
     let nsuf = inp.entries.iter().filter(|e| e.suffix != 0).count();
     let nunit = inp.units.iter().filter(|u| u.0 & UNATTACHED == 0).count();
-    let (astr, astr_blocks) = blocked(inp.entries.len(), astr_b)?;
-    let (asuf, _) = blocked(nsuf, asuf_b)?;
-    let (auni, _) = blocked(nunit, auni_b)?;
+    let (astr, astr_blocks) = blocked(inp.entries.len(), astr_b, 0)?;
+    let (asuf, _) = blocked(nsuf, asuf_b, DICT_KIB)?;
+    let (auni, _) = blocked(nunit, auni_b, DICT_KIB)?;
     let alse_b = point_blocks(inp, block);
     let alse_raw = alse_b.iter().map(|b| b.1.len() as u64).sum();
-    let (alse, alse_blocks) = blocked(inp.points.len(), alse_b)?;
-    let (arng, _) = blocked(inp.ranges.len(), range_blocks(&inp.ranges, block))?;
-    let (apcd, _) = blocked(inp.codes.len(), code_blocks(&inp.codes, block))?;
+    let (alse, alse_blocks) = blocked(inp.points.len(), alse_b, DICT_KIB)?;
+    let (arng, _) = blocked(inp.ranges.len(), range_blocks(&inp.ranges, block), DICT_KIB)?;
+    let (apcd, _) = blocked(inp.codes.len(), code_blocks(&inp.codes, block), 0)?;
 
     // Every section is read back, as a check of the encoding.
     let decoded = decode_streets(&astr, &asuf, &auni)?;

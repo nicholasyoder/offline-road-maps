@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::{Entry, Index, Kind};
 use crate::geom::P;
-use crate::street::encode::{Blocks, blocked, read_blocks, string};
+use crate::street::encode::{Blocks, DICT_KIB, blocked, read_blocks, string};
 
 pub use omp_core::search::{SENT, SFST, SHIFT, SPST, STWN};
 const LEVEL: i32 = 19;
@@ -111,7 +111,7 @@ fn postings_list(ids: &[u32], total: u64, out: &mut Vec<u8>) {
 pub fn sections(index: &Index, block: usize) -> Result<(Sections, Sizes)> {
     let n = index.entries.len();
     let (b, sent_raw, by_kind) = blocks(&index.entries, block);
-    let (sent, sent_blocks) = blocked(n, b)?;
+    let (sent, sent_blocks) = blocked(n, b, DICT_KIB)?;
 
     let mut towns_raw = Vec::new();
     put(&mut towns_raw, index.towns.len() as u64);

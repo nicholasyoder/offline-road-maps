@@ -18,13 +18,16 @@ fn frame(raw: &[u8]) -> Vec<u8> {
     zstd::bulk::compress(raw, 3).unwrap()
 }
 
-/// `count nblocks (first offset length)* block*`.
+/// `count nblocks dict_offset dict_length (first offset length)* block*`, with no dictionary.
 fn blocked(count: usize, blocks: &[(u32, Vec<u8>)]) -> Vec<u8> {
     let frames: Vec<(u32, Vec<u8>)> = blocks.iter().map(|(f, b)| (*f, frame(b))).collect();
     let mut out = Vec::new();
     out.extend_from_slice(&(count as u32).to_le_bytes());
     out.extend_from_slice(&(frames.len() as u32).to_le_bytes());
-    let mut offset = 8 + 12 * frames.len();
+    let mut offset = 16 + 12 * frames.len();
+    for v in [offset as u32, 0] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
     for (f, b) in &frames {
         for v in [*f, offset as u32, b.len() as u32] {
             out.extend_from_slice(&v.to_le_bytes());

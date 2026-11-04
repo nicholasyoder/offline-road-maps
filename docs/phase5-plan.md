@@ -53,7 +53,7 @@ What phase 4 left in place for this:
 | 5.9 Perf: long routes and directions | Deferred 2026-11-03 | Owner: routing is fast enough in use, and the segment cache stays as it is rather than spend RSS; P10 not taken |
 | 5.10 Perf: memory | **Done** 2026-11-04 | glibc arenas capped at 2: North America flight 328 → 298 MiB on the dev machine (target 300 met); the other leads measured and left; DX12 and the E6430's GL leak: no setting helps. Found on the way: `panic = "unwind"` crashes the E6430 at start-up, so the app is back on `abort` (5.14) |
 | 5.11 Perf: printing | **Done** 2026-11-04 | Banded pages; print memory within +100 MiB at 300/360 dpi on Vulkan; GL cap lifted; DX12 measured and still high (driver) |
-| 5.12 Perf: builder and pack size | **Done** 2026-11-04 | Merge and streets stages faster, inputs checked against the manifest (R10); no map detail given up. Lossless size levers measured: compressing `RCHE` (−0.35 to −0.47 GB on North America), dictionaries for the blocked sections (−0.13 GB), bigger tile dictionaries (small); the first two change the format and wait for the owner (decision 13) |
+| 5.12 Perf: builder and pack size | **Done** 2026-11-04 | Merge and streets stages faster, inputs checked against the manifest (R10); no map detail given up. Lossless size levers measured: compressing `RCHE` (−0.35 to −0.47 GB on North America), dictionaries for the blocked sections (−0.13 GB), bigger tile dictionaries (small); the first two are in as format 0.7 (2026-11-04, owner's go-ahead); the flights on a North America pack and the stick wait for its rebuild |
 | 5.13 Final checks on every machine | Not started | |
 | 5.14 Why unwinding crashes the E6430 | Not started | Research; before 5.13, so the final checks run on the build that will ship |
 
@@ -177,9 +177,9 @@ The roadmap: "The UI follows a dark style."
 
 **Done when:** the UI is dark or light by the setting or the system, whatever the map style, with no hard-coded UI colour left outside the palette.
 
-> **Done 2026-11-02** (commit `f5dccaa`; checked by hand by the owner on Linux and on Windows). Code: `theme.rs` (palette functions, `apply`, `wants_dark`, contrast test), `systheme.rs` (Linux: settings portal via `gdbus`, then `gsettings`; Windows: egui's system theme), `Config::display.theme`, the Theme row in `app/settings.rs`. 13. **No map detail is given up to save space** (owner 2026-11-04). The detail levers of roadmap §4 (the smallest ponds and streams, land cover capped at z12) are not taken, and the owner may add detail back once the final pack sizes are known. Size is found in the encoding: compression, dictionaries, layout. Compressing `RCHE` and the dictionaries for the blocked sections (5.12) change the format and wait for the owner.
+> **Done 2026-11-02** (commit `f5dccaa`; checked by hand by the owner on Linux and on Windows). Code: `theme.rs` (palette functions, `apply`, `wants_dark`, contrast test), `systheme.rs` (Linux: settings portal via `gdbus`, then `gsettings`; Windows: egui's system theme), `Config::display.theme`, the Theme row in `app/settings.rs`. 13. **No map detail is given up to save space** (owner 2026-11-04). The detail levers of roadmap §4 (the smallest ponds and streams, land cover capped at z12) are not taken, and the owner may add detail back once the final pack sizes are known. Size is found in the encoding: compression, dictionaries, layout. Compressing `RCHE` and the dictionaries for the blocked sections (5.12, format 0.7) were taken with the owner's go-ahead (2026-11-04).
 
-Open: whether to compress `RCHE` and add dictionaries (decision 13). Not seen in dark on the E6430.
+Open: none. Not seen in dark on the E6430.
 
 ## 5.6 High-contrast style and black-and-white printing
 
@@ -357,7 +357,29 @@ After 4.11's fix the dev machine is within +100 MiB at 300 and 360 dpi (+82 and 
 >
 > The dictionary figures for the blocked sections train on the blocks they are measured on, so the small sections (`AUNI`, `ASUF`, `RCPY`) flatter themselves; the large ones (`RCHE`, `RGEO`, `SENT`, `SSTR`) have enough blocks that it does not matter. Together the format-changing levers come to about **0.55–0.65 GB** of North America's 10.0 GB without touching a feature, nearly all of it `RCHE`. The tile dictionaries are worth little (Quebec) and cost RSS, so they stay at 64 KiB until a North America build measures them. `RCHE` was stored raw in phase 3 because decoding varints beat decompressing; with decoded blocks cached the cost is a decompression per cache miss, and the cold route reads fewer bytes, but the warm and cold route flights have not been run with it.
 >
-> **Left for the owner (decision 13):** whether to compress `RCHE` (and add the dictionaries), a format change (0.7); then the routing flights show whether routes keep their times. A North America rebuild with it is decided with decision 9.
+> **Taken 2026-11-04 (owner: yes, with the speed measured): format 0.7.** `RCHE`'s blocks are zstd frames with a 64 KiB dictionary, and every blocked section has a dictionary field in its header; `RGEO`, `SSTR`, `SENT`, `ASUF`, `AUNI`, `ALSE` and `ARNG` get a 112 KiB one when they hold 16 times that much data ([format.md](format.md#addresses)). Readers decode on a thread-local zstd context (a context per 700-byte block would cost more than the block); packs of 0.3–0.6 still open (Ohio's 0.6 pack passes the route set and search with the new reader).
+>
+> | Pack (fresh build) | 0.6 | 0.7 | |
+> |---|---:|---:|---|
+> | Ohio | 215.2 MiB | **193.4 MiB** | −10.1%: `RCHE` 47.8 → 29.7 MiB, `RGEO` 43.9 → 40.8, `SENT` −9%, `SSTR` −7%, `AUNI` −11% |
+> | Quebec | 603.2 MiB | **596.7 MiB** | −1.1% (tiles are 94% of Quebec; `RCHE` is 14% of North America) |
+>
+> Routing speed on Ohio (dev machine, `inspect --readers` and `route --check 300`; the 0.6 pack read by the 5.12 builder before the change, the same flights):
+>
+> | | 0.6 | 0.7 |
+> |---|---:|---:|
+> | Long route, first (blocks read and decoded), p50 | 0.62 ms | 0.92 ms |
+> | Short route, first, p50 | 0.30 ms | 0.47 ms |
+> | Routes again (blocks cached), p50 | 0.103 / 0.038 ms | 0.105 / 0.040 ms |
+> | Long route, cold from the page cache, p50 | 40.8 ms | 36.2 ms |
+> | Cold, top of the hierarchy first, p50 | 70.8 ms | 49.0 ms (20.4 MiB read for the top, not 31.9) |
+> | `--check` trips, first: short / long, p50 | 4.14 / 10.75 ms | 4.44 / 11.11 ms |
+> | `--check` exact queries, 16 threads at once | 0.94 ms | 1.29 ms |
+> | Read from the pack in the `--check` run | 2,071 MiB | 1,814 MiB |
+>
+> So decompressing is a cost only when a block is not cached: +0.2–0.3 ms on a route that reads its blocks for the first time (+3–8% on the trips), nothing once they are cached; cold reads read a third fewer bytes and come out faster. Correctness: `route --check` 0 differ from Dijkstra and 0 forbidden paths on Ohio and Quebec, the route sets pass (26/26, 22/22), `verify` and the readers' cross-checks pass; the 0.7 Ohio pack's tiles are unchanged. **Not yet measured:** North America's flights (`north-america`, `north-america-p4`) and the cold ones from the USB stick, which need a rebuilt pack (decision 9); North America should lose about 0.5 GB (`RCHE` is 1.4 GB of 10.0).
+>
+> **Left for the owner:** a North America rebuild with 0.7, then those flights.
 
 ## 5.13 Final checks on every machine
 

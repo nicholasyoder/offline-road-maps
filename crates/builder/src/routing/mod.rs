@@ -15,6 +15,7 @@ mod tests;
 
 use std::time::Instant;
 
+use crate::street::encode::{DICT_KIB, compress_blocks};
 use anyhow::{Result, ensure};
 use omp_core::pack::Writer;
 use omp_core::profile;
@@ -29,9 +30,9 @@ use crate::geom::P;
 use crate::graph::{self, Graph};
 use crate::street::WayStreets;
 use crate::street::grid::segment_cells;
-
 /// zstd level of the compressed routing blocks, as the street sections'.
-const LEVEL: i32 = 19;
+/// `RCHE`'s dictionary, in KiB; its blocks are small, so a smaller one does as well.
+const RCHE_DICT_KIB: usize = 64;
 /// Uncompressed bytes per block of the zstd sections, about.
 pub const BLOCK: usize = 16 << 10;
 
@@ -116,29 +117,35 @@ pub struct BlockedSection {
     pub id: [u8; 4],
     pub count: u32,
     pub blocks: Blocks,
+    /// The zstd dictionary the blocks were compressed with, empty for none.
+    pub dict: Vec<u8>,
 }
 
 impl BlockedSection {
     fn bytes(&self) -> u64 {
-        8 + self
-            .blocks
-            .iter()
-            .map(|(_, b)| 12 + b.len() as u64)
-            .sum::<u64>()
+        16 + self.dict.len() as u64
+            + self
+                .blocks
+                .iter()
+                .map(|(_, b)| 12 + b.len() as u64)
+                .sum::<u64>()
     }
 }
 
 pub struct Sections {
     pub rhdr: Vec<u8>,
-    /// `RCHE`'s blocks of nodes.
+    /// `RCHE`'s blocks of nodes, compressed.
     pub rche: Vec<Vec<u8>>,
+    /// The dictionary of `rche`'s blocks, empty for none.
+    pub rche_dict: Vec<u8>,
     pub nodes: u32,
     pub blocked: Vec<BlockedSection>,
 }
 
-/// `RCHE`'s bytes before its blocks: `nodes:u32 nblocks:u32 offset:u32 × (nblocks + 1)`.
+/// `RCHE`'s bytes before its dictionary and blocks:
+/// `nodes:u32 nblocks:u32 dict_offset:u32 dict_length:u32 offset:u32 × (nblocks + 1)`.
 fn rche_head_len(blocks: usize) -> u64 {
-    8 + 4 * (blocks as u64 + 1)
+    16 + 4 * (blocks as u64 + 1)
 }
 
 impl Sections {
@@ -147,24 +154,30 @@ impl Sections {
         let mut out = vec![w.section(core::RHDR, &self.rhdr)?];
         // RCHE: each block runs to the next one's offset, padding included.
         let head_len = rche_head_len(self.rche.len());
-        let lens = std::iter::once(head_len).chain(self.rche.iter().map(|b| b.len() as u64));
+        let lens = [head_len, self.rche_dict.len() as u64]
+            .into_iter()
+            .chain(self.rche.iter().map(|b| b.len() as u64));
         let offsets = w.spanning_offsets(lens);
         let end = offsets.last().unwrap() + self.rche.last().map_or(0, |b| b.len() as u64);
         let mut head = Vec::with_capacity(head_len as usize);
         head.extend_from_slice(&self.nodes.to_le_bytes());
         head.extend_from_slice(&(self.rche.len() as u32).to_le_bytes());
-        for &o in offsets[1..].iter().chain([&end]) {
+        for v in [offsets[1], self.rche_dict.len() as u64] {
+            head.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+        for &o in offsets[2..].iter().chain([&end]) {
             let o = u32::try_from(o).map_err(|_| anyhow::anyhow!("RCHE is over 4 GiB"))?;
             head.extend_from_slice(&o.to_le_bytes());
         }
         w.begin_spanning(core::RCHE);
         w.record(&head)?;
+        w.record(&self.rche_dict)?;
         for b in &self.rche {
             w.record(b)?;
         }
         out.push(w.end_spanning());
         for b in &self.blocked {
-            out.push(core::write_spanning(w, b.id, b.count, &b.blocks)?);
+            out.push(core::write_spanning(w, b.id, b.count, &b.blocks, &b.dict)?);
         }
         Ok(out)
     }
@@ -374,11 +387,12 @@ fn direction(g: &Graph, o: &Order, edge: u32, end: u32, out: &mut Vec<u8>) {
 /// `(first key of a block starting here, may a block start here)`; `enc` appends record `i`
 /// and is told when a block starts, to reset its cursors.
 fn zstd_blocks(
+    dict_kib: usize,
     n: usize,
     key: impl Fn(usize) -> u32,
     can_start: impl Fn(usize) -> bool,
     mut enc: impl FnMut(usize, bool, &mut Vec<u8>),
-) -> Result<(Blocks, u64)> {
+) -> Result<(Blocks, u64, Vec<u8>)> {
     let mut raw = Vec::new();
     let mut cur = Vec::new();
     let mut first = 0u32;
@@ -396,11 +410,8 @@ fn zstd_blocks(
         raw.push((first, cur));
     }
     let bytes = raw.iter().map(|(_, b)| b.len() as u64).sum();
-    let blocks = raw
-        .into_par_iter()
-        .map(|(f, b)| Ok((f, zstd::bulk::compress(&b, LEVEL)?)))
-        .collect::<Result<_>>()?;
-    Ok((blocks, bytes))
+    let (blocks, dict) = compress_blocks(raw, dict_kib)?;
+    Ok((blocks, bytes, dict))
 }
 
 /// The routing sections of `g` and its hierarchy `h`. `streets` names the segments.
@@ -419,7 +430,16 @@ pub fn sections(
     let (seg_order, seg_id, home) = segment_order(g);
     let o = order_with_top(g, h, &seg_id, p);
 
-    let (rche, edges) = hierarchy(g, h, &o, &seg_id, p.block_nodes);
+    let (rche_raw, edges) = hierarchy(g, h, &o, &seg_id, p.block_nodes);
+    let (rche, rche_dict) = compress_blocks(
+        rche_raw
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| (i as u32, b))
+            .collect(),
+        RCHE_DICT_KIB,
+    )?;
+    let rche: Vec<Vec<u8>> = rche.into_iter().map(|(_, b)| b).collect();
     let top_blocks = (o.top.div_ceil(p.block_nodes) as usize).min(rche.len());
     let top_bytes = rche[..top_blocks].iter().map(|b| b.len() as u64).sum();
 
@@ -427,7 +447,8 @@ pub fn sections(
     let ends = segment_edges(g);
     let mut sizes = Sizes::default();
     let (mut prev_a, mut cur) = (0u32, [0i64; 2]);
-    let (rgeo_blocks, rgeo_raw) = zstd_blocks(
+    let (rgeo_blocks, rgeo_raw, rgeo_dict) = zstd_blocks(
+        DICT_KIB,
         seg_order.len(),
         |i| i as u32,
         |_| true,
@@ -478,11 +499,13 @@ pub fn sections(
         id: core::RGEO,
         count: seg_order.len() as u32,
         blocks: rgeo_blocks,
+        dict: rgeo_dict,
     };
 
     // RNAM: label 0 is the empty one, so a segment's label field is its index (0 = none).
     let labels = &g.labels;
-    let (rnam_blocks, _) = zstd_blocks(
+    let (rnam_blocks, _, _) = zstd_blocks(
+        0,
         labels.len(),
         |i| i as u32,
         |_| true,
@@ -496,6 +519,7 @@ pub fn sections(
         id: core::RNAM,
         count: labels.len() as u32,
         blocks: rnam_blocks,
+        dict: Vec::new(),
     };
 
     let (rgrd, cells, cross_pairs) = grid(g, &seg_order, &home)?;
@@ -540,7 +564,9 @@ pub fn sections(
         top_nodes: u64::from(o.top),
         top_bytes,
         rhdr: rhdr.len() as u64,
-        rche: rche_head_len(rche.len()) + rche.iter().map(|b| b.len() as u64).sum::<u64>(),
+        rche: rche_head_len(rche.len())
+            + rche_dict.len() as u64
+            + rche.iter().map(|b| b.len() as u64).sum::<u64>(),
         rgeo: rgeo.bytes(),
         rgeo_raw,
         rnam: rnam.bytes(),
@@ -553,6 +579,7 @@ pub fn sections(
     let s = Sections {
         rhdr,
         rche,
+        rche_dict,
         nodes: n,
         blocked: vec![rgeo, rnam, rgrd, rcpy, rjct],
     };
@@ -604,7 +631,8 @@ fn grid(g: &Graph, seg_order: &[u32], home: &[u32]) -> Result<(BlockedSection, u
         cells.push((k, first, i as u32 - first, cross));
     }
     let (mut prev_key, mut prev_cross) = (0u32, 0u32);
-    let (blocks, _) = zstd_blocks(
+    let (blocks, _, _) = zstd_blocks(
+        0,
         cells.len(),
         |i| cells[i].0,
         |_| true,
@@ -633,6 +661,7 @@ fn grid(g: &Graph, seg_order: &[u32], home: &[u32]) -> Result<(BlockedSection, u
             id: core::RGRD,
             count: n as u32,
             blocks,
+            dict: Vec::new(),
         },
         n,
         cross_pairs,
@@ -668,7 +697,8 @@ fn copies(g: &Graph, o: &Order, seg_id: &[u32]) -> Result<(BlockedSection, u64)>
         .collect();
     list.par_sort_unstable();
     let mut prev = 0u32;
-    let (blocks, _) = zstd_blocks(
+    let (blocks, _, _) = zstd_blocks(
+        0,
         list.len(),
         |i| list[i].0,
         |i| list[i].0 != list[i - 1].0,
@@ -694,6 +724,7 @@ fn copies(g: &Graph, o: &Order, seg_id: &[u32]) -> Result<(BlockedSection, u64)>
             id: core::RCPY,
             count: n as u32,
             blocks,
+            dict: Vec::new(),
         },
         n,
     ))
@@ -718,7 +749,8 @@ fn junctions(g: &Graph, o: &Order) -> Result<(BlockedSection, u64)> {
     }
     list.sort_unstable();
     let mut prev = 0u32;
-    let (blocks, _) = zstd_blocks(
+    let (blocks, _, _) = zstd_blocks(
+        0,
         list.len(),
         |i| list[i].0,
         |_| true,
@@ -738,6 +770,7 @@ fn junctions(g: &Graph, o: &Order) -> Result<(BlockedSection, u64)> {
             id: core::RJCT,
             count: n as u32,
             blocks,
+            dict: Vec::new(),
         },
         n,
     ))

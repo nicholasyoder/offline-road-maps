@@ -27,7 +27,7 @@ pub mod tiles;
 pub mod tz;
 pub mod varint;
 pub mod whitelist;
-mod zframe;
+pub mod zframe;
 
 #[cfg(test)]
 mod damage_tests;

@@ -102,7 +102,7 @@ pub fn sections(admin: &Admin) -> Result<(Vec<u8>, Vec<u8>, Sizes)> {
     if !cur.is_empty() {
         blocks.push((first, cur));
     }
-    let (sapl, nblocks) = crate::street::encode::blocked(admin.areas.len(), blocks)?;
+    let (sapl, nblocks) = crate::street::encode::blocked(admin.areas.len(), blocks, 0)?;
     sizes.sapl = sapl.len() as u64;
     sizes.sapl_blocks = nblocks;
     Ok((sadm, sapl, sizes))

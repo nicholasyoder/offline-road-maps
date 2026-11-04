@@ -10,9 +10,9 @@ use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use zstd::zstd_safe::DCtx;
+use zstd::zstd_safe::DDict;
 
-use crate::pack::{Pack, Section, Writer};
+use crate::pack::{DICT_MINOR, Pack, Section, Writer};
 use crate::varint::{Reader, invalid};
 use crate::zframe;
 
@@ -24,6 +24,8 @@ pub struct Blocked {
     /// Per block: its `first` key and its frame's offset and length.
     firsts: Vec<u32>,
     frames: Vec<(u32, u32)>,
+    /// The dictionary its blocks were compressed with, if any (0.7).
+    dict: Option<DDict<'static>>,
 }
 
 impl Blocked {
@@ -33,20 +35,37 @@ impl Blocked {
             return Ok(None);
         };
         let name = String::from_utf8_lossy(&id).into_owned();
-        if section.len < 8 || section.len > u32::MAX.into() {
+        // From 0.7 the header is `count nblocks dict_offset dict_length`; before, the first two.
+        let head_len: u64 = if pack.minor >= DICT_MINOR { 16 } else { 8 };
+        if section.len < head_len || section.len > u32::MAX.into() {
             return Err(invalid(format!("bad {name} section")));
         }
-        let head = pack.read(section.offset, 8)?;
+        let head = pack.read(section.offset, head_len as usize)?;
         let u32_at = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
         let (count, n) = (u32_at(&head, 0), u32_at(&head, 4) as usize);
         let index_len = 12 * n as u64;
-        if 8 + index_len > section.len {
+        if head_len + index_len > section.len {
             return Err(invalid(format!("{name} block index past the end")));
         }
-        let index = pack.read(section.offset + 8, index_len as usize)?;
+        let index = pack.read(section.offset + head_len, index_len as usize)?;
+        let mut end = head_len + index_len;
+        let mut dict = None;
+        if head_len == 16 {
+            let (at, len) = (u64::from(u32_at(&head, 8)), u64::from(u32_at(&head, 12)));
+            if len > 0 {
+                if at < end || at + len > section.len {
+                    return Err(invalid(format!("{name} dictionary is out of bounds")));
+                }
+                let bytes = pack.read(section.offset + at, len as usize)?;
+                dict = Some(
+                    DDict::try_create(&bytes)
+                        .ok_or_else(|| invalid(format!("{name} has a bad zstd dictionary")))?,
+                );
+                end = at + len;
+            }
+        }
         let mut firsts = Vec::with_capacity(n);
         let mut frames = Vec::with_capacity(n);
-        let mut end = 8 + index_len;
         for i in 0..n {
             let (first, offset, len) = (
                 u32_at(&index, 12 * i),
@@ -68,6 +87,7 @@ impl Blocked {
             count,
             firsts,
             frames,
+            dict,
         }))
     }
 
@@ -88,7 +108,7 @@ impl Blocked {
     pub fn read(&self, pack: &Pack, block: usize) -> io::Result<(Vec<u8>, u64)> {
         let (offset, len) = self.frames[block];
         let frame = pack.read(self.section.offset + u64::from(offset), len as usize)?;
-        let raw = zframe::decompress(&mut DCtx::create(), &frame, None)?;
+        let raw = zframe::decompress_block(&frame, self.dict.as_ref())?;
         Ok((raw, frame.len() as u64))
     }
 
@@ -99,28 +119,35 @@ impl Blocked {
 
 /// Writes a blocked section as a spanning one: the index is one record and each block
 /// another, so none crosses a chunk boundary. `blocks` are `(first, bytes)`, already
-/// compressed where the section's blocks are.
+/// compressed where the section's blocks are, with `dict` (empty for none).
 pub fn write_spanning(
     w: &mut Writer,
     id: [u8; 4],
     count: u32,
     blocks: &[(u32, Vec<u8>)],
+    dict: &[u8],
 ) -> io::Result<Section> {
-    let head_len = 8 + 12 * blocks.len() as u64;
-    let lens = std::iter::once(head_len).chain(blocks.iter().map(|(_, b)| b.len() as u64));
+    let head_len = 16 + 12 * blocks.len() as u64;
+    let lens = [head_len, dict.len() as u64]
+        .into_iter()
+        .chain(blocks.iter().map(|(_, b)| b.len() as u64));
     let offsets = w.spanning_offsets(lens);
     let too_big = || invalid(format!("{} is over 4 GiB", String::from_utf8_lossy(&id)));
     let mut head = Vec::with_capacity(head_len as usize);
     head.extend_from_slice(&count.to_le_bytes());
     head.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
-    for ((first, b), &offset) in blocks.iter().zip(&offsets[1..]) {
+    for v in [offsets[1], dict.len() as u64] {
+        head.extend_from_slice(&u32::try_from(v).map_err(|_| too_big())?.to_le_bytes());
+    }
+    for ((first, b), &offset) in blocks.iter().zip(&offsets[2..]) {
         head.extend_from_slice(&first.to_le_bytes());
         head.extend_from_slice(&u32::try_from(offset).map_err(|_| too_big())?.to_le_bytes());
         head.extend_from_slice(&(b.len() as u32).to_le_bytes());
     }
     w.begin_spanning(id);
     let start = w.record(&head)?;
-    for ((_, b), &offset) in blocks.iter().zip(&offsets[1..]) {
+    w.record(dict)?;
+    for ((_, b), &offset) in blocks.iter().zip(&offsets[2..]) {
         let at = w.record(b)?;
         debug_assert_eq!(at - start, offset);
     }

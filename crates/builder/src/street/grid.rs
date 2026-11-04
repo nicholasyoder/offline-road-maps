@@ -163,7 +163,7 @@ pub fn section(table: &Table, loose: &[P], z: u8, block: usize) -> Result<(Vec<u
             .unwrap_or(0)
     };
     let (blocks, raw) = encode(&cells, block);
-    let (bytes, nblocks) = blocked(cells.len(), blocks)?;
+    let (bytes, nblocks) = blocked(cells.len(), blocks, 0)?;
     let sizes = Sizes {
         zoom: z,
         cells: cells.len() as u64,

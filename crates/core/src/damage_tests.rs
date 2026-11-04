@@ -417,15 +417,15 @@ fn unseal(b: &[u8]) -> Option<Sealed> {
         return Some(Sealed::Frame(raw));
     }
     let (count, n) = (u32_at(0)?, u32_at(4)? as usize);
-    if n == 0 || 8 + 12 * n > b.len() {
+    if n == 0 || 16 + 12 * n > b.len() {
         return None;
     }
     let mut blocks = Vec::with_capacity(n);
     for i in 0..n {
         let (first, at, len) = (
-            u32_at(8 + 12 * i)?,
-            u32_at(12 + 12 * i)? as usize,
-            u32_at(16 + 12 * i)? as usize,
+            u32_at(16 + 12 * i)?,
+            u32_at(20 + 12 * i)? as usize,
+            u32_at(24 + 12 * i)? as usize,
         );
         let frame = b.get(at..at + len)?;
         blocks.push((
@@ -445,7 +445,10 @@ fn seal(s: &Sealed) -> Vec<u8> {
             let mut out = Vec::new();
             out.extend_from_slice(&count.to_le_bytes());
             out.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
-            let mut at = 8 + 12 * blocks.len();
+            let mut at = 16 + 12 * blocks.len();
+            for v in [at as u32, 0] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
             for ((first, _), f) in blocks.iter().zip(&frames) {
                 for v in [*first, at as u32, f.len() as u32] {
                     out.extend_from_slice(&v.to_le_bytes());

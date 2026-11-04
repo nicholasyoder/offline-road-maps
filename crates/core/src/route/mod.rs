@@ -23,11 +23,12 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use zstd::zstd_safe::DDict;
 
 pub use crate::blocked::write_spanning;
 use crate::blocked::{Blocked, Cache, string};
 use crate::geo::{self, P};
-use crate::pack::Pack;
+use crate::pack::{DICT_MINOR, Pack};
 use crate::tile::hilbert;
 use crate::varint::{Reader, invalid};
 use crate::zframe;
@@ -323,6 +324,9 @@ pub struct Reads {
 struct BlockIndex {
     section: u64,
     at: Vec<u32>,
+    /// From 0.7 the blocks are zstd frames, with this dictionary if there is one.
+    compressed: bool,
+    dict: Option<DDict<'static>>,
 }
 
 impl BlockIndex {
@@ -330,24 +334,47 @@ impl BlockIndex {
         let s = *pack
             .section(RCHE)
             .ok_or_else(|| invalid("no RCHE section"))?;
-        let head = pack.read(s.offset, 8)?;
-        let u32_at = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
-        let (count, n) = (u32_at(&head, 0), u32_at(&head, 4) as usize);
-        if count != nodes || n != nodes.div_ceil(block_nodes.max(1)) as usize || s.len < 12 {
+        // From 0.7: `nodes nblocks dict_offset dict_length offset × (nblocks + 1)`; before, the
+        // first two and the offsets.
+        let compressed = pack.minor >= DICT_MINOR;
+        let fixed: u64 = if compressed { 16 } else { 8 };
+        if s.len < fixed + 4 {
             return Err(invalid("RHDR does not match RCHE"));
         }
-        let raw = pack.read(s.offset + 8, 4 * (n + 1))?;
+        let head = pack.read(s.offset, fixed as usize)?;
+        let u32_at = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        let (count, n) = (u32_at(&head, 0), u32_at(&head, 4) as usize);
+        if count != nodes || n != nodes.div_ceil(block_nodes.max(1)) as usize {
+            return Err(invalid("RHDR does not match RCHE"));
+        }
+        let raw = pack.read(s.offset + fixed, 4 * (n + 1))?;
         let at: Vec<u32> = (0..=n).map(|k| u32_at(&raw, 4 * k)).collect();
-        let head_len = 8 + 4 * (n as u64 + 1);
+        let head_len = fixed + 4 * (n as u64 + 1);
         if u64::from(at[0]) < head_len
             || at.windows(2).any(|w| w[1] < w[0])
             || u64::from(at[n]) > s.len
         {
             return Err(invalid("bad RCHE block index"));
         }
+        let mut dict = None;
+        if compressed {
+            let (o, len) = (u64::from(u32_at(&head, 8)), u64::from(u32_at(&head, 12)));
+            if len > 0 {
+                if o < head_len || o + len > u64::from(at[0]) {
+                    return Err(invalid("RCHE dictionary is out of bounds"));
+                }
+                let bytes = pack.read(s.offset + o, len as usize)?;
+                dict = Some(
+                    DDict::try_create(&bytes)
+                        .ok_or_else(|| invalid("RCHE has a bad zstd dictionary"))?,
+                );
+            }
+        }
         Ok(BlockIndex {
             section: s.offset,
             at,
+            compressed,
+            dict,
         })
     }
 
@@ -479,12 +506,18 @@ impl Routing {
         let b = (v / bn) as usize;
         let block = self.nodes.get(b, || {
             let (at, len) = self.rche.frame(b);
-            let raw = self.pack.read(at, len as usize)?;
+            let frame = self.pack.read(at, len as usize)?;
             let first = b as u32 * bn;
             let n = bn.min(self.header.nodes - first);
-            let blk = decode_nodes(&raw, first, n, self.header.nodes)?;
+            let blk = match self.rche.compressed {
+                true => {
+                    let raw = zframe::decompress_block(&frame, self.rche.dict.as_ref())?;
+                    decode_nodes(&raw, first, n, self.header.nodes)?
+                }
+                false => decode_nodes(&frame, first, n, self.header.nodes)?,
+            };
             let bytes = blk.nodes.capacity() * 16 + blk.edges.capacity() * 16;
-            Ok((blk, bytes, raw.len() as u64))
+            Ok((blk, bytes, frame.len() as u64))
         })?;
         Ok(Node {
             block,

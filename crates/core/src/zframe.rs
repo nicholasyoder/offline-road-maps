@@ -22,6 +22,28 @@ pub fn compressor(level: i32, dict: &[u8]) -> io::Result<zstd::bulk::Compressor<
     Ok(c)
 }
 
+/// A compressor for the frames of blocked sections: with the magic number, without a
+/// checksum or a dictionary ID, so a reader that knows the dictionary needs neither.
+pub fn block_compressor(level: i32, dict: &[u8]) -> io::Result<zstd::bulk::Compressor<'static>> {
+    let mut c = zstd::bulk::Compressor::with_dictionary(level, dict)?;
+    c.set_parameter(CParameter::DictIdFlag(false))?;
+    c.set_parameter(CParameter::ChecksumFlag(false))?;
+    Ok(c)
+}
+
+thread_local! {
+    static DCTX: std::cell::RefCell<DCtx<'static>> = std::cell::RefCell::new(DCtx::create());
+}
+
+/// Decompresses one block of a blocked section on the thread's own context, which blocks of
+/// a few hundred bytes need: making a context costs more than they do. Bytes after the frame
+/// (the zero padding at a chunk's end) are ignored.
+pub fn decompress_block(frame: &[u8], dict: Option<&DDict>) -> io::Result<Vec<u8>> {
+    let end = zstd::zstd_safe::find_frame_compressed_size(frame)
+        .map_err(|code| invalid(format!("zstd: {}", zstd::zstd_safe::get_error_name(code))))?;
+    DCTX.with(|d| decompress(&mut d.borrow_mut(), &frame[..end], dict))
+}
+
 /// A compressor for tile frames: magicless, without a checksum.
 pub fn tile_compressor(level: i32, dict: &[u8]) -> io::Result<zstd::bulk::Compressor<'static>> {
     let mut c = zstd::bulk::Compressor::with_dictionary(level, dict)?;
