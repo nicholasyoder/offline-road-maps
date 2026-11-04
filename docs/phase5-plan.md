@@ -381,7 +381,17 @@ After 4.11's fix the dev machine is within +100 MiB at 300 and 360 dpi (+82 and 
 >
 > **Build memory (2026-11-04, the owner asked why the North America build needs the IDE closed).** The stage log only printed the peak, which never falls, so the first step was to print the resident size *now* too, and to sample it every 0.25 s on Quebec. Findings: (1) most of what a stage frees is not returned to the system: glibc keeps it in its arenas (millions of small features, records and names), so the next stage starts on top of the last one's peak; a `malloc_trim` after each stage took Quebec's resident size after the bands from 6 GiB to 1 GiB. (2) The node set was held twice (`marked` and the clone inside the locations, 1.75 GiB each at any region size). (3) Neither more bands (Quebec peak 7.0 GiB with 1 band, 8.35 with 3, 8.37 with 6) nor `MALLOC_ARENA_MAX=2` (−6% for 1.7× the time) helps. Changes: the node set moves into the locations and back instead of being cloned; `release_memory()` (`malloc_trim`) after every stage, every `features::read` pass and every address subdivision. Quebec with addresses, 3 bands: **peak RSS 8.35 → 5.75 GiB (−31%)**, same time (114 s against 111), pack byte-identical (and Ohio at 3 bands). Per stage on Quebec now: bands 4.4 GiB, address merge 4.5, routing graph 3.9, the rest under 2. **Not measured on North America** (it peaks at 49.7 GiB in the merge and 50.5 in the graph, after 47.6 in the bands; the log's `now` column will show each stage's real size on the next build). What stays: band 0's read holds the 14.0 GiB location table (8 bytes for each of 1.6 billion nodes) next to its features, so the read phase will not fall below roughly that plus the features; a build that fits beside the IDE may still need a smaller table (a rank-ordered 6-byte location, or reading the nodes band by band) if the stages above turn out to peak well over 40 GiB.
 >
-> **Left for the owner:** a North America rebuild with 0.7, then those flights.
+> **North America rebuilt with 0.7 (2026-11-04, owner's go-ahead; IDE closed, 56 GB scope, `build --addresses all --bands 3 --deterministic`, no `--reuse-stages`; logs in `$OMP_WORK/measure/p5/na-build/`).** Against P20's build (2,919 s, peak 50,544 MiB, pack 9,997.7 MiB):
+>
+> | | P20 (2026-11-02) | Now | |
+> |---|---:|---:|---:|
+> | Wall time | 2,919 s | **2,695 s (44:55)** | −7.7% |
+> | Peak RSS | 50,544 MiB | **43,515 MiB** | −14% |
+> | Pack | 9,997.7 MiB | **9,413.8 MiB** (3 chunks; chunk SHA-256 `5f79cf6f…`, `d7926333…`, `9a15556b…`) | −5.8% |
+>
+> Correctness on the new pack: `verify` OK (28 sections); route set 72/72; `route --check 300 --pbf` 0 differ from Dijkstra, 0 bad paths, 0 forbidden paths in 17,558 restricted approaches (peak 30 GiB; it needs more than 20 GB for the graph rebuild); address set 965/1000 first at its point, "what's here" 995/1000; `queries.tsv` Ohio 77/90, Quebec 76/79, Ontario 66/72 (not compared with the old pack). Long trips p50 108-122 ms, the cross-continent routes 220-265 ms. Copied to the stick (`maps/`, replacing the old pack; 51 min, read back byte-identical); the old bisect builds and scripts were removed from it.
+>
+> **Left open:** the build log has only the final line, not the per-stage lines with the resident size (the `now` column); the flights on the new pack (`north-america`, `north-america-p4`, warm and cold from the stick) have not been run; `packs/north-america` still holds the 0.6 pack.
 
 ## 5.13 Final checks on every machine
 
