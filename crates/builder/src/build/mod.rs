@@ -319,7 +319,7 @@ impl Setup {
         });
         let tz = match tz.exists() {
             true => {
-                provenance.add_input(&tz, "tz");
+                provenance.add_input(&tz, "tz")?;
                 Some(tz)
             }
             false => {
@@ -327,6 +327,7 @@ impl Setup {
                 None
             }
         };
+        provenance.start_hashing();
         let bounds = pbf::header_bounds(&args.input)?
             .context("the PBF header has no bounding box; the pack needs one")?;
         let clip = args.clip_poly.as_deref().map(Poly::read).transpose()?;
@@ -405,7 +406,8 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     let mut search = search::Builder::new();
     let mut streets = addresses_and_streets(&args, &setup, &admin, &mut search, &mut t)?;
     if let Some(a) = &streets.addresses {
-        setup.provenance.add_files(&a.files);
+        setup.provenance.add_files(&a.files)?;
+        setup.provenance.start_hashing();
     }
     let (search_sections, search_sizes) = search_index(
         &args,
@@ -436,6 +438,7 @@ pub fn run(args: BuildArgs, work_dir: &Path) -> Result<()> {
     drop((way_streets, routing, hierarchy));
     routing::print_sizes(&route_sizes);
     t.stage("routing sections");
+    setup.provenance.finish_hashing()?;
     let build_time = match args.deterministic {
         true => 0,
         false => jiff::Timestamp::now().as_second(),

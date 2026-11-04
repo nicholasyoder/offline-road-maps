@@ -2356,6 +2356,7 @@ dependencies = [
  "clap",
  "csv",
  "flate2",
+ "foldhash 0.2.0",
  "fst",
  "hex",
  "jiff",

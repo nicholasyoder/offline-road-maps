@@ -1,12 +1,15 @@
 //! `META` for `build`: the sources and snapshot (from the `fetch` manifest), the attribution
 //! and the build settings.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::thread::JoinHandle;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use omp_core::meta::{Meta, Source};
 use omp_core::pack;
 use omp_core::whitelist::Whitelist;
+use sha2::{Digest, Sha256};
 
 use crate::addr::{merge, store};
 use crate::fetch::manifest::{FileEntry, Manifest};
@@ -19,6 +22,16 @@ pub struct Provenance {
     pub dir: PathBuf,
     pub sources: Vec<Source>,
     pub snapshot: String,
+    /// Input files whose hash is not yet being checked against the manifest.
+    unchecked: Vec<Input>,
+    /// Threads hashing inputs, which [`Self::finish_hashing`] joins.
+    hashing: Vec<JoinHandle<Result<()>>>,
+}
+
+/// An input file as the manifest describes it.
+struct Input {
+    path: PathBuf,
+    sha256: String,
 }
 
 impl Provenance {
@@ -27,7 +40,8 @@ impl Provenance {
     pub fn load(manifest_path: &Path, input: &Path, water: Option<&Path>) -> Result<Self> {
         let manifest = Manifest::load_or_default(manifest_path)?;
         let dir = manifest_path.parent().unwrap_or(Path::new(".")).to_owned();
-        let osm_entry = manifest_entry(&manifest, &dir, input);
+        let osm_entry = manifest_entry(&manifest, &dir, input).cloned();
+        let osm_entry = osm_entry.as_ref();
         let mut sources = match osm_entry {
             Some(e) => vec![source(e)],
             None => {
@@ -58,39 +72,119 @@ impl Provenance {
             }
             None => eprintln!("  water: no water polygons, oceans left out"),
         }
-        Ok(Self {
+        let mut p = Self {
             manifest,
             dir,
             sources,
             snapshot,
-        })
+            unchecked: Vec::new(),
+            hashing: Vec::new(),
+        };
+        if let Some(e) = osm_entry {
+            p.expect(e, input)?;
+        }
+        if let Some(z) = water
+            && let Some(e) = manifest_entry(&p.manifest, &p.dir, z)
+        {
+            p.expect(&e.clone(), z)?;
+        }
+        Ok(p)
+    }
+
+    /// Stops if `file`'s size is not the manifest's `e.size` (the file was changed or cut short
+    /// since `fetch`), else queues it for [`Self::start_hashing`].
+    fn expect(&mut self, e: &FileEntry, file: &Path) -> Result<()> {
+        let size = std::fs::metadata(file)
+            .with_context(|| format!("read {}", file.display()))?
+            .len();
+        if size != e.size {
+            bail!(
+                "{} is {size} bytes but the manifest says {}: run `fetch` again",
+                file.display(),
+                e.size
+            );
+        }
+        self.unchecked.push(Input {
+            path: file.to_owned(),
+            sha256: e.sha256.clone(),
+        });
+        Ok(())
+    }
+
+    /// Hashes the inputs queued so far on a thread of their own, beside the build's work, to
+    /// compare with the manifest. [`Self::finish_hashing`] reports a mismatch.
+    pub fn start_hashing(&mut self) {
+        let inputs = std::mem::take(&mut self.unchecked);
+        if inputs.is_empty() {
+            return;
+        }
+        self.hashing.push(std::thread::spawn(move || {
+            let mut buf = vec![0u8; 1 << 20];
+            for i in inputs {
+                let mut f = std::fs::File::open(&i.path)
+                    .with_context(|| format!("read {}", i.path.display()))?;
+                let mut h = Sha256::new();
+                loop {
+                    let n = f
+                        .read(&mut buf)
+                        .with_context(|| format!("read {}", i.path.display()))?;
+                    if n == 0 {
+                        break;
+                    }
+                    h.update(&buf[..n]);
+                }
+                if !hex::encode(h.finalize()).eq_ignore_ascii_case(&i.sha256) {
+                    bail!(
+                        "{} does not match the manifest's SHA-256: run `fetch` again",
+                        i.path.display()
+                    );
+                }
+            }
+            Ok(())
+        }));
+    }
+
+    /// Waits for the hashing of every input and stops at the first that does not match.
+    pub fn finish_hashing(&mut self) -> Result<()> {
+        self.start_hashing();
+        for h in std::mem::take(&mut self.hashing) {
+            h.join()
+                .map_err(|_| anyhow::anyhow!("an input's hash check panicked"))??;
+        }
+        Ok(())
     }
 
     /// Adds the source of another input file, `what` in the snapshot ("tz 2026e"), if the
     /// manifest has it.
-    pub fn add_input(&mut self, file: &Path, what: &str) {
-        match manifest_entry(&self.manifest, &self.dir, file) {
+    pub fn add_input(&mut self, file: &Path, what: &str) -> Result<()> {
+        match manifest_entry(&self.manifest, &self.dir, file).cloned() {
             Some(e) => {
-                self.sources.push(source(e));
+                self.sources.push(source(&e));
                 let date = e.downloaded.get(..10).unwrap_or(&e.downloaded);
                 let id = e.source_id.as_deref().unwrap_or(date);
                 self.snapshot.push_str(&format!("; {what} {id}"));
+                self.expect(&e, file)?;
             }
             None => eprintln!(
                 "  warning: {} is not in the manifest; META leaves it out",
                 file.display()
             ),
         }
+        Ok(())
     }
 
     /// Adds the address files read, by manifest path.
-    pub fn add_files(&mut self, files: &[String]) {
+    pub fn add_files(&mut self, files: &[String]) -> Result<()> {
         for f in files {
-            match self.manifest.files.iter().find(|e| e.path == *f) {
-                Some(e) => self.sources.push(source(e)),
+            match self.manifest.files.iter().find(|e| e.path == *f).cloned() {
+                Some(e) => {
+                    self.sources.push(source(&e));
+                    self.expect(&e, &self.dir.join(f))?;
+                }
                 None => eprintln!("  warning: {f} is not in the manifest"),
             }
         }
+        Ok(())
     }
 }
 
@@ -252,5 +346,57 @@ mod tests {
             s(None, "CC0"),
         ]);
         assert_eq!(a, "© OpenStreetMap contributors, ODbL-1.0\nCC0");
+    }
+
+    /// A provenance whose manifest lists `name` with `size` and `sha256`.
+    fn provenance_of(dir: &Path, name: &str, size: u64, sha256: &str) -> Provenance {
+        let entry = FileEntry {
+            path: name.into(),
+            source: "osm".into(),
+            source_id: None,
+            url: String::new(),
+            metadata_url: None,
+            downloaded: "2026-10-01T00:00:00Z".into(),
+            size,
+            sha256: sha256.into(),
+            md5: None,
+            license: crate::fetch::manifest::License {
+                name: "ODbL-1.0".into(),
+                url: None,
+                attribution_required: None,
+                attribution: None,
+                share_alike: None,
+            },
+        };
+        Provenance {
+            manifest: Manifest { files: vec![entry] },
+            dir: dir.to_owned(),
+            sources: Vec::new(),
+            snapshot: String::new(),
+            unchecked: Vec::new(),
+            hashing: Vec::new(),
+        }
+    }
+
+    const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    #[test]
+    fn inputs_are_checked_against_the_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"abc").unwrap();
+        let file = dir.path().join("a.bin");
+
+        let mut p = provenance_of(dir.path(), "a.bin", 3, ABC);
+        p.add_input(&file, "x").unwrap();
+        p.finish_hashing().unwrap();
+
+        let mut p = provenance_of(dir.path(), "a.bin", 4, ABC);
+        let e = p.add_input(&file, "x").unwrap_err().to_string();
+        assert!(e.contains("a.bin") && e.contains("fetch"), "{e}");
+
+        let mut p = provenance_of(dir.path(), "a.bin", 3, &"0".repeat(64));
+        p.add_input(&file, "x").unwrap();
+        let e = p.finish_hashing().unwrap_err().to_string();
+        assert!(e.contains("a.bin") && e.contains("SHA-256"), "{e}");
     }
 }

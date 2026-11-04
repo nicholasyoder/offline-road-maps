@@ -120,7 +120,7 @@ pub struct Rec {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Interner {
-    map: HashMap<String, u32>,
+    map: streets::HashMap<String, u32>,
     pub list: Vec<String>,
 }
 

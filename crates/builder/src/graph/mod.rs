@@ -322,6 +322,21 @@ impl Graph {
     }
 }
 
+impl Graph {
+    /// Segment `s`'s first point, without decoding the rest.
+    pub fn first_point(&self, s: u32) -> P {
+        let start = match s {
+            0 => 0,
+            _ => self.geo_end[s as usize - 1],
+        };
+        let mut r = omp_core::varint::Reader::new(&self.geo[start as usize..]);
+        r.count().expect("graph points");
+        let x = r.varint().expect("graph points") as u32;
+        let y = r.varint().expect("graph points") as u32;
+        [x << SHIFT, y << SHIFT]
+    }
+}
+
 /// `npts:varint x:varint y:varint (dx:zvarint dy:zvarint)*`, in units of 2^[`SHIFT`].
 fn encode_points(pts: &[P], out: &mut Vec<u8>) {
     put(out, pts.len() as u64);

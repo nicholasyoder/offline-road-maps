@@ -335,7 +335,7 @@ pub(crate) fn segment_order(g: &Graph) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let keys: Vec<(u32, u64)> = (0..g.segments.len() as u32)
         .into_par_iter()
         .map(|i| {
-            let p = g.points(i)[0];
+            let p = g.first_point(i);
             (
                 core::cell_key(p[0] >> s, p[1] >> s),
                 hilbert(24, p[0] >> 8, p[1] >> 8),

@@ -650,7 +650,7 @@ impl Table {
             .collect();
         spellings.sort_unstable();
         spellings.dedup_by_key(|s| (s.0, s.1));
-        let resolved: HashMap<(u32, u32), String> = spellings
+        let resolved: HashMap<(u32, u32), (String, String)> = spellings
             .into_par_iter()
             .map(|(c, deepest, i)| {
                 let name = towns::display(
@@ -659,7 +659,7 @@ impl Table {
                     &piece_chain[&i],
                     mid(i as usize),
                 );
-                ((c, deepest), name)
+                ((c, deepest), (towns::key(&name), name))
             })
             .collect();
         let mut town_ids: HashMap<String, u32> = HashMap::new();
@@ -669,12 +669,8 @@ impl Table {
             let i = group[0].0;
             let deepest = piece_chain[&i].last().copied().unwrap_or(u32::MAX);
             let mut counts: HashMap<&str, (u32, &str)> = HashMap::new();
-            let mut keyed: Vec<(String, &str)> = Vec::new();
             for &(_, c) in group {
-                let name = &resolved[&(c, deepest)];
-                keyed.push((towns::key(name), name));
-            }
-            for (k, name) in &keyed {
+                let (k, name) = &resolved[&(c, deepest)];
                 counts.entry(k).or_insert((0, name)).0 += 1;
             }
             let (k, (_, name)) = counts

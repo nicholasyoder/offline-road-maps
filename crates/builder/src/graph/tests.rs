@@ -224,6 +224,18 @@ fn edges_between_intersections() {
 }
 
 #[test]
+fn first_point_is_the_first_of_points() {
+    let g = In::default()
+        .way(1, STREET, &[11, 21, 31])
+        .way(2, STREET, &[21, 22])
+        .build();
+    assert!(!g.segments.is_empty());
+    for s in 0..g.segments.len() as u32 {
+        assert_eq!(g.first_point(s), g.points(s)[0]);
+    }
+}
+
+#[test]
 fn oneway_edges() {
     let oneway = &[("highway", "residential"), ("oneway", "yes")];
     let g = In::default().way(1, oneway, &[11, 21]).build();

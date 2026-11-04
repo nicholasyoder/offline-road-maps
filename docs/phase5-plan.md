@@ -53,7 +53,7 @@ What phase 4 left in place for this:
 | 5.9 Perf: long routes and directions | Deferred 2026-11-03 | Owner: routing is fast enough in use, and the segment cache stays as it is rather than spend RSS; P10 not taken |
 | 5.10 Perf: memory | **Done** 2026-11-04 | glibc arenas capped at 2: North America flight 328 → 298 MiB on the dev machine (target 300 met); the other leads measured and left; DX12 and the E6430's GL leak: no setting helps. Found on the way: `panic = "unwind"` crashes the E6430 at start-up, so the app is back on `abort` (5.14) |
 | 5.11 Perf: printing | **Done** 2026-11-04 | Banded pages; print memory within +100 MiB at 300/360 dpi on Vulkan; GL cap lifted; DX12 measured and still high (driver) |
-| 5.12 Perf: builder and pack size | Not started | |
+| 5.12 Perf: builder and pack size | **Done** 2026-11-04 | Merge and streets stages faster, inputs checked against the manifest (R10); no map detail given up. Lossless size levers measured: compressing `RCHE` (−0.35 to −0.47 GB on North America), dictionaries for the blocked sections (−0.13 GB), bigger tile dictionaries (small); the first two change the format and wait for the owner (decision 13) |
 | 5.13 Final checks on every machine | Not started | |
 | 5.14 Why unwinding crashes the E6430 | Not started | Research; before 5.13, so the final checks run on the build that will ship |
 
@@ -177,7 +177,9 @@ The roadmap: "The UI follows a dark style."
 
 **Done when:** the UI is dark or light by the setting or the system, whatever the map style, with no hard-coded UI colour left outside the palette.
 
-> **Done 2026-11-02** (commit `f5dccaa`; checked by hand by the owner on Linux and on Windows). Code: `theme.rs` (palette functions, `apply`, `wants_dark`, contrast test), `systheme.rs` (Linux: settings portal via `gdbus`, then `gsettings`; Windows: egui's system theme), `Config::display.theme`, the Theme row in `app/settings.rs`. Open: none. Not seen in dark on the E6430.
+> **Done 2026-11-02** (commit `f5dccaa`; checked by hand by the owner on Linux and on Windows). Code: `theme.rs` (palette functions, `apply`, `wants_dark`, contrast test), `systheme.rs` (Linux: settings portal via `gdbus`, then `gsettings`; Windows: egui's system theme), `Config::display.theme`, the Theme row in `app/settings.rs`. 13. **No map detail is given up to save space** (owner 2026-11-04). The detail levers of roadmap §4 (the smallest ponds and streams, land cover capped at z12) are not taken, and the owner may add detail back once the final pack sizes are known. Size is found in the encoding: compression, dictionaries, layout. Compressing `RCHE` and the dictionaries for the blocked sections (5.12) change the format and wait for the owner.
+
+Open: whether to compress `RCHE` and add dictionaries (decision 13). Not seen in dark on the E6430.
 
 ## 5.6 High-contrast style and black-and-white printing
 
@@ -324,6 +326,38 @@ After 4.11's fix the dev machine is within +100 MiB at 300 and 360 dpi (+82 and 
 - **Inputs checked against `fetch`'s manifest** (R10, owner 2026-11-02): `build` compares each input's size and SHA-256 with `inputs/manifest.toml` and stops on a mismatch, naming the file ("run `fetch` again"). The size check is free; the hash re-reads the inputs (37 GB for North America), so measure it, overlapped with the build's own reads, before taking it into every build. In place before the next rebuild.
 
 **Done when:** the address merge has been profiled and any change taken is measured; the size levers are measured on Ohio and written up.
+
+> **Done 2026-11-04.** Measured on Ohio (215.2 MiB) and Quebec (603.2 MiB, water-heavy like North America) with `--deterministic --reuse-stages`, scripts in `$OMP_WORK/measure/p5/5.12/`.
+>
+> **No map detail is given up for size** (owner 2026-11-04, decision 13): the owner may add detail back depending on the final sizes. So the levers that drop features (the smallest ponds and streams, land cover capped at z12) are not measured or taken, and V5 tile groups (8% of the tiles for 2.5× the bytes read, phase 0's number) are left as they were. What follows looks only for size that costs no detail.
+>
+> **Builder (P4, P5, P21, P23, R10).** Packs stay byte-identical (Ohio `b326540c…`, Quebec `7f8115a3…`, fresh builds before and after).
+>
+> | Change | Ohio | Quebec |
+> |---|---:|---:|
+> | Address merge (names normalized in one parallel pass, `foldhash` for the maps) | 9.9 → 7.4 s | 28.3 → 23.3 s |
+> | Streets stage (postal-town key once per spelling, not once per vote) | 3.1 → 2.3 s | 7.3 → 2.0 s |
+> | Whole build, fresh | 75 → 51 s | – (the baseline run had the size probes on) |
+>
+> `segment_order` reads a segment's first point only (P5). P22 (the routing graph's one thread) was looked at and left: about 30 s of the 105 s could go in a parallel pass, under 2% of the build. P21's parallel subdivisions are left too, as the merge already peaks at 48.5 GiB of the 56 GB cap. The North America build is not rerun (decision 9); the merge and streets gains there are unmeasured, the profile put the streets' key work at about 55 s.
+>
+> **R10 is in place:** `build` stops when an input's size is not the manifest's (the OSM file, water, time zones and every address file), and hashes them all on threads of their own, beside the build, comparing SHA-256 before the pack is written; a mismatch names the file and says to run `fetch` again. The North America PBF alone (19.5 GB) hashes in 37 s cold from the data disk (10 s of CPU), so the 37 GB of inputs add nothing to a 49-minute build.
+>
+> **Lossless size levers**, in the order of what they are worth. All use only Ohio and Quebec; "North America" is the same ratio on its section sizes.
+>
+> | Lever | Ohio | Quebec | North America (est.) | Needs |
+> |---|---:|---:|---:|---|
+> | `RCHE` blocks (about 700 B each, stored raw) compressed with zstd 19 | −33.5% | −26.2% | **−350 to −470 MB** | format change; the reader already decodes blocks into a cache, so a miss adds a decompression of about 1 µs |
+> | …and a 64 KiB dictionary for them | −37.6% | −31.4% | −430 to −525 MB | the same, plus the dictionary stored in the pack |
+> | A 64 KiB dictionary per blocked section, `RGEO` (1.4 GB) | −6.0% | −5.2% | −75 MB | format change |
+> | …`SENT`, `SSTR`, `ALSE`, `ARNG`, `AUNI`, `SGEO`, `ASTR` | −9.5, −9.0, −6.0, −4.9, −27, −1.2, −1.4% | −5.4, −13.6, −7.8, −6.7 (`ARNG`), −24, −1.4, −1.3% | −50 MB together | format change |
+> | Tile dictionaries 64 → 256 KiB (20–25 of them) | −3.2% of the tile bytes, but +4 MiB of dictionaries: pack +0.6 MiB | −0.85%: pack −0.2 MiB | −55 MB if Quebec's ratio holds, up to −200 MB at Ohio's | none (`TDIC` is as it was); +4 MB RSS for the loaded dictionaries |
+> | zstd level 22 for the tiles | +140 B | – | none | none |
+> | 128 KiB tile dictionaries, more training data (64 MiB per dictionary) | −1.2% (pack +0.1 MiB), no gain from the training data | −0.16% | none | none |
+>
+> The dictionary figures for the blocked sections train on the blocks they are measured on, so the small sections (`AUNI`, `ASUF`, `RCPY`) flatter themselves; the large ones (`RCHE`, `RGEO`, `SENT`, `SSTR`) have enough blocks that it does not matter. Together the format-changing levers come to about **0.55–0.65 GB** of North America's 10.0 GB without touching a feature, nearly all of it `RCHE`. The tile dictionaries are worth little (Quebec) and cost RSS, so they stay at 64 KiB until a North America build measures them. `RCHE` was stored raw in phase 3 because decoding varints beat decompressing; with decoded blocks cached the cost is a decompression per cache miss, and the cold route reads fewer bytes, but the warm and cold route flights have not been run with it.
+>
+> **Left for the owner (decision 13):** whether to compress `RCHE` (and add the dictionaries), a format change (0.7); then the routing flights show whether routes keep their times. A North America rebuild with it is decided with decision 9.
 
 ## 5.13 Final checks on every machine
 

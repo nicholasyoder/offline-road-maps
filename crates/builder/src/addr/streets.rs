@@ -1,7 +1,7 @@
 //! Street index for attaching addresses: named OSM ways bucketed by name key and grid cell,
 //! and "streets" (connected ways sharing a key) with a linear offset along each.
 
-use std::collections::HashMap;
+use std::collections::HashMap as StdMap;
 
 use omp_core::geo;
 use omp_core::normalize::{is_direction, loose_key, street_key};
@@ -12,6 +12,10 @@ use crate::geom::{self, P};
 
 /// Grid cells of 2^17 world units: about 940 m at 40° N and 560 m at 62° N, so the 3 × 3
 /// cells around a point cover every way within 500 m of it.
+/// The merge's hash maps: a fast fixed hash instead of std's SipHash, as nothing here needs
+/// its resistance to attacks and no result depends on the order of a map.
+pub type HashMap<K, V> = StdMap<K, V, foldhash::fast::FixedState>;
+
 const CELL_SHIFT: u32 = 17;
 
 pub fn cell(p: P) -> (i32, i32) {
@@ -120,9 +124,14 @@ fn find(parent: &mut [u32], mut i: u32) -> u32 {
 impl Streets {
     pub fn build(raw: Vec<StreetWay>, keys: &mut Keys) -> Self {
         let mut ways = Vec::with_capacity(raw.len());
-        for s in &raw {
-            let ks = keys.intern_names(&s.names);
-            let mut ks_sorted = ks.clone();
+        // Every way's names normalized in one parallel pass, then interned in way order.
+        let normalized: Vec<Vec<String>> = raw
+            .par_iter()
+            .map(|s| s.names.iter().map(|n| street_key(n)).collect())
+            .collect();
+        for (s, names) in raw.iter().zip(normalized) {
+            let ks: Vec<u32> = names.into_iter().map(|k| keys.intern(k)).collect();
+            let mut ks_sorted = ks;
             ks_sorted.sort_unstable();
             ks_sorted.dedup();
             let mpu = geom::metres_per_unit(s.coords[0]);
@@ -138,8 +147,8 @@ impl Streets {
             });
         }
 
-        let mut strict: HashMap<(u32, i32, i32), Vec<u32>> = HashMap::new();
-        let mut loose: HashMap<(u32, i32, i32), Vec<u32>> = HashMap::new();
+        let mut strict: HashMap<(u32, i32, i32), Vec<u32>> = HashMap::default();
+        let mut loose: HashMap<(u32, i32, i32), Vec<u32>> = HashMap::default();
         let mut cells = Vec::new();
         for (wi, w) in ways.iter().enumerate() {
             cells.clear();
@@ -166,7 +175,7 @@ impl Streets {
             }
         }
 
-        let mut cell_keys: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+        let mut cell_keys: HashMap<(i32, i32), Vec<u32>> = HashMap::default();
         for &(k, x, y) in strict.keys() {
             cell_keys.entry((x, y)).or_default().push(k);
         }
@@ -185,7 +194,7 @@ impl Streets {
             entries.extend(ks.into_iter().map(|k| (wi as u32, k)));
         }
         let mut parent: Vec<u32> = (0..entries.len() as u32).collect();
-        let mut by_node: HashMap<(u32, i64), u32> = HashMap::new();
+        let mut by_node: HashMap<(u32, i64), u32> = HashMap::default();
         for (ei, &(w, k)) in entries.iter().enumerate() {
             for &n in &raw[w as usize].refs {
                 match by_node.get(&(k, n)) {
@@ -202,7 +211,7 @@ impl Streets {
             }
         }
         drop(by_node);
-        let mut groups: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut groups: HashMap<u32, Vec<u32>> = HashMap::default();
         for ei in 0..entries.len() as u32 {
             groups.entry(find(&mut parent, ei)).or_default().push(ei);
         }
@@ -218,7 +227,7 @@ impl Streets {
             .collect();
         comps.sort_unstable_by_key(|(m, c)| (*m, c.key, raw[c.ways[0] as usize].id));
         let comps: Vec<Comp> = comps.into_iter().map(|(_, c)| c).collect();
-        let mut entry = HashMap::new();
+        let mut entry = HashMap::default();
         for (ci, c) in comps.iter().enumerate() {
             let mut base = 0.0;
             for &w in &c.ways {
