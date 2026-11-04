@@ -151,6 +151,11 @@ impl NodeRanks {
         self.len
     }
 
+    /// The set, without the ranks.
+    pub fn into_set(self) -> NodeSet {
+        self.set
+    }
+
     pub fn heap_bytes(&self) -> u64 {
         self.set.heap_bytes() + self.ranks.iter().map(|r| r.len() as u64 * 8).sum::<u64>()
     }
@@ -200,6 +205,11 @@ impl RankedLocations {
 
     pub fn heap_bytes(&self) -> u64 {
         self.ranks.heap_bytes() + self.slots.len() as u64 * 8
+    }
+
+    /// The set of nodes, freeing the locations: for the next band, which needs the same nodes.
+    pub fn into_set(self) -> NodeSet {
+        self.ranks.into_set()
     }
 }
 

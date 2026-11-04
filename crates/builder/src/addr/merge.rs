@@ -168,6 +168,8 @@ pub fn merge(opts: &Options, admin: &Admin, all: OsmAddresses) -> Result<(Merged
     };
     for ((sub, part), idx) in opts.subdivisions.iter().zip(parts).zip(owned) {
         merge_one(opts, admin, sub, part, &idx, &ways, &mut m)?;
+        // The 66 North American subdivisions would otherwise pile their freed records up.
+        crate::release_memory();
     }
     m.units.sort_unstable();
     m.files.sort_unstable();

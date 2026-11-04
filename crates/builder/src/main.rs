@@ -64,17 +64,39 @@ fn mib(b: u64) -> f64 {
     b as f64 / (1u64 << 20) as f64
 }
 
-/// Peak resident set size so far, from /proc (Linux only; 0 elsewhere).
-fn peak_rss_mib() -> f64 {
+/// A field of /proc/self/status in MiB (Linux only; 0 elsewhere).
+fn status_mib(field: &str) -> f64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|s| {
             s.lines()
-                .find(|l| l.starts_with("VmHWM:"))
+                .find(|l| l.starts_with(field))
                 .and_then(|l| l.split_whitespace().nth(1))
                 .and_then(|kb| kb.parse::<f64>().ok())
         })
         .map_or(0.0, |kb| kb / 1024.0)
+}
+
+/// Peak resident set size so far, from /proc (Linux only; 0 elsewhere).
+fn peak_rss_mib() -> f64 {
+    status_mib("VmHWM:")
+}
+
+/// Hands the memory the allocator holds free back to the system. glibc keeps what a stage
+/// freed (millions of small features, records and names) in its arenas, so without this the
+/// next stage starts on top of the last one's peak (phase5-plan.md 5.12).
+pub fn release_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim takes a plain integer.
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::malloc_trim(0)
+    };
+}
+
+/// Resident set size now, from /proc (Linux only; 0 elsewhere).
+fn rss_mib() -> f64 {
+    status_mib("VmRSS:")
 }
 
 fn work_dir(cli: &Cli) -> PathBuf {

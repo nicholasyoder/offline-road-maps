@@ -359,7 +359,14 @@ pub fn read(
     keep_tags: Option<&KeepTags>,
 ) -> Result<OsmData> {
     let ctx = Ctx::new(wl, band, regions, keep_tags)?;
-    let progress = |what: &str| eprintln!("    {what}: peak RSS {:.0} MiB", peak_rss_mib());
+    let progress = |what: &str| {
+        crate::release_memory();
+        eprintln!(
+            "    {what}: peak RSS {:.0} MiB, now {:.0}",
+            peak_rss_mib(),
+            crate::rss_mib()
+        );
+    };
     let bbox = header_bbox(pbf.path())?;
     let mut routes = RouteStats::default();
     let add_coverage = |b: &mut Block, routes: &mut RouteStats| {
@@ -435,8 +442,9 @@ pub fn read(
     // Pass 2: ways, marking the nodes they need. Pass 3: those nodes, stored by
     // rank. Pass 4: the ways again, resolved as they are read. Reading the ways twice
     // is cheaper than holding them, since their refs alone are 8 bytes per vertex.
-    let needed = match marked {
-        Some(set) => set.clone(),
+    // The set moves into the locations and back, so only one copy of it is ever held.
+    let needed = match marked.take() {
+        Some(set) => set,
         None => {
             let needed = NodeSet::new();
             blocks(pbf, "ways (mark)", Kinds::WAYS, |block, out| {
@@ -449,7 +457,6 @@ pub fn read(
                 Ok(())
             })?;
             progress("ways marked");
-            *marked = Some(needed.clone());
             needed
         }
     };
@@ -480,6 +487,9 @@ pub fn read(
         collect(&mut b);
     }
     progress("ways resolved");
+    // The locations are not needed again; the node set is kept for the next band.
+    *marked = Some(locs.into_set());
+    progress("locations freed");
 
     // Multipolygons from their member ways.
     let lookup = |members: &[(i64, bool)]| -> Option<Vec<(&[P], bool)>> {

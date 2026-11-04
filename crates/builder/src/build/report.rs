@@ -12,7 +12,7 @@ use crate::geom::{Geometry, P};
 use crate::pbf::features;
 use crate::search::{self, encode as search_encode};
 use crate::tiles;
-use crate::{mib, peak_rss_mib};
+use crate::{mib, peak_rss_mib, release_memory, rss_mib};
 
 /// Prints each stage's time and the peak RSS so far.
 pub struct Timer(Instant);
@@ -23,10 +23,12 @@ impl Timer {
     }
 
     pub fn stage(&mut self, name: &str) {
+        release_memory();
         eprintln!(
-            "  {name}: {:.1} s, peak RSS {:.0} MiB",
+            "  {name}: {:.1} s, peak RSS {:.0} MiB, now {:.0}",
             self.0.elapsed().as_secs_f64(),
-            peak_rss_mib()
+            peak_rss_mib(),
+            rss_mib()
         );
         self.0 = Instant::now();
     }
