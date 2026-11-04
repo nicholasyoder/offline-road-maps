@@ -51,10 +51,11 @@ What phase 4 left in place for this:
 | 5.7 UI polish | **Done** 2026-11-02 | Shortcuts table and F1 window, tooltips, window state, first-run screen, exFAT note, plain messages, print Cancel; checked by the owner on Linux |
 | 5.8 Perf: cold reads from the stick | Deferred 2026-11-03 | Owner: cold reads do not feel slow in use. P8 (the routing top's warm-up) tried and left: see [perf-findings.md](perf-findings.md); P9, P16 and the regression hunt not taken |
 | 5.9 Perf: long routes and directions | Deferred 2026-11-03 | Owner: routing is fast enough in use, and the segment cache stays as it is rather than spend RSS; P10 not taken |
-| 5.10 Perf: memory | In progress | Dev machine done 2026-11-03: glibc arenas capped at 2 (−30 MiB, North America flight 328 → 298 MiB, target met); other leads measured and left. Windows DX12 and the E6430's GL leak wait for the laptops (`run-mem` on the stick) |
+| 5.10 Perf: memory | **Done** 2026-11-04 | glibc arenas capped at 2: North America flight 328 → 298 MiB on the dev machine (target 300 met); the other leads measured and left; DX12 and the E6430's GL leak: no setting helps. Found on the way: `panic = "unwind"` crashes the E6430 at start-up, so the app is back on `abort` (5.14) |
 | 5.11 Perf: printing | Not started | |
 | 5.12 Perf: builder and pack size | Not started | |
 | 5.13 Final checks on every machine | Not started | |
+| 5.14 Why unwinding crashes the E6430 | Not started | Research; before 5.13, so the final checks run on the build that will ship |
 
 ## Environment notes
 
@@ -248,7 +249,7 @@ RSS on the North America flight: dev 329 MiB (target 300 MB), 7490 Windows DX12 
 
 **Done when:** each lead taken is measured before and after, and the RSS on every machine is recorded.
 
-> **In progress 2026-11-03.** Dev machine (RADV, warm, North America pack, each build run twice; logs and reports in `$OMP_WORK/measure/p5/5.10/`):
+> **Done 2026-11-04** (commits `d74d5fc`, `a53c26d`, `49bce67` and the one after). Dev machine (RADV, warm, North America pack, each build run twice; logs and reports in `$OMP_WORK/measure/p5/5.10/`):
 >
 > | Variant | NA flight RSS peak | `na-alternatives` RSS | Cost |
 > |---|---:|---:|---|
@@ -261,10 +262,22 @@ RSS on the North America flight: dev 329 MiB (target 300 MB), 7490 Windows DX12 
 >
 > The `p4` flight (routes, three prints) peaks at 436 / 486 MiB before and 400 / 408 after; the prints add +80 MiB at 300 dpi and +76–87 at 360 (was +98 and +89). Cause of the saving: the loaders, routing, search and print workers each had a glibc arena that kept what it freed; two arenas share it. Windows has no glibc and is unchanged. **Newer wgpu:** none; 30.0.1 (with eframe 0.37) is the latest on crates.io.
 >
-> **E6430 crash (found 2026-11-04): `panic = "unwind"` (R8).** The 5.10 runs on the E6430 (GL) ended in `Surface::configure`: "Failed to wait for GPU to come idle", sometimes after loader threads panicked with "Could not lock adapter context" (wgpu's WGL lock waits at most 1 s); the window stayed white. Bisected on the laptop with CI builds of the commits between 4.11 and now: `d1e58ec` and `23af52f` run, `ccaceaa` (R8, whose only code change is `panic = "abort"` → `"unwind"` in `Cargo.toml`) and every build after it crash, the short and the full flight alike. A gate holding the loaders' GPU uploads out of the surface's configure (tried in `0b42364`) changed nothing and was removed. Why unwinding matters is not known: wgpu fails a configure when the GL fence wait (capped near 2 s) times out, so the code generated with unwinding must leave the HD 4000 behind at the first frames (a race or a slow start), but no setting or code path was found. The release profile is back to `abort`; the catches of R1, R3 and B6 stay (tests, debug builds, the builder's profile) but do nothing in the shipped app, as before R8. Owner's decision 12 is reopened: a shipped app that survives a worker's panic or one that starts on the E6430. Also since D6 the Windows build lost redirected output (batch-file logs were empty); fixed in `a53c26d`.
 >
-> **Left for the laptops:** the diagnostics `OMP_PRESENT` (`fifo`, `mailbox`, `immediate`, `auto`) and `OMP_LATENCY` (frame latency) exist, and wgpu reads `WGPU_DX12_PRESENTATION_SYSTEM`; `run-mem.bat` on the stick runs the North America flight with each (the 7490 under DX12, the E6430 under GL, whose leak is per frame presented), and `run-mem.sh` the Linux ones. Then: what the 7490's extra 200 MiB is, whether any setting lowers it or the E6430's leak, and the RSS on every machine recorded here.
-
+> **E6430 crash (found 2026-11-04): `panic = "unwind"` (R8).** The 5.10 runs on the E6430 (GL) ended in `Surface::configure`: "Failed to wait for GPU to come idle", sometimes after loader threads panicked with "Could not lock adapter context" (wgpu's WGL lock waits at most 1 s); the window stayed white. Bisected on the laptop with CI builds of the commits between 4.11 and now: `d1e58ec` and `23af52f` run, `ccaceaa` (R8, whose only code change is `panic = "abort"` → `"unwind"` in `Cargo.toml`) and every build after it crash, the short and the full flight alike. A gate holding the loaders' GPU uploads out of the surface's configure (tried in `0b42364`) changed nothing and was removed. Why unwinding matters is not known: wgpu fails a configure when the GL fence wait (capped near 2 s) times out, so the code generated with unwinding must leave the HD 4000 behind at the first frames (a race or a slow start), but no setting or code path was found. The release profile is back to `abort` (`49bce67`); the E6430 then runs the flight again. The catches of R1, R3 and B6 stay (tests, debug builds, the builder's profile) but do nothing in the shipped app, as before R8, so a panic on any thread ends the app at once and unsaved trip or pin edits are lost. Owner's decision 12 is reopened and 5.14 looks for the real cause. Also since D6 the Windows build lost redirected output (batch-file logs were empty); fixed in `a53c26d`.
+>
+>
+> **RSS on every machine** (the North America flight, `run-mem` on the stick, `results/5.10/` there; 4.11's numbers in brackets):
+>
+> | Machine | Backend | RSS peak | Notes |
+> |---|---|---:|---|
+> | Dev machine (Linux) | Vulkan | **298 MiB** (328) | arena cap |
+> | 7490, Debian | Vulkan | **306 MiB** (325) | frame latency 1: 304, vsync: 303 |
+> | 7490, Windows 11 | DX12 | **545 MiB** (541) | frame latency 1: 546, vsync: 550, `WGPU_DX12_PRESENTATION_SYSTEM=visual`: 549–554 (runs of 2026-11-03 and 04); the allocator holds 142 of 196 MiB, so about 200 MiB over Vulkan lies outside our buffers (the driver's and Windows' own accounting). No setting wgpu exposes lowers it; accepted as it is |
+> | E6430, Windows 10 | GL | 5,180 MiB (4,218) in 14,395 frames | grows with frames presented, 0.36 MiB each: frame latency 1: 3,902 MiB in 10,539 frames (0.37); vsync (`OMP_PRESENT=fifo`): 1,588 MiB in 3,439 frames (0.46); the DX12 swapchain setting does nothing on GL: 3,825 MiB in 10,381 frames (0.37). No present mode or latency changes the per-frame rate, and wgpu 30.0.1 is the newest release: the leak stays the upstream issue accepted in phase 1 (decision 22). Real use does not present 14,000 frames in a minute |
+>
+> An observation from the 7490's Task Manager (upper 400s MiB) is not used: it was not watched for the whole run.
+>
+> **Left as leads, not taken:** the tile cache at 64 MiB (−5 MiB), routing caches at 8 + 8 MiB (−20 MiB, but short routes twice as slow), search's readers (not tried; the cold search depends on them). Diagnostics kept in the app for the laptops: `OMP_PRESENT` and `OMP_LATENCY`.
 
 ## 5.11 Perf: printing
 
@@ -297,6 +310,30 @@ As 4.11, for this phase:
 
 **Done when:** every exit criterion is measured on every machine, with any that miss written up for the owner.
 
+## 5.14 Why unwinding crashes the E6430
+
+Phase 5 step 5.1's R8 set `panic = "unwind"` in `[profile.release]` so that the catches of R1, R3 and B6 work in the shipped app (decision 12). On the Latitude E6430 (Windows 10, Intel HD 4000, wgpu's GL backend) every build from that commit on opens a white window and dies within seconds with exit code 101. Reverted to `abort` in `49bce67` (5.10); this step looks for the actual cause, so unwinding can come back if it is safe. The owner's expectation, which this step tests: the crash is unwinding meeting some other bug (in our code, wgpu's GL backend or the old Intel driver), not unwinding making every Rust or egui program fail; the 7490 (Windows 11, DX12), the dev machine and the 7490 on Debian are all fine with it.
+
+**What is known** (5.10; logs on the stick in `results/5.10/`, `*-bisect*`):
+- Bisected on the laptop with CI builds: `d1e58ec` (4.11) and `23af52f` run, `ccaceaa` and every later build crash, on the short flight (`bench/quick.toml`) and the full one. `ccaceaa` differs from `23af52f` by the `Cargo.toml` line alone (and docs), so the code is the same and only its compilation differs. It is repeatable, not a matter of luck.
+- The panic is on the main thread, in `Surface::configure`: "Failed to wait for GPU to come idle before reconfiguring the Surface". In wgpu-core that error means the device's wait, after `PollType::wait_indefinitely`, did not come back with the queue empty; with the GL backend the fence wait is `glClientWaitSync` with the timeout capped near 2.1 s (`i32::MAX` ns), so either the HD 4000 took over 2 s to finish its first frames, or the wait failed, or another thread submitted meanwhile. Sometimes loader threads panic first with "Could not lock adapter context" (WGL's lock waits 1 s at most), which says something held the GL context for over a second.
+- The window stays white: it fails before the first frame is presented, with or without a route (the short flight has none).
+- A gate keeping the loaders' GPU uploads out of the surface's configure changed nothing (tried in `0b42364`, removed). Present mode, frame latency and the DX12 swapchain kind do not matter (they were varied in `run-mem`).
+- The app's own `catch_unwind`s are not involved in the failing path (the loaders do not panic in the default run); wgpu-hal's GL code wraps its debug callbacks in `catch_unwind` (`gles/mod.rs`, `glow`), winit's Windows event loop catches panics in its handlers only when unwinding, and none of the three was shown to matter.
+
+**To find:**
+1. **Which configure fails and when**: a Windows build with symbols (`strip = false`, `debug = "limited"`; the `profiling` profile) and `RUST_BACKTRACE=full`, so the panic's backtrace names the caller (the first `set_window`, a resize event, or `paint`'s `needs_reconfigure` / outdated-surface path). Time-stamp the app's start, `App::new`, the first frame and the panic in the log (a `--trace-start` flag or `OMP_LOG=info`).
+2. **Does a stock app fail the same way?** Build eframe's own `hello_world` for wgpu (with `panic = "unwind"` and with `abort`, same profile as ours: `lto = "fat"`, `codegen-units = 1`) and run both on the E6430 with GL. If the unwinding one fails too, it is eframe/wgpu/driver and a small report to upstream is the result; if only ours fails, it is in our code.
+3. **What in the compilation matters**: unwinding with `lto = "off"`, with `codegen-units = 16`, with `opt-level = 2`, and a debug build (debug builds unwind and have never been run on the E6430); `-C force-unwind-tables`; `panic = "immediate-abort"`. The first that runs separates a code-generation or timing effect from an unwinding-specific behaviour.
+4. **The GL path itself**: `WGPU_BACKEND=gl` on the 7490 under Windows 11 (the same Intel GL driver family, a newer one) and on Linux (Mesa), unwinding builds, with MSAA 4× and 1 (`--msaa`; the config's `msaa`), to see whether the E6430's old driver, MSAA or the multisampled resolve is part of it. Set `WGPU_GLES_MINOR_VERSION` and `WGPU_GL_...` variables if wgpu offers them for the older context.
+5. **What happens if the error is survived**: an uncaptured-error handler on the device (`Device::on_uncaptured_error`) that logs the error instead of panicking, and whether the surface is reconfigured by the next frame and the map draws. A fallback that tolerates one failed configure may be the workable fix if the cause stays outside our reach.
+6. **The GL wait**: log `glClientWaitSync`'s result and the time the first frame's GPU work takes (a one-off timestamp query or `glFinish` timing in a test build) to learn whether the HD 4000 needs more than 2 s for the first draws, and what in them (shader compilation, the MSAA resolve, texture uploads of the glyph atlas).
+7. **Upstream**: search wgpu's and egui's issues for "Failed to wait for GPU to come idle" / "Could not lock adapter context" on GL and Windows, and for fixes in wgpu releases after 30.0.1.
+
+**Method:** each test build is a CI artifact (or a PR build, as in 5.10's bisect) put on the stick with a `.bat` that runs the short flight (`bench/quick.toml`, 20 s) for each variant and writes a summary; one trip with the laptop covers several variants. Stop when a cause is found and understood, or after three rounds on the laptop; then write down what is known.
+
+**Done when:** the cause is named and fixed, or the app runs with unwinding on the E6430 in another way (a tolerated error, a setting), and `panic = "unwind"` is back in the release profile and checked on the E6430 and the 7490; or, if no cause is found, the evidence is written here with the upstream report, and the owner decides whether the app stays on `abort` for good (decision 12).
+
 ---
 
 ## Order of work
@@ -306,13 +343,14 @@ First:  5.1 audit: bugs and design ─┐
         5.2 audit: perf baseline ───┴─► owner triages the findings and leads
 Then:   (split app.rs if 5.1 says so) ─► perf session G (still frames) ─► 5.3 settings ─► 5.4 styles ─► 5.5 dark UI ─► 5.6 high contrast + B&W ─► 5.7 polish
 Beside: 5.8 cold reads · 5.9 routes and directions · 5.10 memory · 5.11 printing · 5.12 builder and pack
+Then:   5.14 why unwinding crashes the E6430 (a research item, before the final checks)
 Last:   5.13 checks
 ```
 
 - The audits come first because they decide what the later steps fix and in what order, and because the baseline must be taken before anything changes.
 - 5.3 before 5.4: the style choice is a setting, and the label size setting changes how styles are applied. 5.5 needs 5.4's style list; 5.6 needs 5.4's high-contrast style.
 - The performance items are independent of the UI steps and of each other, and can be taken in the order the [leads table](perf-findings.md#leads) ranks them.
-- The laptops are needed only for 5.10's and 5.11's machine-specific items and for 5.13; the owner's runs can be batched.
+- The laptops are needed only for 5.11's machine-specific items, for 5.14 and for 5.13; the owner's runs can be batched.
 
 ## Audit findings
 
