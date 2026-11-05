@@ -81,7 +81,7 @@ Download the data (about 1 GB, mostly the world's ocean polygons, which every re
 omp-builder fetch --region us/delaware
 ```
 
-This puts into `$OMP_WORK/inputs/`: the OpenStreetMap extract from [Geofabrik](https://download.geofabrik.de/) (`osm/delaware-261001.osm.pbf`; the number is the extract's date, 2026-10-01), the ocean polygons from osmdata.openstreetmap.de, the state's boundary, its OpenAddresses files, the US Census TIGER address ranges, and the time zone polygons. It records every file in `inputs/manifest.toml` and will not download a file twice. `--dry-run` lists what it would fetch.
+This puts into `$OMP_WORK/inputs/`: the OpenStreetMap extract from [Geofabrik](https://download.geofabrik.de/) (`osm/delaware-261001.osm.pbf`; the number is the extract's date, 2026-10-01), the ocean polygons from osmdata.openstreetmap.de (if that host does not answer, `fetch` tries its unofficial North America mirror, osmdata.org), the state's boundary, its OpenAddresses files, the US Census TIGER address ranges, and the time zone polygons. It records every file in `inputs/manifest.toml` and will not download a file twice. `--dry-run` lists what it would fetch.
 
 Build the map:
 

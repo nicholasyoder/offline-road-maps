@@ -36,7 +36,7 @@ Starting point (checked 2026-11-04):
 | 6.4 Release build and packaging script | In progress | `tools/package.sh` done and used for the first stick; `tools/build-windows.sh` done (cross-build works, exe on the stick); `tools/build-linux.sh` done (glibc 2.35, on the stick); the 1.0.0 bump remains |
 | 6.5 Docs: BUILDING.md, README, README.txt | **Done** 2026-11-05 | The rest of BUILDING.md's commands are walked through for real in 6.7 |
 | 6.6 Licences and attribution check | **Done** 2026-11-05 | `tools/licenses.py`; optional About entry skipped; the `README.txt` paragraph is 6.5's |
-| 6.7 Clean-room check on both platforms | Not started | |
+| 6.7 Clean-room check on both platforms | In progress | Stick (Windows) and BUILDING.md's Delaware build on a fresh machine passed 2026-11-05; times not recorded; 1.0.0 bump and roadmap tick remain |
 
 Order: 6.1 first (so docs are written against the tree that will ship), then 6.2 (the name touches everything the docs quote), then 6.3 and 6.4 together, 6.5 and 6.6 in parallel with them, 6.7 last.
 
@@ -163,6 +163,8 @@ The roadmap's attribution item is covered by *About this map*; what is left is a
 ## 6.7 Clean-room check
 
 On the Windows laptop (and one more if available, say the 7490 on Debian), from a stick made only with `tools/package.sh`: read only `README.txt`, start the app, open the map, search, route, save a trip, print to PDF, close; eject; insert on another machine and check the trip and settings are there. Then on a clean user account or machine (a fresh container or VM is enough for BUILDING.md), follow `BUILDING.md` to build Delaware and open it. Everything that took a guess becomes a fix to the docs. Record times and the stick's size in this file.
+
+> **In progress 2026-11-05.** Owner ran the stick walk-through and BUILDING.md's Delaware build on a fresh machine: both worked and the pack opens in the app. Finding: osmdata.openstreetmap.de was unreachable (no route to host, also from the dev machine), so the owner built without ocean polygons. Fix: `fetch` now falls back to the unofficial North America mirror www.osmdata.org (same path and file; `fetch_one`, `mirror()`), the URL actually used goes into the manifest; BUILDING.md says so. Not yet exercised against a real outage, and the mirror has no published hash, so only the zip magic is checked. Remaining: record times and stick size, bump to 1.0.0, tick the roadmap.
 
 **Done when:** both walk-throughs pass with no step the docs left out, and the roadmap's phase 6 is ticked.
 

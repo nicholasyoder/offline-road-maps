@@ -285,6 +285,13 @@ fn magic(path: &str) -> Option<&'static [u8]> {
     }
 }
 
+/// The unofficial North America mirror of osmdata.openstreetmap.de, tried when the main
+/// host fails (it was unreachable on 2026-11-05). Same paths, same files.
+fn mirror(url: &str) -> Option<String> {
+    url.strip_prefix("https://osmdata.openstreetmap.de/")
+        .map(|rest| format!("https://www.osmdata.org/{rest}"))
+}
+
 fn fetch_one(agent: &Agent, out: &Path, job: &Job) -> Result<FileEntry> {
     let (license, metadata_url) = match &job.license {
         LicenseSpec::Known(l) => (l.clone(), None),
@@ -303,7 +310,18 @@ fn fetch_one(agent: &Agent, out: &Path, job: &Job) -> Result<FileEntry> {
         dest.file_name().unwrap_or_default().to_string_lossy()
     ));
     let started = Instant::now();
-    let d = http::download(agent, &job.url, &part, &job.path)?;
+    let mut url = job.url.clone();
+    let d = match http::download(agent, &url, &part, &job.path) {
+        Ok(d) => d,
+        Err(e) => {
+            let Some(alt) = mirror(&url) else {
+                return Err(e);
+            };
+            println!("  {}: {e:#}\n  trying the mirror {alt}", job.path);
+            url = alt;
+            http::download(agent, &url, &part, &job.path)?
+        }
+    };
     let check = || -> Result<()> {
         if let Some(size) = job.expected_size {
             ensure!(
@@ -344,7 +362,7 @@ fn fetch_one(agent: &Agent, out: &Path, job: &Job) -> Result<FileEntry> {
         path: job.path.clone(),
         source: job.source.as_str().into(),
         source_id: job.source_id.clone(),
-        url: job.url.clone(),
+        url,
         metadata_url,
         downloaded: jiff::Timestamp::now()
             .strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -354,4 +372,19 @@ fn fetch_one(agent: &Agent, out: &Path, job: &Job) -> Result<FileEntry> {
         md5: job.expected_md5.as_ref().map(|_| d.md5),
         license,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mirror;
+
+    #[test]
+    fn only_osmdata_has_a_mirror() {
+        assert_eq!(
+            mirror("https://osmdata.openstreetmap.de/download/water-polygons-split-4326.zip")
+                .as_deref(),
+            Some("https://www.osmdata.org/download/water-polygons-split-4326.zip")
+        );
+        assert_eq!(mirror("https://download.geofabrik.de/x.osm.pbf"), None);
+    }
 }
