@@ -156,11 +156,11 @@ Made by the owner 2026-11-04:
 
 ## Work-disk verdicts (6.1)
 
-**The owner removes the work-disk items marked Delete or Trim by hand, at some point** (decided 2026-11-04); Claude's sandbox blocks bulk deletes, and the step does not wait on it. Everything marked Delete is safe to remove as it stands.
+**The owner removed the work-disk items marked Delete by hand; done 2026-11-04** (Claude's sandbox blocks bulk deletes). `$OMP_WORK` now holds `inputs/` and `packs/north-america`.
 
 Checked 2026-11-04. The queries and route sets behind the plans' accuracy numbers are already in the repo (`crates/core/tests/search/`, `crates/core/tests/route/routes.tsv`), the builds are reproducible from `inputs/`, and the plans quote the numbers they need.
 
-| Item | Size | Verdict |
+| Item | Size | Verdict (all carried out) |
 |---|---|---|
 | `inputs/` (OSM, OpenAddresses, TIGER, StatCan, tz, poly) | 37 GB | **Keep:** slow to download |
 | `packs/north-america` (format 0.7, built 2026-11-04, the final) | 9.2 GB | **Keep** |
