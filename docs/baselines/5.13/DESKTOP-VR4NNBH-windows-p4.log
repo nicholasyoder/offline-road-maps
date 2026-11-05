@@ -1,0 +1,34 @@
+omp-app 0.1.0: bench bench\north-america-p4.toml on maps\north-america.omp.000
+adapter: Intel(R) HD Graphics 4000 (Gl)
+bench: print page opened
+bench: preview done in 894 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 1537 ms: Ok(())
+bench: print page opened
+bench: preview done in 692 ms: Ok(())
+bench: saving the PDF at 360 dpi
+bench: PDF done in 1941 ms: Ok(())
+bench: print page opened
+bench: preview done in 917 ms: Ok(())
+bench: saving the PDF at 360 dpi
+bench: PDF done in 4672 ms: Ok(())
+north-america-p4: 5298 frames, interval p50 11.48 / p95 15.27 / max 452.7 ms, cpu p95 1.51 ms, labels p95 0.00 ms
+start-up 382 ms; tiles 45 loaded + 0 absent, 0 errors; latency p50 118.36 / p95 315.53 ms, read p95 0.37 ms, decode p95 5.28 ms, prepare p95 75.47 ms
+2.5 MiB read; RSS peak 1984 MiB; GPU allocator - MiB; tile slabs peak 32 MiB; cache peak 25.1 MiB of 96; idle CPU 0.16% (0 frames)
+idle wake: 1 × crates\app\src\app\bench.rs:183 
+  continent z4                    98 frames, p95  20.00 ms,   20 tiles, detailed in 162 ms, RSS 169 MiB
+  route: coast to coast, 5 stops, schedule   857 frames, p95  11.51 ms,    0 tiles, detailed in 10 ms, RSS 551 MiB
+    route: 5 stops, 4808.6 km, 3292 min, 18115 points, 90 steps; shown after 2378 ms (trip 1712.7 ms, directions 654.9 ms); 6 alternatives shown after 4702 ms
+  print: map at 300 dpi          482 frames, p95  12.46 ms,    0 tiles, detailed in 11 ms, RSS 462 MiB
+    print map at 300 dpi: preview 894 ms, PDF 1537 ms (2045 KiB); RSS MiB before 552, preview 330, peak 488, after 431
+  print: map at 360 dpi          490 frames, p95  12.61 ms,    0 tiles, detailed in 11 ms, RSS 466 MiB
+    print map at 360 dpi: preview 692 ms, PDF 1941 ms (2514 KiB); RSS MiB before 463, preview 335, peak 549, after 435
+  print: directions at 360 dpi   574 frames, p95  15.34 ms,    0 tiles, detailed in 11 ms, RSS 482 MiB
+    print directions at 360 dpi: preview 917 ms, PDF 4672 ms (3085 KiB); RSS MiB before 467, preview 351, peak 571, after 450
+  route: short, Cincinnati-Cleveland   128 frames, p95  18.02 ms,   25 tiles, detailed in 215 ms, RSS 550 MiB
+    route: 2 stops, 405.1 km, 292 min, 1637 points, 17 steps; shown after 122 ms (trip 89.0 ms, directions 29.5 ms); 2 alternatives shown after 642 ms
+  route: 25 stops, optimized    2669 frames, p95  15.29 ms,    0 tiles, detailed in 15 ms, RSS 1984 MiB
+    route: 25 stops, 72808.0 km, 48465 min, 242460 points, 749 steps; shown after 23456 ms (trip 15471.1 ms, directions 7942.7 ms)
+    optimized: 16933.5 km, 11684 min; shown after 7670 ms (order 271.5 ms)
+report written to results\5.13\DESKTOP-VR4NNBH-windows-p4.json
+exit code 0

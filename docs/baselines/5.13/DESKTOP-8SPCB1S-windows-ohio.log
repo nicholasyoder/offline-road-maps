@@ -1,0 +1,45 @@
+omp-app 0.1.0: bench bench\ohio.toml on ohio\ohio.omp.000
+adapter: Intel(R) UHD Graphics 620 (Dx12)
+ohio: 9897 frames, interval p50 5.27 / p95 11.07 / max 81.2 ms, cpu p95 1.44 ms, labels p95 0.80 ms
+start-up 1043 ms; tiles 578 loaded + 38 absent, 0 errors; latency p50 16.27 / p95 81.26 ms, read p95 25.96 ms, decode p95 1.74 ms, prepare p95 17.10 ms
+11.9 MiB read; RSS peak 339 MiB; GPU allocator 92 of 132 MiB; tile slabs peak 88 MiB; cache peak 92.3 MiB of 96; idle CPU 0.00% (20 frames)
+idle wake: 21 × C:\Users\runneradmin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.37.0\src\text_selection\visuals.rs:313 
+idle wake: 21 × crates\app\src\app\bench.rs:183 
+search: opened in 103 ms, first keystroke 343.8 ms; 153 keystrokes, latency p50 46.6 / p95 314.5 / max 503.3 ms; readers hold 24.8 MiB, 150.3 MiB read
+what's here: 3 asked, latency p50 17.1 / p95 69.0 / max 69.0 ms
+  Ohio                           155 frames, p95  14.12 ms,   16 tiles, detailed in 121 ms, RSS 207 MiB
+  Columbus z11                     9 frames, p95  12.13 ms,   10 tiles, detailed in 43 ms, RSS 210 MiB
+  Columbus zoom to z14           360 frames, p95  12.04 ms,   95 tiles, RSS 213 MiB
+  Columbus pan east              516 frames, p95  11.51 ms,   21 tiles, RSS 213 MiB
+  zoom to z17                    346 frames, p95   9.91 ms,    0 tiles, RSS 213 MiB
+  zoom out to z8                 580 frames, p95  11.39 ms,  116 tiles, RSS 282 MiB
+  Cleveland z12                    6 frames, p95  14.74 ms,   17 tiles, detailed in 35 ms, RSS 283 MiB
+  Cleveland to Akron z12         686 frames, p95  11.19 ms,   49 tiles, RSS 284 MiB
+  Cincinnati z15                   7 frames, p95  10.29 ms,   15 tiles, detailed in 29 ms, RSS 284 MiB
+  Cincinnati zoom out to z7      832 frames, p95  10.20 ms,  126 tiles, RSS 288 MiB
+  Toledo z10                      10 frames, p95  10.75 ms,   14 tiles, detailed in 51 ms, RSS 290 MiB
+  Toledo to Dayton z10           864 frames, p95   9.90 ms,   33 tiles, detailed in 4 ms, RSS 290 MiB
+  search: address               1124 frames, p95  10.47 ms,    0 tiles, detailed in 3 ms, RSS 335 MiB
+    "333 W Broad St, Columbus, OH": 28 keystrokes, p95 450.9 / max 503.3 ms (find p95 439.8), levels at 170 / 397 / 505 / 738 ms, Enter 5.7 ms → 333 West Broad Street, Columbus, Ohio
+  search: typo                   295 frames, p95  11.07 ms,    0 tiles, detailed in 5 ms, RSS 331 MiB
+    "Cincinatti": 10 keystrokes, p95 66.1 / max 66.1 ms (find p95 36.1), levels at 17 / 182 / 199 / 209 ms, Enter 44.8 ms → Cincinnati, Ohio
+  search: approximate           1022 frames, p95  10.13 ms,   29 tiles, detailed in 11 ms, RSS 331 MiB
+    "7777 Columbus-Lancaster Rd, Carroll": 35 keystrokes, p95 176.6 / max 314.5 ms (find p95 171.4), levels at 10 / 196 / 228 / 268 ms, expected at 10 ms (level 0), Enter 4.2 ms → 7777 Columbus-Lancaster Road Northwest, Carroll, Ohio
+  search: unit                  1203 frames, p95  10.34 ms,    5 tiles, detailed in 4 ms, RSS 338 MiB
+    "1710 N High St Unit 3, Columbus": 31 keystrokes, p95 318.2 / max 359.8 ms (find p95 311.8), levels at 26 / 378 / 679 / 953 ms, Enter 35.9 ms → 1710 North High Street, Columbus, Ohio
+  search: POI                    639 frames, p95  11.42 ms,   10 tiles, detailed in 10 ms, RSS 332 MiB
+    "Cleveland Hopkins airport": 25 keystrokes, p95 122.2 / max 128.4 ms (find p95 118.3), levels at 18 / 189 / 216 / 232 ms, Enter 7.0 ms → Cleveland Hopkins International Airport, Cleveland, Ohio
+  search: postcode               276 frames, p95  10.95 ms,    0 tiles, detailed in 9 ms, RSS 333 MiB
+    "43215": 5 keystrokes, p95 46.6 / max 46.6 ms (find p95 44.1), levels at 8 / 158 / 158 / 158 ms, Enter 2.6 ms → 43215, Columbus, Ohio
+  search: shared name            299 frames, p95  11.65 ms,   16 tiles, detailed in 6 ms, RSS 333 MiB
+    "Springfield": 11 keystrokes, p95 56.2 / max 56.2 ms (find p95 48.7), levels at 9 / 167 / 175 / 183 ms, Enter 24.8 ms → Springfield, Ohio
+  search: brand near view        362 frames, p95   9.33 ms,   14 tiles, detailed in 10 ms, RSS 336 MiB
+    "Speedway": 8 keystrokes, p95 74.9 / max 74.9 ms (find p95 68.3), levels at 9 / 166 / 198 / 202 ms, Enter 3.4 ms → Speedway, Springfield, Ohio
+  here: Statehouse, Columbus      76 frames, p95  13.11 ms,    0 tiles, detailed in 2 ms, RSS 337 MiB
+    what's here: 69.1 ms (whats_here 61.0 ms) → 1 Capitol Square, Columbus, OH 43215; street East State Street, Columbus; nearby ; in Columbus, Franklin County, Ohio
+  here: approximate, Butler County    98 frames, p95  11.35 ms,   13 tiles, detailed in 16 ms, RSS 337 MiB
+    what's here: 17.1 ms (whats_here 15.7 ms) → 4665 Logsdons Meadow Drive, Liberty Township, OH (approximate); street Logsdons Meadow Drive, Liberty Township; nearby ; in Liberty Township, Butler County, Ohio
+  here: farmland, no address     132 frames, p95   8.54 ms,   17 tiles, detailed in 18 ms, RSS 337 MiB
+    what's here: 11.9 ms (whats_here 10.8 ms) → no address; street none; nearby ; in Paris Township, Union County, Ohio
+report written to results\5.13\DESKTOP-8SPCB1S-windows-ohio.json
+exit code 0

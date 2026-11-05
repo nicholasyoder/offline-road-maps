@@ -1,0 +1,300 @@
+  PBF: 338473 blobs: 310751 with nodes, 27411 with ways, 311 with relations; 33.3 s
+build North America: /media/nicholas/Data/maps-testing/inputs/osm/north-america-261001.osm.pbf
+  time zones: 1.4 s, peak RSS 154 MiB, now 29
+    pass admin relations: 311 blobs, 0.3 s, decode 3 CPU s, work 2 CPU s
+    pass admin ways: 27411 blobs, 19.5 s, decode 154 CPU s, work 139 CPU s
+    pass admin nodes: 310751 blobs, 26.0 s, decode 161 CPU s, work 250 CPU s
+  admin: 54937 areas, 198880 places, 47.9 s, peak RSS 1793 MiB
+  admin: 48.0 s, peak RSS 1792 MiB, now 705
+ band 0/3
+    pass relations: 311 blobs, 0.7 s, decode 3 CPU s, work 4 CPU s
+    pass ways (mark): 27411 blobs, 77.6 s, decode 171 CPU s, work 357 CPU s
+    ways marked: peak RSS 17224 MiB, now 3163
+    1624312075 needed nodes, 14.0 GiB of locations
+    pass nodes: 310751 blobs, 27.0 s, decode 161 CPU s, work 241 CPU s
+    nodes located: peak RSS 19001 MiB, now 17494
+    pass ways (resolve): 27411 blobs, 106.9 s, decode 208 CPU s, work 490 CPU s
+    ways resolved: peak RSS 43515 MiB, now 33568
+    locations freed: peak RSS 43515 MiB, now 20963
+  read: 231.3 s, peak RSS 43515 MiB, now 20109
+  routes: 71757 road route relations
+    ways                      all  relation  ref only   neither    shield
+    CA motorway              27086     94.5%      0.9%      4.6%     94.6%
+    CA trunk                 24333     94.1%      1.3%      4.7%     94.2%
+    CA primary               77390     77.3%      2.2%     20.4%     77.6%
+    CA secondary            174275     42.9%      1.6%     55.5%     43.0%
+    CA tertiary             197443      2.0%      1.8%     96.3%      2.0%
+    CA all                  500527     37.4%      1.7%     60.9%     37.4%
+    US motorway             287591     96.4%      1.1%      2.5%     96.9%
+    US trunk                309488     95.7%      0.5%      3.8%     96.1%
+    US primary              834541     69.0%      0.8%     30.3%     69.3%
+    US secondary           1076326     29.5%      1.8%     68.7%     30.2%
+    US tertiary            1164018     12.0%      4.5%     83.5%     14.2%
+    US all                 3671964     43.7%      2.2%     54.0%     44.8%
+    other motorway           16015     50.4%     44.4%      5.2%     52.3%
+    other trunk              18821     69.4%     16.7%     13.9%     69.5%
+    other primary            53609     44.7%     22.9%     32.4%     45.1%
+    other secondary          79591      6.4%     17.9%     75.8%      7.3%
+    other tertiary          161002      0.6%      3.5%     95.9%      0.9%
+    other all               329038     15.5%     12.9%     71.6%     16.1%
+    CA-AB                    72146     22.9%      0.8%     76.3%     22.9%
+    CA-BC                    63970     23.1%      0.3%     76.6%     23.3%
+    CA-MB                    24884     45.3%      1.1%     53.6%     45.3%
+    CA-NB                    13676     47.9%      1.3%     50.8%     48.9%
+    CA-NL                     9730     34.8%     17.6%     47.6%     34.8%
+    CA-NS                    19871     44.3%      3.8%     51.9%     45.0%
+    CA-NT                     1228     26.9%      0.1%     73.0%     26.9%
+    CA-NU                      386      0.0%      0.0%    100.0%      0.0%
+    CA-ON                   170864     45.3%      1.2%     53.6%     45.3%
+    CA-PE                     2781     71.5%      2.3%     26.1%     71.6%
+    CA-QC                   105256     35.6%      2.4%     62.0%     35.6%
+    CA-SK                    14495     52.9%      1.9%     45.2%     53.0%
+    CA-YT                     1240     65.6%      0.2%     34.2%     65.6%
+    US-AK                     7858     24.1%      1.7%     74.2%     24.7%
+    US-AL                    47941     56.1%      6.7%     37.2%     62.4%
+    US-AR                    32581     55.5%      1.0%     43.5%     56.3%
+    US-AZ                   104894     18.5%      2.6%     78.9%     18.4%
+    US-CA                   456268     19.1%      0.7%     80.2%     19.2%
+    US-CO                    99094     38.2%      2.8%     59.0%     39.4%
+    US-CT                    28916     53.9%      0.1%     46.0%     54.0%
+    US-DC                     8212     10.9%      1.9%     87.2%     12.8%
+    US-DE                    13084     56.1%      0.8%     43.1%     56.8%
+    US-FL                   232786     51.4%      0.0%     48.5%     51.5%
+    US-GA                   131176     51.2%      0.9%     47.9%     52.0%
+    US-HI                    11010     37.2%      8.0%     54.8%     45.0%
+    US-IA                    50052     40.8%      8.0%     51.2%     41.0%
+    US-ID                    20482     30.8%      1.3%     67.9%     31.1%
+    US-IL                   124672     45.2%      3.5%     51.3%     46.2%
+    US-IN                    65474     37.7%      0.4%     61.9%     37.9%
+    US-KS                    39772     38.0%      2.2%     59.8%     39.1%
+    US-KY                    41842     82.4%      0.6%     17.0%     82.5%
+    US-LA                    36961     61.7%      1.4%     36.9%     62.7%
+    US-MA                    61279     38.9%      0.1%     61.0%     39.0%
+    US-MD                    63844     48.8%      0.4%     50.8%     49.2%
+    US-ME                    14910     68.6%      0.7%     30.7%     69.2%
+    US-MI                    91777     32.1%      1.8%     66.1%     32.8%
+    US-MN                    91009     66.3%      3.4%     30.2%     68.8%
+    US-MO                    64121     53.1%      4.9%     42.1%     53.3%
+    US-MS                    29147     57.7%      0.8%     41.4%     58.4%
+    US-MT                    15436     61.9%      2.4%     35.6%     62.8%
+    US-NC                   114846     40.1%      1.7%     58.2%     40.3%
+    US-ND                    15286     49.8%     11.6%     38.6%     61.0%
+    US-NE                    33078     32.8%      0.2%     67.0%     32.9%
+    US-NH                    15922     67.4%      0.4%     32.2%     67.8%
+    US-NJ                    74806     72.4%      4.6%     23.0%     76.4%
+    US-NM                    26436     43.2%      7.6%     49.2%     45.3%
+    US-NV                    41354     22.8%      0.4%     76.8%     22.9%
+    US-NY                   133928     51.2%      2.7%     46.2%     53.6%
+    US-OH                   125445     52.6%      7.9%     39.5%     56.6%
+    US-OK                    88762     53.2%      1.0%     45.9%     53.7%
+    US-OR                    61217     27.0%      5.8%     67.2%     31.1%
+    US-PA                   130669     50.9%      1.5%     47.6%     51.1%
+    US-RI                     8847     53.0%      0.1%     46.8%     53.2%
+    US-SC                    46467     51.5%      7.5%     41.0%     51.8%
+    US-SD                    18213     63.4%      2.0%     34.6%     63.8%
+    US-TN                    54815     54.0%      1.0%     45.1%     54.4%
+    US-TX                   347249     36.1%      1.6%     62.2%     37.1%
+    US-UT                    37574     42.0%      2.2%     55.8%     42.9%
+    US-VA                   103264     71.4%      1.2%     27.3%     71.5%
+    US-VT                     9183     65.7%      0.3%     33.9%     66.0%
+    US-WA                    85878     24.3%      1.1%     74.6%     24.4%
+    US-WI                    84204     69.6%      0.9%     29.6%     69.9%
+    US-WV                    20142     63.2%     21.6%     15.1%     84.4%
+    US-WY                     9781     63.7%      2.5%     33.8%     65.4%
+    other                   329038     15.5%     12.9%     71.6%     16.1%
+    1483 networks; ways per network: US:US 481038, US:I 184976, US:GA 69667, US:FL 54678, US:CA 42837, US:VA:Secondary 38897, US:NY 38714, US:PA 38649, US:OH 38089, US:TX:FM 36011, MX:MX 32952, US:TX 31029, US:IL 30732, CA:QC:R 30478, US:US:Historic 28265, US:US:Business 28119, US:WI 26152, US:KY 25958, US:OK 25885, US:NC 23619, US:MD 23112, US:FL:CR 22641, US:VA 20440, US:MA 19351, CA:ON:primary 19236, MX:MEX 17092, US:MI 15771, US:LA 15734, US:WA 14603, US:MN 14395, US:MO 13844, US:CO 13745, US:I:Business:Loop 13461, US:AL 13277, US:IN 12885, US:CA:CR 12839, US:SC 12602, CA:BC 12480, US:NJ:CR 12412, US:NJ 11831
+  water: 7.6 s, peak RSS 43515 MiB, now 20588
+  tiles: 63.8 s, peak RSS 43515 MiB, now 3010
+ band 1/3
+    pass relations: 311 blobs, 0.8 s, decode 3 CPU s, work 3 CPU s
+    1624312075 needed nodes, 14.0 GiB of locations
+    pass nodes: 310751 blobs, 27.7 s, decode 157 CPU s, work 235 CPU s
+    nodes located: peak RSS 43515 MiB, now 17468
+    pass ways (resolve): 27411 blobs, 110.1 s, decode 211 CPU s, work 482 CPU s
+    ways resolved: peak RSS 43515 MiB, now 31557
+    locations freed: peak RSS 43515 MiB, now 18952
+  read: 152.9 s, peak RSS 43515 MiB, now 17467
+  water: 6.8 s, peak RSS 43515 MiB, now 17668
+  tiles: 57.5 s, peak RSS 43515 MiB, now 3225
+ band 2/3
+    pass relations: 311 blobs, 0.8 s, decode 3 CPU s, work 3 CPU s
+    1624312075 needed nodes, 14.0 GiB of locations
+    pass nodes: 310751 blobs, 28.8 s, decode 155 CPU s, work 231 CPU s
+    nodes located: peak RSS 43515 MiB, now 18044
+    pass ways (resolve): 27411 blobs, 110.0 s, decode 214 CPU s, work 492 CPU s
+    ways resolved: peak RSS 43515 MiB, now 31760
+    locations freed: peak RSS 43515 MiB, now 19156
+  read: 153.3 s, peak RSS 43515 MiB, now 17775
+  water: 6.9 s, peak RSS 43515 MiB, now 17997
+  tiles: 58.9 s, peak RSS 43515 MiB, now 3725
+    pass address ways: 27411 blobs, 50.3 s, decode 131 CPU s, work 121 CPU s
+    pass address nodes: 310751 blobs, 27.5 s, decode 150 CPU s, work 204 CPU s
+  addresses read: 117.3 s, peak RSS 43515 MiB, now 23815
+  addresses: OSM 44252503 points, 1169418 ranges, 16194543 street ways; 1122814 points and 1961 ranges in no subdivision
+  addresses US-AL: 2671661 records (1910606 strict, 340585 loose, 5784 alias, 34741 fuzzy, 379945 unattached) → 1924274 addresses, 85.36% attached, 244181 units, 375633 of 832453 ranges kept; 6.6 s, peak RSS 43515 MiB
+  addresses US-AK: 653934 records (439354 strict, 82046 loose, 4 alias, 5817 fuzzy, 126713 unattached) → 354594 addresses, 72.23% attached, 113287 units, 19285 of 86506 ranges kept; 3.1 s, peak RSS 43515 MiB
+  addresses US-AZ: 9302857 records (7798550 strict, 538092 loose, 282 alias, 35720 fuzzy, 930213 unattached) → 2990012 addresses, 89.49% attached, 1175967 units, 200643 of 746747 ranges kept; 14.6 s, peak RSS 43515 MiB
+  addresses US-AR: 2486270 records (1864999 strict, 242938 loose, 26100 alias, 26204 fuzzy, 326029 unattached) → 1655851 addresses, 84.00% attached, 329261 units, 172336 of 624254 ranges kept; 5.9 s, peak RSS 43515 MiB
+  addresses US-CA: 22145285 records (19114173 strict, 1804148 loose, 987 alias, 124229 fuzzy, 1101748 unattached) → 12588422 addresses, 94.56% attached, 3129121 units, 591347 of 2602679 ranges kept; 33.7 s, peak RSS 43515 MiB
+  addresses US-CO: 7016301 records (5859377 strict, 568768 loose, 943 alias, 39902 fuzzy, 547311 unattached) → 2477440 addresses, 89.05% attached, 889912 units, 237898 of 695116 ranges kept; 12.1 s, peak RSS 43515 MiB
+  addresses US-CT: 2695358 records (2492256 strict, 63763 loose, 463 alias, 27902 fuzzy, 110974 unattached) → 1242625 addresses, 93.97% attached, 110977 units, 37822 of 282441 ranges kept; 4.7 s, peak RSS 43515 MiB
+  addresses US-DE: 650233 records (569970 strict, 16566 loose, 11 alias, 7150 fuzzy, 56536 unattached) → 511839 addresses, 90.56% attached, 67385 units, 16282 of 100567 ranges kept; 2.4 s, peak RSS 43515 MiB
+  addresses US-DC: 282696 records (279335 strict, 1670 loose, 0 alias, 102 fuzzy, 1589 unattached) → 145085 addresses, 99.14% attached, 581 units, 4256 of 23104 ranges kept; 0.5 s, peak RSS 43515 MiB
+  addresses US-FL: 32171124 records (27924571 strict, 1520486 loose, 719 alias, 264300 fuzzy, 2461048 unattached) → 11590351 addresses, 87.90% attached, 3022300 units, 359977 of 1950294 ranges kept; 41.4 s, peak RSS 43515 MiB
+  addresses US-GA: 5586717 records (4125961 strict, 701195 loose, 504 alias, 66872 fuzzy, 692185 unattached) → 3992826 addresses, 87.39% attached, 493962 units, 389661 of 1243350 ranges kept; 12.3 s, peak RSS 43515 MiB
+  addresses US-HI: 424045 records (357320 strict, 19505 loose, 1 alias, 6616 fuzzy, 40603 unattached) → 353838 addresses, 90.18% attached, 50651 units, 8882 of 41717 ranges kept; 1.4 s, peak RSS 43515 MiB
+  addresses US-ID: 2234783 records (1924966 strict, 145515 loose, 204 alias, 9570 fuzzy, 154528 unattached) → 899757 addresses, 89.84% attached, 152454 units, 87838 of 294811 ranges kept; 5.3 s, peak RSS 43515 MiB
+  addresses US-IL: 5504521 records (4662886 strict, 449505 loose, 17 alias, 36751 fuzzy, 355362 unattached) → 3827879 addresses, 91.84% attached, 194930 units, 645844 of 1443596 ranges kept; 11.7 s, peak RSS 43515 MiB
+  addresses US-IN: 5449824 records (4223236 strict, 836217 loose, 239 alias, 46410 fuzzy, 343722 unattached) → 3185045 addresses, 92.39% attached, 78664 units, 316898 of 1060486 ranges kept; 11.2 s, peak RSS 43515 MiB
+  addresses US-IA: 2287757 records (2068288 strict, 90654 loose, 265 alias, 10118 fuzzy, 118432 unattached) → 1400425 addresses, 94.72% attached, 171739 units, 253916 of 696666 ranges kept; 6.2 s, peak RSS 43515 MiB
+  addresses US-KS: 2525274 records (1940844 strict, 407201 loose, 41 alias, 8014 fuzzy, 169174 unattached) → 1337875 addresses, 91.91% attached, 267528 units, 245615 of 603176 ranges kept; 5.4 s, peak RSS 43515 MiB
+  addresses US-KY: 4372395 records (3575984 strict, 200600 loose, 212 alias, 48781 fuzzy, 546818 unattached) → 2164234 addresses, 82.54% attached, 468187 units, 147768 of 651918 ranges kept; 10.1 s, peak RSS 43515 MiB
+  addresses US-LA: 2587060 records (2077138 strict, 226913 loose, 198 alias, 29143 fuzzy, 253668 unattached) → 1529569 addresses, 89.42% attached, 132149 units, 308961 of 600668 ranges kept; 5.7 s, peak RSS 43515 MiB
+  addresses US-ME: 1454405 records (1374539 strict, 18557 loose, 90 alias, 4531 fuzzy, 56688 unattached) → 714197 addresses, 94.96% attached, 114246 units, 29987 of 228806 ranges kept; 3.1 s, peak RSS 43515 MiB
+  addresses US-MD: 6081897 records (5679726 strict, 96036 loose, 41 alias, 36750 fuzzy, 269344 unattached) → 2318058 addresses, 93.65% attached, 412646 units, 84178 of 481098 ranges kept; 11.2 s, peak RSS 43515 MiB
+  addresses US-MA: 6328824 records (6191893 strict, 24464 loose, 32 alias, 5172 fuzzy, 107263 unattached) → 2392440 addresses, 98.12% attached, 1355186 units, 49354 of 575666 ranges kept; 11.5 s, peak RSS 43515 MiB
+  addresses US-MI: 7329459 records (5386697 strict, 1448284 loose, 42 alias, 54974 fuzzy, 439462 unattached) → 4439711 addresses, 92.62% attached, 191290 units, 585620 of 1277079 ranges kept; 13.9 s, peak RSS 43515 MiB
+  addresses US-MN: 7104326 records (5999483 strict, 564257 loose, 167 alias, 28703 fuzzy, 511716 unattached) → 2377675 addresses, 91.20% attached, 331204 units, 342210 of 939504 ranges kept; 11.3 s, peak RSS 43515 MiB
+  addresses US-MS: 2194672 records (1544260 strict, 197549 loose, 45204 alias, 35618 fuzzy, 372041 unattached) → 1309051 addresses, 79.34% attached, 39852 units, 188927 of 530217 ranges kept; 6.2 s, peak RSS 43515 MiB
+  addresses US-MO: 4612399 records (3758458 strict, 332329 loose, 9257 alias, 42113 fuzzy, 470242 unattached) → 2645175 addresses, 86.46% attached, 565314 units, 355731 of 1076320 ranges kept; 10.1 s, peak RSS 43515 MiB
+  addresses US-MT: 747281 records (574045 strict, 49605 loose, 233 alias, 6062 fuzzy, 117336 unattached) → 567285 addresses, 82.66% attached, 88799 units, 81214 of 239824 ranges kept; 2.6 s, peak RSS 43515 MiB
+  addresses US-NE: 779585 records (751394 strict, 10293 loose, 0 alias, 1240 fuzzy, 16658 unattached) → 419061 addresses, 97.43% attached, 28112 units, 317574 of 431516 ranges kept; 2.7 s, peak RSS 43515 MiB
+  addresses US-NV: 2412191 records (2145641 strict, 108038 loose, 13 alias, 23714 fuzzy, 134785 unattached) → 1105397 addresses, 93.99% attached, 262418 units, 66629 of 283429 ranges kept; 5.3 s, peak RSS 43515 MiB
+  addresses US-NH: 642245 records (564203 strict, 16746 loose, 18 alias, 5081 fuzzy, 56197 unattached) → 508309 addresses, 89.69% attached, 15174 units, 40167 of 168041 ranges kept; 2.3 s, peak RSS 43515 MiB
+  addresses US-NJ: 4866338 records (4495137 strict, 112212 loose, 536 alias, 44566 fuzzy, 213887 unattached) → 3028863 addresses, 95.89% attached, 750827 units, 86627 of 635391 ranges kept; 10.1 s, peak RSS 43515 MiB
+  addresses US-NM: 2899516 records (1433946 strict, 158549 loose, 182 alias, 20464 fuzzy, 1286375 unattached) → 1839158 addresses, 47.43% attached, 268324 units, 77069 of 293771 ranges kept; 5.5 s, peak RSS 43515 MiB
+  addresses US-NY: 14426432 records (13008151 strict, 428020 loose, 1841 alias, 125934 fuzzy, 862486 unattached) → 5769761 addresses, 91.73% attached, 1435161 units, 140166 of 1145471 ranges kept; 23.1 s, peak RSS 43515 MiB
+  addresses US-NC: 11833349 records (9848097 strict, 728782 loose, 800 alias, 113820 fuzzy, 1141850 unattached) → 5706678 addresses, 88.95% attached, 1139359 units, 277725 of 1492349 ranges kept; 22.9 s, peak RSS 43515 MiB
+  addresses US-ND: 813296 records (595659 strict, 82515 loose, 0 alias, 4034 fuzzy, 131088 unattached) → 387782 addresses, 79.66% attached, 98120 units, 172079 of 276882 ranges kept; 2.5 s, peak RSS 43515 MiB
+  addresses US-OH: 7221826 records (6305932 strict, 474614 loose, 6028 alias, 57726 fuzzy, 377526 unattached) → 4941404 addresses, 95.28% attached, 703393 units, 367242 of 1382439 ranges kept; 12.1 s, peak RSS 43515 MiB
+  addresses US-OK: 3374256 records (2254036 strict, 763156 loose, 0 alias, 7664 fuzzy, 349400 unattached) → 895486 addresses, 87.95% attached, 25220 units, 412220 of 693993 ranges kept; 6.3 s, peak RSS 43515 MiB
+  addresses US-OR: 7210135 records (6517531 strict, 301948 loose, 23 alias, 17497 fuzzy, 373136 unattached) → 1862061 addresses, 92.38% attached, 1386785 units, 129185 of 542441 ranges kept; 12.2 s, peak RSS 43515 MiB
+  addresses US-PA: 6874104 records (6101259 strict, 298561 loose, 856 alias, 57064 fuzzy, 416364 unattached) → 5384638 addresses, 93.31% attached, 481982 units, 311902 of 1427223 ranges kept; 12.8 s, peak RSS 43515 MiB
+  addresses US-RI: 519993 records (492897 strict, 9773 loose, 0 alias, 4477 fuzzy, 12846 unattached) → 392363 addresses, 97.38% attached, 2744 units, 10425 of 104032 ranges kept; 1.6 s, peak RSS 43515 MiB
+  addresses US-SC: 5648270 records (4696665 strict, 176847 loose, 337 alias, 49493 fuzzy, 724928 unattached) → 3081263 addresses, 83.68% attached, 591095 units, 146338 of 732507 ranges kept; 11.6 s, peak RSS 43515 MiB
+  addresses US-SD: 264171 records (196143 strict, 12965 loose, 48 alias, 924 fuzzy, 54091 unattached) → 236592 addresses, 80.93% attached, 7498 units, 134211 of 209559 ranges kept; 1.1 s, peak RSS 43515 MiB
+  addresses US-TN: 5905149 records (4834560 strict, 309203 loose, 208 alias, 71437 fuzzy, 689741 unattached) → 3475920 addresses, 87.47% attached, 695336 units, 189750 of 940323 ranges kept; 12.3 s, peak RSS 43515 MiB
+  addresses US-TX: 33235401 records (26570821 strict, 2912641 loose, 1108 alias, 393608 fuzzy, 3357223 unattached) → 13101700 addresses, 86.84% attached, 947592 units, 707485 of 2873651 ranges kept; 50.1 s, peak RSS 43515 MiB
+  addresses US-UT: 2710268 records (549855 strict, 1962582 loose, 1 alias, 2310 fuzzy, 195520 unattached) → 1304382 addresses, 91.14% attached, 407580 units, 75707 of 348325 ranges kept; 5.3 s, peak RSS 43515 MiB
+  addresses US-VT: 677910 records (587905 strict, 33719 loose, 50 alias, 4760 fuzzy, 51476 unattached) → 358983 addresses, 91.81% attached, 389 units, 42987 of 143533 ranges kept; 1.8 s, peak RSS 43515 MiB
+  addresses US-VA: 8458489 records (7874640 strict, 142843 loose, 1 alias, 43258 fuzzy, 397747 unattached) → 3593392 addresses, 93.91% attached, 466621 units, 243387 of 1028632 ranges kept; 16.0 s, peak RSS 43515 MiB
+  addresses US-WA: 8569480 records (7658205 strict, 335545 loose, 473 alias, 19355 fuzzy, 555902 unattached) → 3120996 addresses, 89.44% attached, 568567 units, 212875 of 858381 ranges kept; 13.0 s, peak RSS 43515 MiB
+  addresses US-WV: 1897976 records (1312763 strict, 114462 loose, 232 alias, 25423 fuzzy, 445096 unattached) → 1057814 addresses, 73.59% attached, 81697 units, 76307 of 339175 ranges kept; 6.1 s, peak RSS 43515 MiB
+  addresses US-WI: 5218975 records (4420623 strict, 409558 loose, 398 alias, 29188 fuzzy, 359208 unattached) → 2521350 addresses, 90.26% attached, 309684 units, 152899 of 672882 ranges kept; 10.3 s, peak RSS 43515 MiB
+  addresses US-WY: 598312 records (417288 strict, 69447 loose, 5986 alias, 4799 fuzzy, 100792 unattached) → 348613 addresses, 78.79% attached, 32245 units, 48360 of 126138 ranges kept; 1.6 s, peak RSS 43515 MiB
+  addresses US-PR: 61111 records (0 strict, 0 loose, 0 alias, 0 fuzzy, 61111 unattached) → 49969 addresses, 0.00% attached, 5570 units, 0 of 130570 ranges kept; 0.3 s, peak RSS 43515 MiB
+  addresses US-VI: 0 records (0 strict, 0 loose, 0 alias, 0 fuzzy, 0 unattached) → 0 addresses, 0.00% attached, 0 units, 0 of 2130 ranges kept; 0.1 s, peak RSS 43515 MiB
+  addresses CA-AB: 4251235 records (3696402 strict, 152747 loose, 0 alias, 13443 fuzzy, 388643 unattached) → 1856846 addresses, 83.24% attached, 714823 units, 4 of 66670 ranges kept; 12.9 s, peak RSS 43515 MiB
+  addresses CA-BC: 4816309 records (4585032 strict, 71513 loose, 315 alias, 9430 fuzzy, 150019 unattached) → 1485084 addresses, 93.91% attached, 1260104 units, 0 of 17994 ranges kept; 12.2 s, peak RSS 43515 MiB
+  addresses CA-MB: 1270152 records (1118713 strict, 42957 loose, 37 alias, 4940 fuzzy, 103505 unattached) → 523371 addresses, 83.08% attached, 202761 units, 0 of 176 ranges kept; 6.0 s, peak RSS 43515 MiB
+  addresses CA-NB: 1280195 records (782680 strict, 413309 loose, 81 alias, 4952 fuzzy, 79173 unattached) → 751295 addresses, 91.09% attached, 80891 units, 0 of 2620 ranges kept; 6.0 s, peak RSS 43515 MiB
+  addresses CA-NL: 282199 records (244028 strict, 13553 loose, 107 alias, 3880 fuzzy, 20631 unattached) → 192425 addresses, 90.03% attached, 34702 units, 0 of 862 ranges kept; 4.5 s, peak RSS 43515 MiB
+  addresses CA-NS: 1549086 records (1429871 strict, 57336 loose, 9 alias, 2758 fuzzy, 59112 unattached) → 727289 addresses, 93.69% attached, 124137 units, 7 of 92800 ranges kept; 6.9 s, peak RSS 43515 MiB
+  addresses CA-NT: 25142 records (24117 strict, 128 loose, 0 alias, 162 fuzzy, 735 unattached) → 9919 addresses, 93.69% attached, 5995 units, 0 of 243 ranges kept; 3.3 s, peak RSS 43515 MiB
+  addresses CA-NU: 5641 records (2303 strict, 910 loose, 0 alias, 40 fuzzy, 2388 unattached) → 3437 addresses, 56.94% attached, 2634 units, 0 of 0 ranges kept; 4.0 s, peak RSS 43515 MiB
+  addresses CA-ON: 15716347 records (14823770 strict, 371074 loose, 9820 alias, 57436 fuzzy, 454247 unattached) → 5507110 addresses, 94.72% attached, 2745233 units, 33 of 559789 ranges kept; 25.7 s, peak RSS 43515 MiB
+  addresses CA-PE: 230175 records (182380 strict, 1691 loose, 9238 alias, 866 fuzzy, 36000 unattached) → 142330 addresses, 75.95% attached, 17026 units, 1 of 24586 ranges kept; 3.8 s, peak RSS 43515 MiB
+  addresses CA-QC: 12794444 records (12047595 strict, 471813 loose, 86 alias, 19704 fuzzy, 255246 unattached) → 4228687 addresses, 96.38% attached, 1800719 units, 10 of 355321 ranges kept; 24.8 s, peak RSS 43515 MiB
+  addresses CA-SK: 754412 records (689307 strict, 20566 loose, 295 alias, 4413 fuzzy, 39831 unattached) → 367629 addresses, 89.97% attached, 128639 units, 0 of 31 ranges kept; 4.8 s, peak RSS 43515 MiB
+  addresses CA-YT: 44832 records (40064 strict, 736 loose, 0 alias, 302 fuzzy, 3730 unattached) → 22231 addresses, 87.18% attached, 6947 units, 0 of 554 ranges kept; 3.4 s, peak RSS 43515 MiB
+  addresses merged: 689.6 s, peak RSS 43515 MiB, now 22140
+  streets: 16194543 ways (206288505 vertices) → 17194088 pieces (662030 cut at admin 8, 337515 at 5 km) → 10000803 streets (6060708 by postal town, 3940095 by area, 28930 capped), 10666696 parts (506542 streets with several, at most 50), 90759430 stored points, 9267259 km, longest 79.0 km; 69.5 s
+  streets: towns Addresses 6060708, Admin 274452, Neighbours 1926706, Place 1728759, None 10178; 41 without admin area, 292829 with alternate names, 540222 with refs
+  grid z14: 2126400 cells (953356 with unattached addresses), 15459428 cell-street pairs; streets per cell p50 2 p99 98 max 1008; SGRD 7.90 MiB (19.90 raw, 1273 blocks)
+  streets: 92.8 s, peak RSS 43515 MiB, now 22444
+  addresses: 16 KiB blocks: 135950610 on 6568922 streets, 15294511 unattached, 10577454 ranges (0 dropped), 895148 codes, 7857916 exceptions; ASTR 198.18 MiB (317.13 raw, 20202 blocks), ASUF 7.77, AUNI 19.51, ALSE 102.30 (8568 blocks), ARNG 51.97, APCD 0.68; 380.40 MiB, 2.28 bytes per address
+  addresses: 66 subdivisions, 327040305 records (277018528 strict, 22578800 loose, 131167 alias, 2292427 fuzzy, 25019383 unattached) → 151245121 addresses, 135950610 attached (89.89%), 448311 approximate, 32027877 units, 10577454 of 38333493 ranges kept; 1950151 streets known only from 12161737 addresses, 895148 postcodes
+  addresses: 53.3 s, peak RSS 43515 MiB, now 10939
+  search: 1616050 features, 356609 with alternative names
+  search: 14483479 entries (Admin 21327, Place 333846, Street 10000803, Poi 811485, Postcode 895148, Feature 470719, AddressStreet 1950151); 33610 places stand for an admin area, 21327 areas on their own; 888573 with alternative names, 13894913 with a town (56606 towns); 1547794 tokens, 26038536 postings; 16.5 s
+  search: longest lists: road 2216510, street 1710663, drive 1378747, avenue 1071801, lane 981339, calle 752870, court 676090, north 479901, west 451156, east 448703, south 444522, cr 305371, way 280309, place 267925, circle 236879, de 235600, park 218137, lake 211196, boulevard 167507, saint 166669, trail 147064, northwest 143695, privada 142690, dr 142474, creek 140477
+  search: 22 tokens left out of postings (over 100000 entries): road 2216510 (kept 5545), street 1710663 (kept 21142), drive 1378747 (kept 6921), avenue 1071801 (kept 7350), lane 981339 (kept 2994), court 676090 (kept 3503), north 479901 (kept 12095), west 451156 (kept 11370), east 448703 (kept 11265), south 444522 (kept 10174), way 280309 (kept 652), place 267925 (kept 588), circle 236879 (kept 4848), de 235600 (kept 16), boulevard 167507 (kept 1179), trail 147064 (kept 958), northwest 143695 (kept 853), southwest 136815 (kept 624), northeast 134199 (kept 599), highway 128481 (kept 640), southeast 119554 (kept 521), la 101449 (kept 51)
+  search: 16 KiB blocks: SENT 181.32 MiB (435.24 raw: Admin 0.67, Place 8.42, Street 315.56, Poi 24.20, Postcode 18.23, Feature 13.18, AddressStreet 54.97; street names 145.04; 27828 blocks); STWN 0.28 MiB, SFST 5.05 MiB, SPST 48.23 MiB; 17.0 bytes per entry in all
+  search: 30.5 s, peak RSS 43515 MiB, now 5252
+    pass restrictions: 311 blobs, 1.1 s, decode 3 CPU s, work 2 CPU s
+    pass graph ways: 27411 blobs, 92.1 s, decode 168 CPU s, work 204 CPU s
+    pass graph nodes: 310751 blobs, 39.5 s, decode 165 CPU s, work 83 CPU s
+  graph read: 41567434 ways, 383027299 node refs, 153.1 s, peak RSS 43515 MiB
+  graph: 45405629 road and ferry ways read, 41567233 kept (618 ferries, 201 left out for meeting no road); dropped: access 3804951, closed 32868, size 217, speed 159; 0 node refs missing
+  graph: nodes: 634182 signals, 1037349 passable barriers, 3773 toll booths, 64172 blocking barriers (50900 ends added)
+  graph: restrictions: 567305 relations, 542625 for cars, 521484 applied (55677 via ways), 19887 missing members, 1254 broken; 546729 forbidden paths, 520199 nodes added
+  graph: 68439922 nodes (67919723 before restrictions), 164509197 edges (89790 toll, 1364 ferry, 10861063 restricted, 3689338 entering restricted), longest 137400 s; 0 loops left out
+  graph: 86275448 segments, 281722017 points stored (1240.0 MiB), 105156 labels, 52069 exit numbers
+  graph: 268620 components, largest 67665636 nodes; 631619 nodes in 268607 small ones; sizes 1 / 2–9 / 10–99 / 100–999 / 1000+: [110916, 152555, 4965, 171, 13]
+  graph: read 153.1 s, edges 87.2 s, restrictions 3.0 s, components 7.6 s, peak RSS 43515 MiB
+  routing graph: 253.0 s, peak RSS 43515 MiB, now 12289
+  ch: 68439922 nodes, 160207674 arcs, 5.0 s, peak RSS 43515 MiB
+  ch: round 4, 42908842 nodes left, 23895671 shortcuts, 93 s, peak RSS 43515 MiB
+  ch: round 9, 29127734 nodes left, 47814045 shortcuts, 128 s, peak RSS 43515 MiB
+  ch: round 18, 18559215 nodes left, 67682207 shortcuts, 167 s, peak RSS 43515 MiB
+  ch: round 28, 11886336 nodes left, 79965050 shortcuts, 198 s, peak RSS 43515 MiB
+  ch: round 41, 6612330 nodes left, 91349075 shortcuts, 228 s, peak RSS 43515 MiB
+  ch: round 63, 2925446 nodes left, 100644478 shortcuts, 259 s, peak RSS 43515 MiB
+  ch: round 112, 689859 nodes left, 107923271 shortcuts, 289 s, peak RSS 43515 MiB
+  ch: round 254, 56573 nodes left, 111365009 shortcuts, 319 s, peak RSS 43515 MiB
+  ch: 68439922 nodes, 164509197 base edges (160207674 arcs), 135554368 up + 135130361 down edges (1.65 per base edge), 110550019 shortcuts; 379535 flagged edges (289381 shortcuts); 902 rounds, depth 245, longest 430137 s; about 3881 MiB; 349.2 s, peak RSS 43515 MiB
+  routing CH: 350.4 s, peak RSS 43515 MiB, now 17203
+  routing: 68439922 nodes (528351 at the top, 25.1 MiB), 270684729 edges, 86275448 segments (281722017 points, 45058397 with a street, 273040 with a label), 105157 labels, 2379131 cells (8153198 crossings), 520199 copies, 52599 exit numbers; 129.7 s
+  routing: RCHE 880.4 MiB, RGEO 1253.9 (2089.8 raw), RNAM 1.41, RGRD 11.47, RCPY 2.18, RJCT 0.16, RHDR 0.000; 2149.5 MiB in all
+  routing sections: 130.4 s, peak RSS 43515 MiB, now 7231
+  dictionaries: 26.3 s, peak RSS 43515 MiB, now 6865
+  compress: 119.3 s, peak RSS 43515 MiB, now 7075
+  write: 8.7 s, peak RSS 43515 MiB, now 7075
+  zoom      tiles     frames       raw MiB    tiles MiB
+  z0            1          3           0.1          0.0
+  z1            2          5           0.2          0.0
+  z2            8         17           0.3          0.1
+  z3           32         59           0.5          0.2
+  z4          117        228           1.2          0.7
+  z5          359        648           2.9          1.9
+  z6         1098       2312           8.1          5.6
+  z7         3104       7036          32.4         23.2
+  z8         9142      23816          83.1         62.1
+  z9        28774      80358         199.1        152.2
+  z10       93145     245600         437.0        341.7
+  z11      305354     733287         759.6        618.3
+  z12     1025728    2295216        1410.8       1131.6
+  z13     3838001    8570219        2621.3       2191.1
+  z14     7642055   10330266        2004.0       1701.2
+  all    12946920   22289070        7560.6       6229.9
+  left out: 27431516 tiles covered by one polygon (z4 6, z5 101, z6 661, z7 3564, z8 16646, z9 72078, z10 303147, z11 1252565, z12 5111959, z13 20670789)
+    water/ocean: 26038412 tiles, 444.6 MiB raw
+    landcover/protected_area: 1326658 tiles, 75.6 MiB raw
+    water/lake: 43690 tiles, 1.5 MiB raw
+    landcover/wood: 21567 tiles, 0.4 MiB raw
+    landcover/forest: 1152 tiles, 0.0 MiB raw
+    landcover/farmland: 30 tiles, 0.0 MiB raw
+    landcover/industrial: 7 tiles, 0.0 MiB raw
+  admin: 54937 areas, SADM 1.74 MiB, SAPL 12.52 MiB (231 blocks)
+  time zones: 294 zones, 606204 vertices, TZON 2.15 MiB
+  admin chains, places: 342788 features, 66 in no area, 742 without level 4, 8225 without level 6, 234977 without level 8, 91079 in a city, town or village
+  admin chains, pois: 2563702 features, 35 in no area, 1088 without level 4, 25294 without level 6, 697900 without level 8, 1749700 in a city, town or village
+  streets: 32 KiB blocks: SSTR 84.62 MiB (336.61 raw, 10766 blocks), SGEO 240.59 MiB (279.39 raw, 8923 blocks), 8.9 + 25.2 bytes per street
+  routing: 68439922 nodes (528351 at the top, 25.1 MiB), 270684729 edges, 86275448 segments (281722017 points, 45058397 with a street, 273040 with a label), 105157 labels, 2379131 cells (8153198 crossings), 520199 copies, 52599 exit numbers; 129.7 s
+  routing: RCHE 880.4 MiB, RGEO 1253.9 (2089.8 raw), RNAM 1.41, RGRD 11.47, RCPY 2.18, RJCT 0.16, RHDR 0.000; 2149.5 MiB in all
+  search: 16 KiB blocks: SENT 181.32 MiB (435.24 raw: Admin 0.67, Place 8.42, Street 315.56, Poi 24.20, Postcode 18.23, Feature 13.18, AddressStreet 54.97; street names 145.04; 27828 blocks); STWN 0.28 MiB, SFST 5.05 MiB, SPST 48.23 MiB; 17.0 bytes per entry in all
+  addresses: 16 KiB blocks: 135950610 on 6568922 streets, 15294511 unattached, 10577454 ranges (0 dropped), 895148 codes, 7857916 exceptions; ASTR 198.18 MiB (317.13 raw, 20202 blocks), ASUF 7.77, AUNI 19.51, ALSE 102.30 (8568 blocks), ARNG 51.97, APCD 0.68; 380.40 MiB, 2.28 bytes per address
+wrote out/north-america/north-america.omp.000 in 3 chunk(s), 9413.8 MiB (tiles 6532477678 B, TIDX 70466859 B, TDIC 34 dictionaries); 2694 s, peak RSS 43515 MiB, temp store 7560.6 MiB
+	Command being timed: "/home/nicholas/Misc/offline-road-maps/target/release/omp-builder build /media/nicholas/Data/maps-testing/inputs/osm/north-america-261001.osm.pbf --out out/north-america --work-dir /media/nicholas/Data/maps-testing --temp /media/nicholas/Data/maps-testing/measure/p5/na-build/tmp --addresses all --bands 3 --deterministic"
+	User time (seconds): 19063.03
+	System time (seconds): 345.87
+	Percent of CPU this job got: 720%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 44:54.60
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 44559460
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 27
+	Minor (reclaiming a frame) page faults: 57778773
+	Voluntary context switches: 4118583
+	Involuntary context switches: 651341
+	Swaps: 0
+	File system inputs: 182862538
+	File system outputs: 34766800
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

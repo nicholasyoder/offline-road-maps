@@ -1,0 +1,9 @@
+Linux tower1 7.1.8+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 7.1.8-1~bpo13+1 (2026-08-16) x86_64 GNU/Linux
+
+CPU(s):                                  16
+Model name:                              AMD Ryzen 7 5700X 8-Core Processor
+CPU(s) scaling MHz:                      55%
+
+MemTotal:       65770844 kB
+
+07:00.0 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Navi 44 [RX 9060 XT] (rev c0)

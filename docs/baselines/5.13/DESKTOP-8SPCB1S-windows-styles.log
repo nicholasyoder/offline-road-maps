@@ -1,0 +1,16 @@
+omp-app 0.1.0: bench bench\styles.toml on maps\north-america.omp.000
+adapter: Intel(R) UHD Graphics 620 (Dx12)
+styles: 1108 frames, interval p50 5.51 / p95 12.33 / max 98.0 ms, cpu p95 1.46 ms, labels p95 0.96 ms
+start-up 853 ms; tiles 174 loaded + 0 absent, 0 errors; latency p50 16.56 / p95 32.40 ms, read p95 3.95 ms, decode p95 2.10 ms, prepare p95 13.75 ms
+8.0 MiB read; RSS peak 265 MiB; GPU allocator 20 of 68 MiB; tile slabs peak 16 MiB; cache peak 8.1 MiB of 96; idle CPU 0.00% (0 frames)
+idle wake: 1 × crates\app\src\app\bench.rs:183 
+  North America z4               140 frames, p95  14.49 ms,   20 tiles, detailed in 96 ms, RSS 253 MiB
+  to night                       158 frames, p95  11.34 ms,   20 tiles, detailed in 24 ms, RSS 255 MiB
+  to high contrast               158 frames, p95  11.22 ms,   20 tiles, detailed in 21 ms, RSS 256 MiB
+  back to default                159 frames, p95  11.11 ms,   20 tiles, detailed in 18 ms, RSS 257 MiB
+  Columbus z11                   125 frames, p95  12.56 ms,   25 tiles, detailed in 30 ms, RSS 257 MiB
+  Columbus z11 to night          121 frames, p95  12.76 ms,   25 tiles, detailed in 24 ms, RSS 257 MiB
+  Columbus z14 to default        122 frames, p95  12.48 ms,   22 tiles, detailed in 30 ms, RSS 259 MiB
+  Columbus z14 to night          125 frames, p95  12.14 ms,   22 tiles, detailed in 18 ms, RSS 260 MiB
+report written to results\5.13\DESKTOP-8SPCB1S-windows-styles.json
+exit code 0

@@ -1,0 +1,29 @@
+omp-app 0.1.0: bench bench\print-hc.toml on maps\north-america.omp.000
+adapter: Intel(R) HD Graphics 4000 (Gl)
+bench: print page opened
+bench: preview done in 719 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 1559 ms: Ok(())
+bench: print page opened
+bench: preview done in 699 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 1428 ms: Ok(())
+bench: print page opened
+bench: preview done in 941 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 3407 ms: Ok(())
+print-hc: 2687 frames, interval p50 10.42 / p95 11.59 / max 331.9 ms, cpu p95 0.75 ms, labels p95 0.00 ms
+start-up 327 ms; tiles 60 loaded + 0 absent, 0 errors; latency p50 60.13 / p95 114.20 ms, read p95 0.14 ms, decode p95 1.34 ms, prepare p95 25.05 ms
+1.1 MiB read; RSS peak 495 MiB; GPU allocator - MiB; tile slabs peak 16 MiB; cache peak 3.2 MiB of 96; idle CPU 0.00% (0 frames)
+idle wake: 1 × crates\app\src\app\bench.rs:183 
+  route: coast to coast          368 frames, p95  11.37 ms,   20 tiles, detailed in 111 ms, RSS 290 MiB
+    route: 5 stops, 4808.6 km, 3292 min, 18115 points, 90 steps; shown after 830 ms (trip 360.4 ms, directions 460.9 ms)
+  print: map at 300 dpi, default style   700 frames, p95  11.51 ms,    0 tiles, detailed in 11 ms, RSS 406 MiB
+    print map at 300 dpi: preview 719 ms, PDF 1559 ms (2023 KiB); RSS MiB before 291, preview 254, peak 423, after 334
+  print: map at 300 dpi, high contrast   680 frames, p95  11.69 ms,   20 tiles, detailed in 72 ms, RSS 406 MiB
+    print map at 300 dpi: preview 699 ms, PDF 1428 ms (1482 KiB); RSS MiB before 412, preview 266, peak 435, after 340
+  print: directions at 300 dpi, high contrast   748 frames, p95  11.90 ms,    0 tiles, detailed in 10 ms, RSS 430 MiB
+    print directions at 300 dpi: preview 941 ms, PDF 3407 ms (1761 KiB); RSS MiB before 407, preview 305, peak 494, after 365
+  back to the default style      191 frames, p95  11.42 ms,   20 tiles, detailed in 55 ms, RSS 484 MiB
+report written to results\5.13\DESKTOP-VR4NNBH-windows-print-hc.json
+exit code 0

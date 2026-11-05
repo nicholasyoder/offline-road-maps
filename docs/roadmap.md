@@ -158,12 +158,16 @@ Detailed plan: [phase5-plan.md](phase5-plan.md) (draft 2, 2026-10-29). Added 202
 - [x] **Exit criterion:** every setting is reachable from the UI and survives a restart; styles switch at runtime; the audit's findings are written up and triaged; each performance area is measured and written up, with the changes worth it taken in. **Done 2026-11-04** ([5.13](phase5-plan.md#513-final-checks-on-every-machine)): every criterion measured on the dev machine and three laptop setups; the owner accepted the misses (Windows print memory, cold first route and first search, the E6430's RSS). Deferred by the owner: 5.8 (cold reads) and 5.9 (long routes); 5.14 found no fix for unwinding on the E6430 (`panic = "abort"` stays).
 
 ### Phase 6: Distribution
-- [ ] `docs/BUILDING.md`: hardware needs, a step-by-step region build, and a custom region from a polygon.
-- [ ] Release layout for physical media: `app/` holding the Windows `.exe`, a Linux AppImage or binary and a macOS build, plus `maps/` and `README.txt` Linux mounts FAT32 without exec, so the Linux app needs a launcher run with `sh` (phase 1 step 1.10).
-- [ ] Attribution screen and file covering ODbL and each address source.
-- [ ] Planet build trial (stretch goal).
+Detailed plan: [phase6-plan.md](phase6-plan.md) (draft 1, 2026-11-04). Changed with the owner while planning: the planet build moved to *Later or optional*, the attribution item dropped (About this map covers it; 6.6 only checks it and adds the dependencies' licence notices), a user-friendly binary name added, and a clean-up of development leftovers added.
+
+- [ ] Clean-up of what development left behind: the reference screenshots, the E6430 probe tool and workflow, stale bench flights, and the local `target/` and `$OMP_WORK` variants; listed first, deleted only as the owner approves ([6.1](phase6-plan.md#61-clean-up-inventory)).
+- [ ] A product name on the binaries: `OfflineRoadMaps` / `OfflineRoadMaps.exe` instead of `omp-app` ([6.2](phase6-plan.md#62-binary-name)).
+- [ ] Release layout for physical media: the binaries, `maps/` and `README.txt` in one folder (the app keeps its data next to the executable), a Linux launcher run with `sh` for sticks that do not allow exec (phase 1 step 1.10), a release workflow and a packaging script ([6.3, 6.4](phase6-plan.md#63-release-layout-and-launchers)). No macOS build.
+- [ ] Docs: `docs/BUILDING.md` (hardware needs, a step-by-step region build, a custom region from a polygon), a front-page README, and a concise `README.txt` for the release folder ([6.5](phase6-plan.md#65-docs)); licence notices for the dependencies ([6.6](phase6-plan.md#66-licences-and-attribution-check)).
+- [ ] **Exit criterion:** a stick made only by the packaging script runs on Windows and Linux from `README.txt` alone, and `BUILDING.md` builds a working region on a clean machine ([6.7](phase6-plan.md#67-clean-room-check)).
 
 ### Later or optional
+- A whole-planet build trial (stretch goal, under 100 GB). Moved here from phase 6 by the owner on 2026-11-04.
 - GPX, KML and CSV import and export of trips and pushpins, best effort. Planned as [phase 4 step 4.8](phase4-plan.md#48-gpx-kml-and-csv-best-effort) and deferred by the owner on 2026-10-29; the in-app file browser it needs is already built.
 - Fuel, rest and overnight suggestions along a trip, from the POIs already in the pack (no new data, little RAM). Planned as [phase 4 step 4.6](phase4-plan.md#46-fuel-rest-and-overnight-suggestions-if-cheap) and deferred by the owner on 2026-10-29; the plan there is ready to take up.
 - A larger POI set (shops, schools, offices and other named places beyond the 11 car-trip classes), added to the map and search together. To consider once the app works end to end and the final pack sizes are known (decided 2026-10-25, phase 2 planning).

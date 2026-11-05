@@ -1,0 +1,17 @@
+omp-app 0.1.0: bench bench/styles.toml on maps/north-america.omp.000
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+adapter: AMD Radeon Graphics (RADV GFX1200) (Vulkan)
+styles: 14639 frames, interval p50 0.51 / p95 0.78 / max 16.7 ms, cpu p95 0.19 ms, labels p95 0.14 ms
+start-up 124 ms; tiles 175 loaded + 0 absent, 0 errors; latency p50 7.88 / p95 15.98 ms, read p95 2.40 ms, decode p95 0.63 ms, prepare p95 7.84 ms
+7.8 MiB read; RSS peak 158 MiB; GPU allocator 38 of 128 MiB; tile slabs peak 16 MiB; cache peak 8.1 MiB of 96; idle CPU 0.00% (0 frames)
+idle wake: 1 × crates/app/src/app/bench.rs:183 
+  North America z4              1707 frames, p95   0.79 ms,   20 tiles, detailed in 16 ms, RSS 149 MiB
+  to night                      1838 frames, p95   0.81 ms,   20 tiles, detailed in 8 ms, RSS 151 MiB
+  to high contrast              1902 frames, p95   0.78 ms,   20 tiles, detailed in 9 ms, RSS 151 MiB
+  back to default               1861 frames, p95   0.79 ms,   20 tiles, detailed in 8 ms, RSS 152 MiB
+  Columbus z11                  1822 frames, p95   0.70 ms,   26 tiles, detailed in 12 ms, RSS 153 MiB
+  Columbus z11 to night         1828 frames, p95   0.68 ms,   25 tiles, detailed in 11 ms, RSS 153 MiB
+  Columbus z14 to default       1864 frames, p95   0.74 ms,   22 tiles, detailed in 6 ms, RSS 158 MiB
+  Columbus z14 to night         1817 frames, p95   0.74 ms,   22 tiles, detailed in 5 ms, RSS 158 MiB
+report written to results/5.13/dev-linux-styles.json
+exit code 0

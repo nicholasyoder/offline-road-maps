@@ -1,0 +1,35 @@
+omp-app 0.1.0: bench bench/north-america-p4.toml on maps/north-america.omp.000
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+adapter: AMD Radeon Graphics (RADV GFX1200) (Vulkan)
+bench: print page opened
+bench: preview done in 306 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 528 ms: Ok(())
+bench: print page opened
+bench: preview done in 296 ms: Ok(())
+bench: saving the PDF at 360 dpi
+bench: PDF done in 739 ms: Ok(())
+bench: print page opened
+bench: preview done in 402 ms: Ok(())
+bench: saving the PDF at 360 dpi
+bench: PDF done in 2067 ms: Ok(())
+north-america-p4: 48716 frames, interval p50 1.01 / p95 1.86 / max 130.8 ms, cpu p95 0.31 ms, labels p95 0.00 ms
+start-up 120 ms; tiles 46 loaded + 0 absent, 0 errors; latency p50 20.65 / p95 79.80 ms, read p95 0.11 ms, decode p95 2.16 ms, prepare p95 37.20 ms
+2.7 MiB read; RSS peak 333 MiB; GPU allocator 97 of 132 MiB; tile slabs peak 32 MiB; cache peak 25.1 MiB of 96; idle CPU 0.00% (0 frames)
+idle wake: 1 × crates/app/src/app/bench.rs:183 
+  continent z4                  1679 frames, p95   0.78 ms,   20 tiles, detailed in 15 ms, RSS 149 MiB
+  route: coast to coast, 5 stops, schedule  8284 frames, p95   1.09 ms,    0 tiles, detailed in 1 ms, RSS 235 MiB
+    route: 5 stops, 4808.6 km, 3292 min, 18115 points, 90 steps; shown after 1867 ms (trip 1472.6 ms, directions 392.7 ms); 6 alternatives shown after 3821 ms
+  print: map at 300 dpi         4847 frames, p95   1.04 ms,    0 tiles, detailed in 1 ms, RSS 256 MiB
+    print map at 300 dpi: preview 306 ms, PDF 528 ms (2137 KiB); RSS MiB before 235, preview 251, peak 280, after 256
+  print: map at 360 dpi         4972 frames, p95   1.04 ms,    0 tiles, detailed in 1 ms, RSS 259 MiB
+    print map at 360 dpi: preview 296 ms, PDF 739 ms (2629 KiB); RSS MiB before 256, preview 259, peak 294, after 259
+  print: directions at 360 dpi  5821 frames, p95   1.05 ms,    0 tiles, detailed in 1 ms, RSS 288 MiB
+    print directions at 360 dpi: preview 402 ms, PDF 2067 ms (3256 KiB); RSS MiB before 259, preview 259, peak 323, after 288
+  route: short, Cincinnati-Cleveland  1750 frames, p95   1.54 ms,   26 tiles, detailed in 53 ms, RSS 288 MiB
+    route: 2 stops, 405.1 km, 292 min, 1637 points, 17 steps; shown after 65 ms (trip 50.1 ms, directions 13.9 ms); 2 alternatives shown after 565 ms
+  route: 25 stops, optimized   21363 frames, p95   2.02 ms,    0 tiles, detailed in 1 ms, RSS 316 MiB
+    route: 25 stops, 72808.0 km, 48465 min, 242460 points, 749 steps; shown after 18189 ms (trip 13196.1 ms, directions 4972.6 ms)
+    optimized: 16933.5 km, 11684 min; shown after 7574 ms (order 242.0 ms)
+report written to results/5.13/dev-linux-p4.json
+exit code 0

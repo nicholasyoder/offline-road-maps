@@ -1,0 +1,42 @@
+omp-app 0.1.0: bench bench/print-rss.toml on maps/north-america.omp.000
+adapter: Intel(R) UHD Graphics 620 (KBL GT2) (Vulkan)
+bench: print page opened
+bench: preview done in 395 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 1223 ms: Ok(())
+bench: print page opened
+bench: preview done in 358 ms: Ok(())
+bench: saving the PDF at 360 dpi
+bench: PDF done in 1608 ms: Ok(())
+bench: print page opened
+bench: preview done in 375 ms: Ok(())
+bench: saving the PDF at 600 dpi
+bench: PDF done in 3398 ms: Ok(())
+bench: print page opened
+bench: preview done in 499 ms: Ok(())
+bench: saving the PDF at 360 dpi
+bench: PDF done in 3582 ms: Ok(())
+bench: print page opened
+bench: preview done in 1509 ms: Ok(())
+bench: saving the PDF at 360 dpi
+bench: PDF done in 24792 ms: Ok(())
+print-rss: 13295 frames, interval p50 7.03 / p95 9.44 / max 281.9 ms, cpu p95 5.53 ms, labels p95 0.00 ms
+start-up 345 ms; tiles 20 loaded + 0 absent, 0 errors; latency p50 26.78 / p95 35.01 ms, read p95 0.16 ms, decode p95 2.24 ms, prepare p95 21.98 ms
+0.4 MiB read; RSS peak 351 MiB; GPU allocator 222 of 324 MiB; tile slabs peak 16 MiB; cache peak 3.2 MiB of 96; idle CPU 0.20% (0 frames)
+idle wake: 1 × crates/app/src/app/bench.rs:183 
+  route: coast to coast          695 frames, p95   7.79 ms,   20 tiles, detailed in 108 ms, RSS 204 MiB
+    route: 5 stops, 4808.6 km, 3292 min, 18115 points, 90 steps; shown after 1342 ms (trip 550.4 ms, directions 784.2 ms)
+  print: map at 300 dpi         1167 frames, p95   7.91 ms,    0 tiles, detailed in 6 ms, RSS 226 MiB
+    print map at 300 dpi: preview 395 ms, PDF 1223 ms (2114 KiB); RSS MiB before 204, preview 220, peak 250, after 226
+  print: map at 360 dpi         1207 frames, p95   8.07 ms,    0 tiles, detailed in 8 ms, RSS 235 MiB
+    print map at 360 dpi: preview 358 ms, PDF 1608 ms (2599 KiB); RSS MiB before 226, preview 228, peak 270, after 235
+  print: map at 600 dpi         1431 frames, p95   8.34 ms,    0 tiles, detailed in 7 ms, RSS 239 MiB
+    print map at 600 dpi: preview 375 ms, PDF 3398 ms (4563 KiB); RSS MiB before 235, preview 235, peak 336, after 239
+  print: directions at 360 dpi  1464 frames, p95   8.49 ms,    0 tiles, detailed in 7 ms, RSS 268 MiB
+    print directions at 360 dpi: preview 499 ms, PDF 3582 ms (2439 KiB); RSS MiB before 239, preview 239, peak 305, after 268
+  route: 25 stops, not optimized  3601 frames, p95   8.81 ms,    0 tiles, detailed in 6 ms, RSS 270 MiB
+    route: 25 stops, 72808.0 km, 48465 min, 242460 points, 749 steps; shown after 23292 ms (trip 9290.5 ms, directions 13938.4 ms)
+  print: 749-step directions at 360 dpi  3730 frames, p95  10.78 ms,    0 tiles, detailed in 7 ms, RSS 315 MiB
+    print directions at 360 dpi: preview 1509 ms, PDF 24792 ms (20634 KiB); RSS MiB before 270, preview 276, peak 352, after 315
+report written to results/5.13/ny7490-linux-print.json
+exit code 0

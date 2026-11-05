@@ -1,0 +1,73 @@
+omp-app 0.1.0: bench bench\north-america.toml on maps\north-america.omp.000
+adapter: Intel(R) HD Graphics 4000 (Gl)
+north-america: 14839 frames, interval p50 8.66 / p95 15.55 / max 96.6 ms, cpu p95 1.32 ms, labels p95 0.83 ms
+start-up 693 ms; tiles 1409 loaded + 34 absent, 0 errors; latency p50 45.33 / p95 166.98 ms, read p95 7.11 ms, decode p95 1.94 ms, prepare p95 30.20 ms
+37.0 MiB read; RSS peak 5357 MiB; GPU allocator - MiB; tile slabs peak 104 MiB; cache peak 96.0 MiB of 96; idle CPU 3.12% (20 frames)
+idle wake: 21 × C:\Users\runneradmin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.37.0\src\text_selection\visuals.rs:313 
+idle wake: 21 × crates\app\src\app\bench.rs:183 
+search: opened in 1099 ms, first keystroke 75.2 ms; 160 keystrokes, latency p50 105.4 / p95 449.8 / max 1293.0 ms; readers hold 40.7 MiB, 583.8 MiB read
+route: 2 stops, 5320.0 km, 3536 min, 17638 points, 38 steps; shown after 5424 ms (trip 3850.5 ms, directions 913.8 ms)
+what's here: 5 asked, latency p50 128.0 / p95 185.8 / max 185.8 ms
+  continent z3                   120 frames, p95  15.81 ms,   12 tiles, detailed in 282 ms, RSS 177 MiB
+  zoom to z5                     308 frames, p95  11.92 ms,   56 tiles, RSS 305 MiB
+  Manhattan z12                    6 frames, p95  38.94 ms,   14 tiles, detailed in 67 ms, RSS 309 MiB
+  zoom to z15                    227 frames, p95  17.44 ms,   67 tiles, RSS 409 MiB
+  pan to Lower Manhattan         389 frames, p95  11.55 ms,    8 tiles, RSS 538 MiB
+  zoom to z17                    225 frames, p95  10.64 ms,    0 tiles, RSS 609 MiB
+  zoom out to z9                 309 frames, p95  22.46 ms,  121 tiles, RSS 800 MiB
+  Chicago z13                      4 frames, p95  29.42 ms,   19 tiles, detailed in 34 ms, RSS 805 MiB
+  pan to O'Hare                  370 frames, p95  17.02 ms,   50 tiles, RSS 937 MiB
+  Montreal z11                     7 frames, p95  21.39 ms,   13 tiles, detailed in 71 ms, RSS 946 MiB
+  zoom to z14                    187 frames, p95  21.83 ms,  102 tiles, RSS 1021 MiB
+  Toronto z10                      7 frames, p95  34.10 ms,   14 tiles, detailed in 81 ms, RSS 1050 MiB
+  Toronto to Ottawa z10          456 frames, p95  16.35 ms,   98 tiles, RSS 1237 MiB
+  Banff z9                         6 frames, p95  26.40 ms,    8 tiles, detailed in 55 ms, RSS 1243 MiB
+  zoom to z12                    231 frames, p95  19.88 ms,   99 tiles, RSS 1324 MiB
+  Vancouver z14                    5 frames, p95  18.55 ms,   22 tiles, detailed in 44 ms, RSS 1326 MiB
+  Mexico City z12                  6 frames, p95  36.25 ms,   10 tiles, detailed in 52 ms, RSS 1334 MiB
+  zoom out to z4                 435 frames, p95  21.99 ms,  252 tiles, RSS 1542 MiB
+  San Francisco z5                 4 frames, p95  12.35 ms,   11 tiles, detailed in 22 ms, RSS 1548 MiB
+  pan east at z5                 775 frames, p95  13.12 ms,   14 tiles, RSS 1823 MiB
+  Arctic z4                        6 frames, p95  16.05 ms,   11 tiles, detailed in 52 ms, RSS 1829 MiB
+  zoom to z6                     341 frames, p95  10.57 ms,   74 tiles, RSS 1947 MiB
+  Anchorage z11                    7 frames, p95  22.32 ms,   17 tiles, detailed in 61 ms, RSS 1952 MiB
+  here: Empire State Building     96 frames, p95   8.19 ms,   22 tiles, detailed in 34 ms, RSS 1989 MiB
+    what's here: 185.8 ms (whats_here 179.3 ms) → 10 West 33rd Street, New York, NY 10001; street West 33rd Street, New York; nearby Empire State Building / Sushi teria / NY Skyride; in Manhattan, New York County, New York, United States
+  here: Times Square              64 frames, p95   8.69 ms,    0 tiles, detailed in 8 ms, RSS 2003 MiB
+    what's here: 8.7 ms (whats_here 4.0 ms) → 1515 Broadway, New York, NY 10019; street 7th Avenue, New York; nearby Theater District / Manhattan; in Manhattan, New York County, New York, United States
+  here: Vieux-Québec              89 frames, p95   8.40 ms,   13 tiles, detailed in 23 ms, RSS 2034 MiB
+    what's here: 139.1 ms (whats_here 135.0 ms) → 2 Rue des Jardins, Québec, QC G1R 4L4; street Rue des Jardins, Québec; nearby Jardins de l'hôtel de ville; in Québec, Agglomération de Québec, Québec, Canada
+  here: Plateau, Montréal         77 frames, p95   8.61 ms,   15 tiles, detailed in 32 ms, RSS 2056 MiB
+    what's here: 82.8 ms (whats_here 75.7 ms) → 4311 Rue Saint-Denis, Montréal, QC H2J 2K9; street Rue Saint-Denis, Montréal; nearby Restaurant Azalea; in Montréal, Agglomération de Montréal, Québec, Canada
+  here: Statehouse, Columbus      81 frames, p95   8.97 ms,   13 tiles, detailed in 28 ms, RSS 2079 MiB
+    what's here: 128.0 ms (whats_here 121.3 ms) → 1 Capitol Square, Columbus, OH 43215; street East State Street, Columbus; nearby ; in Columbus, Franklin County, Ohio, United States
+  search: address               2044 frames, p95   9.05 ms,   20 tiles, detailed in 8 ms, RSS 2578 MiB
+    "1100 E 9th St, Cleveland, OH": 28 keystrokes, p95 714.1 / max 1293.0 ms (find p95 705.9), levels at 1293 / 2240 / 5934 / 8562 ms, expected at 1293 ms (level 0), Enter 11.5 ms → 1100 East 9th Street, Cleveland, Ohio
+  search: address, town cut short  2529 frames, p95   8.05 ms,   10 tiles, detailed in 7 ms, RSS 3324 MiB
+    "8723 River Road, Amar": 21 keystrokes, p95 521.5 / max 1020.0 ms (find p95 513.7), levels at 1020 / 1216 / 4574 ms, expected at 1020 ms (level 0), Enter 2694.1 ms → 8723 River Road, Amarillo, Texas (timed out)
+  search: city and state         695 frames, p95  10.51 ms,   21 tiles, detailed in 8 ms, RSS 3507 MiB
+    "Springfield, IL": 15 keystrokes, p95 98.1 / max 225.5 ms (find p95 91.1), levels at 226 / 449 / 784 / 2576 ms, Enter 45.5 ms → Springfield, Illinois
+  search: brand and town         568 frames, p95  11.23 ms,   13 tiles, detailed in 11 ms, RSS 3671 MiB
+    "Tim Hortons Kingston": 20 keystrokes, p95 286.9 / max 304.5 ms (find p95 277.6), levels at 127 / 713 / 1573 / 1634 ms, Enter 10.5 ms → McDonald's, Kingston, Ontario
+  search: French                 804 frames, p95   8.84 ms,   21 tiles, detailed in 7 ms, RSS 3931 MiB
+    "Rue Sainte-Catherine, Montréal": 30 keystrokes, p95 358.3 / max 449.8 ms (find p95 352.5), levels at 8 / 506 / 614 / 722 ms, Enter 31.5 ms → Rue Sainte-Catherine Ouest, Montréal, Québec
+  search: feature                231 frames, p95  15.62 ms,   25 tiles, detailed in 15 ms, RSS 4024 MiB
+    "Lac Saint-Jean": 14 keystrokes, p95 150.4 / max 180.2 ms (find p95 140.5), levels at 75 / 287 / 363 / 392 ms, Enter 17.1 ms → Lac Saint-Jean, Québec
+  search: postcode               189 frames, p95   9.49 ms,   26 tiles, detailed in 9 ms, RSS 4088 MiB
+    "45201": 5 keystrokes, p95 141.6 / max 141.6 ms (find p95 135.6), levels at 142 / 306 / 330 / 337 ms, Enter 48.6 ms → 05201, Bennington, Vermont
+  search: shared name            829 frames, p95  10.19 ms,   30 tiles, detailed in 10 ms, RSS 4423 MiB
+    "London ON": 9 keystrokes, p95 195.1 / max 195.1 ms (find p95 186.7), levels at 195 / 713 / 1690 / 5267 ms, Enter 52.8 ms → London, Ontario
+  search: street                 665 frames, p95  13.14 ms,   15 tiles, detailed in 11 ms, RSS 4685 MiB
+    "Broadway, New York": 18 keystrokes, p95 397.7 / max 423.5 ms (find p95 386.1), levels at 398 / 672 / 1931 / 3048 ms, Enter 73.3 ms → Broadway, New York, New York
+  route: short, Columbus          73 frames, p95  17.24 ms,   22 tiles, detailed in 65 ms, RSS 4720 MiB
+    route: 2 stops, 21.6 km, 25 min, 359 points, 9 steps; shown after 122 ms (trip 104.5 ms, directions 13.4 ms)
+  route: short, Montreal          72 frames, p95  22.08 ms,   30 tiles, detailed in 109 ms, RSS 4770 MiB
+    route: 2 stops, 24.1 km, 26 min, 269 points, 12 steps; shown after 168 ms (trip 120.0 ms, directions 44.0 ms)
+  route: Cincinnati-Cleveland    118 frames, p95  23.77 ms,   30 tiles, detailed in 237 ms, RSS 4857 MiB
+    route: 2 stops, 405.1 km, 292 min, 1637 points, 17 steps; shown after 606 ms (trip 507.4 ms, directions 94.3 ms)
+  route: Halifax-Los Angeles     717 frames, p95  11.06 ms,    0 tiles, detailed in 14 ms, RSS 5125 MiB
+    route: 2 stops, 5829.3 km, 3934 min, 19953 points, 52 steps; shown after 5167 ms (trip 3411.8 ms, directions 1746.2 ms)
+  route: 10 stops, Northeast     467 frames, p95  13.85 ms,   25 tiles, detailed in 105 ms, RSS 5357 MiB
+    route: 10 stops, 1841.7 km, 1450 min, 11371 points, 160 steps; shown after 3951 ms (trip 2486.3 ms, directions 1455.7 ms)
+report written to results\5.13\DESKTOP-VR4NNBH-windows-cold.json
+exit code 0

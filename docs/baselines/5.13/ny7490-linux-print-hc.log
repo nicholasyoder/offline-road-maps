@@ -1,0 +1,32 @@
+omp-app 0.1.0: bench bench/print-hc.toml on maps/north-america.omp.000
+adapter: Intel(R) UHD Graphics 620 (KBL GT2) (Vulkan)
+bench: print page opened
+bench: preview done in 384 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 1208 ms: Ok(())
+bench: print page opened
+bench: preview done in 362 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 1010 ms: Ok(())
+bench: print page opened
+bench: preview done in 490 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 2440 ms: Ok(())
+print-hc: 4885 frames, interval p50 6.10 / p95 7.09 / max 60.0 ms, cpu p95 1.11 ms, labels p95 0.00 ms
+start-up 230 ms; tiles 60 loaded + 0 absent, 0 errors; latency p50 26.06 / p95 38.57 ms, read p95 0.82 ms, decode p95 2.50 ms, prepare p95 23.09 ms
+1.1 MiB read; RSS peak 307 MiB; GPU allocator 92 of 128 MiB; tile slabs peak 16 MiB; cache peak 3.2 MiB of 96; idle CPU 5.60% (152 frames)
+idle wake: 96 × /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/tooltip.rs:424 
+idle wake: 4 × /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/containers/tooltip.rs:436 
+idle wake: 95 × /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:579 
+idle wake: 153 × crates/app/src/app/bench.rs:183 
+  route: coast to coast          701 frames, p95   6.70 ms,   20 tiles, detailed in 56 ms, RSS 205 MiB
+    route: 5 stops, 4808.6 km, 3292 min, 18115 points, 90 steps; shown after 1076 ms (trip 380.8 ms, directions 690.7 ms)
+  print: map at 300 dpi, default style  1244 frames, p95   6.96 ms,    0 tiles, detailed in 5 ms, RSS 229 MiB
+    print map at 300 dpi: preview 384 ms, PDF 1208 ms (2114 KiB); RSS MiB before 205, preview 221, peak 253, after 229
+  print: map at 300 dpi, high contrast  1206 frames, p95   7.29 ms,   20 tiles, detailed in 34 ms, RSS 259 MiB
+    print map at 300 dpi: preview 362 ms, PDF 1010 ms (1574 KiB); RSS MiB before 229, preview 229, peak 259, after 259
+  print: directions at 300 dpi, high contrast  1406 frames, p95   7.14 ms,    0 tiles, detailed in 5 ms, RSS 278 MiB
+    print directions at 300 dpi: preview 490 ms, PDF 2440 ms (1889 KiB); RSS MiB before 259, preview 259, peak 302, after 278
+  back to the default style      328 frames, p95   7.01 ms,   20 tiles, detailed in 34 ms, RSS 278 MiB
+report written to results/5.13/ny7490-linux-print-hc.json
+exit code 0

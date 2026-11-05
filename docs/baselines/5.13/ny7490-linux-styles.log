@@ -1,0 +1,16 @@
+omp-app 0.1.0: bench bench/styles.toml on maps/north-america.omp.000
+adapter: Intel(R) UHD Graphics 620 (KBL GT2) (Vulkan)
+styles: 1225 frames, interval p50 6.61 / p95 10.18 / max 105.0 ms, cpu p95 1.87 ms, labels p95 1.16 ms
+start-up 287 ms; tiles 164 loaded + 0 absent, 0 errors; latency p50 28.67 / p95 60.62 ms, read p95 4.77 ms, decode p95 3.68 ms, prepare p95 31.38 ms
+8.0 MiB read; RSS peak 164 MiB; GPU allocator 52 of 128 MiB; tile slabs peak 16 MiB; cache peak 7.9 MiB of 96; idle CPU 0.00% (0 frames)
+idle wake: 1 × crates/app/src/app/bench.rs:183 
+  North America z4               181 frames, p95   7.03 ms,   20 tiles, detailed in 102 ms, RSS 154 MiB
+  to night                       174 frames, p95   7.62 ms,   20 tiles, detailed in 32 ms, RSS 157 MiB
+  to high contrast               166 frames, p95   8.11 ms,   20 tiles, detailed in 40 ms, RSS 157 MiB
+  back to default                174 frames, p95   8.13 ms,   20 tiles, detailed in 40 ms, RSS 158 MiB
+  Columbus z11                   124 frames, p95  11.92 ms,   20 tiles, detailed in 39 ms, RSS 159 MiB
+  Columbus z11 to night          126 frames, p95  11.50 ms,   20 tiles, detailed in 44 ms, RSS 160 MiB
+  Columbus z14 to default        142 frames, p95   9.43 ms,   22 tiles, detailed in 35 ms, RSS 164 MiB
+  Columbus z14 to night          138 frames, p95   9.81 ms,   22 tiles, detailed in 20 ms, RSS 164 MiB
+report written to results/5.13/ny7490-linux-styles.json
+exit code 0

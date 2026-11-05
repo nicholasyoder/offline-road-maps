@@ -1,0 +1,34 @@
+omp-app 0.1.0: bench bench/north-america-p4.toml on maps/north-america.omp.000
+adapter: Intel(R) UHD Graphics 620 (KBL GT2) (Vulkan)
+bench: print page opened
+bench: preview done in 403 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 1284 ms: Ok(())
+bench: print page opened
+bench: preview done in 373 ms: Ok(())
+bench: saving the PDF at 360 dpi
+bench: PDF done in 1685 ms: Ok(())
+bench: print page opened
+bench: preview done in 485 ms: Ok(())
+bench: saving the PDF at 360 dpi
+bench: PDF done in 3849 ms: Ok(())
+north-america-p4: 12508 frames, interval p50 7.17 / p95 9.13 / max 101.2 ms, cpu p95 2.77 ms, labels p95 0.00 ms
+start-up 278 ms; tiles 40 loaded + 0 absent, 0 errors; latency p50 39.34 / p95 174.14 ms, read p95 0.34 ms, decode p95 6.10 ms, prepare p95 78.06 ms
+2.1 MiB read; RSS peak 344 MiB; GPU allocator 110 of 196 MiB; tile slabs peak 32 MiB; cache peak 21.3 MiB of 96; idle CPU 0.00% (0 frames)
+idle wake: 1 × crates/app/src/app/bench.rs:183 
+  continent z4                   181 frames, p95   9.53 ms,   20 tiles, detailed in 98 ms, RSS 154 MiB
+  route: coast to coast, 5 stops, schedule  1822 frames, p95   8.36 ms,    0 tiles, detailed in 6 ms, RSS 239 MiB
+    route: 5 stops, 4808.6 km, 3292 min, 18115 points, 90 steps; shown after 3411 ms (trip 2290.1 ms, directions 1110.1 ms); 6 alternatives shown after 7025 ms
+  print: map at 300 dpi          845 frames, p95   8.17 ms,    0 tiles, detailed in 6 ms, RSS 267 MiB
+    print map at 300 dpi: preview 403 ms, PDF 1284 ms (2138 KiB); RSS MiB before 239, preview 258, peak 291, after 267
+  print: map at 360 dpi          856 frames, p95   8.49 ms,    0 tiles, detailed in 7 ms, RSS 273 MiB
+    print map at 360 dpi: preview 373 ms, PDF 1685 ms (2628 KiB); RSS MiB before 267, preview 270, peak 308, after 273
+  print: directions at 360 dpi  1171 frames, p95   8.45 ms,    0 tiles, detailed in 7 ms, RSS 315 MiB
+    print directions at 360 dpi: preview 485 ms, PDF 3849 ms (3255 KiB); RSS MiB before 273, preview 274, peak 342, after 315
+  route: short, Cincinnati-Cleveland   294 frames, p95  10.39 ms,   20 tiles, detailed in 134 ms, RSS 316 MiB
+    route: 2 stops, 405.1 km, 292 min, 1637 points, 17 steps; shown after 217 ms (trip 135.2 ms, directions 78.6 ms); 2 alternatives shown after 1072 ms
+  route: 25 stops, optimized    7339 frames, p95   9.26 ms,    0 tiles, detailed in 9 ms, RSS 322 MiB
+    route: 25 stops, 72808.0 km, 48465 min, 242460 points, 749 steps; shown after 40526 ms (trip 23944.0 ms, directions 16526.3 ms)
+    optimized: 16933.5 km, 11684 min; shown after 12890 ms (order 320.0 ms)
+report written to results/5.13/ny7490-linux-p4.json
+exit code 0

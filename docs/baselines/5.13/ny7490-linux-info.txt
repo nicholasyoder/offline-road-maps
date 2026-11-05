@@ -1,0 +1,9 @@
+Linux ny7490 6.12.113+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+
+CPU(s):                                  8
+Model name:                              Intel(R) Core(TM) i7-8650U CPU @ 1.90GHz
+CPU(s) scaling MHz:                      17%
+
+MemTotal:       16120496 kB
+
+00:02.0 VGA compatible controller: Intel Corporation UHD Graphics 620 (rev 07)

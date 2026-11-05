@@ -1,0 +1,29 @@
+omp-app 0.1.0: bench bench\print-hc.toml on maps\north-america.omp.000
+adapter: Intel(R) UHD Graphics 620 (Dx12)
+bench: print page opened
+bench: preview done in 403 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 694 ms: Ok(())
+bench: print page opened
+bench: preview done in 350 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 570 ms: Ok(())
+bench: print page opened
+bench: preview done in 452 ms: Ok(())
+bench: saving the PDF at 300 dpi
+bench: PDF done in 1639 ms: Ok(())
+print-hc: 4685 frames, interval p50 4.58 / p95 9.92 / max 107.4 ms, cpu p95 1.45 ms, labels p95 0.00 ms
+start-up 866 ms; tiles 60 loaded + 0 absent, 0 errors; latency p50 18.22 / p95 36.41 ms, read p95 0.32 ms, decode p95 1.84 ms, prepare p95 17.85 ms
+1.1 MiB read; RSS peak 503 MiB; GPU allocator 60 of 132 MiB; tile slabs peak 16 MiB; cache peak 3.2 MiB of 96; idle CPU 0.00% (0 frames)
+idle wake: 1 × crates\app\src\app\bench.rs:183 
+  route: coast to coast          682 frames, p95   9.97 ms,   20 tiles, detailed in 106 ms, RSS 299 MiB
+    route: 5 stops, 4808.6 km, 3292 min, 18115 points, 90 steps; shown after 1127 ms (trip 489.7 ms, directions 629.6 ms)
+  print: map at 300 dpi, default style  1199 frames, p95   9.33 ms,    0 tiles, detailed in 7 ms, RSS 322 MiB
+    print map at 300 dpi: preview 403 ms, PDF 694 ms (2023 KiB); RSS MiB before 299, preview 342, peak 503, after 468
+  print: map at 300 dpi, high contrast  1142 frames, p95  10.04 ms,   20 tiles, detailed in 18 ms, RSS 390 MiB
+    print map at 300 dpi: preview 350 ms, PDF 570 ms (1482 KiB); RSS MiB before 325, preview 338, peak 499, after 465
+  print: directions at 300 dpi, high contrast  1309 frames, p95  10.32 ms,    0 tiles, detailed in 4 ms, RSS 391 MiB
+    print directions at 300 dpi: preview 452 ms, PDF 1639 ms (1761 KiB); RSS MiB before 390, preview 405, peak 474, after 433
+  back to the default style      353 frames, p95   9.14 ms,   20 tiles, detailed in 21 ms, RSS 394 MiB
+report written to results\5.13\DESKTOP-8SPCB1S-windows-print-hc.json
+exit code 0

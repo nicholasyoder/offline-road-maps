@@ -1,0 +1,16 @@
+omp-app 0.1.0: bench bench\styles.toml on maps\north-america.omp.000
+adapter: Intel(R) HD Graphics 4000 (Gl)
+styles: 704 frames, interval p50 10.49 / p95 16.18 / max 129.4 ms, cpu p95 0.75 ms, labels p95 0.46 ms
+start-up 424 ms; tiles 174 loaded + 0 absent, 0 errors; latency p50 40.04 / p95 107.99 ms, read p95 1.75 ms, decode p95 1.26 ms, prepare p95 23.19 ms
+5.6 MiB read; RSS peak 301 MiB; GPU allocator - MiB; tile slabs peak 16 MiB; cache peak 8.1 MiB of 96; idle CPU 0.00% (0 frames)
+idle wake: 1 × crates\app\src\app\bench.rs:183 
+  North America z4                94 frames, p95  15.17 ms,   20 tiles, detailed in 125 ms, RSS 168 MiB
+  to night                       106 frames, p95  10.78 ms,   20 tiles, detailed in 76 ms, RSS 190 MiB
+  to high contrast               106 frames, p95  10.67 ms,   20 tiles, detailed in 75 ms, RSS 212 MiB
+  back to default                106 frames, p95  10.72 ms,   20 tiles, detailed in 70 ms, RSS 233 MiB
+  Columbus z11                    69 frames, p95  16.23 ms,   25 tiles, detailed in 94 ms, RSS 252 MiB
+  Columbus z11 to night           67 frames, p95  16.54 ms,   25 tiles, detailed in 93 ms, RSS 270 MiB
+  Columbus z14 to default         78 frames, p95  14.39 ms,   22 tiles, detailed in 84 ms, RSS 287 MiB
+  Columbus z14 to night           78 frames, p95  14.33 ms,   22 tiles, detailed in 61 ms, RSS 301 MiB
+report written to results\5.13\DESKTOP-VR4NNBH-windows-styles.json
+exit code 0
