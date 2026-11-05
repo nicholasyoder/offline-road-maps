@@ -1,6 +1,7 @@
 #!/bin/sh
 # Renders the reference screenshots (phase1-plan.md 1.5 to 1.8, phase3-plan.md 3.6) from the
-# North America pack, with the built-in style.
+# North America pack, with the built-in style. The PNGs are not kept in the repo (removed in
+# phase 6; the last set is in commit 57d56dd).
 #
 #   docs/screenshots/render.sh [pack dir]
 #

@@ -30,7 +30,7 @@ Starting point (checked 2026-11-04):
 
 | Step | State | Notes |
 |---|---|---|
-| 6.1 Clean-up inventory | Not started | |
+| 6.1 Clean-up inventory | **Done** 2026-11-04 | Tracked items done 2026-11-04 ; owner deleted the untracked leftovers in `target/`, `data/`, `tools/gl-probe/target` |
 | 6.2 Binary name | Not started | |
 | 6.3 Release layout and launchers | Not started | |
 | 6.4 Release build and packaging script | Not started | |
@@ -42,7 +42,7 @@ Order: 6.1 first (so docs are written against the tree that will ship), then 6.2
 
 ## 6.1 Clean-up inventory
 
-**Rule: list first, delete only what the owner marks.** The step produces a table (item, size, what uses it, verdict) in this file; the deletions come after. Everything tracked in git stays recoverable from history, so removing it from the tree loses nothing.
+**Rule (changed 2026-11-04): delete what is in git, list the rest.** Files tracked in the repo are removed at once, since history keeps them (`git show <commit>:<path>`). Everything else (untracked or ignored files in the repo directory, `target/`, `$OMP_WORK`) is listed, whole directories as one line, and deleted only after the owner approves. The verdicts for the second kind are in the tables below.
 
 *In the repo (tracked)*
 - **`docs/screenshots/`** (29 files, 15 MB, plus `1.5c/` with 8). Found so far: nothing in the code reads them; `render.sh` regenerates the set from the North America pack, and `snapshot.rs` only mentions it in a comment. Plans link to a few by name (phase 1 step 1.5c, 1.6; phase 3 step 3.6; phase 4). They are reference shots for style tuning during phases 1–3, not regression tests (nothing compares them). **Proposal:** delete the PNGs (they stay in history), keep `render.sh` as the way to regenerate, and turn plan links to them into plain text ("removed in phase 6; `git show <commit>:docs/screenshots/…`"). Then make a small new set of 4–6 hero shots from the final build for the README (map, search, route with directions, night style, print preview), each under about 300 KB.
@@ -56,6 +56,8 @@ Order: 6.1 first (so docs are written against the tree that will ship), then 6.2
 - **`target/`: 29 GB.** `debug` 19 GB, `profiling` 3.4 GB, `wt` 0.8 GB (a worktree build), `omp-builder-base` and the cross-compile dir `x86_64-pc-windows-msvc` (0.5 GB). Safe to remove and rebuild; `release/` also holds the owner's real `config.toml`, `trips/` and `pins/`, so **never `rm -r target/release`**; remove only named build subdirectories, with the owner's say.
 - **`data/tmp/ohio-build.v2`** (124 MB, ignored), **`notes`** (ignored; empty-looking): check and drop or keep.
 - **`$OMP_WORK` (about 250 GB):** `inputs` 37 GB (the downloads; keep, they cost time to fetch), `packs` 48 GB (keep `north-america` and the small test regions; the numbered variants `1.5`, `1.5b`, `v2`, `north-america-0.3` and `-0.6-old` are 36 GB of experiments), `refactor` 33 GB, `measure` 86 GB (reports and logs of every phase; the reports worth keeping are the ones the plans quote), `osrm` 9.8 GB, `graph` 5 GB, `data` 8.3 GB, `audit-d` and `audit-e` (0.9 GB), `tmp` 0.4 GB. **Proposal:** keep `inputs`, the final packs, and a trimmed `measure/` (reports and logs only, not the pack copies and tiles inside); delete the rest on the owner's word. This frees roughly 150 GB.
+
+> **Tracked items, done 2026-11-04.** Deleted from the tree: `docs/screenshots/*.png` and `1.5c/` (kept `render.sh`; plan links turned into plain text pointing at 57d56dd), `tools/gl-probe/` and `.github/workflows/probe.yml`. Kept: `tools/osrm/`, the plans, 8 of the 12 bench flights, listed in the new `crates/app/bench/README.md` (deleted the done or superseded `na-alternatives`, `na-schedule`, `na-print`, `ohio-route`; `quick.toml` kept as a smoke test). Left open: the README's 4–6 hero shots (6.5, from the final build) and the `OMP_*` list (BUILDING.md, 6.5).
 
 **Done when:** the inventory table is in this section with a verdict for each item; the approved deletions are done; `grep -r screenshots docs README.md crates` finds no dead link; CI is still green.
 
@@ -167,8 +169,8 @@ Checked 2026-11-04. The queries and route sets behind the plans' accuracy number
 | `refactor/`, `audit-d/`, `audit-e/` | 34 GB | Delete: before/after pack copies; the plans keep the findings |
 | `osrm/`, `graph/` | 15 GB | Delete: derived (OSRM's processed graphs, the routing graph); `tools/osrm/` regenerates the OSRM side |
 | `data/`, `tmp/` | 8.7 GB | Delete: temporaries |
-| `measure/` | 86 GB | Trim: delete every file over 20 MB and every non-text file (pack copies, tiles, PNGs), keeping logs, JSON, TSV and CSV (about 150 MB) |
-| `whitelists/` | 8 MB | Keep (tiny) |
+| `measure/` | 86 GB | Delete: the plans quote the numbers they need, final runs are in `docs/baselines/`; the plans' `$OMP_WORK/measure/` mentions are historical pointers |
+| `whitelists/` | 8 MB | Delete: variants for finished size experiments; the real one is `crates/core/data/whitelist.toml` |
 | **Copied into the repo** | 0.3 MB | `docs/baselines/5.13/` (every machine's final flight logs and machine info) and `docs/baselines/na-build/` (North America build stages, memory and the pack's checksums): the reference for any later regression |
 
 Roughly 155 GB is freed. Also found: `target/release-builder/omp-builder` is older than the final pack (it reads format 0.6, the pack is 0.7), so rebuild before using it.
