@@ -70,7 +70,7 @@ Order: 6.1 first (so docs are written against the tree that will ship), then 6.2
 - The window's Wayland `app_id` and X11 class: set to the product name so desktops group the window correctly.
 - **Icon (decided):** one icon used in three places: the `.exe`'s resource (Explorer, taskbar), the window's icon on Windows and Linux (`ViewportBuilder::with_icon`, which sets the title bar, taskbar and Alt-Tab entry on X11 and Wayland through `app_id`), and the README. A generic map icon, drawn as SVG and rendered to PNG at 16–256 px and to `.ico`; the owner picks from a few options first (6.2 starts with those). Compiled in as one 256 px PNG (about 10 KB).
 - **Windows:** an icon and version info on the `.exe` (name, version, description) so Explorer shows the product name, not a bare file. Done with a build script (`winresource`) as a build-dependency only, which the network-crate CI check (normal dependencies) does not see. Needs an icon; a simple one drawn once as SVG and rendered to `.ico`/`.png`. Optional; skip if it costs more than an hour or a new toolchain requirement on CI.
-- The Linux binary gets no icon (a bare ELF has none); a `.desktop` file is out of scope for a stick that is never installed.
+- The Linux binary gets no icon (a bare ELF has none). An optional example `.desktop` file is shipped instead (6.3). Correction: `with_icon` sets the title bar and Alt-Tab icon on X11 and Windows only; Wayland ignores it and uses the `.desktop` file's `Icon`.
 - **Builder (decision 1):** `omp-builder` is a developer tool, not on the stick, and appears only in BUILDING.md. Recommend keeping its name; renaming it the same way is the same small change if the owner prefers.
 - The owner's dev `target/release` holds the real `config.toml`, `trips/` and `pins/` next to `omp-app`; the renamed binary lands in the same folder and sees them. Delete the old `omp-app` file there only after the owner has switched.
 - Config and data paths: `config.rs` `APP_DIR = "offline-road-maps"` (the per-user fallback folder) is an internal name; unchanged unless the owner wants the product spelling there too (it would orphan existing fallback configs, which are not used when the config sits next to the exe).
@@ -91,6 +91,7 @@ The constraint from the code: the executable's folder holds `maps/`, `config.tom
     OfflineRoadMaps.sh        Linux launcher (run with `sh`)
     maps/                     the packs (north-america.omp.000 …)
     licenses/                 licence and third-party notices
+    linux/                    example OfflineRoadMaps.desktop (menu entry) and its icon PNG
     config.toml, trips/, pins/, styles/   created by the app on first use
   ```
 
@@ -98,6 +99,8 @@ The constraint from the code: the executable's folder holds `maps/`, `config.tom
 - **B: `app/<platform>/` holding binaries, data folder one level up.** Needs a small change: the app takes its data folder as the executable's folder, else its parent if it contains `maps/`, and the write test for `config.toml` changes with it. Tidier on the stick (one visible folder per platform), a risk of surprising users who copy a binary elsewhere, and a platform to test: macOS later fits it better. Not recommended for a first release.
 
 **Linux launcher.** `OfflineRoadMaps.sh`: finds its own folder; if the binary can be executed in place (exFAT or a disk mounted with exec), runs it; otherwise copies it to `${XDG_CACHE_HOME:-~/.cache}/OfflineRoadMaps/` and runs it from there **with `--data-dir <stick folder>`** (a new, small option so the config, trips, pins and `maps/` still come from the stick, not the cache). Run as `sh OfflineRoadMaps.sh`, which works on any mount. The data-dir option is the one code change in this phase; if it turns out larger than expected, fall back to symlinks created by the launcher.
+
+**Menu entry (decided 2026-11-04):** an example `OfflineRoadMaps.desktop` and `OfflineRoadMaps.png` in `linux/` ([`crates/app/data/linux/`](../crates/app/data/linux/)), so a Linux user can add the app to their menu by editing the path and copying one file; the README.txt says how. Not installed by anything. Its `Exec` runs the `sh` launcher, so it needs the launcher of this step. (On Wayland the window itself gets no icon from `with_icon`; the compositor takes it from a `.desktop` file, which this is.)
 
 **AppImage:** not recommended. It needs FUSE (absent on many current distributions), does not avoid the no-exec mount, and the binary is already one file with only system graphics libraries. A plain binary built on Ubuntu 22.04 (glibc 2.35) is what CI makes now.
 
@@ -110,7 +113,7 @@ The constraint from the code: the executable's folder holds `maps/`, `config.tom
 ## 6.4 Release build and packaging script
 
 - **CI:** a `release` workflow (manual, and on a `v*` tag) building Linux (Ubuntu 22.04) and Windows binaries, running the existing checks first, and attaching `OfflineRoadMaps`, `OfflineRoadMaps.exe` and `SHA256SUMS` to a GitHub release. The maps are far too large to attach and stay outside the release; the README says where they come from or how to build them.
-- **`tools/package.sh`** (and a PowerShell twin only if someone asks): takes the binaries and a `maps/` directory (or a pack directory) and writes the 6.3 layout to a target folder, including `README.txt`, `licenses/`, the launcher and a checksum list of the pack files, then runs the builder's `verify` on the packs so a bad copy is caught before the stick leaves the house.
+- **`tools/package.sh`** (and a PowerShell twin only if someone asks): takes the binaries and a `maps/` directory (or a pack directory) and writes the 6.3 layout to a target folder, including `README.txt`, `licenses/`, `linux/` (the example `.desktop` and icon from `crates/app/data/linux/`), the launcher and a checksum list of the pack files, then runs the builder's `verify` on the packs so a bad copy is caught before the stick leaves the house.
 - Version number: one place (`workspace.package.version`), shown in About and in `README.txt`. Bump 0.1.0 to **1.0.0** (decided), in the commit that passes 6.7, so the tag and the first stick match.
 
 **Done when:** a tag produces a release with both binaries and checksums, and `tools/package.sh` produces a layout that passes 6.3's check on the stick.

@@ -1,0 +1,18 @@
+[Desktop Entry]
+# Example menu entry for Offline Road Maps. To add it to your application menu:
+#   1. Replace /path/to/OfflineRoadMaps below (twice) with the folder that holds
+#      OfflineRoadMaps.sh (the stick or the folder you copied it to).
+#   2. Copy this file to ~/.local/share/applications/
+# Nothing else is needed; delete the file to remove the entry.
+# Wayland shows the Icon in the menu and the launcher, but not in the window's title
+# bar; X11 shows it there too.
+Type=Application
+Name=Offline Road Maps
+Comment=Offline road maps and routing for North America
+Exec=sh "/path/to/OfflineRoadMaps/OfflineRoadMaps.sh"
+Path=/path/to/OfflineRoadMaps
+Icon=/path/to/OfflineRoadMaps/linux/OfflineRoadMaps.png
+Terminal=false
+Categories=Utility;Maps;Geography;
+# Matches the window's app_id / X11 class, so the running window is grouped with this entry.
+StartupWMClass=OfflineRoadMaps
