@@ -42,14 +42,14 @@ jobs:
             echo "### Linux binary sizes"
             echo "| Binary | Bytes |"
             echo "|---|---|"
-            echo "| omp-app | $(stat -c %s target/release/omp-app) |"
+            echo "| OfflineRoadMaps | $(stat -c %s target/release/OfflineRoadMaps) |"
             echo "| omp-builder | $(stat -c %s target/release-builder/omp-builder) |"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64
           path: |
-            target/release/omp-app
+            target/release/OfflineRoadMaps
             target/release-builder/omp-builder
 
   build-windows:
@@ -63,18 +63,18 @@ jobs:
       - name: Binary sizes
         shell: pwsh
         run: |
-          $app = (Get-Item target/release/omp-app.exe).Length
+          $app = (Get-Item target/release/OfflineRoadMaps.exe).Length
           $builder = (Get-Item target/release-builder/omp-builder.exe).Length
           @(
             "### Windows binary sizes"
             "| Binary | Bytes |"
             "|---|---|"
-            "| omp-app.exe | $app |"
+            "| OfflineRoadMaps.exe | $app |"
             "| omp-builder.exe | $builder |"
           ) | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v7
         with:
           name: windows-x86_64
           path: |
-            target/release/omp-app.exe
+            target/release/OfflineRoadMaps.exe
             target/release-builder/omp-builder.exe

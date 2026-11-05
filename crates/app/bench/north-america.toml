@@ -1,6 +1,6 @@
 # Bench flight across North America: the exit-criteria flight of phase1-plan.md.
 # Jumps between cities, pans and zooms at every zoom from z3 to z17.
-# omp-app --bench crates/app/bench/north-america.toml --pack $OMP_WORK/packs/north-america
+# OfflineRoadMaps --bench crates/app/bench/north-america.toml --pack $OMP_WORK/packs/north-america
 #
 # Each step moves to lat/lon/zoom at once (seconds = 0, a jump, which then waits until the
 # view is fully detailed) or linearly over `seconds`. `hold` stays put afterwards.

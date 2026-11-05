@@ -3,7 +3,7 @@
 # high-contrast style (the print page follows the map's style, decision 8), and the
 # directions. The pages' times and memory are the same as print-rss.toml's; the style switch
 # is the second step's.
-# omp-app --bench crates/app/bench/print-hc.toml --pack $OMP_WORK/packs/north-america
+# OfflineRoadMaps --bench crates/app/bench/print-hc.toml --pack $OMP_WORK/packs/north-america
 name = "print-hc"
 window = [1280, 800]
 [[step]]

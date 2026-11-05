@@ -1,4 +1,4 @@
-//! `omp-app --render`: draws one view offscreen to a PNG, without a window. For reviewing
+//! `OfflineRoadMaps --render`: draws one view offscreen to a PNG, without a window. For reviewing
 //! renderer and style changes, and for `docs/screenshots/render.sh`'s reference views.
 //! With `--route`, it routes through the stops and draws the route as the app does (with
 //! its restricted parts and the lines to stops off the road), fitting the view to it unless

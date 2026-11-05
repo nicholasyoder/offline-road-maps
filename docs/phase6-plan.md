@@ -31,7 +31,7 @@ Starting point (checked 2026-11-04):
 | Step | State | Notes |
 |---|---|---|
 | 6.1 Clean-up inventory | **Done** 2026-11-04 | Tracked items done 2026-11-04 ; owner deleted the untracked leftovers in `target/`, `data/`, `tools/gl-probe/target` |
-| 6.2 Binary name | Not started | |
+| 6.2 Binary name | **Done** 2026-11-04 | Windows exe icon unchecked until CI builds it |
 | 6.3 Release layout and launchers | Not started | |
 | 6.4 Release build and packaging script | Not started | |
 | 6.5 Docs: BUILDING.md, README, README.txt | Not started | |
@@ -63,6 +63,8 @@ Order: 6.1 first (so docs are written against the tree that will ship), then 6.2
 
 ## 6.2 Binary name
 
+
+> **Done 2026-11-04** (commit below in git log). `[[bin]] name = "OfflineRoadMaps"`; USAGE, module docs, bench header, `render.sh`, bench flight comments, `ci.yml` (artifact paths, size table) and the README updated; `cargo run -p omp-app` still works. Window: `with_app_id("OfflineRoadMaps")` and `with_icon` from the compiled-in `crates/app/data/icon.png` (256 px, 12 KB; `icon.ico` with 16–256 px beside it, both rendered from `icon.svg` with inkscape/ImageMagick). Windows: `build.rs` with `winresource` (a Windows-only build-dependency) sets the icon and name; **not yet seen**: check the Explorer icon on the first CI Windows build. `cargo fmt`, clippy and tests pass; the Linux binary starts and `--help` shows the new name. Left open: the old `target/release/omp-app` is still next to the new binary for the owner to delete after switching; the old name remains only in history (plans, baselines logs) and the crate.
 - Add `[[bin]] name = "OfflineRoadMaps"` to the app crate (package, crate and `omp-` library names stay: the roadmap keeps `omp` in code). On Linux the file is `OfflineRoadMaps`; on Windows `OfflineRoadMaps.exe`.
 - Update everything that quotes the old path or name: the `USAGE` text and module doc in `main.rs`, the bench report header (`"omp-app {}: bench …"`), `render.sh`, `.github/workflows/ci.yml` (artifact paths and the size table), every `cargo run -p omp-app` / `target/release/omp-app` in README, plans' *future-facing* commands (not the history), and the bench files' header comments. `cargo run -p omp-app` keeps working (package name unchanged); `--bin` users need the new name.
 - The window's Wayland `app_id` and X11 class: set to the product name so desktops group the window correctly.

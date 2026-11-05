@@ -1,6 +1,6 @@
 # The Ohio flight (ohio.toml) with 10,000 pushpins spread over the pack (phase 4 step 4.7,
 # criterion 5): its frame times against ohio.toml's on the same pack are what the pins cost.
-# omp-app --bench crates/app/bench/ohio-pins.toml --pack $OMP_WORK/packs/ohio
+# OfflineRoadMaps --bench crates/app/bench/ohio-pins.toml --pack $OMP_WORK/packs/ohio
 #
 # Each step moves to lat/lon/zoom at once (seconds = 0, a jump, which then waits until the
 # view is fully detailed) or linearly over `seconds`. `hold` stays put afterwards.

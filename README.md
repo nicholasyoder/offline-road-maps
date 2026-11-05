@@ -4,7 +4,7 @@ An offline road map app for North America, in Rust. The `omp` prefix on crates, 
 
 - `omp-core`: the pack format, shared by the builder and the app
 - `omp-builder`: builds map packs from OSM and address data
-- `omp-app`: the map viewer
+- `omp-app`: the map viewer (the program is `OfflineRoadMaps`, `OfflineRoadMaps.exe` on Windows)
 
 Plans and progress are in [docs/roadmap.md](docs/roadmap.md) and the per-phase plans in [docs/](docs/).
 
@@ -41,7 +41,7 @@ cargo run --release -p omp-app -- --bench crates/app/bench/ohio.toml --pack $OMP
 
 `cargo run -p omp-app -- --help` lists every option.
 
-On Windows the release build opens no console window. Started from a terminal it writes to that terminal, but the terminal does not wait for it: run the bench and `--render` with `start /wait omp-app.exe …` (cmd) or `Start-Process -Wait -NoNewWindow .\omp-app.exe -ArgumentList '…'` (PowerShell). Debug builds keep their console.
+On Windows the release build opens no console window. Started from a terminal it writes to that terminal, but the terminal does not wait for it: run the bench and `--render` with `start /wait OfflineRoadMaps.exe …` (cmd) or `Start-Process -Wait -NoNewWindow .\OfflineRoadMaps.exe -ArgumentList '…'` (PowerShell). Debug builds keep their console.
 
 ## Building a pack
 

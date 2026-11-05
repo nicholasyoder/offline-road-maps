@@ -5,10 +5,10 @@
 #
 #   docs/screenshots/render.sh [pack dir]
 #
-# Default pack: $OMP_WORK/packs/north-america. Needs a release build of omp-app.
+# Default pack: $OMP_WORK/packs/north-america. Needs a release build of OfflineRoadMaps.
 set -eu
 cd "$(dirname "$0")"
-app=../../target/release/omp-app
+app=../../target/release/OfflineRoadMaps
 pack=${1:-${OMP_WORK:-/media/nicholas/Data/maps-testing}/packs/north-america}
 
 shot() { # name lat,lon zoom

@@ -1,5 +1,5 @@
 # Bench flight over Ohio: city jumps, street-level pans and zooms from z6 to z17.
-# omp-app --bench crates/app/bench/ohio.toml --pack $OMP_WORK/packs/ohio
+# OfflineRoadMaps --bench crates/app/bench/ohio.toml --pack $OMP_WORK/packs/ohio
 #
 # Each step moves to lat/lon/zoom at once (seconds = 0, a jump, which then waits until the
 # view is fully detailed) or linearly over `seconds`. `hold` stays put afterwards.

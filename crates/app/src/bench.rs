@@ -1,4 +1,4 @@
-//! `omp-app --bench <flight.toml>`: flies a fixed path and reports frame times, tile
+//! `OfflineRoadMaps --bench <flight.toml>`: flies a fixed path and reports frame times, tile
 //! latencies, memory and bytes read as JSON. This is how the phase 1 exit criteria are
 //! measured (phase1-plan.md).
 //!

@@ -5,7 +5,7 @@
 # before, during and after, then *Optimize stop order* on 25 stops in a poor order. Frame
 # times with none of this in use are north-america.toml's; the pins (10,000, criterion 5) are
 # ohio-pins.toml against ohio.toml.
-# omp-app --bench crates/app/bench/north-america-p4.toml --pack $OMP_WORK/packs/north-america
+# OfflineRoadMaps --bench crates/app/bench/north-america-p4.toml --pack $OMP_WORK/packs/north-america
 name = "north-america-p4"
 window = [1280, 800]
 depart = "2026-07-11T08:00"

@@ -1,9 +1,9 @@
 //! Offline Road Maps viewer.
 //!
 //! ```text
-//! omp-app [--pack <dir>] [--style <file>]
-//! omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
-//! omp-app --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
+//! OfflineRoadMaps [--pack <dir>] [--style <file>]
+//! OfflineRoadMaps --bench <flight.toml> [--pack <dir>] [--out <report.json>]
+//! OfflineRoadMaps --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
 //!         [--step <n>] [--alternatives] [--size <w>x<h>] [--scale <s>] [--msaa <n>] [--style <file>] <out.png>
 //! ```
 //!
@@ -60,11 +60,26 @@ use std::time::Instant;
 
 use eframe::egui;
 
-const USAGE: &str = "usage: omp-app [--pack <dir>] [--style <file>]
-       omp-app --bench <flight.toml> [--pack <dir>] [--out <report.json>]
-       omp-app --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
+/// The window's icon (title bar, taskbar, Alt-Tab): `data/icon.png`, 256 px, compiled in.
+fn window_icon() -> egui::IconData {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(include_bytes!("../data/icon.png")))
+        .read_info()
+        .expect("icon.png decodes");
+    let mut rgba = vec![0; reader.output_buffer_size().expect("icon.png size")];
+    let info = reader.next_frame(&mut rgba).expect("icon.png frame");
+    rgba.truncate(info.buffer_size());
+    egui::IconData {
+        rgba,
+        width: info.width,
+        height: info.height,
+    }
+}
+
+const USAGE: &str = "usage: OfflineRoadMaps [--pack <dir>] [--style <file>]
+       OfflineRoadMaps --bench <flight.toml> [--pack <dir>] [--out <report.json>]
+       OfflineRoadMaps --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
                [--step <n>] [--alternatives] [--size <w>x<h>] [--scale <s>] [--msaa <n>] [--style <file>] <out.png>
-       omp-app --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
+       OfflineRoadMaps --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
                --print <out.pdf> [--paper <p>] [--orientation <o>] [--text-size <t>] [--label <text>]
                [--directions] [--dpi <n>] [--units <u>]
 
@@ -244,7 +259,10 @@ fn main() -> ExitCode {
         multisampling: msaa as u16,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
-            .with_title("Offline Road Maps"),
+            .with_title("Offline Road Maps")
+            // Wayland app_id and X11 class, so desktops group the window under the product name.
+            .with_app_id("OfflineRoadMaps")
+            .with_icon(window_icon()),
         ..Default::default()
     };
     // Windows: DX12, else GL. Intel's Vulkan driver for UHD 620 crashed while wgpu listed
@@ -306,7 +324,7 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| PathBuf::from(format!("bench-{}.json", flight.name)));
             // A first line, so a log that stops here shows the app did start.
             eprintln!(
-                "omp-app {}: bench {} on {}",
+                "OfflineRoadMaps {}: bench {} on {}",
                 env!("CARGO_PKG_VERSION"),
                 path.display(),
                 chosen
