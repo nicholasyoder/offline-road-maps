@@ -64,6 +64,7 @@ install -m 644 "$root/crates/app/data/linux/OfflineRoadMaps.desktop" \
 sed "s/@VERSION@/$version/" "$root/tools/release/README.txt" > "$out/README.txt"
 install -m 644 "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$out/licenses/"
 install -m 644 "$root/crates/app/data/fonts/OFL.txt" "$out/licenses/NotoSans-OFL.txt"
+python3 -I "$root/tools/licenses.py" "$out/licenses/THIRD-PARTY.txt"
 
 # The packs, each copy compared with its source by checksum (a stick that dropped a write
 # shows up here, not in the car).

@@ -26,6 +26,12 @@ jobs:
           done | sed 's/ (\*)//' | sort -u |
             grep -E '^(hyper|reqwest|ureq|curl|curl-sys|isahc|attohttpc|surf|tokio|async-std|rustls|native-tls|openssl|h2|http|socket2|mio|tungstenite|url) v' || true)
           if [ -n "$found" ]; then echo "omp-app depends on network crates:"; echo "$found"; exit 1; fi
+      - name: Third-party licences
+        # Every library in the app must have a licence we can ship, and its notice must be found
+        # (tools/licenses.py, the file the release folder carries).
+        run: |
+          cargo fetch --locked
+          python3 -I tools/licenses.py "$RUNNER_TEMP/THIRD-PARTY.txt"
 
   build-linux:
     # 22.04 keeps the glibc requirement at 2.35.
