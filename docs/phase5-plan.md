@@ -54,7 +54,7 @@ What phase 4 left in place for this:
 | 5.10 Perf: memory | **Done** 2026-11-04 | glibc arenas capped at 2: North America flight 328 → 298 MiB on the dev machine (target 300 met); the other leads measured and left; DX12 and the E6430's GL leak: no setting helps. Found on the way: `panic = "unwind"` crashes the E6430 at start-up, so the app is back on `abort` (5.14) |
 | 5.11 Perf: printing | **Done** 2026-11-04 | Banded pages; print memory within +100 MiB at 300/360 dpi on Vulkan; GL cap lifted; DX12 measured and still high (driver) |
 | 5.12 Perf: builder and pack size | **Done** 2026-11-04 | Merge and streets stages faster, inputs checked against the manifest (R10); no map detail given up. Lossless size levers measured: compressing `RCHE` (−0.35 to −0.47 GB on North America), dictionaries for the blocked sections (−0.13 GB), bigger tile dictionaries (small); the first two are in as format 0.7 (2026-11-04, owner's go-ahead); the flights on a North America pack and the stick wait for its rebuild |
-| 5.13 Final checks on every machine | Not started | |
+| 5.13 Final checks on every machine | In progress | Laptops done 2026-11-04 (flights and hand checks); the dev machine's flights and the write-up of the misses for the owner remain |
 | 5.14 Why unwinding crashes the E6430 | **Done** 2026-11-04 | Not our code: a plain eframe window crashes the same way with `panic = "unwind"` on the E6430; no cause or fix found (wgpu GL fence wait times out); tolerating the error breaks the next resize. Release stays on `abort` (decision 12 amended) |
 
 ## Environment notes
@@ -402,6 +402,34 @@ As 4.11, for this phase:
 - the binary's size and `cargo tree`.
 
 > **Prepared 2026-11-04.** The final build is CI's of `cb9f322` (the commit that adds `print-hc.toml`; run 41919079897, `panic = "abort"`), on the stick as `omp-app` / `omp-app.exe`. The stick was cleaned: the 5.14 probe builds are gone (reproducible from the workflow runs), the probe scripts are in `archive/5.14/`, the stick's `ohio/` is still the old Ohio pack (129 MB, opens fine) so the Ohio flights stay comparable with 4.11's. Stick: `run-final.bat` (Windows: E6430, 7490) and `run-final.sh` (7490 Debian) run `north-america` cold and warm, `north-america-p4`, `styles`, `print-rss` (banded; 300, 360 and 600 dpi; on the E6430 the 600 dpi page), `print-hc` (a Letter page and the directions after switching to the high-contrast style; new, in `crates/app/bench/` with `print-rss.toml` and `quick.toml`, which had only been on the stick), `ohio` and `ohio-pins`, into `results/5.13/<machine>-<system>-<flight>.json/.log`. On the dev machine the same flights run from `$OMP_WORK/packs/` (the 0.7 pack, now at `packs/north-america`; the old one is `packs/north-america-0.6-old`). The hand checks are in the stick's `README.txt`.
+
+> **Laptops run 2026-11-04** (the owner; reports in `results/5.13/` on the stick, copied to `$OMP_WORK/measure/bench/5.13/`; build `cb9f322`, `panic = "abort"`). All eight flights ran to exit code 0 on all three machines, nothing failed, and the 600 dpi page prints on the E6430 (PDF 4.1 s; 4.11 had it capped at 360 dpi). The hand checks (`README.txt` a–h) all looked good, the Windows ones included, which closes the Windows check that 5.7 waived and 4.11's open hand checks. One thing seen, not debugged (the owner's call): on the E6430 a tearing artefact shows across the UI and map some of the time, and goes away with anti-aliasing (MSAA) off. It fits 5.14's finding that the E6430's GL path is fragile; no cause looked for.
+>
+> | | 7490 Debian (Vulkan) | 7490 Windows 11 (DX12) | E6430 Windows 10 (GL) |
+> |---|---:|---:|---:|
+> | NA flight cold / warm: frame p95 | 9.5 / 9.7 ms | 12.4 / 11.8 ms | 15.6 / 16.3 ms |
+> | RSS peak cold / warm | 304 / 307 MiB | 556 / 546 MiB | **5,357 / 3,910 MiB** |
+> | Idle CPU (cold / warm) | 1.0 / 1.2% | 0.0 / 0.0% | 3.1 / 0.2% |
+> | Start-up cold / warm | 517 / 223 ms | 1,270 / 838 ms | 693 / 361 ms |
+> | Search opened cold / warm | 706 / 41 ms | 861 / 63 ms | 1,099 / 76 ms |
+> | First route (Miami–Seattle) cold / warm | 7.6 / 1.65 s | 6.2 / 1.35 s | 5.4 / **0.94 s** |
+> | Halifax–Los Angeles cold / warm | 5.8 / 1.75 s | 4.7 / 1.27 s | 5.2 / 0.90 s |
+> | 25 stops: order / until reordered route shown | 0.32 / 12.9 s | 0.30 / 9.6 s | 0.27 / 7.7 s |
+> | Alternatives, 4 legs (6 alts) shown / Cincinnati–Cleveland | 7.0 / 1.07 s | 5.3 / 0.78 s | 4.7 / 0.64 s |
+> | Style switch, detailed in | 20–44 ms | 18–30 ms | 61–93 ms |
+> | Print 300 / 360 / 600 dpi: PDF | 1.2 / 1.6 / 3.4 s | 0.65 / 0.87 / 1.9 s | 1.5 / 1.9 / 4.1 s |
+> | Print RSS before → peak, 300 / 360 / 600 dpi | +48 / +46 / +106 MiB | **+214 / +223 / +384** | **+177 / +81 / +267** |
+> | High-contrast print, 300 dpi map PDF | 1.0 s | 0.57 s | 1.4 s |
+> | Ohio frame p95 without / with 10,000 pins (cpu p95) | 9.4 / 9.9 ms (1.62 / 2.05) | 11.1 / 12.1 ms (1.44 / 2.06) | 16.7 / 17.0 ms (0.69 / 0.91) |
+>
+> **Against the exit criteria**
+> - **5, targets met on the laptops:** coast to coast with directions on the E6430 **0.94 s** warm (1.25 s); 25 stops reordered in 0.27–0.32 s (0.5 s), the whole reordered route 7.7 s on the E6430 (8.5 s in 4.11), 9.6 s (11.7) on the 7490 Windows, 12.9 s (14.8) Debian; alternatives 0.64–1.07 s for a leg; 600 dpi printing now works on every machine; printing on Debian is within +100 MiB at 300 and 360 dpi (+48, +46; 600 dpi +106 against 4.11's +362); the Windows DX12 RSS (541 MiB in 4.11) is 546–556 now.
+> - **5, missed, for the owner:** (a) **print RSS on Windows** is still far above 100 MiB: +214 / +223 MiB at 300 / 360 dpi on the 7490 under DX12 (4.11: +965 before the shared device), and +177 at 300 dpi on the E6430 (the 360 dpi page is +81; its "before" figure moves with the driver's own mappings). (b) **First route cold**: 5.4–7.6 s on the laptops against 3 s; a flight that asks it alongside the pack opening and the first search, from a USB 2 stick; the dev machine's number (and the 2.5–2.8 s that were lost between 3.9 and 4.11) is with the dev flights below. (c) **First search cold**: 0.7–1.1 s to open on the laptops (1 s target: met on Debian and Windows 11, 1.1 s on the E6430). Warm everything is far below its target.
+> - **5, E6430 RSS 5.4 GB** (3.9 GB warm; 4.18 GB in 4.11, 1.6 GB on Ohio): not new and not ours (a GL driver's mappings on an 8 GB machine; the tile slabs peak is 104 MiB and `GPU allocator` is unreported on GL), but it is the largest number in the table and it did not move with this phase. It was always going to be an "accepted" item; written here for the owner's call.
+> - **6, no regression:** frame p95 on the laptops is vsync-bound and within noise of 4.11 (Debian 9.5 against 9.2 ms, Windows 12.4 against 10.6 on the cold run, E6430 15.6 against 16.1); idle CPU 1.0–1.2% on Debian is not comparable with the dev machine's 0.5% (not measured on this machine in 4.11; the dev flight will say). Pins: cpu p95 +0.2–0.6 ms for 10,000 on the laptops, as in 4.11. **Binary:** 16.55 MB Linux, 14.98 MB Windows (4.11: 16.1 and 14.6; limit 30). **`cargo tree`** for the workspace on all targets has no network crate (reqwest, hyper, ureq, curl, tokio, rustls, openssl, native-tls: none). The phase 2–4 accuracy checks are untouched by this phase's changes (not rerun here).
+> - **2, styles:** a switch is within one frame's work plus re-tessellation on every laptop: tiles re-detailed in 18–44 ms (Debian, Win 11) and 61–93 ms (E6430), against 0.5 s (aim, on the dev machine). Night, high contrast and default all flown.
+>
+> **Open:** the dev machine's flights (warm and cold from the stick) for criterion 5's RSS (300 MB target; 304–307 MiB on Debian here), the dev frame p95 against 4.11's 1.30 ms, the cold first route against 4.11's 10.1 s, and the dev machine's printing RSS; then the owner's decision on the misses above.
 
 **Done when:** every exit criterion is measured on every machine, with any that miss written up for the owner.
 
