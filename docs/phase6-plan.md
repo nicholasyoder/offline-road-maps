@@ -32,8 +32,8 @@ Starting point (checked 2026-11-04):
 |---|---|---|
 | 6.1 Clean-up inventory | **Done** 2026-11-04 | Tracked items done 2026-11-04 ; owner deleted the untracked leftovers in `target/`, `data/`, `tools/gl-probe/target` |
 | 6.2 Binary name | **Done** 2026-11-04 | Windows exe icon unchecked until CI builds it |
-| 6.3 Release layout and launchers | Not started | |
-| 6.4 Release build and packaging script | Not started | |
+| 6.3 Release layout and launchers | In progress | Linux half done and tested 2026-11-05; the Windows exe on a Windows laptop and a real FAT32 stick are still to test |
+| 6.4 Release build and packaging script | In progress | `tools/package.sh` done and used for the first stick; `tools/build-windows.sh` written but unrun (needs `cargo-xwin`); the CI `release` workflow and the 1.0.0 bump remain |
 | 6.5 Docs: BUILDING.md, README, README.txt | Not started | |
 | 6.6 Licences and attribution check | Not started | |
 | 6.7 Clean-room check on both platforms | Not started | |
@@ -81,24 +81,24 @@ Order: 6.1 first (so docs are written against the tree that will ship), then 6.2
 
 The constraint from the code: the executable's folder holds `maps/`, `config.toml`, `trips/`, `pins/`, `style.toml`. The roadmap's sketch (`app/` with the executables, `maps/` and `README.txt` beside it) would make the data folder `app/`, so `maps/` would have to sit inside it, or the app must look one folder up. Options:
 
-- **A (recommended): everything at the stick's top level, no code change.**
+- **A (recommended): the data folder is the stick's top level.** *Changed 2026-11-05:* the Linux binary lives in `linux/`, so the only thing to run on Linux is the launcher; the Windows exe stays at the top because its folder is its data folder.
 
   ```
   OfflineRoadMaps/            (the stick's root or one folder on it)
     README.txt
     OfflineRoadMaps.exe       Windows
-    OfflineRoadMaps           Linux binary
-    OfflineRoadMaps.sh        Linux launcher (run with `sh`)
-    maps/                     the packs (north-america.omp.000 …)
+    OfflineRoadMaps.sh        Linux launcher (run with `sh`): the one thing to run on Linux
+    linux/                    OfflineRoadMaps (the Linux binary), and the example
+                              OfflineRoadMaps.desktop (menu entry) and its icon PNG
+    maps/<pack name>/         the packs (north-america.omp.000 …) and their SHA256SUMS
     licenses/                 licence and third-party notices
-    linux/                    example OfflineRoadMaps.desktop (menu entry) and its icon PNG
     config.toml, trips/, pins/, styles/   created by the app on first use
   ```
 
-  Simple to explain, and the user's saved trips and settings travel with the stick. One folder holds both platforms' binaries, which share `maps/` and the user's files.
+  Simple to explain, and the user's saved trips and settings travel with the stick. One folder holds both platforms, which share `maps/` and the user's files.
 - **B: `app/<platform>/` holding binaries, data folder one level up.** Needs a small change: the app takes its data folder as the executable's folder, else its parent if it contains `maps/`, and the write test for `config.toml` changes with it. Tidier on the stick (one visible folder per platform), a risk of surprising users who copy a binary elsewhere, and a platform to test: macOS later fits it better. Not recommended for a first release.
 
-**Linux launcher.** `OfflineRoadMaps.sh`: finds its own folder; if the binary can be executed in place (exFAT or a disk mounted with exec), runs it; otherwise copies it to `${XDG_CACHE_HOME:-~/.cache}/OfflineRoadMaps/` and runs it from there **with `--data-dir <stick folder>`** (a new, small option so the config, trips, pins and `maps/` still come from the stick, not the cache). Run as `sh OfflineRoadMaps.sh`, which works on any mount. The data-dir option is the one code change in this phase; if it turns out larger than expected, fall back to symlinks created by the launcher.
+**Linux launcher.** `OfflineRoadMaps.sh` (source `tools/release/`): finds its own folder; tries `linux/OfflineRoadMaps --help` and, if the shell says it may not be executed (status 126: FAT32, `noexec`), copies the binary to `${XDG_CACHE_HOME:-~/.cache}/OfflineRoadMaps/` (only when it differs, by `cmp`) and runs that copy. Either way it passes **`--data-dir <stick folder>`** (the new option, the one code change of this phase: `main.rs` takes it instead of the executable's folder) so the config, trips, pins and `maps/` come from the stick. Run as `sh OfflineRoadMaps.sh`, which works on any mount; arguments are passed on.
 
 **Menu entry (decided 2026-11-04):** an example `OfflineRoadMaps.desktop` and `OfflineRoadMaps.png` in `linux/` ([`crates/app/data/linux/`](../crates/app/data/linux/)), so a Linux user can add the app to their menu by editing the path and copying one file; the README.txt says how. Not installed by anything. Its `Exec` runs the `sh` launcher, so it needs the launcher of this step. (On Wayland the window itself gets no icon from `with_icon`; the compositor takes it from a `.desktop` file, which this is.)
 
@@ -108,13 +108,18 @@ The constraint from the code: the executable's folder holds `maps/`, `config.tom
 
 **Measure on the way:** whether exFAT sticks mount executable on this Debian (the dev machine) and on the usual Ubuntu/Mint/Fedora defaults; the README states what we measured, not what we expect.
 
+> **Linux half done 2026-11-05.** `--data-dir <dir>` (main.rs, USAGE; an unreadable folder exits 2), `tools/release/OfflineRoadMaps.sh`, the layout above built onto a fresh 58 GB exFAT stick by `tools/package.sh`. Measured: this Debian mounts the exFAT stick with `rw,nosuid,nodev` (no `noexec`), so `sh OfflineRoadMaps.sh` runs the binary in place and `config.toml` appeared on the stick. The no-exec branch was tested in a user namespace on a `noexec` tmpfs (direct exec gives 126; the launcher copied the binary to the cache, started the app and the config landed in the `noexec` folder). **Open:** a real FAT32 stick (no loop mounts without root here; the `noexec` tmpfs is the same case for the launcher, though not for the no-4 GB-file limit), the Windows exe on a Windows laptop, and the other desktops' exFAT mount options (Ubuntu, Mint, Fedora) for the README.
+
 **Done when:** from a fresh exFAT stick laid out as above, the Windows exe starts on a Windows laptop, `sh OfflineRoadMaps.sh` starts the Linux build on this machine whether or not the stick allows exec (test both: the stick, and a FAT32 stick), and settings, trips and pins written there end up on the stick.
 
 ## 6.4 Release build and packaging script
 
 - **CI:** a `release` workflow (manual, and on a `v*` tag) building Linux (Ubuntu 22.04) and Windows binaries, running the existing checks first, and attaching `OfflineRoadMaps`, `OfflineRoadMaps.exe` and `SHA256SUMS` to a GitHub release. The maps are far too large to attach and stay outside the release; the README says where they come from or how to build them.
-- **`tools/package.sh`** (and a PowerShell twin only if someone asks): takes the binaries and a `maps/` directory (or a pack directory) and writes the 6.3 layout to a target folder, including `README.txt`, `licenses/`, `linux/` (the example `.desktop` and icon from `crates/app/data/linux/`), the launcher and a checksum list of the pack files, then runs the builder's `verify` on the packs so a bad copy is caught before the stick leaves the house.
+- **Windows binary on Linux (decided 2026-11-05):** the project must not depend on GitHub CI alone, and the owner packages on Linux, so `tools/build-windows.sh` cross-builds `x86_64-pc-windows-msvc` with `cargo-xwin` (the same target and static-CRT flag as CI; it fetches the Windows SDK and CRT on first use). CI stays as the second, independent build. **Unrun so far:** installing `cargo-xwin` needs the owner's say. Open questions for the first run: the icon and version info on the `.exe` (`build.rs` only runs `winresource` when the *host* is Windows; `llvm-windres-19` is installed and may serve) and whether the exe starts under `wine` as a smoke test. How to build on Windows by hand is a section of BUILDING.md (6.5). No PowerShell packaging script: the owner packages on Linux.
+- **`tools/package.sh`** (no PowerShell twin, decided 2026-11-05): takes the binaries and a `maps/` directory (or a pack directory) and writes the 6.3 layout to a target folder, including `README.txt`, `licenses/`, `linux/` (the example `.desktop` and icon from `crates/app/data/linux/`), the launcher and a checksum list of the pack files, then runs the builder's `verify` on the packs so a bad copy is caught before the stick leaves the house.
 - Version number: one place (`workspace.package.version`), shown in About and in `README.txt`. Bump 0.1.0 to **1.0.0** (decided), in the commit that passes 6.7, so the tag and the first stick match.
+
+> **`tools/package.sh` done 2026-11-05.** `tools/package.sh [--linux f] [--windows f | --no-windows] [--builder f] [--no-verify] --pack <dir>… <out>`: lays out the 6.3 tree (the version from `Cargo.toml` goes into `README.txt`), copies each pack into `maps/<name>/`, compares the copy with its source by sha256 (writes `SHA256SUMS` beside the chunks), then runs `omp-builder verify` on the copy (builds the builder if missing); refuses a non-empty target. First run, North America (9.3 GB) onto the exFAT stick: 8 min 28 s end to end, verify OK. `licenses/` holds only the app's MIT/Apache and the Noto OFL for now (6.6 adds the dependency notices); `README.txt` is a first draft (6.5). Left open: the Windows exe in the package (see above), the `release` workflow, the 1.0.0 bump.
 
 **Done when:** a tag produces a release with both binaries and checksums, and `tools/package.sh` produces a layout that passes 6.3's check on the stick.
 
@@ -181,6 +186,10 @@ Checked 2026-11-04. The queries and route sets behind the plans' accuracy number
 Roughly 155 GB is freed. Also found: `target/release-builder/omp-builder` is older than the final pack (it reads format 0.6, the pack is 0.7), so rebuild before using it.
 
 Not touched here (owner's call, separate): `target/` (29 GB, regenerable), `data/tmp/ohio-build.v2` in the repo directory, `notes`.
+
+## Decisions (2026-11-05)
+8. **Linux binary in `linux/`**, launcher at the top, always started with `--data-dir` (6.3).
+9. **No PowerShell packaging script**; packaging is done on Linux. The Windows exe is cross-built on Linux (6.4), with CI as a second build and a manual Windows build documented in BUILDING.md (6.5).
 
 ## Risks
 - **Renaming the binary breaks scripts and docs that quote it.** The grep in 6.2 is the check; CI covers the build, not the prose.

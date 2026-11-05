@@ -75,7 +75,7 @@ fn window_icon() -> egui::IconData {
     }
 }
 
-const USAGE: &str = "usage: OfflineRoadMaps [--pack <dir>] [--style <file>]
+const USAGE: &str = "usage: OfflineRoadMaps [--data-dir <dir>] [--pack <dir>] [--style <file>]
        OfflineRoadMaps --bench <flight.toml> [--pack <dir>] [--out <report.json>]
        OfflineRoadMaps --render --pack <dir> (--center <lat,lon> --zoom <z> | --route <lat,lon;lat,lon…>)
                [--step <n>] [--alternatives] [--size <w>x<h>] [--scale <s>] [--msaa <n>] [--style <file>] <out.png>
@@ -83,6 +83,10 @@ const USAGE: &str = "usage: OfflineRoadMaps [--pack <dir>] [--style <file>]
                --print <out.pdf> [--paper <p>] [--orientation <o>] [--text-size <t>] [--label <text>]
                [--directions] [--dpi <n>] [--units <u>]
 
+  --data-dir <dir>
+                 the folder that holds maps/, config.toml, trips/, pins/, style.toml and
+                 styles/ (default: the folder the executable is in); the Linux launcher
+                 uses it when it has to run a copy of the executable from elsewhere
   --pack <dir>   open the pack in <dir> (or the first chunk file itself); default:
                  maps/ next to the executable, else the pack used last
   --bench <file> fly the path in <file> and write a JSON report, then exit
@@ -108,6 +112,7 @@ const USAGE: &str = "usage: OfflineRoadMaps [--pack <dir>] [--style <file>]
 
 #[derive(Default)]
 struct Args {
+    data_dir: Option<PathBuf>,
     pack: Option<PathBuf>,
     bench: Option<PathBuf>,
     out: Option<PathBuf>,
@@ -145,6 +150,7 @@ fn parse_args() -> Result<Args, String> {
         };
         let text = |p: PathBuf| p.to_string_lossy().into_owned();
         match arg.to_str() {
+            Some("--data-dir") => a.data_dir = Some(value("--data-dir")?),
             Some("--pack") => a.pack = Some(value("--pack")?),
             Some("--bench") => a.bench = Some(value("--bench")?),
             Some("--out") => a.out = Some(value("--out")?),
@@ -190,11 +196,21 @@ fn main() -> ExitCode {
             return ExitCode::from(if e.is_empty() { 0 } else { 2 });
         }
     };
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.canonicalize().ok())
-        .and_then(|p| p.parent().map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."));
+    // The data folder: --data-dir, else the executable's own folder.
+    let exe_dir = match &args.data_dir {
+        Some(d) => match d.canonicalize() {
+            Ok(d) if d.is_dir() => d,
+            _ => {
+                eprintln!("--data-dir: {} is not a folder", d.display());
+                return ExitCode::from(2);
+            }
+        },
+        None => std::env::current_exe()
+            .ok()
+            .and_then(|p| p.canonicalize().ok())
+            .and_then(|p| p.parent().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from(".")),
+    };
     if args.render {
         // --style, else style.toml next to the executable if there is one, else the
         // built-in one.

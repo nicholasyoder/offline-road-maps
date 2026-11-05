@@ -14,7 +14,7 @@ Plans and progress are in [docs/roadmap.md](docs/roadmap.md) and the per-phase p
 cargo run --release -p omp-app -- --pack $OMP_WORK/packs/ohio
 ```
 
-`$OMP_WORK` is the builder's work directory (default `./data`); packs are built into `$OMP_WORK/packs/<region>` (see below). A small region such as Delaware is quick to build and load. Without `--pack` the app opens `maps/` next to the executable, else the map used last; with none to open, the window says what a map is and where it looked. Ctrl+O opens the file browser to choose a map. The window's size, place and maximized state are kept in `config.toml` and restored (a window that no longer fits the monitor is brought onto it).
+`$OMP_WORK` is the builder's work directory (default `./data`); packs are built into `$OMP_WORK/packs/<region>` (see below). A small region such as Delaware is quick to build and load. `--data-dir <dir>` makes `<dir>` the data folder (maps, config, trips, pins, styles) instead of the executable's folder; the release's Linux launcher uses it. Without `--pack` the app opens `maps/` in the data folder, else the map used last; with none to open, the window says what a map is and where it looked. Ctrl+O opens the file browser to choose a map. The window's size, place and maximized state are kept in `config.toml` and restored (a window that no longer fits the monitor is brought onto it).
 
 **Put maps on an exFAT stick.** Format the stick exFAT, not FAT32: on FAT32 the first read deep into each map file walks the file's cluster chain, which takes seconds on a USB 2 stick. FAT32 keeps working, only slower to start.
 
