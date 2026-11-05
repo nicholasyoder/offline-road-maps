@@ -2,7 +2,7 @@
 
 Road maps, search and driving directions for the whole of North America that work with no internet connection, from a USB stick or a folder. Nothing in the program ever connects to a network.
 
-![A street map of Columbus, Ohio](docs/img/map.png)
+![The app window with a three-stop route, its alternatives and directions](docs/img/window.png)
 
 - **Map:** the United States and Canada, from the whole continent down to individual streets, in a default, a night and a high-contrast style.
 - **Search:** places, streets and addresses (151 million of them), as you type.
@@ -10,9 +10,9 @@ Road maps, search and driving directions for the whole of North America that wor
 - **Print:** a route's map and directions to a printer or a PDF.
 - **Portable:** the program, the maps (one 9 GB file set for all of North America) and your settings, trips and pins live in one folder. Windows and Linux; copy the folder to take it with you.
 
-| Route | Night style | Print |
+| Street map | Night style | Print |
 |---|---|---|
-| ![A route from Columbus to Cleveland](docs/img/route.png) | ![Chicago at night](docs/img/night.png) | ![A printed route page](docs/img/print.png) |
+| ![A street map of Columbus, Ohio](docs/img/map.png) | ![Chicago at night](docs/img/night.png) | ![A printed route page](docs/img/print.png) |
 
 ## Get it
 
