@@ -15,4 +15,4 @@ Scripted runs for `OfflineRoadMaps --bench <flight.toml> --pack <dir>` (see the 
 
 Removed in phase 6 (done checks, superseded): `na-alternatives`, `na-schedule`, `na-print`, `ohio-route`; the last commit with them is 57d56dd (`git show 57d56dd:crates/app/bench/<name>.toml`).
 
-The final numbers for every machine are in `docs/baselines/5.13/`.
+The final numbers for every machine are in `docs/dev/baselines/5.13/`.

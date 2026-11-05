@@ -1,6 +1,6 @@
 # Phase 5 Plan: Settings, Map Styles, Polish and Performance
 
-*Draft 2, 2026-10-29, with the owner's answers to draft 1's questions (decisions 6–11). Expands Phase 5 of [roadmap.md](roadmap.md#phase-5-settings-map-styles-and-polish), with the owner's changes from planning (2026-10-29): map styles are chosen in the side panel's Layers tab, which may be renamed; the "map tuning" item is dropped; the performance pass is split into separate items; and the whole project gets an audit for bugs, bad design and missed optimizations, now that the app is complete enough to look at as a whole.*
+*Draft 2, 2026-10-29, with the owner's answers to draft 1's questions (decisions 6–11). Expands Phase 5 of [roadmap.md](../roadmap.md#phase-5-settings-map-styles-and-polish), with the owner's changes from planning (2026-10-29): map styles are chosen in the side panel's Layers tab, which may be renamed; the "map tuning" item is dropped; the performance pass is split into separate items; and the whole project gets an audit for bugs, bad design and missed optimizations, now that the app is complete enough to look at as a whole.*
 
 ## Purpose
 
@@ -357,7 +357,7 @@ After 4.11's fix the dev machine is within +100 MiB at 300 and 360 dpi (+82 and 
 >
 > The dictionary figures for the blocked sections train on the blocks they are measured on, so the small sections (`AUNI`, `ASUF`, `RCPY`) flatter themselves; the large ones (`RCHE`, `RGEO`, `SENT`, `SSTR`) have enough blocks that it does not matter. Together the format-changing levers come to about **0.55–0.65 GB** of North America's 10.0 GB without touching a feature, nearly all of it `RCHE`. The tile dictionaries are worth little (Quebec) and cost RSS, so they stay at 64 KiB until a North America build measures them. `RCHE` was stored raw in phase 3 because decoding varints beat decompressing; with decoded blocks cached the cost is a decompression per cache miss, and the cold route reads fewer bytes, but the warm and cold route flights have not been run with it.
 >
-> **Taken 2026-11-04 (owner: yes, with the speed measured): format 0.7.** `RCHE`'s blocks are zstd frames with a 64 KiB dictionary, and every blocked section has a dictionary field in its header; `RGEO`, `SSTR`, `SENT`, `ASUF`, `AUNI`, `ALSE` and `ARNG` get a 112 KiB one when they hold 16 times that much data ([format.md](format.md#addresses)). Readers decode on a thread-local zstd context (a context per 700-byte block would cost more than the block); packs of 0.3–0.6 still open (Ohio's 0.6 pack passes the route set and search with the new reader).
+> **Taken 2026-11-04 (owner: yes, with the speed measured): format 0.7.** `RCHE`'s blocks are zstd frames with a 64 KiB dictionary, and every blocked section has a dictionary field in its header; `RGEO`, `SSTR`, `SENT`, `ASUF`, `AUNI`, `ALSE` and `ARNG` get a 112 KiB one when they hold 16 times that much data ([format.md](../format.md#addresses)). Readers decode on a thread-local zstd context (a context per 700-byte block would cost more than the block); packs of 0.3–0.6 still open (Ohio's 0.6 pack passes the route set and search with the new reader).
 >
 > | Pack (fresh build) | 0.6 | 0.7 | |
 > |---|---:|---:|---|

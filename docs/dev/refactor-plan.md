@@ -8,11 +8,11 @@
 
 Phase 2 left the code working and well tested (163 tests), but with three structural problems:
 
-- **The production builder runs on Phase 0 spike modules.** `build` uses `measure::{osm, tiles, compress, water, poly, geom}`, and the address merge in [addr/merge.rs](../crates/builder/src/addr/merge.rs) imports its stages from [addr/mod.rs](../crates/builder/src/addr/mod.rs), which is mostly the `addr-spike` command and its reports. So a change to a spike report can break `build`, and it is hard to tell which code ships.
+- **The production builder runs on Phase 0 spike modules.** `build` uses `measure::{osm, tiles, compress, water, poly, geom}`, and the address merge in [addr/merge.rs](../../crates/builder/src/addr/merge.rs) imports its stages from [addr/mod.rs](../../crates/builder/src/addr/mod.rs), which is mostly the `addr-spike` command and its reports. So a change to a spike report can break `build`, and it is hard to tell which code ships.
 - **Shared logic is copied around.** Web Mercator math appears in five places, and the PBF pass helper in three. Douglas–Peucker, `put_str`, `read_at`, `invalid`, `mib` and finding a pack's first chunk each appear two to five times.
 - **Builds are slow.** A North America `build --addresses all` takes 51 min ([phase 2 step 2.4](phase2-plan.md#24-address-store-in-build)), and dev loops on Ohio and Quebec take 40–90 s. The PBF is read about 18 times (see R4).
 
-There are also two real bugs (R1) and two files too long to work in comfortably: [app/src/search.rs](../crates/app/src/search.rs) (1,732 lines) and [core/src/find.rs](../crates/core/src/find.rs) (1,786 lines, with an `impl Run` of about 900).
+There are also two real bugs (R1) and two files too long to work in comfortably: [app/src/search.rs](../../crates/app/src/search.rs) (1,732 lines) and [core/src/find.rs](../../crates/core/src/find.rs) (1,786 lines, with an `impl Run` of about 900).
 
 None of this changes the pack format or what the app shows.
 
@@ -76,12 +76,12 @@ sha256sum $OMP_WORK/refactor/base/*/*.omp.*
 
 Small and independent. One session, one commit per fix or one for all.
 
-1. **`build` deletes the old pack before it starts** ([build/mod.rs `remove_old_chunks`](../crates/builder/src/build/mod.rs)). A North America build that fails after 50 minutes leaves no pack, or partial chunks. **Fix:** write the chunks into a temp directory next to `--out` (same filesystem, so a rename works), and only after `Writer::finish` succeeds remove the old chunks and rename the new ones in. A failed build leaves the old pack as it was, and the next build clears the temp directory.
+1. **`build` deletes the old pack before it starts** ([build/mod.rs `remove_old_chunks`](../../crates/builder/src/build/mod.rs)). A North America build that fails after 50 minutes leaves no pack, or partial chunks. **Fix:** write the chunks into a temp directory next to `--out` (same filesystem, so a rename works), and only after `Writer::finish` succeeds remove the old chunks and rename the new ones in. A failed build leaves the old pack as it was, and the next build clears the temp directory.
 2. **Repeated subdivisions in `--addresses`.** `subs.dedup()` only removes neighbouring duplicates, so `--addresses US-OH --addresses all` merges Ohio twice. **Fix:** sort and dedup, or collect into a `BTreeSet`; keep the order `Subdivision::all()` uses so the output is unchanged.
-3. **A resumed download can join two versions of a file** ([fetch/http.rs](../crates/builder/src/fetch/http.rs)). The `Range` request has no `If-Range`. Geofabrik files are safe, since their md5 is checked, but OpenAddresses and TIGER files have no hash. **Fix:** keep the `ETag` (or `Last-Modified`) of the first response in a small `<file>.part.meta`, and send it as `If-Range` when resuming. A server that answers 200 starts the file over, which the code already handles.
+3. **A resumed download can join two versions of a file** ([fetch/http.rs](../../crates/builder/src/fetch/http.rs)). The `Range` request has no `If-Range`. Geofabrik files are safe, since their md5 is checked, but OpenAddresses and TIGER files have no hash. **Fix:** keep the `ETag` (or `Last-Modified`) of the first response in a small `<file>.part.meta`, and send it as `If-Range` when resuming. A server that answers 200 starts the file over, which the code already handles.
 4. **Small issues worth fixing while here:**
-   - `Pack::open` adds `s.offset + s.len` without a checked add ([pack.rs](../crates/core/src/pack.rs)). A crafted file wraps in release builds. Use `checked_add`, and reject the file on overflow.
-   - `draw` reads the `OMP_BENCH_NO_MAP` environment variable every frame ([app.rs](../crates/app/src/app.rs)). Read it once, into `App` or `Bench`.
+   - `Pack::open` adds `s.offset + s.len` without a checked add ([pack.rs](../../crates/core/src/pack.rs)). A crafted file wraps in release builds. Use `checked_add`, and reject the file on overflow.
+   - `draw` reads the `OMP_BENCH_NO_MAP` environment variable every frame ([app.rs](../../crates/app/src/app.rs)). Read it once, into `App` or `Bench`.
    - `draw` builds `wanted` with `Vec::contains` in a loop (O(n²) in the tile count). Use a `HashSet` beside the `Vec`, keeping the order.
 
    Left alone on purpose: once over budget, `Cache::evict` sorts the whole cache on every insert. At today's tile counts (a few thousand at most) it doesn't show up in the bench. Revisit only if it does.
@@ -91,27 +91,27 @@ Small and independent. One session, one commit per fix or one for all.
 ## R2 Shared geometry and small helpers
 
 > **Done 2026-10-26** (the commit "Refactor R2: shared geometry and small helpers"). What was done, and how it was checked:
-> - **Projection:** `omp_core::geo` now has `WORLD`, `EARTH_CIRCUMFERENCE_M`, `EARTH_RADIUS_M` (pub), `project_e7` (moved from the builder), the app's form as `Unit = [f64; 2]` with `lonlat_to_unit`/`unit_to_lonlat` and `to_unit`/`from_unit`, and the haversine `distance_m`. `project` and `unproject` are written on top of the unit form, with the same operations as before, so the `u32` output is unchanged. [measure/geom.rs](../crates/builder/src/measure/geom.rs) re-exports core's `P`, `project`, `project_e7`, `unproject` and `metres_per_unit`, so its callers did not change. The app's `camera::lonlat_to_world`/`world_to_lonlat` and `search::world`/`to_p`/`distance_m` are gone; callers use `geo::*`. The app's y used to be `0.5 − ln(…)/2π` and is now core's `(1 − ln(…)/π)/2`: equal up to the last bit, and the renders below are pixel-identical. The camera's round-trip test moved to core's `projection_round_trips`. `scale.rs` and `find::view_scale_m` use `EARTH_CIRCUMFERENCE_M`; the latter had `40_075_016.0`, and `search --check` gives the same results with `.686`.
+> - **Projection:** `omp_core::geo` now has `WORLD`, `EARTH_CIRCUMFERENCE_M`, `EARTH_RADIUS_M` (pub), `project_e7` (moved from the builder), the app's form as `Unit = [f64; 2]` with `lonlat_to_unit`/`unit_to_lonlat` and `to_unit`/`from_unit`, and the haversine `distance_m`. `project` and `unproject` are written on top of the unit form, with the same operations as before, so the `u32` output is unchanged. [measure/geom.rs](../../crates/builder/src/measure/geom.rs) re-exports core's `P`, `project`, `project_e7`, `unproject` and `metres_per_unit`, so its callers did not change. The app's `camera::lonlat_to_world`/`world_to_lonlat` and `search::world`/`to_p`/`distance_m` are gone; callers use `geo::*`. The app's y used to be `0.5 − ln(…)/2π` and is now core's `(1 − ln(…)/π)/2`: equal up to the last bit, and the renders below are pixel-identical. The camera's round-trip test moved to core's `projection_round_trips`. `scale.rs` and `find::view_scale_m` use `EARTH_CIRCUMFERENCE_M`; the latter had `40_075_016.0`, and `search --check` gives the same results with `.686`.
 > - **Douglas–Peucker:** `geom::simplify_kept` (generic over `u32`/`i32` points, returns kept indices) is the one implementation, using `geom`'s single `seg_dist2` (the integer copy is gone too); `geom::simplify` and the street table call it. Street sections stay byte-identical.
 > - **Helpers:** `dist` from core in `street/`; `omp_core::varint::put_str` for the street, admin and address encoders and core's search tests (`pack.rs` keeps its own header `put_str`, a different format: a `u8` length, at most 255 bytes); `omp_core::pack::{read_at, write_at}` are `pub` and `measure/compress.rs` uses them; `omp_core::varint::invalid` is `pub` and the only copy (`pack.rs` and the builder's encoders use it); one builder `mib` in `main.rs` (`report.rs`'s, which formats text, is renamed `mib_text`); `omp_core::pack::{is_first_chunk, first_chunks}`, used by `build::first_chunk` (still errors on several packs) and `app::packs::find` (still looks one level down).
-> - **Theme:** [app/src/theme.rs](../crates/app/src/theme.rs) holds `INK`, `WEAK` and `APPROX` (`app.rs` had a third `INK`, now also from there).
+> - **Theme:** [app/src/theme.rs](../../crates/app/src/theme.rs) holds `INK`, `WEAK` and `APPROX` (`app.rs` had a third `INK`, now also from there).
 > - **Checks:** Ohio (`12c70434…`) and Quebec (`df133861…`) `--deterministic` packs have the same SHA-256 with `master`'s builder and this one. `omp-app --render` of Ohio at Columbus, z5, z10 and z15: decoded pixels identical (the PNG files differ only in their compressed bytes). `search --check --level 9` with all the query sets: the same pass counts on both packs. CI checks pass.
 
 Mechanical: no behaviour change, and the deterministic packs stay byte-identical. One session.
 
-1. **One Web Mercator in `omp-core`.** [core/geo.rs](../crates/core/src/geo.rs) becomes the only home of the projection and the distances:
-   - Delete the copies of `WORLD`, `MAX_LAT`, `EARTH_CIRCUMFERENCE_M`, `project`, `unproject` and `metres_per_unit` from [builder measure/geom.rs](../crates/builder/src/measure/geom.rs), and re-export or call core's. Keep `project_e7` if it is used, moved to core.
-   - Add the app's normalised f64 form to core (`to_unit`/`from_unit`, or `lonlat_to_world`/`world_to_lonlat` on `[f64; 2]`), with converters to and from `P`. Use them from [app camera.rs](../crates/app/src/camera.rs) and [app search.rs](../crates/app/src/search.rs) (`world`, `to_p`).
-   - Move the haversine `distance_m` from app `search.rs` to core. Make [app scale.rs](../crates/app/src/scale.rs) and the literal `40_075_016.0` in [core find.rs](../crates/core/src/find.rs) use core's constant. Check that the f32/f64 rounding is the same where the app's maths moves to core's.
-2. **One Douglas–Peucker.** [measure/geom.rs `simplify`](../crates/builder/src/measure/geom.rs) returns points, and [street/mod.rs `simplify`](../crates/builder/src/street/mod.rs) returns kept indices. Keep the indices form as the core of it, and have the points version call it. The two give the same result today, since both use the same segment distance and tie-breaking; the street sections must stay identical to prove it.
+1. **One Web Mercator in `omp-core`.** [core/geo.rs](../../crates/core/src/geo.rs) becomes the only home of the projection and the distances:
+   - Delete the copies of `WORLD`, `MAX_LAT`, `EARTH_CIRCUMFERENCE_M`, `project`, `unproject` and `metres_per_unit` from [builder measure/geom.rs](../../crates/builder/src/measure/geom.rs), and re-export or call core's. Keep `project_e7` if it is used, moved to core.
+   - Add the app's normalised f64 form to core (`to_unit`/`from_unit`, or `lonlat_to_world`/`world_to_lonlat` on `[f64; 2]`), with converters to and from `P`. Use them from [app camera.rs](../../crates/app/src/camera.rs) and [app search.rs](../../crates/app/src/search.rs) (`world`, `to_p`).
+   - Move the haversine `distance_m` from app `search.rs` to core. Make [app scale.rs](../../crates/app/src/scale.rs) and the literal `40_075_016.0` in [core find.rs](../../crates/core/src/find.rs) use core's constant. Check that the f32/f64 rounding is the same where the app's maths moves to core's.
+2. **One Douglas–Peucker.** [measure/geom.rs `simplify`](../../crates/builder/src/measure/geom.rs) returns points, and [street/mod.rs `simplify`](../../crates/builder/src/street/mod.rs) returns kept indices. Keep the indices form as the core of it, and have the points version call it. The two give the same result today, since both use the same segment distance and tie-breaking; the street sections must stay identical to prove it.
 3. **Small helpers:**
-   - `dist`: delete the copy in [street/mod.rs](../crates/builder/src/street/mod.rs) and use `omp_core::geo::dist`.
+   - `dist`: delete the copy in [street/mod.rs](../../crates/builder/src/street/mod.rs) and use `omp_core::geo::dist`.
    - `put_str`: one copy for the three builder encoders (street, admin, addr), e.g. in a builder `encode_util` module, or next to `omp_core::varint::put` if core's tests want it too.
-   - `read_at`: make core's `pack::read_at`/`write_at` `pub` (or put them in a small `omp_core::io` module), and delete the copy in [measure/compress.rs](../crates/builder/src/measure/compress.rs).
-   - `invalid`: one `pub(crate)` copy in core (`varint::invalid` already exists, so `pack.rs` uses it). The builder's in [street/encode.rs](../crates/builder/src/street/encode.rs) moves to core or stays as the builder's one copy.
+   - `read_at`: make core's `pack::read_at`/`write_at` `pub` (or put them in a small `omp_core::io` module), and delete the copy in [measure/compress.rs](../../crates/builder/src/measure/compress.rs).
+   - `invalid`: one `pub(crate)` copy in core (`varint::invalid` already exists, so `pack.rs` uses it). The builder's in [street/encode.rs](../../crates/builder/src/street/encode.rs) moves to core or stays as the builder's one copy.
    - `mib`: one builder copy (four today). The app keeps its own, since the crates share no utility module and one tiny function isn't worth one.
    - First chunk of a pack: `build::first_chunk` and `app::packs::find` both look for `*.omp.000`. Move the shared part (is this a first chunk; the first chunks in a directory) into `omp_core::pack`, and keep each caller's policy (the builder errors on several packs; the app also looks one level down).
-4. **App UI colours.** `INK`, `WEAK` and `APPROX` are defined in both [here.rs](../crates/app/src/here.rs) and [search.rs](../crates/app/src/search.rs). Put them in one `app/src/theme.rs`, which phase 5's map styles and settings will grow.
+4. **App UI colours.** `INK`, `WEAK` and `APPROX` are defined in both [here.rs](../../crates/app/src/here.rs) and [search.rs](../../crates/app/src/search.rs). Put them in one `app/src/theme.rs`, which phase 5's map styles and settings will grow.
 
 **Done when:** `grep` finds each of these once; Ohio and Quebec `--deterministic` packs are byte-identical to the baseline; `--render` snapshots of Ohio at z5, z10 and z15 match the baseline pixel for pixel; CI passes.
 
@@ -139,10 +139,10 @@ Moves and splits, with no behaviour change. One session; probably the largest di
    - `pbf/`: the shared parallel pass (R3.3), `header_bounds`, the needed-node sets (`measure/nodes.rs`) and the whitelisted feature reader (`measure/osm.rs`).
    - `geom.rs`: what is left of `measure/geom.rs` after R2 (clipping, ring assembly, centroids, simplification).
    - `tiles/`: `measure/tiles.rs` (pyramid cut, store, bands), `measure/compress.rs` (dictionary training) and `measure/water.rs`, `measure/poly.rs`.
-   - `addr/`: split [addr/mod.rs](../crates/builder/src/addr/mod.rs) into `addr/pipeline.rs` (`select`, `extract`, `normalize`, `attach_records`, `dedup`, `clusters`, `fallback_ranges`, `Interner`, `Raw`, `Src`, the row types the merge returns) and, if kept, `addr/spike.rs` (the `addr-spike` command, its reports and samples).
+   - `addr/`: split [addr/mod.rs](../../crates/builder/src/addr/mod.rs) into `addr/pipeline.rs` (`select`, `extract`, `normalize`, `attach_records`, `dedup`, `clusters`, `fallback_ranges`, `Interner`, `Raw`, `Src`, the row types the merge returns) and, if kept, `addr/spike.rs` (the `addr-spike` command, its reports and samples).
    - `measure/` keeps only the spike command, its variants and its report types, if it stays.
-3. **One PBF pass helper.** [measure/osm.rs](../crates/builder/src/measure/osm.rs), [addr/osm.rs](../crates/builder/src/addr/osm.rs) and [admin/read.rs](../crates/builder/src/admin/read.rs) each define `pass`; the last two are identical, and [search/mod.rs](../crates/builder/src/search/mod.rs) borrows admin's. Replace them all with `pbf::pass(path, init, f)`, which returns `Result` from `f` (measure's version needs that). R4 builds on this one function.
-4. **Split `build::run`** (about 400 lines in [build/mod.rs](../crates/builder/src/build/mod.rs)):
+3. **One PBF pass helper.** [measure/osm.rs](../../crates/builder/src/measure/osm.rs), [addr/osm.rs](../../crates/builder/src/addr/osm.rs) and [admin/read.rs](../../crates/builder/src/admin/read.rs) each define `pass`; the last two are identical, and [search/mod.rs](../../crates/builder/src/search/mod.rs) borrows admin's. Replace them all with `pbf::pass(path, init, f)`, which returns `Result` from `f` (measure's version needs that). R4 builds on this one function.
+4. **Split `build::run`** (about 400 lines in [build/mod.rs](../../crates/builder/src/build/mod.rs)):
    - stage functions: `read_bands`, `addresses_and_streets`, `search_index`, `write_pack`, each taking what it needs and returning what the next needs, so the order of `drop`s that keeps the peak under the cap stays visible in `run`;
    - a `build/report.rs` for the `print_*` functions, `ChainStats`, `ZoomTotals` and the stage timer;
    - a `build/meta.rs` for `META`'s settings, sources, snapshot and attribution.
@@ -231,7 +231,7 @@ The phase 2 stage timings are a starting point (bands up to 44.5 GiB, OSM addres
 
 ## R5 Split the app's search UI
 
-[app/src/search.rs](../crates/app/src/search.rs) holds the worker thread, the session and result merging, the geometry helpers and the egui widgets in one 1,732-line file. One session.
+[app/src/search.rs](../../crates/app/src/search.rs) holds the worker thread, the session and result merging, the geometry helpers and the egui widgets in one 1,732-line file. One session.
 
 Split into a `search/` module:
 - `search/worker.rs`: `Query`, `Answer`, `Shared`, `Slot`, `Worker`, `work`, `stopper`. These touch no egui, so they can be tested headless: a query answered, a stale answer dropped, a level stopped by a new keystroke, "what's here" served between levels.
@@ -250,7 +250,7 @@ The geometry helpers (`world`, `to_p`, `distance_m`) will have moved to core in 
 
 ## R6 Split the search engine
 
-[core/src/find.rs](../crates/core/src/find.rs) is 1,786 lines, and its `impl Run` is about 900 of them. [Phase 2 decided](phase2-plan.md#27b-progressive-search) not to *rewrite* `find` to avoid repeated work across levels; that decision stands. This step only reorganises the code so it can be read and changed. One session.
+[core/src/find.rs](../../crates/core/src/find.rs) is 1,786 lines, and its `impl Run` is about 900 of them. [Phase 2 decided](phase2-plan.md#27b-progressive-search) not to *rewrite* `find` to avoid repeated work across levels; that decision stands. This step only reorganises the code so it can be read and changed. One session.
 
 Split `find.rs` into a `find/` module along the stages its module doc already describes:
 - `find/mod.rs`: `Request`, `Hit`, `HitKind`, `Search::find`/`start`, `Session` and its levels.
@@ -262,7 +262,7 @@ Split `find.rs` into a `find/` module along the stages its module doc already de
 
 Split `Run` itself by stage too: its methods move into the files above as `impl Run` blocks, or as free functions taking the `Run`'s caches, so each file has one stage of the pipeline. If, while splitting, a pass turns out simpler to express differently, record it as a follow-up rather than mixing it into the move.
 
-[search_tests.rs](../crates/core/src/search_tests.rs) (1,101 lines) can move to `find/tests.rs`, split the same way if that helps.
+[search_tests.rs](../../crates/core/src/search_tests.rs) (1,101 lines) can move to `find/tests.rs`, split the same way if that helps.
 
 **Done when:** no file in `find/` is over about 500 lines; `cargo test` and `omp-builder search --check` on Ohio and Quebec give the same numbers as before; warm p95 is unchanged within noise; CI passes.
 

@@ -104,7 +104,9 @@ pub struct BuildArgs {
     #[arg(long)]
     tz: Option<PathBuf>,
 
-    /// Keep only the ocean pieces that meet this boundary (`.poly`).
+    /// Keep only the ocean pieces that meet this boundary (`.poly`), and only the addresses
+    /// inside it. For a region cut from a bigger extract (`osmium extract -p`), give the same
+    /// polygon as for the cut.
     #[arg(long)]
     clip_poly: Option<PathBuf>,
 
@@ -243,7 +245,7 @@ impl Stages {
             file(&args.clip_poly)?,
         );
         let addresses = format!(
-            "{admin} {}\n{:?}\n{:?} {:?} {} {} {}\n{}",
+            "{admin} {}\n{:?}\n{:?} {:?} {} {} {} {:?}\n{}",
             cache::ADDRESSES,
             opts.subdivisions,
             opts.sources.sources,
@@ -251,6 +253,7 @@ impl Stages {
             opts.inputs.display(),
             opts.attach_m,
             opts.dedup_m,
+            file(&args.clip_poly)?,
             cache::fingerprint(&opts.inputs.join("manifest.toml"))?,
         );
         Ok(Stages {
@@ -340,6 +343,7 @@ impl Setup {
             inputs: provenance.dir.clone(),
             attach_m: merge::ATTACH_M,
             dedup_m: merge::DEDUP_M,
+            clip: args.clip_poly.as_deref().map(Poly::read).transpose()?,
         };
         let regions = load_regions(
             &args

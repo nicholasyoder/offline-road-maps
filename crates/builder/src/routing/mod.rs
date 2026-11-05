@@ -37,7 +37,7 @@ const RCHE_DICT_KIB: usize = 64;
 pub const BLOCK: usize = 16 << 10;
 
 /// The layout's parameters, chosen in step 3.3 from the pages queries touch (see
-/// `docs/phase3-plan.md`).
+/// `docs/dev/phase3-plan.md`).
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Params {
     /// Nodes per `RCHE` block.

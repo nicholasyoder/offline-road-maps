@@ -1,6 +1,6 @@
 # Pack format
 
-*Version 0.7 (draft), 2026-11-04. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](phase0-plan.md) and [size-table.md](size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom. 0.4 (phase 2 step 2.5): the search, address, admin and street sections are specified, with their readers in `omp-core`; `SGRD` (the spatial grid) is new, and `SAPL` takes the block layout the other sections share. 0.5 (phase 3 step 3.3): the routing sections are specified, and a blocked section may be spanning. 0.6 (phase 4 step 4.5): the time zones (`TZON`). 0.7 (phase 5 step 5.12): `RCHE`'s blocks are zstd frames, and every blocked section has a dictionary field in its header (empty, or a zstd dictionary for `RCHE`, `RGEO`, `SSTR`, `SENT`, `ASUF`, `AUNI`, `ALSE` and `ARNG`); 0.6 and older packs keep the old header and a raw `RCHE`, which the reader still opens.*
+*Version 0.7 (draft), 2026-11-04. Written in phase 0 step 0.6 from the measurements in [phase0-plan.md](dev/phase0-plan.md) and [size-table.md](dev/size-table.md). 0.2 (phase 1 step 1.5b): a tile that is not stored is drawn from its nearest stored ancestor, and tiles that one polygon covers (open ocean, mostly) are left out. 0.3 (phase 1 step 1.5c): tile frames have no magic number and no checksum, and a layer may stop at a `maxzoom` (land cover and water areas at z13), above which it is drawn from the tile at that zoom. 0.4 (phase 2 step 2.5): the search, address, admin and street sections are specified, with their readers in `omp-core`; `SGRD` (the spatial grid) is new, and `SAPL` takes the block layout the other sections share. 0.5 (phase 3 step 3.3): the routing sections are specified, and a blocked section may be spanning. 0.6 (phase 4 step 4.5): the time zones (`TZON`). 0.7 (phase 5 step 5.12): `RCHE`'s blocks are zstd frames, and every blocked section has a dictionary field in its header (empty, or a zstd dictionary for `RCHE`, `RGEO`, `SSTR`, `SENT`, `ASUF`, `AUNI`, `ALSE` and `ARNG`); 0.6 and older packs keep the old header and a raw `RCHE`, which the reader still opens.*
 
 A **pack** holds everything the app needs for one region: map tiles, addresses, and later routing and search data. It is built by `omp-builder` and read by `omp-app`, usually from a USB flash drive. This document is the contract between the two.
 
@@ -175,7 +175,7 @@ polygon    = nrings:varint  (npoints:varint (dx:zvarint dy:zvarint)*)*
 - A prop value that is a small non-negative decimal integer without leading zeros (e.g. a `ref` of `401`) is stored as an integer. Every other value is an index into the payload's string table.
 - All deltas are from one **cursor** that starts at `(0, 0)` and carries across points, parts, rings and features. Each decoded point moves the cursor.
 - **Polygons:** rings are implicitly closed (the last point is not repeated). Outer rings are clockwise on screen (positive shoelace area with y down) and holes counter-clockwise, as in MVT. A ring belongs to the nearest preceding outer ring. A polygon has at least one outer ring.
-- Features are already simplified for their zoom (Douglas–Peucker, with tolerances from the whitelist, see [phase0-plan.md](phase0-plan.md#water-simplification-follow-up-2026-10-24)) and filtered by `minzoom`. The app draws what it gets.
+- Features are already simplified for their zoom (Douglas–Peucker, with tolerances from the whitelist, see [phase0-plan.md](dev/phase0-plan.md#water-simplification-follow-up-2026-10-24)) and filtered by `minzoom`. The app draws what it gets.
 - **Merged lines** (phase 1 decision 5): in the layers the whitelist marks (roads, ferries, rail and waterways), pieces of one class with identical props that meet end to end are joined before simplification, wherever exactly two piece ends meet. All of a tile's pieces with the same class and props then form **one feature**, whose parts are the joined chains. So a feature is not an OSM way: one road feature may be several separate stretches of the same street. Oneway roads and waterways keep their direction (pieces are joined end to start only).
 
 ### Labels and shields
@@ -249,7 +249,7 @@ From 0.7 (before, the header was `count` and `nblocks` alone and no section had 
 
 `offset` is from the start of the section. What `count` and `first` mean depends on the section. Blocks hold about 16 KiB uncompressed. 4 KiB blocks would make the sections 5.1% larger (North America) and save about 0.3 ms per USB 2 read, which the 1 s cold-lookup target does not need.
 
-The sizes for North America are in the [size table](size-table.md#phase-2-step-24-addresses).
+The sizes for North America are in the [size table](dev/size-table.md#phase-2-step-24-addresses).
 
 ### `ASTR`: street runs (contiguous)
 
@@ -315,7 +315,7 @@ block = code:str*
 
 ## Routing
 
-The car routing sections (0.5, phase 3 step 3.3): a contraction hierarchy over the car graph, the road segments it stands for with their geometry, names and signs, a grid to find segments near a point, the node copies made by turn restrictions, and exit numbers. `omp-core::route` reads them; the builder writes them from its `graph` and `ch` stages. All but `RHDR` are in the [blocked layout](#streets) (`count:u32 nblocks:u32 (first:u32 offset:u32 length:u32)* block*`), and may be **spanning**: then the index is one record and each block another, and `offset` (from the section's start) points past any padding. North America's sizes are in the [size table](size-table.md#phase-3-step-33-the-routing-sections).
+The car routing sections (0.5, phase 3 step 3.3): a contraction hierarchy over the car graph, the road segments it stands for with their geometry, names and signs, a grid to find segments near a point, the node copies made by turn restrictions, and exit numbers. `omp-core::route` reads them; the builder writes them from its `graph` and `ch` stages. All but `RHDR` are in the [blocked layout](#streets) (`count:u32 nblocks:u32 (first:u32 offset:u32 length:u32)* block*`), and may be **spanning**: then the index is one record and each block another, and `offset` (from the section's start) points past any padding. North America's sizes are in the [size table](dev/size-table.md#phase-3-step-33-the-routing-sections).
 
 **The graph.** Its nodes are intersections, way ends and the ends at blocking barriers (the **plain** nodes), and one **copy** of a node per approach that a turn restriction names, with only the edges out of the node that the approach allows (phase 3 decision 2). A **segment** is a stretch of one way between two plain nodes; each of its one or two directions is an edge of the graph, from a plain node or from one of its copies. Edge weights are driving times in tenths of a second, plus 3,600 s on an edge that enters a road a car may use only to start or end a route on (`access=destination` and the like) from an open one.
 
@@ -327,7 +327,7 @@ A zstd-compressed JSON object: `nodes`, `edges` (of the hierarchy), `segments`, 
 
 ### `RCHE`: the hierarchy (spanning)
 
-`count` is the number of nodes. Block *k* holds nodes *k* × `block_nodes` onwards (32, fewer in the last block), and its `first` is its first node. Blocks are zstd frames from 0.7 (level 19, a 64 KiB dictionary trained on them, no checksum or dictionary ID): about 700 bytes each uncompressed, they shrink by a third, and the reader decodes a block once into its cache. Before 0.7 they were stored raw, since decoding varints beats decompressing; Ohio's routes took 0.2–0.3 ms longer on a cache miss for it ([phase 5 step 5.12](phase5-plan.md#512-perf-builder-and-pack-size)). The section starts with `nodes:u32  nblocks:u32  dict_offset:u32  dict_length:u32  offset:u32 × (nblocks + 1)` (before 0.7 without the dictionary fields), then the dictionary, then the blocks; each block runs to the next one's offset, and a frame's end is found in the frame, so the padding at a chunk boundary after it is ignored. The block below is what a frame holds.
+`count` is the number of nodes. Block *k* holds nodes *k* × `block_nodes` onwards (32, fewer in the last block), and its `first` is its first node. Blocks are zstd frames from 0.7 (level 19, a 64 KiB dictionary trained on them, no checksum or dictionary ID): about 700 bytes each uncompressed, they shrink by a third, and the reader decodes a block once into its cache. Before 0.7 they were stored raw, since decoding varints beats decompressing; Ohio's routes took 0.2–0.3 ms longer on a cache miss for it ([phase 5 step 5.12](dev/phase5-plan.md#512-perf-builder-and-pack-size)). The section starts with `nodes:u32  nblocks:u32  dict_offset:u32  dict_length:u32  offset:u32 × (nblocks + 1)` (before 0.7 without the dictionary fields), then the dictionary, then the blocks; each block runs to the next one's offset, and a frame's end is found in the frame, so the padding at a chunk boundary after it is ignored. The block below is what a frame holds.
 
 ```
 block = node*
@@ -444,7 +444,7 @@ polygon = nrings:varint  (npts:varint  (dx:zvarint  dy:zvarint)*)*
 
 ## Streets
 
-One record per street (phase 2 step 2.2): connected named OSM ways whose `name` has the same normalized key, split where the postal town of their addresses changes, where they cross a city boundary (admin level 8) without addresses, and at about 20 km. A **street ID** is the street's position in the table; streets are ordered along a Morton curve of their middle points. North America has 10.0M streets (see the [size table](size-table.md#phase-2-step-22-streets)).
+One record per street (phase 2 step 2.2): connected named OSM ways whose `name` has the same normalized key, split where the postal town of their addresses changes, where they cross a city boundary (admin level 8) without addresses, and at about 20 km. A **street ID** is the street's position in the table; streets are ordered along a Morton curve of their middle points. North America has 10.0M streets (see the [size table](dev/size-table.md#phase-2-step-22-streets)).
 
 Both sections are zstd blocks (level 19) of consecutive streets, about 32 KiB uncompressed each, with an index in front:
 
@@ -495,11 +495,11 @@ cell  = key_delta:varint  (nstreets << 1 | loose):varint  [first:zvarint  street
 - A street is listed in every cell that one of its stored segments passes through (and the cell of a one-point part). `loose` is 1 when `ALSE` has points in the cell; their block is the last whose `first` is at most the cell's Morton code.
 - **Lookup** of the streets within *r* metres of a point: the cells that the square of side 2*r* around it touches, one block each, then each street's distance from its `SGEO` geometry. Cells with no streets and no points are not stored.
 
-Admin areas are not in the grid: their bounding boxes in `SADM` find the candidates, and `SAPL` decides. z14 was chosen over z13 and z15 by size and by the streets read per lookup (phase 2 step 2.5). North America has about 2.1M cells, 7.8 MiB ([size table](size-table.md#phase-2-step-25-spatial-grid)).
+Admin areas are not in the grid: their bounding boxes in `SADM` find the candidates, and `SAPL` decides. z14 was chosen over z13 and z15 by size and by the streets read per lookup (phase 2 step 2.5). North America has about 2.1M cells, 7.8 MiB ([size table](dev/size-table.md#phase-2-step-25-spatial-grid)).
 
 ## Search
 
-The search index (phase 2 step 2.3). Four sections: the entries (`SENT`), the towns shown with them (`STWN`), an `fst` from token to postings (`SFST`) and the postings (`SPST`). The app holds `SFST`, `STWN` and the block indexes in RAM and reads entries and postings with positioned reads (phase 2 decision 1). Sizes are in the [size table](size-table.md#phase-2-step-23-search).
+The search index (phase 2 step 2.3). Four sections: the entries (`SENT`), the towns shown with them (`STWN`), an `fst` from token to postings (`SFST`) and the postings (`SPST`). The app holds `SFST`, `STWN` and the block indexes in RAM and reads entries and postings with positioned reads (phase 2 decision 1). Sizes are in the [size table](dev/size-table.md#phase-2-step-23-search).
 
 **Tokens.** A name's tokens are `omp_core::normalize::search_tokens`: case and accents folded, abbreviations expanded ("St" → "street" or "saint" by position, "Mt" → "mount", "N" → "north"), French directions in English, ordinals as numbers ("21st" → "21"), route designators shortened ("State Route 161" and "OH 161" → "sr 161"), possessives joined ("Tim's" → "tims") and French elisions split ("l'Église" → "l eglise"). Each entry is posted under the tokens of its name and of each alternative name. A postcode has one token, its display form folded without the space ("K7L 3N6" → `k7l3n6`). The query side uses the same functions.
 

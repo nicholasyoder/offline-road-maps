@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes the third-party notices that travel with a release (docs/phase6-plan.md, 6.6).
+"""Writes the third-party notices that travel with a release (docs/dev/phase6-plan.md, 6.6).
 
     tools/licenses.py <out.txt>
 

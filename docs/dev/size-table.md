@@ -69,7 +69,7 @@ Almost all of it is open ocean inside the region's `.poly`: tiles at z13–z14 t
 
 ### After phase 1 step 1.5b: left-out tiles
 
-[Step 1.5b](phase1-plan.md#15b-leave-out-full-ocean-tiles) leaves out every tile whose only content is one polygon covering the tile and its buffer, when the parent already shows that polygon; the app draws the nearest stored ancestor instead ([format.md](format.md#left-out-tiles)). Most are open ocean, but 5.6M tiles inside large protected areas (Greenland's and northern Canada's parks among them) also go. North America, MiB:
+[Step 1.5b](phase1-plan.md#15b-leave-out-full-ocean-tiles) leaves out every tile whose only content is one polygon covering the tile and its buffer, when the parent already shows that polygon; the app draws the nearest stored ancestor instead ([format.md](../format.md#left-out-tiles)). Most are open ocean, but 5.6M tiles inside large protected areas (Greenland's and northern Canada's parks among them) also go. North America, MiB:
 
 | | 1.5 pack | 1.5b pack | Change |
 |---|---:|---:|---:|
@@ -85,7 +85,7 @@ Left out: 40.1M ocean tiles, 5.6M protected-area tiles, 0.24M lake tiles and 0.1
 
 ### After phase 1 step 1.5c: lighter frames, capped layers
 
-[Step 1.5c](phase1-plan.md#15c-tile-size-experiments-frame-overhead-and-per-layer-max-zoom) drops the magic number and checksum from every tile frame (8 bytes each) and stores land cover and water areas only up to z13; the app draws them from z13 at z14 and above ([format.md](format.md#capped-layers-maxzoom)). Rivers, canals and streams move to their own `waterways` layer, which stays to z14. North America, MiB:
+[Step 1.5c](phase1-plan.md#15c-tile-size-experiments-frame-overhead-and-per-layer-max-zoom) drops the magic number and checksum from every tile frame (8 bytes each) and stores land cover and water areas only up to z13; the app draws them from z13 at z14 and above ([format.md](../format.md#capped-layers-maxzoom)). Rivers, canals and streams move to their own `waterways` layer, which stays to z14. North America, MiB:
 
 | | 1.5b pack | 1.5c pack | Change |
 |---|---:|---:|---:|

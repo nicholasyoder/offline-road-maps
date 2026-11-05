@@ -3,12 +3,12 @@
 # North America pack, with the built-in style. The PNGs are not kept in the repo (removed in
 # phase 6; the last set is in commit 57d56dd).
 #
-#   docs/screenshots/render.sh [pack dir]
+#   docs/dev/screenshots/render.sh [pack dir]
 #
 # Default pack: $OMP_WORK/packs/north-america. Needs a release build of OfflineRoadMaps.
 set -eu
 cd "$(dirname "$0")"
-app=../../target/release/OfflineRoadMaps
+app=../../../target/release/OfflineRoadMaps
 pack=${1:-${OMP_WORK:-/media/nicholas/Data/maps-testing}/packs/north-america}
 
 shot() { # name lat,lon zoom

@@ -43,6 +43,10 @@ pub struct Options {
     pub inputs: PathBuf,
     pub attach_m: f64,
     pub dedup_m: f64,
+    /// `--clip-poly`: only addresses (and TIGER ranges) inside it are kept. Without it a
+    /// region cut from a state would carry the state's addresses as unattached points
+    /// outside its roads.
+    pub clip: Option<Poly>,
 }
 
 /// The address comes from OSM.
@@ -198,8 +202,12 @@ fn merge_one(
         true => (part.raws, part.ranges),
         false => (Vec::new(), Vec::new()),
     };
-    let (raws, mut ranges) = extract(&sel, osm_raws)?;
+    let (mut raws, mut ranges) = extract(&sel, osm_raws)?;
     ranges.extend(osm_ranges);
+    if let Some(clip) = &opts.clip {
+        raws.retain(|r| clip.contains(r.p));
+        ranges.retain(|r| clip.meets(&r.line));
+    }
     let Normalized {
         mut recs,
         street_names,

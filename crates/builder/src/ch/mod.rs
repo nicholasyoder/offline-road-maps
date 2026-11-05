@@ -71,7 +71,7 @@ fn insert(list: &mut Vec<Arc>, a: Arc) {
 }
 
 /// The weights of the priority terms, the witness search limit and the round size. The
-/// defaults were tuned on Ohio (see step 3.2 in `docs/phase3-plan.md`).
+/// defaults were tuned on Ohio (see step 3.2 in `docs/dev/phase3-plan.md`).
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Params {
     pub edge_difference: i64,

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds a release folder (the layout of docs/phase6-plan.md, step 6.3) for a USB stick
+# Builds a release folder (the layout of docs/dev/phase6-plan.md, step 6.3) for a USB stick
 # or a zip. Run on Linux.
 #
 #   tools/package.sh [options] --pack <pack dir> [--pack <pack dir> ...] <out dir>

@@ -1,6 +1,6 @@
 # Offline Road Maps
 
-Offline road map app for North America (Rust: `omp-core`, `omp-builder`, `omp-app`). OMP stands for Offline MaPs and is kept in code, crate names, env vars and the `.omp` pack format; wherever users see the project's name (README, window title, About, docs titles), call it **Offline Road Maps**. Plans live in `docs/`: [roadmap.md](docs/roadmap.md) and one plan per phase (e.g. [phase0-plan.md](docs/phase0-plan.md)).
+Offline road map app for North America (Rust: `omp-core`, `omp-builder`, `omp-app`). OMP stands for Offline MaPs and is kept in code, crate names, env vars and the `.omp` pack format; wherever users see the project's name (README, window title, About, docs titles), call it **Offline Road Maps**. The roadmap is [docs/roadmap.md](docs/roadmap.md); plans live in `docs/dev/`, one per phase (e.g. [phase0-plan.md](docs/dev/phase0-plan.md)), with the findings and baselines. User-facing docs: `README.md`, `docs/BUILDING.md`, `docs/DEVELOPING.md`.
 
 ## Tracking progress
 
