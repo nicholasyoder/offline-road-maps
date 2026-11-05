@@ -32,11 +32,11 @@ Starting point (checked 2026-11-04):
 |---|---|---|
 | 6.1 Clean-up inventory | **Done** 2026-11-04 | Tracked items done 2026-11-04 ; owner deleted the untracked leftovers in `target/`, `data/`, `tools/gl-probe/target` |
 | 6.2 Binary name | **Done** 2026-11-04 | Windows exe icon unchecked until CI builds it |
-| 6.3 Release layout and launchers | In progress | Linux half done and tested 2026-11-05; the Windows exe (cross-built, on the stick) on a Windows laptop and a real FAT32 stick are still to test |
-| 6.4 Release build and packaging script | In progress | `tools/package.sh` done and used for the first stick; `tools/build-windows.sh` done (cross-build works, exe on the stick); `tools/build-linux.sh` done (glibc 2.35, on the stick); the 1.0.0 bump remains |
+| 6.3 Release layout and launchers | **Done** 2026-11-05 | Windows exe on Windows laptops and a FAT32 stick confirmed by the owner; other desktops' exFAT mount options not measured |
+| 6.4 Release build and packaging script | **Done** 2026-11-05 | Version bumped to 1.0.0; Linux binary not tried on an older distribution |
 | 6.5 Docs: BUILDING.md, README, README.txt | **Done** 2026-11-05 | The rest of BUILDING.md's commands are walked through for real in 6.7 |
 | 6.6 Licences and attribution check | **Done** 2026-11-05 | `tools/licenses.py`; optional About entry skipped; the `README.txt` paragraph is 6.5's |
-| 6.7 Clean-room check on both platforms | In progress | Stick (Windows) and BUILDING.md's Delaware build on a fresh machine passed 2026-11-05; times not recorded; 1.0.0 bump and roadmap tick remain |
+| 6.7 Clean-room check on both platforms | **Done** 2026-11-05 | Numbers not recorded (owner decision) |
 
 Order: 6.1 first (so docs are written against the tree that will ship), then 6.2 (the name touches everything the docs quote), then 6.3 and 6.4 together, 6.5 and 6.6 in parallel with them, 6.7 last.
 
@@ -110,6 +110,8 @@ The constraint from the code: the executable's folder holds `maps/`, `config.tom
 
 > **Linux half done 2026-11-05.** `--data-dir <dir>` (main.rs, USAGE; an unreadable folder exits 2), `tools/release/OfflineRoadMaps.sh`, the layout above built onto a fresh 58 GB exFAT stick by `tools/package.sh`. Measured: this Debian mounts the exFAT stick with `rw,nosuid,nodev` (no `noexec`), so `sh OfflineRoadMaps.sh` runs the binary in place and `config.toml` appeared on the stick. The no-exec branch was tested in a user namespace on a `noexec` tmpfs (direct exec gives 126; the launcher copied the binary to the cache, started the app and the config landed in the `noexec` folder). **Open:** a real FAT32 stick (no loop mounts without root here; the `noexec` tmpfs is the same case for the launcher, though not for the no-4 GB-file limit), the Windows exe on a Windows laptop, and the other desktops' exFAT mount options (Ubuntu, Mint, Fedora) for the README.
 
+> **Done 2026-11-05.** The owner confirmed the Windows exe on Windows laptops (icon shows) and the stick on a real FAT32 stick. Not measured: the exFAT mount options of Ubuntu, Mint and Fedora (the launcher copes either way, tested on a `noexec` tmpfs).
+
 **Done when:** from a fresh exFAT stick laid out as above, the Windows exe starts on a Windows laptop, `sh OfflineRoadMaps.sh` starts the Linux build on this machine whether or not the stick allows exec (test both: the stick, and a FAT32 stick), and settings, trips and pins written there end up on the stick.
 
 ## 6.4 Release build and packaging script
@@ -119,6 +121,8 @@ The constraint from the code: the executable's folder holds `maps/`, `config.tom
 - **Windows binary on Linux (decided 2026-11-05):** the project must not depend on GitHub CI alone, and the owner packages on Linux, so `tools/build-windows.sh` cross-builds `x86_64-pc-windows-msvc` with `cargo-xwin` (the same target and static-CRT flag as CI; it fetches the Windows SDK and CRT on first use). CI stays as the second, independent build. **Done 2026-11-05:** the owner installed `cargo-xwin` and ran the script; it needed `~/.cargo/bin` and Debian's `/usr/lib/llvm-N/bin` (for `llvm-lib`, `llvm-rc`) added to `PATH`, which the script now does. `build.rs` now embeds the icon and version info for any Windows *target* (winresource as a build-dependency on every host; it calls `llvm-rc`). Result: a 15.1 MB PE32+ GUI exe with a `.rsrc` section (icon entries, product name); under `wine` it starts and prints `--help`. **Not yet seen:** the icon in Windows Explorer, and the exe on a real Windows machine. How to build on Windows by hand is a section of BUILDING.md (6.5). No PowerShell packaging script: the owner packages on Linux.
 - **`tools/package.sh`** (no PowerShell twin, decided 2026-11-05): takes the binaries and a `maps/` directory (or a pack directory) and writes the 6.3 layout to a target folder, including `README.txt`, `licenses/`, `linux/` (the example `.desktop` and icon from `crates/app/data/linux/`), the launcher and a checksum list of the pack files, then runs the builder's `verify` on the packs so a bad copy is caught before the stick leaves the house.
 - Version number: one place (`workspace.package.version`), shown in About and in `README.txt`. Bump 0.1.0 to **1.0.0** (decided), in the commit that passes 6.7, so the tag and the first stick match.
+
+> **Done 2026-11-05 (6.4 as a whole):** version bumped to 1.0.0 (`workspace.package.version`), the first stick and the tag match.
 
 > **`tools/package.sh` done 2026-11-05.** `tools/package.sh [--linux f] [--windows f | --no-windows] [--builder f] [--no-verify] --pack <dir>… <out>`: lays out the 6.3 tree (the version from `Cargo.toml` goes into `README.txt`), copies each pack into `maps/<name>/`, compares the copy with its source by sha256 (writes `SHA256SUMS` beside the chunks), then runs `omp-builder verify` on the copy (builds the builder if missing); refuses a non-empty target. First run, North America (9.3 GB) onto the exFAT stick: 8 min 28 s end to end, verify OK. `licenses/` holds only the app's MIT/Apache and the Noto OFL for now (6.6 adds the dependency notices); `README.txt` is a first draft (6.5). Left open: the glibc-2.35 Linux build (above), the 1.0.0 bump.
 
@@ -164,7 +168,9 @@ The roadmap's attribution item is covered by *About this map*; what is left is a
 
 On the Windows laptop (and one more if available, say the 7490 on Debian), from a stick made only with `tools/package.sh`: read only `README.txt`, start the app, open the map, search, route, save a trip, print to PDF, close; eject; insert on another machine and check the trip and settings are there. Then on a clean user account or machine (a fresh container or VM is enough for BUILDING.md), follow `BUILDING.md` to build Delaware and open it. Everything that took a guess becomes a fix to the docs. Record times and the stick's size in this file.
 
-> **In progress 2026-11-05.** Owner ran the stick walk-through and BUILDING.md's Delaware build on a fresh machine: both worked and the pack opens in the app. Finding: osmdata.openstreetmap.de was unreachable (no route to host, also from the dev machine), so the owner built without ocean polygons. Fix: `fetch` now falls back to the unofficial North America mirror www.osmdata.org (same path and file; `fetch_one`, `mirror()`), the URL actually used goes into the manifest; BUILDING.md says so. Not yet exercised against a real outage, and the mirror has no published hash, so only the zip magic is checked. Remaining: record times and stick size, bump to 1.0.0, tick the roadmap.
+> **In progress 2026-11-05.** Owner ran the stick walk-through and BUILDING.md's Delaware build on a fresh machine: both worked and the pack opens in the app. Finding: osmdata.openstreetmap.de was unreachable (no route to host, also from the dev machine), so the owner built without ocean polygons. Fix: `fetch` now falls back to the unofficial North America mirror www.osmdata.org (same path and file; `fetch_one`, `mirror()`), the URL actually used goes into the manifest; BUILDING.md says so. Not yet exercised against a real outage, and the mirror has no published hash, so only the zip magic is checked. 
+
+> **Done 2026-11-05.** The owner ran the stick walk-through on several machines and the Delaware build from BUILDING.md on a fresh machine; both passed with no missing step. Times and stick size were not recorded (owner decision); the owner noticed nothing slow or memory-hungry. The README's first screenshot is to be replaced with a full-window one (route and Route tab open), which `--render` cannot make (no panels), so it is taken by hand.
 
 **Done when:** both walk-throughs pass with no step the docs left out, and the roadmap's phase 6 is ticked.
 

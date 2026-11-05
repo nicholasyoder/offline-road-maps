@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "omp-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bytemuck",
  "eframe",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "omp-builder"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2380,7 +2380,7 @@ dependencies = [
 
 [[package]]
 name = "omp-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "fst",
  "jiff",
