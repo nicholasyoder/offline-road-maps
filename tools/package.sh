@@ -6,7 +6,8 @@
 #
 #   --pack <dir>      a pack's folder (the one holding name.omp.000); copied to
 #                     <out>/maps/<folder name>/. At least one.
-#   --linux <file>    the Linux binary   (default target/release/OfflineRoadMaps)
+#   --linux <file>    the Linux binary   (default target/x86_64-unknown-linux-gnu/release/OfflineRoadMaps,
+#                     from tools/build-linux.sh: glibc 2.35 or newer)
 #   --windows <file>  the Windows exe    (default target/x86_64-pc-windows-msvc/release/OfflineRoadMaps.exe)
 #   --no-windows      leave the Windows exe out (otherwise it must exist)
 #   --builder <file>  omp-builder, to verify the copied packs (default
@@ -17,7 +18,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-linux_bin="$root/target/release/OfflineRoadMaps"
+linux_bin="$root/target/x86_64-unknown-linux-gnu/release/OfflineRoadMaps"
 win_exe="$root/target/x86_64-pc-windows-msvc/release/OfflineRoadMaps.exe"
 builder="$root/target/release-builder/omp-builder"
 use_windows=1
@@ -42,7 +43,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$out" ] || die "no output folder (see --help)"
 [ ${#packs[@]} -gt 0 ] || die "no --pack given"
-[ -f "$linux_bin" ] || die "$linux_bin not found (cargo build --release -p omp-app)"
+[ -f "$linux_bin" ] || die "$linux_bin not found (tools/build-linux.sh builds it)"
 if [ $use_windows = 1 ] && [ ! -f "$win_exe" ]; then
     die "$win_exe not found (tools/build-windows.sh builds it; or pass --no-windows)"
 fi
