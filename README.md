@@ -4,11 +4,11 @@ Road maps, search and driving directions for the whole of North America that wor
 
 ![The app window with a three-stop route, its alternatives and directions](docs/img/window.png)
 
-- **Map:** the United States and Canada, from the whole continent down to individual streets, in a default, a night and a high-contrast style.
-- **Search:** places, streets and addresses (151 million of them), as you type.
+- **Map:** detailed street maps built from [OpenStreetMap](https://www.openstreetmap.org/) data and stored in compact map packs, with several built-in styles.
+- **Search:** places, streets and addresses (151 million in the North America pack), as you type.
 - **Routes:** car routes with alternatives, turn-by-turn directions, saved trips and pushpins.
 - **Print:** a route's map and directions to a printer or a PDF.
-- **Portable:** the program, the maps (one 9 GB file set for all of North America) and your settings, trips and pins live in one folder. Windows and Linux; copy the folder to take it with you.
+- **Portable:** the program, the maps, and your settings, trips and pins live in one folder that works on both Windows and Linux. All of North America, with the program, is under 10 GB.
 
 | Street map | Night style | Print |
 |---|---|---|
@@ -16,15 +16,22 @@ Road maps, search and driving directions for the whole of North America that wor
 
 ## Get it
 
-A release is a folder: `OfflineRoadMaps.exe` for Windows, `OfflineRoadMaps.sh` for Linux, `maps/` and a `README.txt` that explains the rest. Put it on an exFAT stick or any disk and start the program. The maps are far too large to be in a download, so build your own with [docs/BUILDING.md](docs/BUILDING.md) (Delaware takes 12 seconds; all of North America takes about 40 minutes and 47 GiB of RAM).
+There are two ways to get Offline Road Maps. Either one ends with the same thing: one folder (or USB stick) that holds the program and the maps, and runs on Windows and Linux with nothing to install.
 
-## Build it yourself
+**Have one made for you.** The maps for all of North America are about 9 GB, far too large for the git repository, and I don't run any infrastructure to host them. If you'd rather not build them, email me at [nicholasyoder@proton.me](mailto:nicholasyoder@proton.me) and I can set up a USB stick with the program and the maps and mail it to you, for a fee that covers the USB stick, postage, and my time.
 
-[docs/BUILDING.md](docs/BUILDING.md) walks through everything: the tools, getting the data, building a region (a state, a province, North America or a polygon you draw), building the program, and making the release folder for Windows and Linux.
+**Build it yourself.** This is free. It needs a reasonably modern computer and an internet connection for the one-time download of the map data, and you run a few commands in a terminal. [docs/BUILDING.md](docs/BUILDING.md) goes through it step by step:
+
+- a single state or province takes a few minutes to about 15, download included (Delaware: about 5 minutes, of which the build is 12 seconds);
+- all of North America takes about 3 hours, most of it downloading 35 GB, and the build (about 45 minutes) needs a computer with at least 48 GB of RAM;
+- these times assume at least a 50 Mbit/s connection; a slower one means more time spent on downloads;
+- you can also cut your own region, such as one metro area, from a polygon you draw.
+
+BUILDING.md also covers building the program itself and putting everything into a release folder for Windows and Linux.
 
 ## For developers
 
-[docs/DEVELOPING.md](docs/DEVELOPING.md): running from source, the `--render` and `--bench` modes, the checks. The design, the file format ([docs/format.md](docs/format.md)), the plans and the measurements behind them are in [docs/roadmap.md](docs/roadmap.md) and [docs/dev/](docs/dev/).
+See [docs/DEVELOPING.md](docs/DEVELOPING.md) for running from source and the `--render` and `--bench` modes. The design, file format, plans and the measurements behind them are in [docs/roadmap.md](docs/roadmap.md), [docs/format.md](docs/format.md), and [docs/dev/](docs/dev/).
 
 The `omp` in crate names, environment variables and the `.omp` map files stands for Offline MaPs.
 
