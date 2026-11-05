@@ -1,6 +1,6 @@
 # Tools for building a release on Linux
 
-*Draft, 2026-11-05. Written for [phase 6 step 6.5](phase6-plan.md#65-docs), which folds it into `docs/BUILDING.md`. Tested on Debian 13; the Windows part was run through, the Linux part (steps 4 and 5) is not yet.*
+*Draft, 2026-11-05. Written for [phase 6 step 6.5](phase6-plan.md#65-docs), which folds it into `docs/BUILDING.md`. Tested on Debian 13; every step has been run through.*
 
 A release folder holds two programs: one for Linux and one for Windows. You build both on a Linux machine, with two scripts in `tools/`. Each needs a few tools installed once. This guide installs them.
 
