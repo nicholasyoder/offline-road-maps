@@ -8,9 +8,14 @@
 #               (cargo-xwin downloads Microsoft's CRT and Windows SDK headers/libraries on
 #               first use, into ~/.cache/cargo-xwin, and asks you to accept their licence
 #               with XWIN_ACCEPT_LICENSE=1 or the prompt; clang and llvm tools from your
-#               distribution do the compiling and linking.)
+#               distribution do the compiling; llvm-rc makes the icon resource.)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v cargo-xwin >/dev/null || { echo "build-windows.sh: cargo-xwin is not installed (see the top of this file)" >&2; exit 1; }
+# The .exe's icon and version info are compiled with llvm-rc (build.rs, winresource).
+if [ -z "${RC_PATH:-}" ] && ! command -v llvm-rc >/dev/null; then
+    RC_PATH=$(command -v llvm-rc-19 llvm-rc-18 llvm-rc-20 | head -n1 || true)
+    [ -n "$RC_PATH" ] && export RC_PATH
+fi
 cargo xwin build --release --target x86_64-pc-windows-msvc -p omp-app "$@"
 ls -l target/x86_64-pc-windows-msvc/release/OfflineRoadMaps.exe

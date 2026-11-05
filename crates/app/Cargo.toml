@@ -53,6 +53,7 @@ count-allocs = []
 [lints]
 workspace = true
 
-[target.'cfg(windows)'.build-dependencies]
-# Icon and version info on the .exe (build.rs); a build tool only, so not in the network-crate check.
+[build-dependencies]
+# Icon and version info on the .exe (build.rs), also when cross-building on Linux; a build
+# tool only, so not in the network-crate check.
 winresource = "0.1"
